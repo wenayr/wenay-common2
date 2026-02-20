@@ -1,0 +1,43 @@
+{
+  "name": "wenay-common",
+  "version": "1.0.21",
+  "description": "math math math",
+  "strict": true,
+  "scripts": {
+    "build": "tsc",
+    "build:client": "tsc",
+    "build:server": "tsc",
+    "test": "",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm test"
+  },
+  "files": [
+    "lib/*"
+  ],
+  "author": "wenay",
+  "license": "ISC",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=17.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wenayr/math.git"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "node-fetch": "^3.3.2",
+    "xmlhttprequest": "^1.8.0"
+  },
+  "devDependencies": {
+    "npm": "^11.0.0",
+    "dotenv": "^16.4.7",
+    "ts-node": "^10.9.2",
+    "@types/node": "^22.10.7",
+    "@types/dotenv": "^8.2.3"
+  },
+  "optionalDependencies": {
+    "utf-8-validate": "^6.0.3"
+  }
+
+}

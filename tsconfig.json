@@ -1,0 +1,69 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "CommonJS",
+    //"module": "ESNext",
+    "moduleResolution": "node",
+    "noEmitOnError": true,
+    "removeComments": true,
+    "sourceMap": false,
+    "allowJs": true,
+    "strictNullChecks": true,
+    "noImplicitThis": true,
+    "noImplicitAny": true,
+    "strict": true,
+    "strictFunctionTypes": true,
+    "strictPropertyInitialization": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "outDir": "./lib",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    //"skipLibCheck": true,
+    "lib": [
+      "esnext"
+    ],
+    //"types" : ["node"],
+    "baseUrl": ".",
+    "paths": {
+//      "@wenay/server": ["./lib/srcServer/*"],
+//      "@wenay/Client": ["./lib/srcClient/*"],
+//      "@all/*": ["./lib/all/*"]
+      "*": [
+        "node_modules/*"
+//        "./src/types/*"
+      ],
+      //"dom" : ["src/Common/dom"]
+    }
+  },
+
+  "include": [
+//    "./srcLib/**/*"
+    "./src/**/*"
+//    "./srcServer/**/*",
+//    "./srcClient/**/*",
+//    "./src/index.ts",
+//    "./src/server.ts",
+//    "./src/client.ts"
+  ],
+  "exclude": [
+    "**/*.spec.ts",
+    "./noBuild/**/*",
+    "node_modules",
+    "../node_modules",
+    //"src/Common/dom"
+  ],
+  //  "references": [
+//    {
+//      "path": "./srcServer",
+////      "prepend": true
+//    },
+//    {
+//      "path": "./srcClient",
+////      "prepend": true
+//    }
+//  ]
+}
+
