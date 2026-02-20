@@ -167,21 +167,25 @@ function createServer<T extends object>(
         const contexts: any[] = [];
         const routeMap: Record<string, number> = {};
 
-    function transformTree(obj: any): any {
-        if (obj == null || typeof obj != "object" || isProxy(obj)) return obj;
-        const out: any = {};
-        for (const k of Object.keys(obj)) {
-            if (!isSafeKey(k)) continue;
-            const v = obj[k];
-            if (isProxy(v)) {obj[k] = v; continue;}
-            out[k] = typeof v == "function" ? v : v != null && typeof v == "object" ? transformTree(v) : v;
+        function transformTree(obj: any): any {
+            let current = obj;
+            if (hooks?.resolveTransform && !isProxy(current)) {
+                current = hooks.resolveTransform(current);
+            }
+            if (current == null || typeof current != "object" || isProxy(current)) return current;
+            const out: any = {};
+            for (const k of Object.keys(current)) {
+                if (!isSafeKey(k)) continue;
+                const v = current[k];
+                if (isProxy(v)) {out[k] = v; continue;}
+                out[k] = typeof v == "function" ? v : v != null && typeof v == "object" ? transformTree(v) : v;
+            }
+            return out;
         }
-        return out;
-    }
 
-    const resolved = hooks?.resolveTransform ? transformTree(target) : target;
+        const resolved = transformTree(target);
 
-    function index(obj: any, prefix: string) {
+        function index(obj: any, prefix: string) {
         for (const k of Object.keys(obj)) {
             if (!isSafeKey(k)) continue;
             const v = obj[k];
@@ -197,6 +201,7 @@ function createServer<T extends object>(
             for (const k of Object.keys(obj)) {
                 if (!isSafeKey(k)) continue;
                 const v = obj[k];
+                console.log(k)
                 switch (true) {
                     case v == null:        out[k] = "null";        break;
                     case isProxy(v):       out[k] = "dynamic";     break;
@@ -216,9 +221,9 @@ function createServer<T extends object>(
     send([Pkt.MAP, routeMap, strictSchema]);
 
     socket.on(key, async (msg: ServerIncomingMsg) => {
-        if (msg == Pkt.STRICT) { send([Pkt.MAP, routeMap, strictSchema]); return; }
+        if (msg == Pkt.STRICT) {send([Pkt.MAP, routeMap, strictSchema]); return; }
         if (!Array.isArray(msg) || msg[0] !== Pkt.CALL) return;
-
+        console.log(msg)
         const [, reqId, ref, rawArgs, w] = msg;
         const wait = w !== false;
 
@@ -255,15 +260,17 @@ function createServer<T extends object>(
                     let curr: any = target;
                     for (let i = 0; i < ref.length - 1; i++) {
                         const seg = ref[i];
-                        if (curr == null || typeof curr !== "object" || !hasOwn(curr, seg)) { curr = undefined; break; }
-
+                        console.log(seg, !(seg in curr))
+                        if (curr == null || typeof curr !== "object" || !(seg in curr)) { curr = undefined; break; }
                         curr = curr[seg];
+                        console.log(111)
                         if (hooks?.resolveTransform && !isProxy(curr)) curr = hooks.resolveTransform(curr);
                     }
                     const last = ref[ref.length - 1];
                     if (curr != null && typeof curr == "object") {
                         ctx = curr;
-                        fn = hasOwn(curr, last) ? curr[last] : undefined;
+                        fn = last in curr ? curr[last] : undefined;
+                        console.log(fn, last)
                     }
                 }
             }
@@ -407,6 +414,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             get(_, p: string | symbol) {
                 if (p == "then" || p == "catch" || p == Symbol.toPrimitive) return undefined;
                 if (p == "call" && tgt == "func") return (_: any, ...args: any[]) => sendCall(path, args, wait);
+                if (tgt === "func") return undefined;
                 const child = tgt?.[String(p)];
                 return child == "null" || child == undefined ? undefined : buildStrict([...path, String(p)], wait);
             },

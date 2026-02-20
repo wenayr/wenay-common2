@@ -116,7 +116,6 @@ export function UseListen<T>(data: Parameters<typeof funcListenCallbackBase<T>>[
 
 /** Проверяет, является ли объект результатом funcListenCallbackBase */
 export function isListenCallback(obj: any): obj is ReturnType<typeof funcListenCallbackBase> {
-    console.log(obj)
     if (obj == null || typeof obj !== "object") return false
     const obj2 = obj as ReturnType<typeof funcListenCallbackBase>
     return (
