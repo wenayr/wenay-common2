@@ -30,6 +30,13 @@ else fs.mkdirSync(tempDir);
 console.log("Copy files to",tempDir);
 if (1) {
 fs.copyFileSync("./package.json", path.join(tempDir,"package.json"));
+
+// дополнительные файлы, которые копируются при наличии
+for (const file of ["README.md", "LICENSE", "CHANGELOG.md"]) {
+    if (fs.existsSync(file))
+        fs.copyFileSync(file, path.join(tempDir, file));
+}
+
 //fs.symlinkSync("../"+srcDir,  path.join(tempDir, srcDir), "junction");
 fs.cpSync(srcDir, path.join(tempDir, srcDir), { recursive: true, force: true })
 }

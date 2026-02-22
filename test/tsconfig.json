@@ -6,7 +6,7 @@
     "moduleResolution": "node",
     "noEmitOnError": true,
     "removeComments": true,
-    "sourceMap": false,
+    "sourceMap": true,
     "allowJs": true,
     "strictNullChecks": true,
     "noImplicitThis": true,
@@ -17,30 +17,25 @@
     "noImplicitOverride": true,
     "noPropertyAccessFromIndexSignature": true,
     "forceConsistentCasingInFileNames": true,
-    "declaration": true,
-    "outDir": "./lib",
+    //"declaration": true,
+    "outDir": "dist",
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
-    //"skipLibCheck": true,
     "lib": [
       "esnext"
     ],
-    "baseUrl": ".",
+    "types" : ["node"],
+    "baseUrl": "./",
     "paths": {
-      "*": [
-        "node_modules/*"
-      ],
-    }
+    },
   },
-
   "include": [
-    "./src/**/*"
+    //"*.ts"
+    "test.ts"
   ],
   "exclude": [
-    "**/*.spec.ts",
-    "./noBuild/**/*",
-    "node_modules",
-    "../node_modules",
+    "./node_modules"
   ],
+  "files": ["test2.ts"]
 }
 

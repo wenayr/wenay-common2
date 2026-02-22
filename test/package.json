@@ -1,0 +1,20 @@
+{
+  "name": "test",
+  "version": "1.0.0",
+  "//type": "module",
+  "scripts": {
+    "_del_wenay": "IF exist node_modules\\wenay-common (rd /s /q node_modules\\wenay-common)",
+    "_mklink": "npm run _del_wenay  &&  mklink /J node_modules\\wenay-common ..\\dist",
+    "installLink": "npm install",
+    "installCopy": "del package-lock.json  &&  npm run _del_wenay &&  npm install --install-links",
+    "_prepare": "IF not exist node_modules\\wenay-common (npm install)",
+    "test": "npm run _prepare  &&  @echo run test  &&  tsc --incremental  &&  node --enable-source-maps dist/test.js  &&  @echo ok"
+  },
+  "dependencies": {
+    "test": "file:",
+    "wenay-common": "^1.0.223"
+  },
+  "//dependencies": {
+    "wenay-common": "file:.."
+  }
+}

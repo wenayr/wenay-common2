@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Common library",
   "strict": true,
   "main": "lib/index.js",
@@ -8,8 +8,6 @@
   "private": true,
   "scripts": {
     "test": "npm run --prefix ./test test",
-    "testjest": "jest",
-    "testjest2": "jest --clearCache",
     "build & watch": "npm run _clearDir  &&  tsc --watch",
     "build": "npm run _clearDir  &&  tsc --build --verbose  &&  npm run _afterBuild",
     "_afterBuild": "node copyCompiledFiles.mjs .\\dist  &&  cd dist  &&  npm pkg delete scripts devDependencies private",
@@ -33,13 +31,6 @@
     "url": "https://github.com/wenayr/wenay-common2.git"
   },
   "dependencies": {
-    "axios": "^1.13.2",
-    "create-hmac": "^1.1.7",
-    "express": "^5.2.1",
-    "socket.io": "^4.8.3",
-    "socket.io-client": "^4.8.3",
-    "source-map-support": "^0.5.21",
-    "xmlhttprequest": "^1.8.0"
   },
   "devDependencies": {
     "@types/create-hmac": "^1.1.3",
