@@ -8,7 +8,7 @@ declare type HTMLInputElement = {
 //let aaa : HTMLInputElement = new globalThis.HTMLInputElement;
 
 
-import {NormalizeDouble, MaxCommonDivisor,GetDblPrecision, GetDblPrecision2} from "./common";
+import {NormalizeDouble, MaxCommonDivisor,GetDblPrecision, GetDblPrecision2} from "./core/common";
 //import * as lib from "./common"
 
 // задать автоматическое управление шагом для элемента input

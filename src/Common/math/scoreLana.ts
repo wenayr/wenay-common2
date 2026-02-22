@@ -2,7 +2,7 @@
 type tDatumL = {price: number[], key: string|object|number}
 type tfLeaderResultL = {}
 
-function strategyStepOfStepAllL(symbols: tDatumL[]) {
+export function strategyStepOfStepAllL(symbols: tDatumL[]) {
     // минимальный процент всплеска
     const minK =  0
     const percentM =  1/100;
@@ -38,7 +38,7 @@ function PriceTOSumPercentL(price: number[]) {
     return price.map(e=>e/price[0])
 }
 
-function strategyStepOfStepL({t1, t2, minK: _minK, percentM: _percentM, onlyBuy: _onlyBuy}: tStepOfStepL) {
+export function strategyStepOfStepL({t1, t2, minK: _minK, percentM: _percentM, onlyBuy: _onlyBuy}: tStepOfStepL) {
     const onlyBuy = !!_onlyBuy
     const minK = _minK ?? 0
     const percentM = _percentM ?? 1/100;

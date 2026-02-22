@@ -1,5 +1,5 @@
 import {UseListen} from "./Listen";
-import {funcListenBySocket2 as soc} from "./ListenBySocket";
+import {listenSocketSmart as soc} from "../rcp/listen-socket";
 
 type transformer = (func: (data: any) => any, tag: string, data: any) => any
 export function SocketServerHook(opt?:{transformer?: transformer}) {

@@ -1,4 +1,4 @@
-import { sleepAsync } from "./common";
+import { sleepAsync } from "../core/common";
 
 /** Управляет запуском асинхронных функций с throttle/debounce. */
 export function enhancedWaitRun() {
@@ -9,8 +9,8 @@ export function enhancedWaitRun() {
         throttleAsync: (ms: number, func: () => any) => {
             if (busy || last + ms >= Date.now()) return;
             busy = true;
-            chain = chain.then(() => {
-                try { return func(); }
+            chain = chain.then(async () => {
+                try { return await func(); }
                 finally { busy = false; last = Date.now(); }
             });
         },

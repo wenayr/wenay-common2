@@ -1,14 +1,14 @@
-///<reference path="../Common/BaseTypes.ts"/>
+///<reference path="../Common/core/BaseTypes.ts"/>
 
 // /// <reference no-default-lib="false"/>
 // ///<reference types="../BaseTypes"/>
 
 
-import * as lib from "../Common/common";
-import {BSearch,CreateArrayProxy, deepEqual,GetDblPrecision, IItems,NormalizeDouble, ParsedUrlQueryInputMy, SearchMatchMode, VirtualItems} from "../Common/common";
+import * as lib from "../Common/core/common";
+import {BSearch,CreateArrayProxy, deepEqual,GetDblPrecision, IItems,NormalizeDouble, ParsedUrlQueryInputMy, SearchMatchMode, VirtualItems} from "../Common/core/common";
 import {D1_MS, Period, TF, TFIndex} from "../Common/Time";
-import {ByteStreamR, ByteStreamW, Nullable, NumericTypes} from "../Common/ByteStream"
-import {const_Date, ReadonlyFull} from "../Common/BaseTypes";
+import {ByteStreamR, ByteStreamW, Nullable, NumericTypes} from "../Common/data/ByteStream"
+import {const_Date, ReadonlyFull} from "../Common/core/BaseTypes";
 //import {ParsedUrlQueryInput} from "querystring";
 
 export * from "../Common/Time";

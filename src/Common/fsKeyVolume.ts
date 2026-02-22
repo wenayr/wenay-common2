@@ -1,6 +1,6 @@
 import * as fs from "fs";
-import {createAsyncQueue} from "./waitRun";
-import {Transformer} from "./Decorator";
+import {createAsyncQueue} from "./async/waitRun";
+import {Transformer} from "./core/Decorator";
 
 export type SaveKeyValueStore = ReturnType<typeof saveKeyValue>
 

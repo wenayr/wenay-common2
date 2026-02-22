@@ -1,5 +1,5 @@
-import {const_Date} from "../Common/BaseTypes";
-import {deepCloneMutable, isDate} from "../Common/common";
+import {const_Date} from "../Common/core/BaseTypes";
+import {deepCloneMutable, isDate} from "../Common/core/common";
 
 type Digit= 0|1|2|3|4|5|6|7|8|9;
 

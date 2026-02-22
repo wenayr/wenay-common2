@@ -1,5 +1,5 @@
 // ... existing code ...
-import {UseListen} from "./Listen";
+import {UseListen} from "../events/Listen";
 
 export function PromiseArrayListen<T extends any = unknown>(array: ((() => Promise<T>) | (() => any) | Promise<T>)[]) {
     let ok = 0, errorCount = 0

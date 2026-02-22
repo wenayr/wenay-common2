@@ -1,4 +1,4 @@
-import {CListNodeAnd} from "./ListNodeAnd";
+import {CListNodeAnd} from "../data/ListNodeAnd";
 export type tListEvent<T=any, T2=void> = {
     // что нужно выполнить при событии
     func?:(data?:T)=>T2,

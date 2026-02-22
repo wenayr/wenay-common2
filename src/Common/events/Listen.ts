@@ -67,10 +67,8 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
             obj.set(cb, cb)
             if (cbClose) {
                 if (evClose.has(cb)) {
-                    // что-то странное
                     const r=evClose.get(cb)!
                     if (r!==cbClose) {
-                        // что-то странное очень
                         evClose.delete(r)
                         evClose.delete(cb)
                         sinh.delete(r)
@@ -125,11 +123,4 @@ export function isListenCallback(obj: any): obj is ReturnType<typeof funcListenC
         typeof obj2.func === "function" &&
         typeof obj2.count === "function"
     )
-}
-
-function f() {
-    const [set, out] = UseListen<string>()
-    out.addListen(e=>{
-
-    })
 }

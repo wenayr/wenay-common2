@@ -4,7 +4,7 @@ type IterableObjectOptions<V> = {
     onChange?: (type: "set" | "delete", key: string, value?: V) => void
 }
 
-function createIterableObject<V>(
+export function createIterableObject<V>(
     options: IterableObjectOptions<V>
 ): Iterable<[string, V]> & Record<string, V> {
     const { resolve, onChange } = options

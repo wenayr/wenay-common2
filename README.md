@@ -1,32 +1,72 @@
-# math
+# wenay-common2
 
-Набор общих утилит и компонентов для TypeScript/Node проектов.
+Набор общих утилит и компонентов для TypeScript/Node.js проектов.
 
-Подробности по модулям: `DOCS.md`.
+## 📦 Структура библиотеки
 
-Карта модулей и что в них искать:
-- `src/Common/common.ts` — базовые утилиты (глубокое/поверхностное сравнение и клонирование, бинарный поиск `BSearch*`, конвертация чисел, таймеры, mutex, вспомогательные структуры).
-- `src/Common/BaseTypes.ts` — типы `Immutable/Mutable`, `const_Date`, типовые утилиты.
-- `src/Common/Time.ts` — таймфреймы `TF`, периодика `Period`, форматирование времени, конвертация дат.
-- `src/Common/List.ts` — двусвязный список `CList` и иммутабельные интерфейсы.
-- `src/Common/ListNodeAnd.ts` — альтернативный двусвязный список узлов с контрольным элементом.
-- `src/Common/ByteStream.ts` — бинарная сериализация: `ByteStreamW` (write) и `ByteStreamR` (read), поддержка числовых типов и массивов.
-- `src/Common/Decorator.ts` — декораторы/трансформеры функций (до/после вызова, обработка результата).
-- `src/Common/MemoFunc.ts` — мемоизация с TTL и лимитами.
-- `src/Common/Listen.ts` — подписки/события, сокет‑обёртки и утилиты для проксирования колбэков.
-- `src/Common/event.ts` — коллекции обработчиков событий (списки/массивы).
-- `src/Common/waitRun.ts` — throttle/debounce и асинхронные очереди.
-- `src/Common/WebHook2.ts` — webhook сервер/клиент на Express.
-- `src/Common/SocketServerHook.ts` — обвязка подписок по тегам для сокет‑обмена.
-- `src/Common/commonsServer.ts` и `src/Common/commonsServerMini.ts` — фасад RPC поверх сокетов (сервер/клиент/строгая схема).
-- `src/Exchange/Bars.ts` — модели баров/таймсерий и сериализация через `ByteStream`.
+### 🔧 **core/** — Базовые утилиты
+- **`common.ts`** — глубокое/поверхностное клонирование и сравнение, бинарный поиск (`BSearch*`), конвертация чисел, таймеры, mutex, вспомогательные структуры (`MyMap`, `StructMap`), работа с буфером обмена
+- **`BaseTypes.ts`** — типы `Immutable`/`Mutable`, `const_Date`, типовые утилиты (`PickTypes`, `OmitTypes`, `KeysByType`)
+- **`Decorator.ts`** — декораторы/трансформеры функций (до/после вызова, обработка результата)
+- **`MemoFunc.ts`** — мемоизация с TTL и лимитами, эвикция по LRU
 
-WebHook2 (быстрый ориентир):
-- Сервер: `createWebhookServer({ authToken, port, app? })`
-- Клиент: `createWebhookClient({ serverUrl, clientPort, authToken, autoRenew? })`
-- Поддерживается старый и новый формат поля тега в `subscribers.json` (`tag` и `tags`).
+### 📊 **data/** — Структуры данных и сериализация
+- **`List.ts`** — двусвязный список `CList` с иммутабельными интерфейсами
+- **`ListNodeAnd.ts`** — альтернативный двусвязный список узлов с контрольным элементом
+- **`ByteStream.ts`** — бинарная сериализация: `ByteStreamW` (write) и `ByteStreamR` (read), поддержка числовых типов и массивов
+- **`objectPath.ts`** — работа с путями в объектах (`objectGetValueByPath`, `objectSetValueByPath`, итерация `iterateDeepObjectEntries`)
 
-commonsServerMini (быстрый ориентир):
-- `createAPIFacadeServer` — серверный фасад RPC поверх сокета.
-- `createAPIFacadeClient` — клиентский фасад RPC (обычные вызовы, void‑вызовы, строгий режим).
-- `promiseServer`/`wsWrapper` — низкоуровневые обвязки запрос/ответ + колбэки.
+### ⏱️ **async/** — Асинхронные утилиты
+- **`waitRun.ts`** — throttle/debounce (`enhancedWaitRun`), асинхронные очереди (`createAsyncQueue`, `queueRun`), очередь задач с контролем готовности (`createTaskQueue`)
+- **`PromiseArrayListen.ts`** — обработка массива промисов с подписками на успех/ошибку
+- **`createIterableObject.ts`** — прокси для итерируемых объектов (readonly/read-write)
+
+### 🔔 **events/** — События и подписки
+- **`Listen.ts`** — система подписок (`UseListen`, `funcListenCallback`), проверка `isListenCallback`
+- **`event.ts`** — коллекции обработчиков событий (`CObjectEventsArr`, `CObjectEventsList`)
+- **`SocketBuffer.ts`** — буферизация сокет-колбэков (`socketBuffer3`, `funcListenCallbackSnapshot`)
+- **`SocketServerHook.ts`** — обвязка подписок по тегам для сокет-обмена (`SocketServerHook`, `WebSocketServerHook`)
+- **`joinListens.ts`** — объединение нескольких потоков подписок в один (`joinListens`)
+- **`listen-socket.ts`** — мост между системой событий и RPC (`listenSocket`, `listenSocketFirst`, `listenSocketAll`, `listenSocketSmart`)
+
+### 🌐 **rpc/** — RPC-система
+**Ядро:**
+- **`rpc-protocol.ts`** — протокол RPC (типы пакетов `Pkt`, `SocketTmpl`)
+- **`rpc-client.ts`** — клиент RPC (`createRpcClient`, `ClientAPI`)
+- **`rpc-server.ts`** — сервер RPC (`createRpcServer`, хуки `PromiseServerHooks`)
+- **`rpc-walk.ts`** — обход структур (сериализация колбэков, `pack`/`unpack`, `resolveCA`)
+- **`rpc-limits.ts`** — лимиты безопасности (`RpcLimits`, `PayloadLimitError`, `isSafeKey`)
+- **`rpc-dynamic.ts`** — маркировка динамических объектов (`noStrict`, `isNoStrict`)
+- **`id-pool.ts`** — пул переиспользуемых ID (`createIdPool`)
+
+**Автоматизация:**
+- **`rpc-client-auto.ts`** — клиент с автоматической подпиской на события (`createRpcClientAuto`, режимы `smart`/`first`/`all`)
+- **`rpc-server-auto.ts`** — сервер с автоматической обработкой подписок (`createRpcServerAuto`)
+- **`listen-deep.ts`** — глубокая трансформация объектов для подписок (`deepListenFirst`, `deepListenAll`, `deepListenSmart`)
+
+### 📡 **network/** — Сетевые утилиты
+- **`WebHook3.ts`** — webhook сервер/клиент на Express
+    - **Сервер:** `createWebhookServer({ authToken, port, app? })`
+    - **Клиент:** `createWebhookClient({ serverUrl, clientPort, authToken, autoRenew? })`
+    - Поддержка старого (`tag`) и нового (`tags`) формата в `subscribers.json`
+
+### ⏰ **time/** — Работа со временем
+- **`Time.ts`** — таймфреймы (`TF`), периодика (`Period`), форматирование времени, конвертация дат (`timeToStr_*`, `timeLocalToStr_*`)
+- **`funcTimeWait.ts`** — тайм-трекинг запросов по ключам (`funcTimeW`, `FuncTimeWait`)
+
+### 🎨 **utils/** — Вспомогательные утилиты
+- **`Color.ts`** — работа с цветами (`ColorString`, `rgb`, генераторы `colorGenerator`, проверка похожести `isSimilarColors`)
+- **`Math.ts`** — расчёт корреляции Пирсона (`CorrelationRollingByBuffer`)
+- **`isProxy.ts`** — проверка Proxy-объектов (Node.js + браузер)
+- **`fsKeyVolume.ts`** — key-value хранилище на файловой системе (`saveKeyValue`)
+- **`inputAutoStep.ts`** — автоматическое управление шагом для `<input>` (`SetAutoStepForElement`)
+- **`node_console.ts`** — улучшенный вывод в консоль с source maps (clickable links в IDE)
+
+---
+
+## 🚀 Быстрый старт
+
+### Установка
+```bash
+npm install wenay-common2
+```

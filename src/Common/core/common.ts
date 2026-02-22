@@ -27,7 +27,7 @@
 
 import {Immutable, KeysWithoutType, Mutable, MutableFull, PickTypes, ReadonlyFull} from "./BaseTypes";
 
-import "./node_console"
+import "../node_console"
 //import "./Time";
 
 export function GetEnumKeys<TT extends {[key:string]:any}> (T :TT) : readonly (keyof typeof T)[] { return Object.keys(T).filter(k => isNaN(k as any)); }

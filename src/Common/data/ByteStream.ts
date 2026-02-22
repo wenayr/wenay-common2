@@ -1,6 +1,6 @@
 //import {NullLiteral} from "typescript";
 
-import {const_Date} from "./BaseTypes";
+import {const_Date} from "../core/BaseTypes";
 
 function createCopyOfBuffer(src : Readonly<ArrayBuffer>, length :number= src.byteLength)  {
 	let dst = new ArrayBuffer(length);
