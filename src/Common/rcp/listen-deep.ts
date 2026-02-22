@@ -5,22 +5,45 @@ import { listenSocket, listenSocketFirst, listenSocketAll, listenSocketSmart } f
 
 type Obj = Record<string, any>;
 type ListenBase<T extends any[]> = ReturnType<typeof funcListenCallbackBase<T>>;
-type InferArgs<T> = T extends ListenBase<infer R> ? R : never;
-type SocketResult<T extends any[]> = ReturnType<typeof listenSocket<T>>;
 
-type TransformValue<V> =
-    V extends ListenBase<any>
-        ? SocketResult<InferArgs<V>>
-        : V extends typeof Promise
-            ? V
-            : V extends (...a: any) => any
-                ? V
-                : V extends object
-                    ? { [K in keyof V]: TransformValue<V[K]> }
-                    : V;
+// Надежно достаем типы аргументов из метода addListen
+type InferArgs<T> = T extends { addListen: (cb: (...args: infer R) => void, ...rest: any[]) => any } ? R : never;
 
+// Типы для различных вариантов Socket-лиссенеров
 export type DeepSocketListen<T> = {
-    [K in keyof T]: TransformValue<T[K]>;
+    [K in keyof T]: T[K] extends { addListen: Function } 
+        ? ReturnType<typeof listenSocket<InferArgs<T[K]>>>
+        : T[K] extends (...a: any[]) => any ? T[K]
+        : T[K] extends typeof Promise ? T[K]
+        : T[K] extends object ? DeepSocketListen<T[K]> 
+        : T[K];
+};
+
+export type DeepSocketListenFirst<T> = {
+    [K in keyof T]: T[K] extends { addListen: Function } 
+        ? ReturnType<typeof listenSocketFirst<InferArgs<T[K]>>>
+        : T[K] extends (...a: any[]) => any ? T[K]
+        : T[K] extends typeof Promise ? T[K]
+        : T[K] extends object ? DeepSocketListenFirst<T[K]> 
+        : T[K];
+};
+
+export type DeepSocketListenAll<T> = {
+    [K in keyof T]: T[K] extends { addListen: Function } 
+        ? ReturnType<typeof listenSocketAll<InferArgs<T[K]>>>
+        : T[K] extends (...a: any[]) => any ? T[K]
+        : T[K] extends typeof Promise ? T[K]
+        : T[K] extends object ? DeepSocketListenAll<T[K]> 
+        : T[K];
+};
+
+export type DeepSocketListenSmart<T> = {
+    [K in keyof T]: T[K] extends { addListen: Function } 
+        ? ReturnType<typeof listenSocketSmart<InferArgs<T[K]>>>
+        : T[K] extends (...a: any[]) => any ? T[K]
+        : T[K] extends typeof Promise ? T[K]
+        : T[K] extends object ? DeepSocketListenSmart<T[K]> 
+        : T[K];
 };
 
 // ── Утилиты ─────────────────────────────────────────────────────
@@ -73,13 +96,13 @@ export function deepMapByKeys<T, T2 extends Obj, T3>(
 const NOOP_LISTEN = funcListenCallbackBase((_e) => {});
 
 export function deepListenFirst<T>(obj: T, data?: Parameters<typeof listenSocketFirst>[1]) {
-    return deepMapByKeys(obj, NOOP_LISTEN, (e) => listenSocketFirst(e, data)) as DeepSocketListen<T>;
+    return deepMapByKeys(obj, NOOP_LISTEN, (e) => listenSocketFirst(e as any, data)) as DeepSocketListenFirst<T>;
 }
 
 export function deepListenAll<T>(obj: T, data?: Parameters<typeof listenSocketAll>[1]) {
-    return deepMapByKeys(obj, NOOP_LISTEN, (e) => listenSocketAll(e, data)) as DeepSocketListen<T>;
+    return deepMapByKeys(obj, NOOP_LISTEN, (e) => listenSocketAll(e as any, data)) as DeepSocketListenAll<T>;
 }
 
 export function deepListenSmart<T>(obj: T, data?: Parameters<typeof listenSocketSmart>[1]) {
-    return deepMapByKeys(obj, NOOP_LISTEN, (e) => listenSocketSmart(e, data)) as DeepSocketListen<T>;
+    return deepMapByKeys(obj, NOOP_LISTEN, (e) => listenSocketSmart(e as any, data)) as DeepSocketListenSmart<T>;
 }

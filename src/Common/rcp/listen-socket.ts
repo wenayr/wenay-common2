@@ -1,8 +1,8 @@
 // listen-socket.ts
 
-import { funcListenCallback, type Listener } from "../events/Listen";
+import { funcListenCallback, funcListenCallbackBase, type Listener } from "../events/Listen";
 
-type ListenCallbackResult<T extends any[] = any[]> = ReturnType<typeof funcListenCallback<T>>;
+type ListenCallbackResult<T extends any[] = any[]> = ReturnType<typeof funcListenCallbackBase<T>>;
 
 export function listenSocket<Z extends any[] = any[]>(
     e: ListenCallbackResult<Z>,
