@@ -1,5 +1,3 @@
-// rpc-walk.ts
-
 import { idPool } from "../id-pool";
 import { isSafeKey, PayloadLimitError, type RpcLimits } from "./rpc-limits";
 

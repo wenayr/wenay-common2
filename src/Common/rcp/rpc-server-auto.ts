@@ -1,5 +1,3 @@
-// rpc-server-auto.ts
-
 import { isListenCallback, funcListenCallbackBase } from "../events/Listen";
 import { listenSocket, } from "./listen-socket";
 import { createRpcServer, type PromiseServerHooks, type RpcLimits } from "./rpc-server";
