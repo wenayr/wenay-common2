@@ -6,3 +6,5 @@ export * from "./rpc-client";
 export * from "./rpc-server";
 export * from "./rpc-client-auto";
 export * from "./rpc-server-auto";
+export * from "./listen-socket";
+export * from "./listen-deep";
