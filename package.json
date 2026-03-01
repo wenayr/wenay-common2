@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Common library",
   "strict": true,
   "main": "lib/index.js",
@@ -55,11 +55,5 @@
     "./client": "./lib/client.js",
     "./server": "./lib/server.js",
     "./package.json": "./package.json"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "unrs-resolver",
-      "utf-8-validate"
-    ]
   }
 }

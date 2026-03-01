@@ -93,7 +93,7 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
             event?.("remove", obj.size, api)
         },
         count: () => obj.size,
-        get getAllKeys() { return [...obj.keys()] }
+        get getAllKeys(): Listener<NormalizeTuple<T>>[] { return [...obj.keys()] }
     }
     return api
 }
