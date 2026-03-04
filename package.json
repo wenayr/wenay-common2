@@ -55,5 +55,6 @@
     "./client": "./lib/client.js",
     "./server": "./lib/server.js",
     "./package.json": "./package.json"
-  }
+  },
+  "packageManager": "pnpm@11.0.0-alpha.12+sha512.855b12a5ab7883d56d0927bed6746ae4a5e909abfd8d2bff06338d5ee5b9d21a11dc06c9f50338ec9bc79ee1cb1e982d3798cf419167993b0dc2e3a18a95a0fe"
 }

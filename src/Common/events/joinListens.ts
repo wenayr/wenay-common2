@@ -18,7 +18,9 @@ type CollectedResult<T extends Record<string, any>> = {
 type JoinResult<R> = {
     listen: listen<[R, string]>[1],
     pending: Map<string, Map<string, any>>,
-    clear: (tid?: string) => void
+    clear: (tid?: string) => void,
+    // Перегрузка для объекта (требует ключ) и массива (ключ генерируется сам)
+    addListen: (listener: listen<any>[1], key?: string) => void
 }
 
 // --- Перегрузка: объект (именованные порты) ---
@@ -59,12 +61,12 @@ export function joinListens(
             ? keys.map(k => bucket.get(k))        // массив → массив данных
             : Object.fromEntries(bucket)           // объект → объект данных
 
-        buckets.delete(tid)
+        bucket.clear() //uckets.delete(tid)
         set(result, tid)
     }
 
-    for (const portId of keys) {
-        map[portId].addListen((...data: any[]) => {
+    const bindPort = (portId: string, listener: any) => {
+        listener.addListen((...data: any[]) => {
             const tid = getKey(data[0])
             if (!buckets.has(tid)) buckets.set(tid, new Map())
             buckets.get(tid)!.set(portId, data.length <= 1 ? data[0] : data)
@@ -72,11 +74,28 @@ export function joinListens(
         })
     }
 
+    for (const portId of keys) {
+        bindPort(portId, map[portId])
+    }
+
     return {
         listen: out,
         pending: buckets,
         clear: (tid?: string) => {
             tid ? buckets.delete(tid) : buckets.clear()
+        },
+        destroy: (tid?: string) => {
+            
+        },
+        addListen: (listener: any, key?: string) => {
+            // Если режим массива, генерируем индекс автоматически (текущая длина)
+            const portId = isArray ? String(keys.length) : (key ?? String(keys.length))
+            
+            if (map[portId]) return // Защита от дублирования ключей или более верно очистить старый???
+            
+            map[portId] = listener
+            keys.push(portId) // Расширяем размер ожидаемой группы
+            bindPort(portId, listener)
         }
     }
 }
