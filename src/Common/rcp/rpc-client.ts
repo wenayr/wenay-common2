@@ -274,9 +274,23 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     };
 }
 
+export type RpcClientReturn<T extends object> = {
+    func: ClientAPI<T>;
+    pipe: PipeAPI<T>;
+    pipeStrict: PipeAPI<T>;
+    space: ClientAPI<T>;
+    all: ClientAPI<T>;
+    strict: ClientAPI<T>;
+    api: ClientApiHandle;
+    abortAll: (reason: string) => void;
+    schema: () => any;
+    readyStrict: () => Promise<void>;
+    initStrict: (obj?: object) => Promise<void>;
+};
+
 export function createRpcClient<T extends object>({ socket, socketKey: key, limit }: {
     socket: SocketTmpl; socketKey: string; limit?: number;
-}) {
+}): RpcClientReturn<T> {
     return createClient<T>(socket, key, { limit });
 }
 
