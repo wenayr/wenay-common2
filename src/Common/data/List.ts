@@ -56,9 +56,9 @@ export class CList<T, TNode extends ListNode<T> = ListNode<T>> implements Iterab
     *entries() { return this.nodes; }
 
 
-    next(node :ListNode<T>)  { return this.validateNode(node) ? node.next as TNode|undefined : (()=>{throw "Wrong node list"})(); };
+    next(node :ListNode<T>)  { return this.validateNode(node) ? node.next as unknown as TNode|undefined : (()=>{throw "Wrong node list"})(); };
 
-    prev(node :ListNode<T>)  { return this.validateNode(node) ? node.prev as TNode|undefined : (()=>{throw "Wrong node list"})(); };
+    prev(node :ListNode<T>)  { return this.validateNode(node) ? node.prev as unknown as TNode|undefined : (()=>{throw "Wrong node list"})(); };
 
     find(value :T) { for(let node of this.nodes()) if (node.value==value) return node;  return undefined; }
 

@@ -28,6 +28,7 @@ function setupLogs2(){
         if (inspector.url()!=undefined) return;  // запущено в дебаггере
         try {
             //let module= await import(/* webpackIgnore: true */ 'source-map-support');// as typeof import('source-map-support');
+            // @ts-ignore
             let module= require(/* webpackIgnore: true */ moduleName('source-map-support')) as typeof import('source-map-support');
             // для CommonJS надо будет ещё задать module.parser.javascript.commonjsMagicComments
             // require(/* webpackIgnore: true */ moduleName).install();

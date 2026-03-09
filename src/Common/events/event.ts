@@ -77,7 +77,7 @@ export class CObjectEventsList<T=unknown>{
     AddEnd(data:tListEvent)     {this.setup(this.data.AddEnd(data))}
     Add(data:tListEvent)        {this.setup(this.data.AddEnd(data))}
     OnEvent(data?:T)            {this.data.forEach(e=>{e.func?.(data); e.func2?.(data);})}
-    OnSpecEvent<R>(f:(e?:R)=>void)  {this.data.forEach((e)=>{const l=e.func?.(); if (l) {f(l as unknown as R);}  e.func2?.();})}
+    OnSpecEvent<R>(f:(e?:R)=>void)  {this.data.forEach((e)=>{const l: any=e.func?.(); if (l) {f(l as unknown as R);}  e.func2?.();})}
     Clean()                     {let r:CListNodeAnd<any>|undefined =this.data.First(); while (r) {const buf = r; r=r?.Next(); buf.DeleteLink()}}
     count()                     {return this.data.countRef()}
     get length()                {return this.count()}

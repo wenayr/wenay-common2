@@ -27,12 +27,14 @@ export function enhancedDecorator<T extends (...args: any[]) => any>(
         opt?.afterParams?.(...args);
 
         if (rawResult instanceof Promise) {
-            const optAsync = opt as EnhancedDecoratorOptions<() => Promise<any>>;
+            const optAsync = opt as unknown as EnhancedDecoratorOptions<() => Promise<any>>;
             return rawResult
-                .then((res) => opt?.modifyResult?.(optAsync?.onResult?.(res) || res) || res)
+                .then((res) => {
+                    optAsync?.onResult?.(res);
+                    return opt?.modifyResult?.(res) ?? res;
+                })
                 .catch((err) => {
                     optAsync?.onCatch?.(err);
-                    throw err;
                 })
                 .finally(() => optAsync?.onFinally?.()) as ReturnType<T>;
         } else {

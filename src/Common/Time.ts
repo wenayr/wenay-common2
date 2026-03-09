@@ -478,7 +478,7 @@ function replaceConsoleCommands() {
 export function durationToStr(duration_ms :number) : string {
 	//if (duration_ms==null) return null;
 	let units : [number,string][] = [[D1_MS, "д"], [H1_MS, "ч"], [M1_MS, "м"], [1000, "c"], [1, "мс"]];
-	let lastUnit= null; //let passedDuration=0;
+	let lastUnit: [number,string]|null = null; //let passedDuration=0;
 	let str="";
 	for(let unit of units) {
 		let unitCountFloat = duration_ms / unit[0];

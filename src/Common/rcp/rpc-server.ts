@@ -70,27 +70,29 @@ function createServer<T extends object>(
 
     const strictSchema = serialize(resolved);
     const send = (d: any) => socket.emit(key, d);
+    const IS_RPC_PIPE = Symbol.for("isRpcPipe");
 
     send([Pkt.MAP, routeMap, strictSchema]);
 
     socket.on(key, async (msg: any) => {
         if (msg == Pkt.STRICT) { send([Pkt.MAP, routeMap, strictSchema]); return; }
-        if (!Array.isArray(msg) || msg[0] !== Pkt.CALL) return;
+        if (!Array.isArray(msg) || (msg[0] !== Pkt.CALL && msg[0] !== Pkt.PIPE)) return;
 
-        const [, reqId, ref, rawArgs, w] = msg;
+        const isPipe = msg[0] === Pkt.PIPE;
+        const [, reqId, ref, rawArgsOrSteps, w] = msg;
         const wait = w !== false;
 
         if (typeof reqId !== "number" || !Number.isFinite(reqId)) {
-            hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgs, error: "reqId is not a valid number" });
+            hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "reqId is not a valid number" });
             return;
         }
         if (typeof ref !== "number" && !Array.isArray(ref)) {
-            hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgs, error: "ref must be number or string[]" });
+            hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "ref must be number or string[]" });
             if (wait) send([Pkt.RESP, reqId, null, errToObj(new Error("Invalid ref type"))]);
             return;
         }
-        if (!Array.isArray(rawArgs)) {
-            hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgs, error: "args must be an array" });
+        if (!Array.isArray(rawArgsOrSteps)) {
+            hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "args/steps must be an array" });
             if (wait) send([Pkt.RESP, reqId, null, errToObj(new Error("Invalid args: expected array"))]);
             return;
         }
@@ -102,7 +104,7 @@ function createServer<T extends object>(
                 fn = methods[ref]; ctx = contexts[ref];
             } else {
                 if (!ref.every((s: any) => typeof s == "string" && isSafeKey(s))) {
-                    hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgs });
+                    hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps });
                     if (wait) send([Pkt.RESP, reqId, null, errToObj(new Error("Forbidden path segment"))]);
                     return;
                 }
@@ -125,7 +127,7 @@ function createServer<T extends object>(
                 }
             }
             if (typeof fn !== "function") {
-                hooks?.onInvalid?.({ reason: "not_function", key: ref, request: rawArgs });
+                hooks?.onInvalid?.({ reason: "not_function", key: ref, request: rawArgsOrSteps });
                 if (wait) send([Pkt.RESP, reqId, null, errToObj(new Error("Not a function: " + ref))]);
                 return;
             }
@@ -134,16 +136,53 @@ function createServer<T extends object>(
                 const keyArr = typeof ref == "number"
                     ? Object.keys(routeMap).find(k => routeMap[k] == ref)?.split(".") ?? []
                     : ref;
-                const allowed = await hooks.onRequest({ key: keyArr, request: rawArgs, fnName: keyArr[keyArr.length - 1] ?? "", fn: fn as Func });
+                const allowed = await hooks.onRequest({ key: keyArr, request: rawArgsOrSteps, fnName: keyArr[keyArr.length - 1] ?? "", fn: fn as Func });
                 if (allowed == false) {
                     if (wait) send([Pkt.RESP, reqId, null, errToObj(new Error("Rejected by hook"))]);
                     return;
                 }
             }
 
-            const args = unpack(rawArgs, (cbId, cbArgs) => send([Pkt.CB, cbId, cbArgs]), (cbId) => send([Pkt.CB_END, cbId]), lim);
-            const res = await fn.apply(ctx, args);
-            if (wait) send([Pkt.RESP, reqId, res]);
+            if (isPipe) {
+                // --- ЛОГИКА PIPE (КОНВЕЙЕР) ---
+                const steps = rawArgsOrSteps as any[];
+                let current: any = fn.bind(ctx);
+
+                for (let i = 0; i < steps.length; i++) {
+                    const step = steps[i];
+
+                    if (current && typeof current === "object" && current[IS_RPC_PIPE]) {
+                        const remainingSteps = steps.slice(i);
+                        current = current.__executeRemainingPipe(remainingSteps);
+                        break; 
+                    }
+
+                    if (current && typeof current.then === "function") {
+                        current = await current;
+                    }
+
+                    if (step.type === 'get') {
+                        if (current == null) throw new Error(`Cannot read property '${step.prop}' of ${current}`);
+                        current = current[step.prop];
+                    } else if (step.type === 'call') {
+                        if (typeof current !== "function") throw new Error("Attempted to call a non-function in pipe");
+                        const stepArgs = unpack(step.args, (cbId, cbArgs) => send([Pkt.CB, cbId, cbArgs]), (cbId) => send([Pkt.CB_END, cbId]), lim);
+                        current = current(...stepArgs);
+                    }
+                }
+                
+                if (current && typeof current.then === "function") {
+                    current = await current;
+                }
+                if (wait) send([Pkt.RESP, reqId, current]);
+
+            } else {
+                // --- СТАНДАРТНАЯ ЛОГИКА CALL ---
+                const args = unpack(rawArgsOrSteps, (cbId, cbArgs) => send([Pkt.CB, cbId, cbArgs]), (cbId) => send([Pkt.CB_END, cbId]), lim);
+                const res = await fn.apply(ctx, args);
+                if (wait) send([Pkt.RESP, reqId, res]);
+            }
+
         } catch (e) {
             if (wait) send([Pkt.RESP, reqId, null, errToObj(e)]);
         }

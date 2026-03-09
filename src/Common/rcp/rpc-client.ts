@@ -1,13 +1,48 @@
 import { Pkt, type SocketTmpl } from "./rpc-protocol";
 import {createIdPool} from "../id-pool";
 import {pack, resolveCA} from "./rpc-walk";
+// Вспомогательные типы
 type UnwrapPromise<T> = T extends Promise<infer R> ? R : T;
 
+export type DeepDataOnly<T> = T extends Function
+    ? never
+    : T extends Array<infer U>
+        ? Array<DeepDataOnly<U>>
+        : T extends object
+            ? { [K in keyof T as T[K] extends Function ? never : K]: DeepDataOnly<T[K]> }
+            : T;
+
+// --- 1. ТИПИЗАЦИЯ ДЛЯ ОБЫЧНЫХ ВЫЗОВОВ (БЕЗ PIPE) ---
 export type ClientAPI<T> = {
-    [K in keyof T]: T[K] extends (...args: infer A) => infer R
-        ? (...args: A) => Promise<UnwrapPromise<R>>
-        : T[K] extends object ? ClientAPI<T[K]> : T[K];
+    [K in keyof T as T[K] extends Function ? K : T[K] extends object ? K : never]:
+        T[K] extends (...args: infer A) => infer R
+            // Обычный вызов возвращает ТОЛЬКО Promise с чистыми данными. Никакого продолжения цепочки.
+            ? (...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>>
+            : T[K] extends object
+                ? ClientAPI<T[K]>
+                : never;
 };
+
+
+// --- 2. ТИПИЗАЦИЯ ДЛЯ PIPE ВЫЗОВОВ ---
+// Интерфейс для работы с массивами внутри pipe (если сервер возвращает массив, 
+// мы можем продолжить путь по индексу или через map)
+export interface PipeArrayAPI<T> extends Promise<DeepDataOnly<T[]>> {
+    [index: number]: PipeAPI<T>;
+    // map и filter можно добавить, если серверная часть (и наш Proxy) научится их обрабатывать
+}
+
+export type PipeAPI<T> = T extends Array<infer U>
+    ? PipeArrayAPI<U>
+    : {
+        [K in keyof T as T[K] extends Function ? K : T[K] extends object ? K : never]:
+            T[K] extends (...args: infer A) => infer R
+                // Pipe-вызов возвращает и Promise (для await), и продолжает PipeAPI для цепочки
+                ? (...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>> & PipeAPI<UnwrapPromise<R>>
+                : T[K] extends object
+                    ? PipeAPI<T[K]>
+                    : never;
+    };
 
 type ClientApiHandle = {
     log: (s: boolean) => void;
@@ -18,6 +53,8 @@ type ClientApiHandle = {
     remove: (fn: Function) => void;
     end: (fn: Function) => void;
 };
+
+const IS_RPC_PIPE = Symbol.for("isRpcPipe");
 
 function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: { limit?: number }) {
     const limit = opts?.limit ?? 10000;
@@ -63,6 +100,68 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             }
         }
     });
+
+    const sendPipe = (path: string[], steps: any[], wait: boolean): any => {
+        const cbIds: number[] = [];
+        // Упаковываем аргументы во всех шагах вызова (call)
+        const cleanSteps = steps.map(step => {
+            if (step.type === 'call') {
+                return { type: 'call', args: pack(step.args, pool, callbacks, cbIds) };
+            }
+            return step;
+        });
+        const ref: number | string[] = routeCache[path.join(".")] ?? path;
+
+        if (!wait) {
+            socket.emit(key, [Pkt.PIPE, 0, ref, cleanSteps, false]);
+            return Promise.resolve();
+        }
+        return new Promise((resolve, reject) => {
+            if (pending.size >= limit) return reject(new Error("RPC limit"));
+            const reqId = pool.next();
+            pending.set(reqId, { ok: resolve, fail: reject, cbs: cbIds });
+            if (debug) console.log("[RPC PIPE]", path.join("."), "steps=", steps.length, "id=", reqId);
+            socket.emit(key, [Pkt.PIPE, reqId, ref, cleanSteps]);
+        });
+    };
+
+    const buildPipeProxy = (path: string[], steps: any[], wait: boolean): any => {
+        const proxy = new Proxy(function () {}, {
+            get(_, p: string | symbol) {
+                if (p === IS_RPC_PIPE) return true;
+                if (p === "then") {
+                    if (path.length === 0) return undefined;
+                    const promise = sendPipe(path, steps, wait);
+                    return (...a: any[]) => promise.then(...a);
+                }
+                if (p === "catch") {
+                    if (path.length === 0) return undefined;
+                    const promise = sendPipe(path, steps, wait);
+                    return (...a: any[]) => promise.catch(...a);
+                }
+                if (p === "finally") {
+                    if (path.length === 0) return undefined;
+                    const promise = sendPipe(path, steps, wait);
+                    return (...a: any[]) => (promise as any).finally(...a);
+                }
+                if (p === "__executeRemainingPipe") {
+                    // Для серверной прозрачной ретрансляции
+                    return (remaining: any[]) => sendPipe(path, [...steps, ...remaining], wait);
+                }
+                if (p === Symbol.toPrimitive) return undefined;
+
+                if (path.length === 0) {
+                    return buildPipeProxy([String(p)], steps, wait);
+                }
+                return buildPipeProxy(path, [...steps, { type: 'get', prop: String(p) }], wait);
+            },
+            apply(_, __, args) {
+                if (path.length === 0) throw new Error("Cannot call root pipe object");
+                return buildPipeProxy(path, [...steps, { type: 'call', args }], wait);
+            },
+        });
+        return proxy;
+    };
 
     const sendCall = (path: string[], args: any[], wait: boolean): any => {
         const cbIds: number[] = [];
@@ -140,6 +239,9 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     };
 
     const func = buildProxy([], true) as ClientAPI<T>;
+    const pipe = buildPipeProxy([], [], true) as PipeAPI<T>; 
+    const pipeStrict = buildPipeProxy([], [], true) as PipeAPI<T>; 
+
     let _ready: null | Promise<void> = null;
     let ready = () => _ready ? _ready : _ready = init()
     const init = async (obj?: object) => {
@@ -152,10 +254,12 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     }
 
     return {
-        func,
+        func,           // <- Тип ClientAPI (нет цепочек)
+        pipe,           // <- Тип PipeAPI (есть цепочки)
+        pipeStrict,     // <- Тип PipeAPI (есть цепочки)
         space: buildProxy([], false) as ClientAPI<T>,
         all: func as ClientAPI<T>,
-        strict: buildStrict([], true) as ClientAPI<T>,
+        strict: buildStrict([], true) as ClientAPI<T>, // <- Тип ClientAPI (нет цепочек)
         api,
         abortAll: (reason: string) => {
             const err = { error: { name: "RPC_ABORT", message: reason } };
