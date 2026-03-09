@@ -1,4 +1,5 @@
 export * from "./listen-socket";
+export * from "./listen-deep";
 export * from "./rpc-dynamic";
 export * from "./rpc-protocol";
 export * from "./rpc-limits";
