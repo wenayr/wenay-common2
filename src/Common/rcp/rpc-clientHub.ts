@@ -1,23 +1,31 @@
 import {SocketTmpl} from "./rpc-protocol";
-import {createRpcClientAuto} from "./rpc-client-auto";
+import {createRpcClient} from "./rpc-client";
+import {DeepSocketListen, DeepSocketListenSmart} from "./listen-deep";
 
 export interface RpcHubSocket extends SocketTmpl {
     disconnect?: () => void;
 }
 
-export function rpc<T extends object>(socketKey?: string) {
+export type RpcDescriptor<T extends object> = {
+    socketKey?: string;
+    __type?: T;
+};
+
+export function rpc<T extends object>(socketKey?: string): RpcDescriptor<T> {
     return { socketKey };
 }
 
-export function createRpcClientHub<T extends Record<string, ReturnType<typeof rpc<any>>>>(
+type RpcClientResult<T extends object> = ReturnType<typeof createRpcClient<DeepSocketListenSmart<T>>>;
+
+export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>>(
     createSocket: (token: string | null) => RpcHubSocket,
     schemaBuilder: (helper: typeof rpc) => T
 ) {
     const schema = schemaBuilder(rpc);
 
     type SchemaTypes = {
-        [K in keyof T]: T[K] extends ReturnType<typeof rpc<infer U extends object>>
-            ? ReturnType<typeof createRpcClientAuto<U>>
+        [K in keyof T]: T[K] extends RpcDescriptor<infer U extends object>
+            ? RpcClientResult<U>
             : never;
     };
 
@@ -33,26 +41,20 @@ export function createRpcClientHub<T extends Record<string, ReturnType<typeof rp
     let onConnectCb: ((count: number) => void) | null = null;
 
     function setToken(token: string | null) {
-        // Если сокет уже был, отключаем его
         socket?.disconnect?.();
-
-        // Делегируем создание сокета пользовательскому коду
         socket = createSocket(token);
 
         for (const key in schema) {
             const targetSocketKey = schema[key].socketKey || key;
+            const client = createRpcClient<any>({ socketKey: targetSocketKey, socket });
+            facade[key] = client as FacadeClients[typeof key];
 
-            const client = createRpcClientAuto<any>({ socketKey: targetSocketKey, socket });
-            facade[key] = client as any;
-
-            if (client && typeof client['initStrict'] === 'function') {
-                client['initStrict']();
+            if (client && typeof client.initStrict === "function") {
+                client.initStrict();
             }
         }
 
-        // Подписываемся на connect. 
-        // Важно: Socket.IO шлет 'connect', мы просто полагаемся, что пользовательский сокет это поддерживает.
-        socket.on('connect', () => {
+        socket.on("connect", () => {
             connectCount++;
             onConnectCb?.(connectCount);
         });
