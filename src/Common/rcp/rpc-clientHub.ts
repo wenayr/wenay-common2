@@ -1,33 +1,22 @@
-import type { io, Socket, ManagerOptions, SocketOptions } from "socket.io-client";
+import {SocketTmpl} from "./rpc-protocol";
 import {createRpcClientAuto} from "./rpc-client-auto";
 
-const DEFAULT_SOCKET_OPTIONS: Partial<ManagerOptions & SocketOptions> = {
-    transports: ['websocket'],
-    forceNew: true,
-    timeout: 90000,
-};
-
-export interface ApiFacadeConfig {
-    io: typeof io;
-    url: string | (() => string);
-    socketOptions?: Partial<ManagerOptions & SocketOptions>;
+export interface RpcHubSocket extends SocketTmpl {
+    disconnect?: () => void;
 }
 
-// Утилита-маркер скрыта внутри модуля, наружу не экспортируется
-function rpcHelper<T extends object>(socketKey?: string) {
+export function rpc<T extends object>(socketKey?: string) {
     return { socketKey };
 }
 
-export function createRpcClientHub<T extends Record<string, ReturnType<typeof rpcHelper>>>(
-    config: ApiFacadeConfig,
-    schemaBuilder: (rpc: typeof rpcHelper) => T // Принимаем функцию-билдер
+export function createRpcClientHub<T extends Record<string, ReturnType<typeof rpc<any>>>>(
+    createSocket: (token: string | null) => RpcHubSocket,
+    schemaBuilder: (helper: typeof rpc) => T
 ) {
-    // Вызываем билдер, передавая ему наш хелпер, чтобы получить итоговую схему
-    const schema = schemaBuilder(rpcHelper);
+    const schema = schemaBuilder(rpc);
 
-    // Вытаскиваем типы из схемы
     type SchemaTypes = {
-        [K in keyof T]: T[K] extends ReturnType<typeof rpcHelper<infer U extends object>>
+        [K in keyof T]: T[K] extends ReturnType<typeof rpc<infer U extends object>>
             ? ReturnType<typeof createRpcClientAuto<U>>
             : never;
     };
@@ -39,22 +28,16 @@ export function createRpcClientHub<T extends Record<string, ReturnType<typeof rp
         facade[key] = null;
     }
 
-    let socket: Socket | null = null;
+    let socket: RpcHubSocket | null = null;
     let connectCount = 0;
     let onConnectCb: ((count: number) => void) | null = null;
 
     function setToken(token: string | null) {
-        socket?.disconnect();
+        // Если сокет уже был, отключаем его
+        socket?.disconnect?.();
 
-        const targetUrl = typeof config.url === 'function' ? config.url() : config.url;
-        const baseQuery = config.socketOptions?.query || {};
-        const query = token ? { ...baseQuery, token } : baseQuery;
-
-        socket = config.io(targetUrl, {
-            ...DEFAULT_SOCKET_OPTIONS,
-            ...config.socketOptions,
-            query,
-        });
+        // Делегируем создание сокета пользовательскому коду
+        socket = createSocket(token);
 
         for (const key in schema) {
             const targetSocketKey = schema[key].socketKey || key;
@@ -67,6 +50,8 @@ export function createRpcClientHub<T extends Record<string, ReturnType<typeof rp
             }
         }
 
+        // Подписываемся на connect. 
+        // Важно: Socket.IO шлет 'connect', мы просто полагаемся, что пользовательский сокет это поддерживает.
         socket.on('connect', () => {
             connectCount++;
             onConnectCb?.(connectCount);
