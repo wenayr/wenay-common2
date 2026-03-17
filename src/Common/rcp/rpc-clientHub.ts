@@ -39,7 +39,7 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>>
     let socket: RpcHubSocket | null = null;
     let connectCount = 0;
     let onConnectCb: ((count: number) => void) | null = null;
-
+    let promise = Promise.resolve();
     function setToken(token: string | null) {
         socket?.disconnect?.();
         socket = createSocket(token);
@@ -53,17 +53,23 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>>
                 client.initStrict();
             }
         }
-
-        socket.on("connect", () => {
-            connectCount++;
-            onConnectCb?.(connectCount);
-        });
+        promise = new Promise((resolve) => {
+            socket?.on("connect", () => {
+                connectCount++;
+                onConnectCb?.(connectCount);
+                resolve();
+            });
+        })
+        return result;
     }
 
-    return {
+    const result = {
+        get promise() { return promise; },
         facade,
         setToken,
         onConnect: (func?: ((count: number) => void) | null) => { onConnectCb = func ?? null; },
         connectCount: () => connectCount,
     };
+
+    return result;
 }
