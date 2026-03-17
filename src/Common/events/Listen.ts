@@ -1,16 +1,17 @@
 export type Listener<T extends any[]> = (...r: T) => void
 
 /** Нормализация: если T уже кортеж — оставляем, иначе оборачиваем в [T] */
-type NormalizeTuple<T> = T extends any[] ? T : [T]
+export type NormalizeTuple<T> = T extends any[] ? T : [T]
 
 export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) => (void | (() => void)),
                                                         data?: {
                                                             event?: (type: "add" | "remove", count: number, api: ReturnType<typeof funcListenCallbackBase<T>>) => void,
-                                                            fast?: boolean
+                                                            fast?: boolean,
+                                                            addListenClose?: ReturnType<typeof funcListenCallbackBase<any>>
                                                         }
 ) {
     type Z = NormalizeTuple<T>
-    const {fast = true, event} = data ?? {}
+    const {fast = true, event, addListenClose} = data ?? {}
     type cbClose = ()=>void
     const obj = new Map<Listener<Z>, Listener<Z>>()
     const evClose = new Map<cbClose|Listener<Z>, cbClose>()
@@ -18,6 +19,7 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
     let a: Listener<Z> | null = (...e) => {obj.forEach(z => z(...e))}
     let close: (() => void) | null | undefined= null
     let cached: Listener<Z>[] | null = null
+    let closeUnsubscribe: (() => void) | null = null
 
     const getArr = () => cached ?? (cached = Array.from(obj.values()))
 
@@ -38,7 +40,16 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
     }
 
     const func: Listener<Z> = (...e) => { a?.(...e) }
-    const run = () => { close = (b(func) ?? (() => {})) as (() => void) }
+    const run = () => { 
+        close = (b(func) ?? (() => {})) as (() => void)
+        
+        // Подписываемся на событие закрытия
+        if (addListenClose && !closeUnsubscribe) {
+            closeUnsubscribe = addListenClose.addListen(() => {
+                api.close()
+            })
+        }
+    }
 
     const api = {
         func,
@@ -52,6 +63,12 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
             sinh.clear()
             evClose.forEach(cb => cb())
             evClose.clear()
+            
+            // Отписываемся от события закрытия
+            if (closeUnsubscribe) {
+                closeUnsubscribe()
+                closeUnsubscribe = null
+            }
         },
         eventClose: (cb: ()=>void) => {
             evClose.set(cb, cb)

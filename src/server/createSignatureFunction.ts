@@ -12,11 +12,11 @@ export type tInputBase = {
 type tSignatureData = tInputBase
 
 type HmacCreator = (algorithm: string, key: string) => {
-    update: (data: string) => { digest: (encoding: string) => string }
+    update: (data: string) => { digest: (encoding: string) => unknown }
 }
 
-export function createSignatureFunction(hmacCreator: HmacCreator) {
-    return function signRequest(params: tSignatureData, apiSecret: string): string {
+export function createSignatureFunction<T extends HmacCreator>(hmacCreator: T) {
+    return function signRequest(params: tSignatureData, apiSecret: string) {
         const query = Object.keys(params)
             .reduce((accumulator: string[], key) => {
                 const value = params[key]
