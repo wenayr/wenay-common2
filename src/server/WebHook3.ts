@@ -2,7 +2,7 @@ import express from 'express';
 import type { Express, Request, Response } from 'express';
 import axios from 'axios';
 import * as fs from 'fs';
-import { createAsyncQueue } from "./async/waitRun";
+import { createAsyncQueue } from "../Common/async/waitRun";
 
 const SUBSCRIBERS_FILE = './subscribers.json';
 
