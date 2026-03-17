@@ -31,7 +31,10 @@ export * from "./Common/inputAutoStep";
 export * from "./Common/node_console";
 export * from "./Common/Time";
 
+export * from "./toError/myThrow";
+
 export * from "./Exchange/index";
+
 
 export * as Math from "./Common/math/Math";
 export * as Bars from "./Exchange/Bars";
