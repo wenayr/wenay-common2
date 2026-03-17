@@ -19,7 +19,10 @@ type RpcClientResult<T extends object> = ReturnType<typeof createRpcClient<DeepS
 
 export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>>(
     createSocket: (token: string | null) => RpcHubSocket,
-    schemaBuilder: (helper: typeof rpc) => T
+    schemaBuilder: (helper: typeof rpc) => T,
+    options?: {
+        token?: string|false;
+    }
 ) {
     const schema = schemaBuilder(rpc);
 
@@ -29,17 +32,20 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>>
             : never;
     };
 
-    type FacadeClients = { [K in keyof SchemaTypes]: SchemaTypes[K] | null };
+    type FacadeClients = { [K in keyof SchemaTypes]: SchemaTypes[K]  };
 
     const facade = {} as FacadeClients;
-    for (const key in schema) {
-        facade[key] = null;
-    }
+    // for (const key in schema) {
+    //     facade[key] = null;
+    // }
 
     let socket: RpcHubSocket | null = null;
     let connectCount = 0;
     let onConnectCb: ((count: number) => void) | null = null;
-    let promise = Promise.resolve();
+    let resolveFunc: ((facade: FacadeClients) => void)|null = null;
+    let promise = new Promise<FacadeClients>((resolve) => {
+        resolveFunc = resolve;
+    })
     function setToken(token: string | null) {
         socket?.disconnect?.();
         socket = createSocket(token);
@@ -53,16 +59,16 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>>
                 client.initStrict();
             }
         }
-        promise = new Promise((resolve) => {
             socket?.on("connect", () => {
                 connectCount++;
                 onConnectCb?.(connectCount);
-                resolve();
+                if (resolveFunc) {
+                    const a = resolveFunc;
+                    resolveFunc = null;
+                    a(facade);
+                }
             });
-        })
-        return result;
     }
-
     const result = {
         get promise() { return promise; },
         facade,
