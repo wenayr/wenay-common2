@@ -1,4 +1,4 @@
-import {const_Date} from "../Common/core/BaseTypes";
+import {const_Date, ReadonlyFull} from "../Common/core/BaseTypes";
 import {deepCloneMutable, isDate} from "../Common/core/common";
 
 type Digit= 0|1|2|3|4|5|6|7|8|9;
@@ -99,10 +99,10 @@ type Mutable<T> = { -readonly [P in keyof T]: T[P]; };
 
 //type ReadonlyFullBase<T> = { readonly [P in keyof T] : ReadonlyFull<T[P]> }  //T[P] extends object ? ReadonlyFull<T[P]> : T[P] }
 
-export type ReadonlyFull<T> =
-    T extends ((...args:any)=>any) ? T
-    : T extends const_Date ? const_Date
-    : { readonly [P in keyof T] : ReadonlyFull<T[P]> };
+// export type ReadonlyFull<T> =
+//     T extends ((...args:any)=>any) ? T
+//     : T extends const_Date ? const_Date
+//     : { readonly [P in keyof T] : ReadonlyFull<T[P]> };
 //export type ReadonlyFull<T> = T extends ((...args:any)=>any) ? T : T extends object ? { readonly [P in keyof T] : ReadonlyFull<T[P]> } : T;
 //export type ReadonlyFull<T> = T extends ((...args:any)=>any)|String ? T : T extends object ? { readonly [P in keyof T] : ReadonlyFull<T[P]> } : T;
 
