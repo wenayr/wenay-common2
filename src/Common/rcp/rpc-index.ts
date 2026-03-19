@@ -1,3 +1,5 @@
+
+
 export * from "./listen-socket";
 export * from "./listen-deep";
 export * from "./rpc-dynamic";
@@ -9,3 +11,4 @@ export * from "./rpc-server";
 export * from "./rpc-client-auto";
 export * from "./rpc-server-auto";
 export * from "./rpc-clientHub";
+export {createRpcServerAuto2} from "./createRpcServerAutoWithProtocolDetection";

@@ -130,14 +130,45 @@ export function UseListen<T>(data: Parameters<typeof funcListenCallbackBase<T>>[
 }
 
 /** Проверяет, является ли объект результатом funcListenCallbackBase */
+let referenceKeys: string[] | null = null
+let referenceTypes: Map<string, string> | null = null
+
+function getReferenceData(): { keys: string[], types: Map<string, string> } {
+    if (!referenceKeys || !referenceTypes) {
+        const demo = funcListenCallbackBase(() => {})
+        referenceKeys = Object.keys(demo).sort()
+        referenceTypes = new Map()
+
+        // Сохраняем типы всех свойств
+        for (const key of referenceKeys) {
+            referenceTypes.set(key, typeof (demo as any)[key])
+        }
+    }
+    return { keys: referenceKeys, types: referenceTypes }
+}
+// 2. Безопасная проверка
 export function isListenCallback(obj: any): obj is ReturnType<typeof funcListenCallbackBase> {
     if (obj == null || typeof obj !== "object") return false
-    const obj2 = obj as ReturnType<typeof funcListenCallbackBase>
-    return (
-        typeof obj2.addListen === "function" &&
-        typeof obj2.removeListen === "function" &&
-        typeof obj2.eventClose === "function" &&
-        typeof obj2.func === "function" &&
-        typeof obj2.count === "function"
-    )
+
+    // Получаем ключи БЕЗ обращения к свойствам (безопасно от геттеров/Proxy)
+    const objKeys = Object.keys(obj).sort()
+    const { keys: refKeys, types: refTypes } = getReferenceData()
+
+    // Сравниваем количество ключей
+    if (objKeys.length !== refKeys.length) return false
+
+    // Сравниваем названия ключей
+    for (let i = 0; i < refKeys.length; i++) {
+        if (objKeys[i] !== refKeys[i]) return false
+    }
+
+    // Проверяем типы всех свойств
+    for (const key of refKeys) {
+        const expectedType = refTypes.get(key)
+        const actualType = typeof obj[key]
+
+        if (actualType !== expectedType) return false
+    }
+
+    return true
 }

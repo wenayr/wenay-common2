@@ -20,9 +20,6 @@ type RpcClientResult<T extends object> = ReturnType<typeof createRpcClient<DeepS
 export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>>(
     createSocket: (token: string | null) => RpcHubSocket,
     schemaBuilder: (helper: typeof rpc) => T,
-    options?: {
-        token?: string|false;
-    }
 ) {
     const schema = schemaBuilder(rpc);
 
@@ -68,11 +65,14 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>>
                     a(facade);
                 }
             });
+        return promise
     }
+
     const result = {
         get promise() { return promise; },
         facade,
         setToken,
+        get socket() { return socket; },
         onConnect: (func?: ((count: number) => void) | null) => { onConnectCb = func ?? null; },
         connectCount: () => connectCount,
     };
