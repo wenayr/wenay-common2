@@ -4,12 +4,14 @@ import { createRpcServer, type PromiseServerHooks, type RpcLimits } from "./rpc-
 import { DeepSocketListen } from "./listen-deep";
 import { Pkt, type SocketTmpl } from "./rpc-protocol";
 import { promiseServer } from "./oldСommonsServerMini";
+import { isNoStrict } from "./rpc-dynamic";
+import { isSafeKey } from "./rpc-limits";
 
 type ListenCallbackBase<T extends any[] = any[]> = ReturnType<typeof funcListenCallbackBase<T>>;
 
 // ── Старая версия (без изменений) ──────────────────────────────────
 
-export function createRpcServerAuto<T extends object>({ socket, object: target, socketKey: key, debug, hooks, disconnectListen, limits }: {
+function createRpcServerAuto<T extends object>({ socket, object: target, socketKey: key, debug, hooks, disconnectListen, limits }: {
     socket: SocketTmpl;
     object: T;
     socketKey: string;
@@ -57,15 +59,15 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
 type ClientProtocol = 'v2' | 'legacy' | null;
 
 export function createRpcServerAuto2<T extends object>({
-    socket,
-    object: target,
-    socketKey: key,
-    debug = false,
-    hooks,
-    disconnectListen,
-    limits,
-    onProtocolDetect,
-}: {
+                                                           socket,
+                                                           object: target,
+                                                           socketKey: key,
+                                                           debug = false,
+                                                           hooks,
+                                                           disconnectListen,
+                                                           limits,
+                                                           onProtocolDetect,
+                                                       }: {
     socket: SocketTmpl;
     object: T;
     socketKey: string;
@@ -94,41 +96,46 @@ export function createRpcServerAuto2<T extends object>({
     }
 
     // ── Трансформация дерева объекта (Listen → listenSocket) ─────
-    // Рекурсивно обходим, заменяя ListenCallback на listenSocket-обёртку.
-    // Результат используется обоими протоколами.
+    // Повторяет логику transformTree из rpc-server.ts:
+    // - isNoStrict объекты пропускаются как есть
+    // - isSafeKey фильтрует ключи
+    // - resolveTransform применяется к каждому узлу
     function transformTree(obj: any): any {
-        if (obj == null || typeof obj === 'function') return obj;
-        if (typeof obj !== 'object') return obj;
-        const transformed = resolveTransform(obj);
-        if (transformed !== obj) return transformed;
+        let current = obj;
+        if (!isNoStrict(current)) {
+            current = resolveTransform(current);
+        }
+        if (current == null || typeof current !== 'object' || isNoStrict(current)) return current;
         const out: any = {};
-        for (const k of Object.keys(obj)) {
-            const v = obj[k];
-            if (typeof v === 'function') out[k] = v;
-            else if (v != null && typeof v === 'object') out[k] = transformTree(v);
-            else out[k] = v;
+        for (const k of Object.keys(current)) {
+            if (!isSafeKey(k)) continue;
+            const v = current[k];
+            if (isNoStrict(v)) { out[k] = v; continue; }
+            out[k] = typeof v === 'function' ? v : (v != null && typeof v === 'object') ? transformTree(v) : v;
         }
         return out;
     }
 
-    // ── Сериализация схемы ──────────────────────────────────────
-    // Legacy использует как { STRICTLY: schema }
-    // V2 — createRpcServer сам строит свою serialize, но для legacy нам нужна отдельная
+    // ── Сериализация схемы (повторяет логику serialize из rpc-server.ts) ──
     function serialize(obj: any): any {
         const out: any = {};
         for (const k of Object.keys(obj)) {
+            if (!isSafeKey(k)) continue;
             const v = obj[k];
-            if (v == null) out[k] = 'null';
-            else if (typeof v === 'function') out[k] = 'func';
-            else if (typeof v === 'object') out[k] = serialize(v);
-            else out[k] = 'unknown';
+            switch (true) {
+                case v == null:              out[k] = 'null';    break;
+                case isNoStrict(v):          out[k] = 'dynamic'; break;
+                case typeof v === 'function': out[k] = 'func';   break;
+                case typeof v === 'object':   out[k] = serialize(v); break;
+                default:                      out[k] = 'unknown'; break;
+            }
         }
         return out;
     }
 
     // resolved — дерево с Listen заменёнными на { callback, removeCallback }
     const resolved = transformTree(target);
-    // strictSchema — сериализованная схема для legacy клиента
+    // legacySchema — сериализованная схема для legacy клиента
     const legacySchema = serialize(resolved);
 
     // ── Определение протокола ───────────────────────────────────
@@ -141,7 +148,7 @@ export function createRpcServerAuto2<T extends object>({
         return msg === '___STRICTLY';
     }
 
-    /** Legacy сообщение: plain object с { mapId: number, data | error } */
+    /** Legacy сообщение: plain object с { mapId: number } */
     function isLegacyMessage(msg: any): boolean {
         return (
             typeof msg === 'object' &&
@@ -153,15 +160,12 @@ export function createRpcServerAuto2<T extends object>({
 
     /** V2 сообщение: Pkt.STRICT (число 4) или массив [Pkt.CALL|PIPE, ...] */
     function isV2Message(msg: any): boolean {
-        if (msg === Pkt.STRICT) return true;                           // число 4
+        if (msg === Pkt.STRICT) return true;
         if (Array.isArray(msg) && (msg[0] === Pkt.CALL || msg[0] === Pkt.PIPE)) return true;
         return false;
     }
 
     // ── Инициализация Legacy сервера (лениво) ───────────────────
-    // promiseServer принимает ScreenerSoc с sendMessage/api.
-    // Мы подставляем свои: emit → sendMessage, захватываем onMessage.
-    // promiseServer работает с `resolved` — уже трансформированным деревом.
     function initLegacy() {
         if (legacyHandler) return;
 
@@ -182,9 +186,6 @@ export function createRpcServerAuto2<T extends object>({
     }
 
     // ── Инициализация V2 сервера (лениво) ───────────────────────
-    // Создаём "виртуальный" сокет, чтобы перехватить handler из createRpcServer.
-    // createServer при инициализации делает send([Pkt.MAP, routeMap, strictSchema]) —
-    // это уйдёт клиенту через socket.emit, что корректно (v2 клиент уже подключён).
     function initV2() {
         if (v2Handler) return;
 
@@ -234,7 +235,6 @@ export function createRpcServerAuto2<T extends object>({
 
         // ── Рукопожатие: определяем протокол по первому сообщению ──
 
-        // 1) Legacy: запрос схемы
         if (isLegacyStrictRequest(msg)) {
             protocol = 'legacy';
             if (debug) console.log('[RPC-AUTO2] Protocol detected: legacy (___STRICTLY)');
@@ -244,7 +244,6 @@ export function createRpcServerAuto2<T extends object>({
             return;
         }
 
-        // 2) Legacy: обычный вызов (клиент может не запрашивать strictly)
         if (isLegacyMessage(msg)) {
             protocol = 'legacy';
             if (debug) console.log('[RPC-AUTO2] Protocol detected: legacy (mapId message)');
@@ -254,14 +253,11 @@ export function createRpcServerAuto2<T extends object>({
             return;
         }
 
-        // 3) V2: STRICT / CALL / PIPE
         if (isV2Message(msg)) {
             protocol = 'v2';
             if (debug) console.log('[RPC-AUTO2] Protocol detected: v2');
             onProtocolDetect?.('v2');
             initV2();
-            // initV2 → createRpcServer → createServer уже отправил [Pkt.MAP, ...]
-            // Теперь прокидываем первое сообщение
             v2Handler!(msg);
             return;
         }
@@ -271,11 +267,8 @@ export function createRpcServerAuto2<T extends object>({
     });
 
     return {
-        /** Какой протокол определён (null — ещё не было сообщений) */
         getProtocol: () => protocol,
-        /** Схема для legacy */
         getLegacySchema: () => legacySchema,
-        /** Трансформированное дерево */
         getResolved: () => resolved,
     };
 }
