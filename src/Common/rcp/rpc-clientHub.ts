@@ -47,24 +47,32 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>>
         socket?.disconnect?.();
         socket = createSocket(token);
 
+
         for (const key in schema) {
             const targetSocketKey = schema[key].socketKey || key;
             const client = createRpcClient<any>({ socketKey: targetSocketKey, socket });
             facade[key] = client as FacadeClients[typeof key];
-
-            if (client && typeof client.initStrict === "function") {
-                client.initStrict();
+        }
+        // порядок инициализации
+        function hi(){
+            for (const key in schema) {
+                const client = facade[key]
+                if (client && typeof client.initStrict === "function") {
+                    client.initStrict();
+                }
             }
         }
-            socket?.on("connect", () => {
-                connectCount++;
-                onConnectCb?.(connectCount);
-                if (resolveFunc) {
-                    const a = resolveFunc;
-                    resolveFunc = null;
-                    a(facade);
-                }
-            });
+
+        socket?.on("connect", () => {
+            connectCount++;
+            hi()
+            onConnectCb?.(connectCount);
+            if (resolveFunc) {
+                const a = resolveFunc;
+                resolveFunc = null;
+                a(facade);
+            }
+        });
         return promise
     }
 

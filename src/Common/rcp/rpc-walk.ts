@@ -1,7 +1,34 @@
 import { idPool } from "../id-pool";
 import { isSafeKey, PayloadLimitError, type RpcLimits } from "./rpc-limits";
 
-const FN_MARKER = "$_f";
+const FN_MARKER     = "$_f";
+const DATE_MARKER   = "$_d";
+const MAP_MARKER    = "$_m";
+const SET_MARKER    = "$_s";
+const REGEXP_MARKER = "$_r";
+const BIGINT_MARKER = "$_b";
+
+const ALL_MARKERS = new Set([FN_MARKER, DATE_MARKER, MAP_MARKER, SET_MARKER, REGEXP_MARKER, BIGINT_MARKER]);
+
+// Маппинг маркер → десериализатор
+const DESERIALIZERS: Record<string, (v: any) => any> = {
+    [DATE_MARKER]:   (v) => new Date(v),
+    [MAP_MARKER]:    (v) => new Map(v),
+    [SET_MARKER]:    (v) => new Set(v),
+    [REGEXP_MARKER]: (v) => new RegExp(v.source, v.flags),
+    [BIGINT_MARKER]: (v) => BigInt(v),
+};
+
+// Маппинг тип → сериализатор (пары [маркер, значение])
+type Serializer = (v: any) => [string, any] | null;
+
+const SERIALIZERS: Serializer[] = [
+    (v) => v instanceof Date    ? [DATE_MARKER,   v.valueOf()]                          : null,
+    (v) => v instanceof Map     ? [MAP_MARKER,    Array.from(v.entries())]              : null,
+    (v) => v instanceof Set     ? [SET_MARKER,    Array.from(v.values())]               : null,
+    (v) => v instanceof RegExp  ? [REGEXP_MARKER, { source: v.source, flags: v.flags }] : null,
+    (v) => typeof v === "bigint" ? [BIGINT_MARKER, v.toString()]                        : null,
+];
 
 export function walk(
     val: any,
@@ -14,7 +41,8 @@ export function walk(
         if (typeof val == "string" && val.length > lim.maxStringLen) throw new PayloadLimitError("string too long");
     }
     if (val == null || typeof val !== "object") return onLeaf(val);
-    if (val[FN_MARKER] !== undefined) return onLeaf(val);
+    // Если объект уже упакован маркером — передаём как есть в onLeaf
+    if (ALL_MARKERS.has(Object.keys(val)[0])) return onLeaf(val);
     if (Array.isArray(val)) {
         if (lim && val.length > lim.maxArrayLen) throw new PayloadLimitError("array too long");
         return val.map(v => walk(v, onLeaf, lim, depth + 1));
@@ -24,6 +52,29 @@ export function walk(
     const o: any = {};
     for (const k of keys) if (isSafeKey(k)) o[k] = walk(val[k], onLeaf, lim, depth + 1);
     return o;
+}
+
+// Общая функция десериализации листа (используется в unpack и unpackResult)
+function deserializeLeaf(leaf: any, onCallback?: (id: number) => any): any {
+    if (leaf == null || typeof leaf !== "object") return leaf;
+    const key = Object.keys(leaf)[0];
+    if (!key) return leaf;
+
+    if (key === FN_MARKER) {
+        return onCallback?.(leaf[FN_MARKER]) ?? leaf;
+    }
+
+    const deserialize = DESERIALIZERS[key];
+    return deserialize ? deserialize(leaf[key]) : leaf;
+}
+
+// Общая функция сериализации листа (используется в pack и packResult)
+function serializeLeaf(leaf: any): any {
+    for (const serializer of SERIALIZERS) {
+        const result = serializer(leaf);
+        if (result) return { [result[0]]: result[1] };
+    }
+    return leaf;
 }
 
 export function pack(
@@ -39,8 +90,12 @@ export function pack(
             cbIds.push(id);
             return { [FN_MARKER]: id };
         }
-        return leaf;
+        return serializeLeaf(leaf);
     }));
+}
+
+export function packResult(value: any): any {
+    return walk(value, leaf => serializeLeaf(leaf));
 }
 
 const _stopRegistry = new WeakMap<Function, () => void>();
@@ -68,8 +123,12 @@ export function unpack(
             _stopRegistry.set(wrapper, () => onEnd(id));
             return wrapper;
         }
-        return leaf;
+        return deserializeLeaf(leaf);
     }, lim));
+}
+
+export function unpackResult(value: any, lim?: Required<RpcLimits>): any {
+    return walk(value, leaf => deserializeLeaf(leaf), lim);
 }
 
 export const errToObj = (e: any) =>

@@ -66,6 +66,11 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     let strictWaiters: ((v: unknown) => void)[] = [];
     let debug = false;
 
+    const unpackResult = (v: any) => {
+        if (!v) return v;
+        return v;
+    }
+
     socket.on(key, (msg: any) => {
         if (!Array.isArray(msg)) return;
         switch (msg[0]) {
@@ -75,7 +80,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 pending.delete(msg[1]);
                 pool.release(msg[1]);
                 for (const cbId of req.cbs) { callbacks.delete(cbId); pool.release(cbId); }
-                msg[3] ? req.fail(msg[3]) : req.ok(msg[2]);
+                msg[3] ? req.fail(msg[3]) : req.ok(unpackResult(msg[2]));
                 break;
             }
             case Pkt.CB: {

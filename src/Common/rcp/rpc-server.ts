@@ -1,6 +1,6 @@
 import {isNoStrict} from "./rpc-dynamic";
 import { isSafeKey, resolveLimits, type RpcLimits } from "./rpc-limits";
-import { unpack, errToObj } from "./rpc-walk";
+import {unpack, errToObj, packResult} from "./rpc-walk";
 import { Pkt, type SocketTmpl } from "./rpc-protocol";
 
 type Func = (...args: any[]) => any;
@@ -174,13 +174,13 @@ function createServer<T extends object>(
                 if (current && typeof current.then === "function") {
                     current = await current;
                 }
-                if (wait) send([Pkt.RESP, reqId, current]);
+                if (wait) send([Pkt.RESP, reqId, packResult(current)]);
 
             } else {
                 // --- СТАНДАРТНАЯ ЛОГИКА CALL ---
                 const args = unpack(rawArgsOrSteps, (cbId, cbArgs) => send([Pkt.CB, cbId, cbArgs]), (cbId) => send([Pkt.CB_END, cbId]), lim);
                 const res = await fn.apply(ctx, args);
-                if (wait) send([Pkt.RESP, reqId, res]);
+                if (wait) send([Pkt.RESP, reqId, packResult(res)]);
             }
 
         } catch (e) {
