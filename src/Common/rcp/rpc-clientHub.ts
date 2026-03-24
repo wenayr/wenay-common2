@@ -17,8 +17,8 @@ export function rpc<T extends object>(socketKey?: string): RpcDescriptor<T> {
 
 type RpcClientResult<T extends object> = ReturnType<typeof createRpcClient<DeepSocketListenSmart<T>>>;
 
-export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>>(
-    createSocket: (token: string | null) => RpcHubSocket,
+export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>, T2 extends RpcHubSocket>(
+    createSocket: (token: string | null) => T2,
     schemaBuilder: (helper: typeof rpc) => T,
 ) {
     const schema = schemaBuilder(rpc);
@@ -80,7 +80,7 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>>
         get promise() { return promise; },
         facade,
         setToken,
-        get socket() { return socket; },
+        get socket() { return socket as T2; },
         onConnect: (func?: ((count: number) => void) | null) => { onConnectCb = func ?? null; },
         connectCount: () => connectCount,
     };

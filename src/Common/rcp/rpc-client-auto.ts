@@ -1,7 +1,7 @@
 import { funcListenCallbackBase } from "../events/Listen";
 import { deepListenFirst, deepListenAll, deepListenSmart } from "./listen-deep";
 import type { DeepSocketListen } from "./listen-deep";
-import type { ClientAPI } from "./rpc-client";
+import type { ClientAPIStrict } from "./rpc-client";
 
 type ClientAutoOptions = {
     readonly mode?: "smart" | "first" | "all";
@@ -10,7 +10,7 @@ type ClientAutoOptions = {
 };
 
 export type ClientAutoResult<T> = DeepSocketListen<T>;
-export type AutoClientAPI<T> = ClientAPI<DeepSocketListen<T>>;
+export type AutoClientAPI<T> = ClientAPIStrict<DeepSocketListen<T>>;
 
 export function createRpcClientAuto<T>(
     api: T,

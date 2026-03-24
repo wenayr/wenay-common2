@@ -13,15 +13,31 @@ export type DeepDataOnly<T> = T extends Function
             : T;
 
 // --- 1. ТИПИЗАЦИЯ ДЛЯ ОБЫЧНЫХ ВЫЗОВОВ (БЕЗ PIPE) ---
-export type ClientAPI<T> = {
+export type ClientAPIAll<T> = {
     [K in keyof T as T[K] extends Function ? K : T[K] extends object ? K : never]:
         T[K] extends (...args: infer A) => infer R
             // Обычный вызов возвращает ТОЛЬКО Promise с чистыми данными. Никакого продолжения цепочки.
             ? (...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>>
             : T[K] extends object
-                ? ClientAPI<T[K]>
+                ? ClientAPIAll<T[K]>
                 : never;
 };
+
+type NonFalsy<T> = Exclude<T, false | null | 0 | "" | undefined>;
+
+export type ClientAPIStrict<T> = {
+    [K in keyof T as NonFalsy<T[K]> extends Function
+        ? K
+        : NonFalsy<T[K]> extends object
+            ? K
+            : never]:
+    NonFalsy<T[K]> extends (...args: infer A) => infer R
+        ? (...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>>
+        : NonFalsy<T[K]> extends object
+            ? ClientAPIStrict<NonFalsy<T[K]>>
+            : never;
+};
+
 
 
 // --- 2. ТИПИЗАЦИЯ ДЛЯ PIPE ВЫЗОВОВ ---
@@ -243,7 +259,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         end: releaseCbs,
     };
 
-    const func = buildProxy([], true) as ClientAPI<T>;
+    const func = buildProxy([], true) as ClientAPIAll<T>;
     const pipe = buildPipeProxy([], [], true) as PipeAPI<T>; 
     const pipeStrict = buildPipeProxy([], [], true) as PipeAPI<T>; 
 
@@ -262,9 +278,9 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         func,           // <- Тип ClientAPI (нет цепочек)
         pipe,           // <- Тип PipeAPI (есть цепочки)
         pipeStrict,     // <- Тип PipeAPI (есть цепочки)
-        space: buildProxy([], false) as ClientAPI<T>,
-        all: func as ClientAPI<T>,
-        strict: buildStrict([], true) as ClientAPI<T>, // <- Тип ClientAPI (нет цепочек)
+        space: buildProxy([], false) as ClientAPIAll<T>,
+        all: func as ClientAPIAll<T>,
+        strict: buildStrict([], true) as ClientAPIStrict<T>, // <- Тип ClientAPI (нет цепочек)
         api,
         abortAll: (reason: string) => {
             const err = { error: { name: "RPC_ABORT", message: reason } };
@@ -280,12 +296,12 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
 }
 
 export type RpcClientReturn<T extends object> = {
-    func: ClientAPI<T>;
+    func: ClientAPIAll<T>;
     pipe: PipeAPI<T>;
     pipeStrict: PipeAPI<T>;
-    space: ClientAPI<T>;
-    all: ClientAPI<T>;
-    strict: ClientAPI<T>;
+    space: ClientAPIAll<T>;
+    all: ClientAPIAll<T>;
+    strict: ClientAPIStrict<T>;
     api: ClientApiHandle;
     abortAll: (reason: string) => void;
     schema: () => any;
