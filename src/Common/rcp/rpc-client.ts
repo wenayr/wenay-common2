@@ -1,6 +1,6 @@
 import { Pkt, type SocketTmpl } from "./rpc-protocol";
 import {createIdPool} from "../id-pool";
-import {pack, resolveCA} from "./rpc-walk";
+import {pack, resolveCA, unpackResult} from "./rpc-walk";
 // Вспомогательные типы
 type UnwrapPromise<T> = T extends Promise<infer R> ? R : T;
 
@@ -82,11 +82,6 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     let strictWaiters: ((v: unknown) => void)[] = [];
     let debug = false;
 
-    const unpackResult = (v: any) => {
-        if (!v) return v;
-        return v;
-    }
-
     socket.on(key, (msg: any) => {
         if (!Array.isArray(msg)) return;
         switch (msg[0]) {
@@ -100,7 +95,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 break;
             }
             case Pkt.CB: {
-                callbacks.get(msg[1])?.(...(msg[2] || []));
+                callbacks.get(msg[1])?.(...(msg[2] || []).map(unpackResult));
                 break;
             }
             case Pkt.CB_END: {

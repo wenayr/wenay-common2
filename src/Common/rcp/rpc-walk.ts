@@ -42,6 +42,8 @@ export function walk(
     }
     if (val == null || typeof val !== "object") return onLeaf(val);
     // Если объект уже упакован маркером — передаём как есть в onLeaf
+    if (val instanceof Date || val instanceof Map || val instanceof Set || val instanceof RegExp) return onLeaf(val);
+
     if (ALL_MARKERS.has(Object.keys(val)[0])) return onLeaf(val);
     if (Array.isArray(val)) {
         if (lim && val.length > lim.maxArrayLen) throw new PayloadLimitError("array too long");

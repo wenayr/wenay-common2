@@ -37,15 +37,22 @@ export type DeepSocketListenAll<T> = {
         : T[K];
 };
 
+// export type DeepSocketListenSmart<T> = {
+//     [K in keyof T]: T[K] extends { addListen: Function }
+//         ? ReturnType<typeof listenSocketSmart<InferArgs<T[K]>>>
+//         : T[K] extends (...a: any[]) => any ? T[K]
+//         : T[K] extends typeof Promise ? T[K]
+//         : T[K] extends object ? DeepSocketListenSmart<T[K]>
+//         : T[K];
+// };
 export type DeepSocketListenSmart<T> = {
-    [K in keyof T]: T[K] extends { addListen: Function } 
-        ? ReturnType<typeof listenSocketSmart<InferArgs<T[K]>>>
-        : T[K] extends (...a: any[]) => any ? T[K]
-        : T[K] extends typeof Promise ? T[K]
-        : T[K] extends object ? DeepSocketListenSmart<T[K]> 
-        : T[K];
+    [K in keyof T]: NonNullable<T[K]> extends { addListen: Function }
+        ? ReturnType<typeof listenSocketSmart<InferArgs<NonNullable<T[K]>>>> | Extract<T[K], undefined | null>
+        : NonNullable<T[K]> extends (...a: any[]) => any ? T[K]
+            : NonNullable<T[K]> extends typeof Promise ? T[K]
+                : NonNullable<T[K]> extends object ? DeepSocketListenSmart<T[K]>
+                    : T[K];
 };
-
 // ── Утилиты ─────────────────────────────────────────────────────
 
 function isLeafValue(value: unknown): boolean {

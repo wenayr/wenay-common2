@@ -178,7 +178,7 @@ function createServer<T extends object>(
 
             } else {
                 // --- СТАНДАРТНАЯ ЛОГИКА CALL ---
-                const args = unpack(rawArgsOrSteps, (cbId, cbArgs) => send([Pkt.CB, cbId, cbArgs]), (cbId) => send([Pkt.CB_END, cbId]), lim);
+                const args = unpack(rawArgsOrSteps, (cbId, cbArgs) => send([Pkt.CB, cbId, cbArgs.map(packResult)]), (cbId) => send([Pkt.CB_END, cbId]), lim);
                 const res = await fn.apply(ctx, args);
                 if (wait) send([Pkt.RESP, reqId, packResult(res)]);
             }
