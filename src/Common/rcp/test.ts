@@ -14,15 +14,18 @@ const facade = ()=>{
         math: {
             add: async (a: number, b: number) => a + b,
             multiply: async (a: number, b: number) => a * b,
-            callback: async (callback: (a: Date, f: number)=> void)=> {
+            callback: async (a: { callback: (b: { a: Date }, f: number) => void })=> {
                 for (let i = 0; i < 100; i++) {
                     await sleepAsync(50)
-                    callback(new Date(), 43);
+                    a.callback({a: new Date()}, 43);
                 }
             },
         },
         greet: async (name: string) => `Hello, ${name}!`,
-        date: async (date: Date) => ({msg: `Hello!`, map: new Map<string, number>([['ds',43]]), youDate: date, now: new Date()}),
+        date: async (date: Date) => {
+            await sleepAsync(1000)
+            return ({msg: `Hello!`, map: new Map<string, number>([['ds',43]]), youDate: date, now: new Date()})
+        },
     };
 }
 
@@ -69,35 +72,35 @@ async function startClient(port: number) {
     console.log('[client] схема получена, schema:', clients.api.schema());
     return { hub, clients };
 }
-
-// --- Основной тест ---
-async function runTest() {
-    const PORT = 4020;
-    const httpServer = await startServer(PORT);
-    const { hub, clients } = await startClient(PORT);
-
-    const api = clients.api.func;
-
-    const addResult = await api.math.add(5, 7);
-    console.log('[test] math.add(5, 7) =', addResult); // 12
-
-    const mulResult = await api.math.multiply(3, 4);
-    console.log('[test] math.multiply(3, 4) =', mulResult); // 12
-
-    const greetResult = await api.greet('World');
-    console.log('[test] greet("World") =', greetResult); // Hello, World!
-
-    const dateResult = await api.date(new Date());
-    console.log('[test] date(new Date()) =', dateResult);
-    // @ts-ignore
-    console.log('[test] date(new Date()) =', dateResult.youDate.toISOString());
-
-    await api.math.callback((a)=>{
-        console.log(a)
-    });
-
-    hub.socket?.disconnect?.();
-    httpServer.close(() => console.log('[server] остановлен'));
-}
-
-runTest().catch(console.error);
+//
+// // --- Основной тест ---
+// async function runTest() {
+//     const PORT = 4020;
+//     const httpServer = await startServer(PORT);
+//     const { hub, clients } = await startClient(PORT);
+//
+//     const api = clients.api.func;
+//
+//     const addResult = await api.math.add(5, 7);
+//     console.log('[test] math.add(5, 7) =', addResult); // 12
+//
+//     const mulResult = await api.math.multiply(3, 4);
+//     console.log('[test] math.multiply(3, 4) =', mulResult); // 12
+//
+//     const greetResult = await api.greet('World');
+//     console.log('[test] greet("World") =', greetResult); // Hello, World!
+//
+//     const dateResult = await api.date(new Date());
+//     console.log('[test] date(new Date()) =', dateResult);
+//     // @ts-ignore
+//     console.log('[test] date(new Date()) =', dateResult.youDate.toISOString(), new Date(dateResult.youDate).getDate(), dateResult.youDate.getDate());
+//
+//     await api.math.callback({callback: (a)=>{
+//             console.log(a)
+//         }});
+//
+//     hub.socket?.disconnect?.();
+//     httpServer.close(() => console.log('[server] остановлен'));
+// }
+//
+// runTest().catch(console.error);
