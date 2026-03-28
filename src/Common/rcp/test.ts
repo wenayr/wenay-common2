@@ -1,78 +1,78 @@
-import express from 'express';
-import { createServer } from 'http';
-import { Server as SocketIOServer } from 'socket.io';
-import { io } from 'socket.io-client';
-import { createRpcServer } from './rpc-server';
-import { createRpcClientHub, rpc } from './rpc-clientHub';
-import {createRpcServerAuto} from "./rpc-server-auto";
-import {UseListen} from "../events/Listen";
-import {sleepAsync} from "../core/common";
-
-// --- Фасад (API сервера) ---
-const facade = ()=>{
-    return {
-        math: {
-            add: async (a: number, b: number) => a + b,
-            multiply: async (a: number, b: number) => a * b,
-            callback: async (a: { callback: (b: { a: Date }, f: number) => void })=> {
-                for (let i = 0; i < 100; i++) {
-                    await sleepAsync(50)
-                    a.callback({a: new Date()}, 43);
-                }
-            },
-        },
-        greet: async (name: string) => `Hello, ${name}!`,
-        date: async (date: Date) => {
-            await sleepAsync(1000)
-            return ({msg: `Hello!`, map: new Map<string, number>([['ds',43]]), youDate: date, now: new Date()})
-        },
-    };
-}
-
-type FacadeAPI = ReturnType<typeof facade>;
-
-// --- Запуск сервера ---
-async function startServer(port: number) {
-    const app = express();
-    const httpServer = createServer(app);
-    const ioServer = new SocketIOServer(httpServer);
-
-    ioServer.on('connection', (socket) => {
-        console.log('[server] клиент подключился');
-        const [disconnect, disconnectListen] = UseListen()
-        socket.on('disconnect', disconnect);
-        createRpcServerAuto({
-            socket: {
-                emit: (key, data) => socket.emit(key, data),
-                on: (key, cb) => socket.on(key, cb),
-            },
-            socketKey: 'rpc',
-            object: facade(),
-            disconnectListen,
-            debug: true,
-        });
-    });
-
-    await new Promise<void>((resolve) => httpServer.listen(port, resolve));
-    console.log(`[server] слушает :${port}`);
-    return httpServer;
-}
-
-// --- Запуск клиента через hub ---
-async function startClient(port: number) {
-    const hub = createRpcClientHub(
-        () => io(`http://localhost:${port}`, { transports: ['websocket'], forceNew: true }),
-        (r) => ({ api: r<FacadeAPI>('rpc') }) as const,
-    );
-
-    const clients = await hub.setToken(null);
-    console.log('[client] подключились, ждём схему...');
-
-    await clients.api.readyStrict();
-    console.log('[client] схема получена, schema:', clients.api.schema());
-    return { hub, clients };
-}
+// import express from 'express';
+// import { createServer } from 'http';
+// import { Server as SocketIOServer } from 'socket.io';
+// import { io } from 'socket.io-client';
+// import { createRpcServer } from './rpc-server';
+// import { createRpcClientHub, rpc } from './rpc-clientHub';
+// import {createRpcServerAuto} from "./rpc-server-auto";
+// import {UseListen} from "../events/Listen";
+// import {sleepAsync} from "../core/common";
 //
+// // --- Фасад (API сервера) ---
+// const facade = ()=>{
+//     return {
+//         math: {
+//             add: async (a: number, b: number) => a + b,
+//             multiply: async (a: number, b: number) => a * b,
+//             callback: async (a: { callback: (b: { a: Date , b: Date }, f: number) => void })=> {
+//                 for (let i = 0; i < 100; i++) {
+//                     await sleepAsync(50)
+//                     a.callback({a: new Date(), b: new Date(Date.now() - 100000)}, 43);
+//                 }
+//             },
+//         },
+//         greet: async (name: string) => `Hello, ${name}!`,
+//         date: async (date: Date) => {
+//             await sleepAsync(1000)
+//             return ({msg: `Hello!`, map: new Map<string, number>([['ds',43]]), youDate: date, now: new Date()})
+//         },
+//     };
+// }
+//
+// type FacadeAPI = ReturnType<typeof facade>;
+//
+// // --- Запуск сервера ---
+// async function startServer(port: number) {
+//     const app = express();
+//     const httpServer = createServer(app);
+//     const ioServer = new SocketIOServer(httpServer);
+//
+//     ioServer.on('connection', (socket) => {
+//         console.log('[server] клиент подключился');
+//         const [disconnect, disconnectListen] = UseListen()
+//         socket.on('disconnect', disconnect);
+//         createRpcServerAuto({
+//             socket: {
+//                 emit: (key, data) => socket.emit(key, data),
+//                 on: (key, cb) => socket.on(key, cb),
+//             },
+//             socketKey: 'rpc',
+//             object: facade(),
+//             disconnectListen,
+//             debug: true,
+//         });
+//     });
+//
+//     await new Promise<void>((resolve) => httpServer.listen(port, resolve));
+//     console.log(`[server] слушает :${port}`);
+//     return httpServer;
+// }
+//
+// // --- Запуск клиента через hub ---
+// async function startClient(port: number) {
+//     const hub = createRpcClientHub(
+//         () => io(`http://localhost:${port}`, { transports: ['websocket'], forceNew: true }),
+//         (r) => ({ api: r<FacadeAPI>('rpc') }) as const,
+//     );
+//
+//     const clients = await hub.setToken(null);
+//     console.log('[client] подключились, ждём схему...');
+//
+//     await clients.api.readyStrict();
+//     console.log('[client] схема получена, schema:', clients.api.schema());
+//     return { hub, clients };
+// }
+// //
 // // --- Основной тест ---
 // async function runTest() {
 //     const PORT = 4020;
@@ -103,4 +103,4 @@ async function startClient(port: number) {
 //     httpServer.close(() => console.log('[server] остановлен'));
 // }
 //
-// runTest().catch(console.error);
+// // runTest().catch(console.error);
