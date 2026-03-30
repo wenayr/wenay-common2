@@ -1,8 +1,5 @@
-import {BSearch} from "./core/common";
-
 export type tApiKey = string;
-// Хак (string & {}), чтобы строковые литералы не схлопнулись до просто string
-type tType = "UID" | "IP" | (string & {});
+type tType = "UID" | "IP" | tApiKey;
 type tWeight = number;
 type tTime = number;
 type tFunc = {
@@ -11,91 +8,125 @@ type tFunc = {
     weight: number;
 };
 
-export function funcTimeW(maxHistoryElements = 800) {
+export function funcTimeW() {
     type tt1 = [tTime, tWeight];
-    type ttt = { [key: string]: tt1[] };
+    type ttt = { [key: tType]: tt1[] };
     const dStatic: ttt = {};
-
-    function getInsertIndex(arr: tt1[], timeStamp: tTime) {
-        if (arr.length === 0) return 0;
-        if (timeStamp >= arr[arr.length - 1][0]) return arr.length;
-        if (timeStamp <= arr[0][0]) return 0;
-
-        const index = BSearch(arr, timeStamp, (a, b) => a[0] - b, "greatOrEqual", "ascend");
-        return index === -1 ? arr.length : index;
-    }
-
-    function cleanupEmptyKey(type: tType) {
-        if (dStatic[type] && dStatic[type].length === 0) {
-            delete dStatic[type];
-        }
-    }
+    const data: any[] = [];
 
     return {
         dStatic,
+        data,
 
+        // Записывает время в массив
         add(item: tFunc) {
-            const arr = (dStatic[item.type] ??= []);
-            const timeStamp = item.timeStamp ?? Date.now();
-            const insertIndex = getInsertIndex(arr, timeStamp);
-            if (insertIndex === arr.length) {
-                arr.push([timeStamp, item.weight]);
-            } else {
-                arr.splice(insertIndex, 0, [timeStamp, item.weight]);
+            if (!dStatic[item.type]) {
+                dStatic[item.type] = [];
             }
+            dStatic[item.type].push([item.timeStamp ?? Date.now(), item.weight]);
         },
 
         cleanByTime(type: tType, ms = 60 * 1000) {
             const arr = dStatic[type];
             if (!arr || arr.length === 0) return;
 
-            const cutoff = Date.now() - ms;
-            if (arr[0][0] > cutoff) return;
+            const timeStamp = Date.now();
+            // то чистить нечего:
+            if (arr[0][0] > timeStamp - ms) return;
 
-            const cutIndex = BSearch(arr, cutoff, (a, b) => a[0] - b, "greatOrEqual", "ascend");
-            if (cutIndex === -1) {
-                arr.splice(0, arr.length);
-            } else if (cutIndex > 0) {
+            // Или, если хотим "вручную" почистить:
+            let cutIndex = 0;
+            while (cutIndex < arr.length && arr[cutIndex][0] < timeStamp - ms) {
+                cutIndex++;
+            }
+            if (cutIndex > 0) {
                 arr.splice(0, cutIndex);
             }
-            cleanupEmptyKey(type);
         },
 
-        // Объединенный метод для вычисления веса (заменяет weight и weightNow)
+        // Возвращает сумму веса за период времени (ms)
         weight(type: tType, ms = 60 * 1000) {
             const arr = dStatic[type];
             if (!arr || arr.length === 0) return 0;
 
-            const cutoff = Date.now() - ms;
+            const timeStamp = Date.now();
             let sum = 0;
             let i = arr.length - 1;
 
+            // Считаем вес "с конца", пока не встретим более старое время
             for (; i >= 0; i--) {
                 const [_time, _weight] = arr[i];
-                if (_time < cutoff) break;
+                if (_time < timeStamp - ms) break;
                 sum += _weight;
             }
 
+            // Очищаем "хвост", который уже гарантированно старее (timeStamp - ms)
+            // чтобы массив не рос бесконтрольно
             if (i >= 0) {
                 arr.splice(0, i + 1);
-                cleanupEmptyKey(type);
             }
             return sum;
         },
 
-        // Универсальный метод для вычисления по весу, заменяющий byWeight и byWeightTimeNow
-        byWeight(type: tType, weight = 50000, timeNow = Date.now()) {
+        // Аналогично, но «сейчас» (возможно, хотели слегка другой смысл?)
+        weightNow(type: tType, ms = 60 * 1000) {
+            const arr = dStatic[type];
+            if (!arr || arr.length === 0) return 0;
+
+            const timeStamp = Date.now();
+            let sum = 0;
+            let i = arr.length - 1;
+
+            // Продолжаем идти назад, суммируя, пока не выйдем за интервал (ms)
+            for (; i >= 0; i--) {
+                const [_time, _weight] = arr[i];
+                if (_time < timeStamp - ms) break;
+                sum += _weight;
+            }
+
+            // Спиливаем старые события
+            if (i >= 0) {
+                arr.splice(0, i + 1);
+            }
+            return sum;
+        },
+
+        // Возвращает timestamp, когда сумма весов превысила weight
+        byWeight(type: tType, weight = 50000) {
+            const arr = dStatic[type];
+            if (!arr || arr.length === 0) return 0;
+
+            let sum = 0;
+            let i = arr.length - 1;
+            let result = 0;
+
+            for (; i >= 0; i--) {
+                sum += arr[i][1];
+                if (sum > weight) {
+                    // Проверяем, не выйдем ли за границы при i+1
+                    result = arr[i + 1]?.[0] ?? 0;
+                    break;
+                }
+            }
+            // Чтобы массив не разрастался слишком сильно, можно «подчищать»
+            if (i > 800) {
+                arr.splice(0, i - 800);
+            }
+            return result;
+        },
+
+        // То же самое, только с «промежуточным» timeNow
+        byWeightTimeNow(type: tType, timeNow = Date.now(), weight = 50000) {
             const arr = dStatic[type];
             if (!arr || arr.length === 0) return 0;
 
             let sum = 0;
             let i = arr.length - 1;
 
-            // Пропускаем элементы, которые больше timeNow
+            // Сначала «отматываем» массив до timeNow
             for (; i >= 0; i--) {
                 if (arr[i][0] <= timeNow) break;
             }
-
             if (i < 0) return 0;
 
             let result = 0;
@@ -106,37 +137,14 @@ export function funcTimeW(maxHistoryElements = 800) {
                     break;
                 }
             }
-
-            // Очистка старых данных за пределами maxHistoryElements (800 по умолчанию)
-            if (i > maxHistoryElements) {
-                arr.splice(0, i - maxHistoryElements);
-                cleanupEmptyKey(type);
+            if (i > 800) {
+                arr.splice(0, i - 800);
             }
-
             return result;
         },
-
-        removeKey(type: tType) {
-            delete dStatic[type];
-        }
     };
 }
 
-export const FuncTimeWait = funcTimeW();
 
-export function testFuncTimeW() {
-    const tracker = funcTimeW();
-    const type: tType = "UID";
-    const now = Date.now();
-
-    tracker.add({type, weight: 1, timeStamp: now});
-    tracker.add({type, weight: 2, timeStamp: now - 500});
-    tracker.add({type, weight: 3, timeStamp: now + 500});
-    console.log("funcTimeW order", tracker.dStatic);
-
-    tracker.cleanByTime(type, 200);
-    console.log("funcTimeW cleanByTime", tracker.dStatic);
-
-    const w = tracker.weight(type, 1000);
-    console.log("funcTimeW weight 1s", w, tracker.dStatic);
-}
+// Массив для хранения времени ожидания у асинхронных функций
+export const FuncTimeWait = funcTimeW()
