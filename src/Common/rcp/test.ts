@@ -21,7 +21,10 @@
 //                 }
 //             },
 //         },
-//         greet: async (name: string) => `Hello, ${name}!`,
+//         greet: async (name: string) => {
+//             console.log('get ' + name)
+//             return `Hello, ${name}!`
+//         },
 //         date: async (date: Date) => {
 //             await sleepAsync(1000)
 //             return ({msg: `Hello!`, map: new Map<string, number>([['ds',43]]), youDate: date, now: new Date()})
@@ -64,10 +67,9 @@
 //         () => io(`http://localhost:${port}`, { transports: ['websocket'], forceNew: true }),
 //         (r) => ({ api: r<FacadeAPI>('rpc') }) as const,
 //     );
-//
 //     const clients = await hub.setToken(null);
 //     console.log('[client] подключились, ждём схему...');
-//
+//     clients.api.api.log(true)
 //     await clients.api.readyStrict();
 //     console.log('[client] схема получена, schema:', clients.api.schema());
 //     return { hub, clients };
@@ -81,26 +83,27 @@
 //
 //     const api = clients.api.func;
 //
-//     const addResult = await api.math.add(5, 7);
-//     console.log('[test] math.add(5, 7) =', addResult); // 12
+//     // const addResult = await api.math.add(5, 7);
+//     // console.log('[test] math.add(5, 7) =', addResult); // 12
+//     //
+//     // const mulResult = await api.math.multiply(3, 4);
+//     // console.log('[test] math.multiply(3, 4) =', mulResult); // 12
 //
-//     const mulResult = await api.math.multiply(3, 4);
-//     console.log('[test] math.multiply(3, 4) =', mulResult); // 12
-//
+//     console.log('test World')
 //     const greetResult = await api.greet('World');
 //     console.log('[test] greet("World") =', greetResult); // Hello, World!
 //
-//     const dateResult = await api.date(new Date());
-//     console.log('[test] date(new Date()) =', dateResult);
-//     // @ts-ignore
-//     console.log('[test] date(new Date()) =', dateResult.youDate.toISOString(), new Date(dateResult.youDate).getDate(), dateResult.youDate.getDate());
-//
-//     await api.math.callback({callback: (a)=>{
-//             console.log(a)
-//         }});
+//     // const dateResult = await api.date(new Date());
+//     // console.log('[test] date(new Date()) =', dateResult);
+//     // // @ts-ignore
+//     // console.log('[test] date(new Date()) =', dateResult.youDate.toISOString(), new Date(dateResult.youDate).getDate(), dateResult.youDate.getDate());
+//     //
+//     // await api.math.callback({callback: (a)=>{
+//     //         console.log(a)
+//     //     }});
 //
 //     hub.socket?.disconnect?.();
 //     httpServer.close(() => console.log('[server] остановлен'));
 // }
 //
-// // runTest().catch(console.error);
+// runTest().catch(console.error);

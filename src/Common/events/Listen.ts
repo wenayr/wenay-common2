@@ -3,7 +3,7 @@ export type Listener<T extends any[]> = (...r: T) => void
 /** Нормализация: если T уже кортеж — оставляем, иначе оборачиваем в [T] */
 export type NormalizeTuple<T> = T extends any[] ? T : [T]
 
-export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) => (void | (() => void)),
+export function funcListenCallbackBase<T, T2 = any>(b: (e: Listener<NormalizeTuple<T>>) => (void | (() => void)),
                                                         data?: {
                                                             event?: (type: "add" | "remove", count: number, api: ReturnType<typeof funcListenCallbackBase<T>>) => void,
                                                             fast?: boolean,
@@ -13,8 +13,8 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
     type Z = NormalizeTuple<T>
     const {fast = true, event, addListenClose} = data ?? {}
     type cbClose = ()=>void
-    const obj = new Map<Listener<Z>, Listener<Z>>()
-    const evClose = new Map<cbClose|Listener<Z>, cbClose>()
+    const obj = new Map<Listener<Z>|T2, Listener<Z>>()
+    const evClose = new Map<cbClose|Listener<Z>|T2, cbClose>()
     const sinh = new Map<cbClose, Listener<Z>>()
     let a: Listener<Z> | null = (...e) => {obj.forEach(z => z(...e))}
     let close: (() => void) | null | undefined= null
@@ -74,35 +74,36 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
             evClose.set(cb, cb)
             return () => {evClose.delete(cb)}
         },
-        removeEventClose: (cb: ()=>void) => {
+        removeEventClose: (cb: (()=>void)) => {
             const e=sinh.get(cb)
             if (e) evClose.delete(e)
             sinh.delete(cb)
             evClose.delete(cb)
         },
-        addListen: (cb: Listener<Z>, cbClose?: ()=>void) => {
-            obj.set(cb, cb)
+        addListen: (cb: Listener<Z>, {cbClose, key}: {cbClose?: () => void, key?: T2 } = {}) => {
+            const k = key ?? cb
+            obj.set(k, cb)
             if (cbClose) {
-                if (evClose.has(cb)) {
-                    const r=evClose.get(cb)!
+                if (evClose.has(k)) {
+                    const r=evClose.get(k)!
                     if (r!==cbClose) {
                         evClose.delete(r)
-                        evClose.delete(cb)
+                        evClose.delete(k)
                         sinh.delete(r)
                     }
                 }
-                evClose.set(cb, cbClose)
+                evClose.set(k, cbClose)
                 sinh.set(cbClose, cb)
             }
             if (fast) rebuild()
             event?.("add", obj.size, api)
-            return () => api.removeListen(cb)
+            return () => api.removeListen(k)
         },
-        removeListen: (cb: Listener<Z> | null) => {
-            obj.delete(cb!)
-            const e=evClose.get(cb!)
+        removeListen: (k: Listener<Z> | null| T2) => {
+            obj.delete(k!)
+            const e=evClose.get(k!)
             if (fast) rebuild()
-            evClose.delete(cb!)
+            evClose.delete(k!)
             if (e) {
                 evClose.delete(e)
                 sinh.delete(e)
@@ -110,7 +111,7 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
             event?.("remove", obj.size, api)
         },
         count: () => obj.size,
-        get getAllKeys(): Listener<NormalizeTuple<T>>[] { return [...obj.keys()] }
+        get getAllKeys(){ return [...obj.keys()] }
     }
     return api
 }

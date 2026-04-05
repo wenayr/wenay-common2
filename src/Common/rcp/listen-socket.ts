@@ -66,7 +66,7 @@ export function listenSocket<Z extends any[] = any[]>(
             inner(...a);
         };
 
-        addListen(active, removeCallback);
+        addListen(active, {cbClose: removeCallback});
         addListenClose?.addListen(removeCallback);
 
         return new Promise<void>((resolve) => {
