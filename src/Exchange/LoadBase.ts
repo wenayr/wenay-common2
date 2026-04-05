@@ -1,5 +1,7 @@
-import {CBar, sleepAsync, TF} from "wenay-common2";
 import {FuncTimeWait} from "../Common/funcTimeWait";
+import {TF} from "../Common/Time";
+import {CBar} from "./Bars";
+import {sleepAsync} from "../Common/core/common";
 
 type RequestInfo = any //
 type RequestInit = any // это библиотека dom
