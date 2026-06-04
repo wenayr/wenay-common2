@@ -159,8 +159,12 @@ export function toColorString(str :string) { if (colorStringToRGBA(str)) return 
 
 // Проверяет цвета на схожесть по заданной максимальной дельте
 export function isSimilarColors(color1 :ColorString|readonly[number,number,number], color2 :ColorString|readonly[number,number,number], maxDelta = 32) {
-	let [r1, g1, b1] = typeof color1=="string" ? colorStringToRGBA(color1) : color1;
-	let [r2, g2, b2] = typeof color2=="string" ? colorStringToRGBA(color2) : color2;
+	let c1 = typeof color1=="string" ? colorStringToRGBA(color1) : color1;
+	let c2 = typeof color2=="string" ? colorStringToRGBA(color2) : color2;
+	// невалидная строка => colorStringToRGBA вернёт undefined; деструктуризация бросила бы TypeError
+	if (!c1 || !c2) return false;
+	let [r1, g1, b1] = c1;
+	let [r2, g2, b2] = c2;
 	let delta = Math.abs(r1-r2) + Math.abs(g1-g2) + Math.abs(b1-b2);
 	return delta <= maxDelta;
 }

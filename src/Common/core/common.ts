@@ -641,7 +641,7 @@ export class __MyMap<K extends {valueOf():number},  V>  //(K extends {valueOf():
 	public Set(key :K, value :V) :void  { this.map[key.valueOf()]= { key, value };  this.keys= null;  this.OnModify?.(key); }//this.pairs=null; }// this.keys= null;  this.values=null; }
 	public Get(key :K) :V|undefined     { let pair = this.map[key.valueOf()];  return pair ? pair.value : undefined; }
 	public Contains(key :K) : boolean { return this.map[key.valueOf()]!=undefined; }
-	public TryAdd(key :K, value :V) : boolean { if (!this.Contains(key)) return false;  this.Set(key, value);  return true; }
+	public TryAdd(key :K, value :V) : boolean { if (this.Contains(key)) return false;  this.Set(key, value);  return true; }
 	public Add(key :K, value :V) : void { if (! this.TryAdd(key,value)) throw new Error(`Key ${key} is already exists for ${typeof value}`); }
 	public Remove(key :K)  { delete(this.map[key.valueOf()]);  this.keys= null;  this.OnModify?.(key); }
 	public Clear()    { let pairs= this.OnModify ? this.map.values() : [];  this.map.clear();  this.keys=undefined;  this.values=undefined;  for(let p of pairs) this.OnModify!(p.key); }

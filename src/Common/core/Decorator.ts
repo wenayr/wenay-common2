@@ -35,6 +35,7 @@ export function enhancedDecorator<T extends (...args: any[]) => any>(
                 })
                 .catch((err) => {
                     optAsync?.onCatch?.(err);
+                    throw err;   // onCatch — наблюдатель, а не обработчик: промис должен остаться отклонённым
                 })
                 .finally(() => optAsync?.onFinally?.()) as ReturnType<T>;
         } else {

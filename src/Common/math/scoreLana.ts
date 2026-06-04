@@ -35,7 +35,9 @@ type tStepOfStepL = {
 
 
 function PriceTOSumPercentL(price: number[]) {
-    return price.map(e=>e/price[0])
+    const base = price[0]
+    // price[0]===0 / пустой массив иначе отравляют все нижестоящие оценки Infinity/NaN
+    return base ? price.map(e=>e/base) : price.map(()=>0)
 }
 
 export function strategyStepOfStepL({t1, t2, minK: _minK, percentM: _percentM, onlyBuy: _onlyBuy}: tStepOfStepL) {
@@ -90,6 +92,6 @@ export function strategyStepOfStepL({t1, t2, minK: _minK, percentM: _percentM, o
         }
     }
     const k1 = day.profitDays / result1.length
-    const k2 = day.profit / ((day.profit + day.loss) || 1)
+    const k2 = day.profit / ((day.profit + Math.abs(day.loss)) || 1)   // day.loss отрицателен => без abs знаменатель схлопывается/меняет знак (ср. other.ts:89)
     return k1 * k2
 }

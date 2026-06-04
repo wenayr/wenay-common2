@@ -3,7 +3,9 @@ type tDatum = {price: number[], key: string|object|number}
 type tfLeaderResult = {}
 
 function PriceTOSumPercent(price: number[]) {
-    return price.map(e=>e/price[0])
+    const base = price[0]
+    // price[0]===0 / пустой массив иначе отравляют все нижестоящие оценки Infinity/NaN
+    return base ? price.map(e=>e/base) : price.map(()=>0)
 }
 
 function strategyStepOfStepAll(symbols_: tDatum[]) {

@@ -30,6 +30,8 @@ export function DeepCompareKeys2<T, T3>(
 ): T | T3 | null {
     if (isLeafValue(obj1)) return obj1 as any;
     if (CompareKeys2(obj1 as Obj, keys)) return func(obj1);
+    // массив остаётся массивом — fromEntries превратил бы его в {0:..,1:..}
+    if (Array.isArray(obj1)) return obj1.map((v) => DeepCompareKeys2(v, keys, func)) as any;
     return Object.fromEntries(
         Object.entries(obj1 as Obj).map(([k, v]) => [k, DeepCompareKeys2(v, keys, func)] as const),
     ) as any;
@@ -42,6 +44,8 @@ export function DeepCompareKeys<T, T2 extends Obj, T3>(
     if (isLeafValue(obj1)) return obj1 as any;
     const keys = Object.keys(obj2);
     if (CompareKeys2(obj1 as Obj, keys)) return func(obj1 as unknown as T2);
+    // массив остаётся массивом — fromEntries превратил бы его в {0:..,1:..}
+    if (Array.isArray(obj1)) return obj1.map((v) => DeepCompareKeys2(v, keys, func)) as any;
     return Object.fromEntries(
         Object.entries(obj1 as Obj).map(([k, v]) => [k, DeepCompareKeys2(v, keys, func)] as const),
     ) as any;

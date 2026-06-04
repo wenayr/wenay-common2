@@ -53,7 +53,7 @@ export class CList<T, TNode extends ListNode<T> = ListNode<T>> implements Iterab
 
     *reversedValues() { for(let node of this.reversedNodes()) yield node.value; }
 
-    *entries() { return this.nodes; }
+    *entries() { let i=0; for(let node of this.nodes()) yield [i++, node.value] as const; }
 
 
     next(node :ListNode<T>)  { return this.validateNode(node) ? node.next as unknown as TNode|undefined : (()=>{throw "Wrong node list"})(); };
@@ -124,7 +124,11 @@ export class CList<T, TNode extends ListNode<T> = ListNode<T>> implements Iterab
         let newNode = this.newNode(value);
         newNode.next= node.next;
         newNode.prev= node.prev;
+        // перелинковываем соседей и голову/хвост на новый узел, иначе он осиротеет
+        if (node.prev) node.prev.next= newNode; else this._first= newNode;
+        if (node.next) node.next.prev= newNode; else this._last= newNode;
         node.list= undefined;
+        node.next= node.prev= undefined;
         this._immutableList= undefined;
         return newNode;
     }

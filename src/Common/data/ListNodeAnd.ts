@@ -81,7 +81,7 @@ export class CListNodeAnd<T>  extends  CBaseList<T> implements iListNodeMini{
     AddEnd(a?:CListNodeAnd<T>|T):CListNodeAnd<T>    {return this._stop? this.AddPrev(a): this._End().  AddNext(a);}
     AddStart(a?:CListNodeAnd<T>|T):CListNodeAnd<T>  {return this._stop? this.AddNext(a): this._First().AddPrev(a);}
     forEach(el:(item:T,e?:CListNodeAnd<T>)=>void)                         {
-        for (let buf=this.First(); buf?.data && !buf.isForbidden();) { let t=buf.Next(); el(buf.data,buf); buf=t;}
+        for (let buf=this.First(); buf && !buf.isForbidden();) { let t=buf.Next(); el(buf.data as T,buf); buf=t;}
     }
     GetArray():T[] {let a:T[]=[]; this.forEach(e=>a.push(e)); return a}
     find(el:(e:CListNodeAnd<T>)=>boolean):CListNodeAnd<T>|undefined       {let buf=this.First(); for (; buf; buf=buf.Next()) { if (el(buf)) return buf;} return undefined;}

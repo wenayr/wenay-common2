@@ -35,7 +35,12 @@ export function saveKeyValue({ dirDef = "", key: _key = "" }: { dirDef: string; 
 
     async function setElMap({ key = _key, keyEl, valueEl, path = "" }: { key?: string; keyEl: string; valueEl: any; path?: string }) {
         const exists = await has({ key, path });
-        const data = exists ? JSON.parse(await get({ key, path })) : {};
+        // повреждённый/пустой файл не должен валить запись — откатываемся к {}
+        let data: any = {};
+        if (exists) {
+            try { data = JSON.parse(await get({ key, path })); }
+            catch { data = {}; }
+        }
         data[keyEl] = valueEl;
         await set({ key, obj: JSON.stringify(data), path });
     }
