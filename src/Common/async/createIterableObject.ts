@@ -18,7 +18,9 @@ export function createIterableObject<V>(
         },
 
         set(_, key: string | symbol, value: V) {
-            if (!onChange || typeof key !== "string") return false
+            // read-only режим / не-строковый ключ — тихий no-op.
+            // вернуть false здесь => TypeError в strict-режиме (весь вывод ESM/TS)
+            if (!onChange || typeof key !== "string") return true
             onChange("set", key, value)
             return true
         },

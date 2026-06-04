@@ -35,7 +35,7 @@ export function MemoFunc(a?: {
      * Удаляет самые старые записи из Map, оставляя не более half от maxLimits.
      */
     function evictOldest(map: Map<string, CacheEntry<any>>) {
-        const keep = Math.floor(maxLimits / 2);
+        const keep = Math.max(1, Math.floor(maxLimits / 2));
         const entries = [...map.entries()].sort((a, b) => a[1].time - b[1].time);
         const toRemove = entries.slice(0, entries.length - keep);
         for (const [key] of toRemove) {
@@ -45,7 +45,7 @@ export function MemoFunc(a?: {
     }
 
     function evictOldestFuncs() {
-        const keep = Math.floor(maxLimits / 2);
+        const keep = Math.max(1, Math.floor(maxLimits / 2));
         const entries = [...memo.entries()].sort((a, b) => {
             // берём максимальное время из записей каждой функции
             const maxTimeA = Math.max(...[...a[1].values()].map(e => e.time ?? 0));

@@ -39,7 +39,7 @@ export function enhancedDecorator<T extends (...args: any[]) => any>(
                 .finally(() => optAsync?.onFinally?.()) as ReturnType<T>;
         } else {
             opt?.onResult?.(rawResult);
-            return opt?.modifyResult?.(rawResult) || rawResult;
+            return opt?.modifyResult?.(rawResult) ?? rawResult;
         }
     };
 }

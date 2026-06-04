@@ -107,7 +107,7 @@ export function* colorGenerator2(data?: { min?: number, max?: number}): Generato
 //светлость оттенков
 export function colorGeneratorByCount2(value=180, count=100, index=1): [number, number, number] {
     const step = Math.floor(value * 6 * index / count)
-    const p = Math.floor(step / value)
+    const p = Math.floor(step / value) % 6   // на обороте (p==6) иначе чёрный [0,0,0] вместо красного
     const z = Math.floor(step % value)
     const r = (p==0 || p==5) ? value : (p==1) ? value-z : (p==4) ? z : 0
     const g = (p==1 || p==2) ? value : (p==3) ? value-z : (p==0) ? z : 0

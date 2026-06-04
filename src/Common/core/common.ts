@@ -359,7 +359,7 @@ export function _BSearchNearest<T>(array :ArrayLike<T>, searchValue :number, arr
     let indexes : number[] = [];
     if (i==-1) i= array.length-1;
     else
-        if (i>=0) indexes.push(i-1);
+        if (i>0) indexes.push(i-1);   // i==0 => i-1==-1 => array[-1] => NaN
     indexes.push(i);
     let delta= maxDelta ?? Number.MAX_VALUE;
     let index= -1;

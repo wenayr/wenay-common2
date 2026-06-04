@@ -43,6 +43,8 @@ export function funcListenCallbackSnapshot<T extends realSocket2<any | any[]>, T
                 api.close()
                 // @ts-ignore
                 d?.()
+                // без сброса следующий connect() видит d != null и не переподключается
+                d = null
             }
             if (type == "add" && count == 1) api.run()
         }
