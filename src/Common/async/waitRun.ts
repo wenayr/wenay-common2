@@ -60,7 +60,8 @@ export function enhancedQueueRun(maxParallelTasks = 5) {
     return {
         get queueSize() { return q.getQueueSize(); },
         enqueue: (task: () => Promise<any>) => { q.enqueue(task); },
-        enqueueAndRun: (task: () => Promise<any>) => { q.enqueue(task); },
+        // в отличие от enqueue (fire-and-forget) возвращает промис задачи — можно дождаться её выполнения
+        enqueueAndRun: (task: () => Promise<any>) => q.enqueue(task),
         runAll: () => q.onIdle(),
     };
 }

@@ -41,6 +41,15 @@ const saveSubscribers = (subs: Map<string, Subscriber>) => {
 
 const normalizeIP = (ip: string) => ip?.startsWith('::ffff:') ? ip.slice(7) : ip;
 
+// Безопасный self-URL: строим http://<ip-клиента><raw> и требуем, чтобы итоговый host совпал с ip клиента.
+// Отсекает SSRF вида "@evil.com" (host угоняется в userinfo); легитимный ":port/path" проходит без изменений.
+export const buildSelfWebhookUrl = (clientIp: string, raw: unknown): string | null => {
+    if (typeof raw !== 'string' || !raw) return null;
+    let u: URL;
+    try { u = new URL('http://' + clientIp + raw); } catch { return null; }
+    return u.hostname === clientIp ? u.toString() : null;
+};
+
 export const apiSaveData = { loadSubscribers, saveSubscribers };
 
 type params = {
@@ -75,19 +84,18 @@ export const createWebhookServer = (params: params) => {
 
     app.post('/webHook_subscribe', checkAuth, (req: Request, res: Response) => {
         const { tag } = req.body;
-        if (!req.body.url || typeof req.body.url !== 'string' || typeof tag !== 'string') { res.status(400).json({ error: 'Неверный запрос' }); return; }
+        const url = buildSelfWebhookUrl(normalizeIP(req.ip ?? '127.0.0.1'), req.body.url);
+        if (!url || typeof tag !== 'string') { res.status(400).json({ error: 'Неверный запрос' }); return; }
         purgeExpired();
-        const url = new URL(clientAddr(req) + req.body.url).toString();
         subscribers.set(url, { url, tag, expireAt: renewExpiry() });
         file.saveSubscribers(subscribers);
         res.json({ message: 'Подписка оформлена' });
     });
 
     app.get('/webHook_status', checkAuth, (req: Request, res: Response) => {
-        const rawUrl = req.query['url'];
-        if (!rawUrl || typeof rawUrl !== 'string') { res.status(400).json({ error: 'Неверный запрос' }); return; }
+        const url = buildSelfWebhookUrl(normalizeIP(req.ip ?? '127.0.0.1'), req.query['url']);
+        if (!url) { res.status(400).json({ error: 'Неверный запрос' }); return; }
         purgeExpired();
-        const url = new URL(clientAddr(req) + rawUrl).toString();
         const subscriber = Array.from(subscribers.values()).find(s => s.url === url);
         if (!subscriber) { res.json({ subscribed: false }); return; }
         subscriber.expireAt = renewExpiry();
@@ -96,7 +104,8 @@ export const createWebhookServer = (params: params) => {
     });
 
     app.delete('/webHook_unsubscribe', checkAuth, (req: Request, res: Response) => {
-        const url = new URL(clientAddr(req) + req.body.url).toString();
+        const url = buildSelfWebhookUrl(normalizeIP(req.ip ?? '127.0.0.1'), req.body.url);
+        if (!url) { res.status(400).json({ error: 'Неверный запрос' }); return; }
         const key = Array.from(subscribers.keys()).find(k => subscribers.get(k)?.url === url);
         if (key && subscribers.delete(key)) { file.saveSubscribers(subscribers); res.json({ message: 'Подписка удалена' }); return; }
         res.status(404).json({ error: 'Подписчик не найден' });

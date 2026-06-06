@@ -65,13 +65,17 @@ export function joinListens(
         set(result, tid)
     }
 
+    // храним отписки, чтобы destroy() реально снимал подписки (раньше это была пустая заглушка → утечка)
+    const unsubs: Array<() => void> = []
     const bindPort = (portId: string, listener: any) => {
-        listener.addListen((...data: any[]) => {
+        const cb = (...data: any[]) => {
             const tid = getKey(data[0])
             if (!buckets.has(tid)) buckets.set(tid, new Map())
             buckets.get(tid)!.set(portId, data.length <= 1 ? data[0] : data)
             tryFire(tid)
-        })
+        }
+        listener.addListen(cb)
+        unsubs.push(() => listener.removeListen(cb))
     }
 
     for (const portId of keys) {
@@ -84,7 +88,10 @@ export function joinListens(
         clear: (tid?: string) => {
             tid ? buckets.delete(tid) : buckets.clear()
         },
-        destroy: (tid?: string) => {
+        destroy: (_tid?: string) => {
+            for (const u of unsubs) u()
+            unsubs.length = 0
+            buckets.clear()
             
         },
         addListen: (listener: any, key?: string) => {

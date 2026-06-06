@@ -28,9 +28,13 @@ export function saveKeyValue({ dirDef = "", key: _key = "" }: { dirDef: string; 
             .catch(() => false);
     }
 
+    let _tmpSeq = 0;
     async function set({ key = _key, obj, path = "" }: { key?: string; obj: string; path?: string }) {
         const filePath = await resolvePath(path, key);
-        await fs.promises.writeFile(filePath, obj);
+        // атомарно: пишем во временный файл и переименовываем (rename атомарен в пределах ФС) — крах посреди записи не портит хранилище
+        const tmp = `${filePath}.${++_tmpSeq}.tmp`;
+        await fs.promises.writeFile(tmp, obj);
+        await fs.promises.rename(tmp, filePath);
     }
 
     async function setElMap({ key = _key, keyEl, valueEl, path = "" }: { key?: string; keyEl: string; valueEl: any; path?: string }) {
@@ -47,7 +51,10 @@ export function saveKeyValue({ dirDef = "", key: _key = "" }: { dirDef: string; 
 
     async function delEl({ key = _key, keyEl, path = "" }: { key?: string; keyEl: string; path?: string }) {
         if (!(await has({ key, path }))) throw new Error(`Файл не найден: ${path}${key}`);
-        const data = JSON.parse(await get({ key, path }));
+        // повреждённый/пустой файл не должен валить удаление — откатываемся к {} (как в setElMap:38)
+        let data: any = {};
+        try { data = JSON.parse(await get({ key, path })); }
+        catch { data = {}; }
         delete data[keyEl];
         await set({ key, obj: JSON.stringify(data), path });
         return true;

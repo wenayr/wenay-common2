@@ -43,7 +43,7 @@ export function SetAutoStepForElement(element :HTMLInputElement, params :{minSte
 		_step= step;
 		//if (Math.abs(min) < step) min= Math.floor(Math.abs(min)/step)*step * Math.sign(min);
 		if (_min!=null) {
-			if (Math.abs(_min) % step !=0)
+			if (Math.abs(_min) % step > 1e-9 && step - Math.abs(_min) % step > 1e-9)  // != 0 ложно срабатывал из-за FP-погрешности
 				_min= Math.floor(Math.abs(_min)/step) * step * Math.sign(minDefault!);
 			element.min= _min+"";
 		}
@@ -53,7 +53,7 @@ export function SetAutoStepForElement(element :HTMLInputElement, params :{minSte
 		//console.log("dotPos:",dotPos," _digits:",_digits, "minDigits:",minDigits);
 		return step;  ////lib.GetDblPrecision($fee[0].value)); }
 	}
-	let modeAuto = !_step || (_step<1 && Math.log10(_step-Math.trunc(_step))%1==0);  // является степенью 0.1
+	let modeAuto = !_step || (_step<1 && Math.abs(Math.log10(_step)-Math.round(Math.log10(_step)))<1e-9);  // является степенью 0.1
 	const modeAuto0= modeAuto;
 	if (modeAuto) {
 		calculateStep((_step ? (Math.round(parseFloat(element.value)/_step) *_step) : element.value)+"");

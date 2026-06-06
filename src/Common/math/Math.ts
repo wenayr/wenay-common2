@@ -36,14 +36,20 @@ export function CorrelationRollingByBuffer(data: tCorrelationByBuffer) {
 
     return {
         init(data: tCorrelationByBuffer) { setting = { ...data }; },
-        clear(data?: tCorrelationByBuffer) { 
-            map.clear(); 
-            if (data) this.init(data); 
+        clear(data?: tCorrelationByBuffer) {
+            map.clear();
+            if (data) this.init(data);
+        },
+        // освобождение конкретного ключа/пары — против утечки Map с ключами-объектами (полный сброс — clear())
+        remove(key1: any, key2?: any) {
+            if (key2 === undefined) map.delete(key1);
+            else map.get(key1)?.delete(key2);
         },
         
         // Потоковый расчет по одному значению
         corr2(val1: number, val2: number, key1: any, key2: any) {
-            const buffer = setting.bufferOn ? getBuffer(key1, key2) : defBuf();
+            // corr2 всегда нуждается в истории окна; раньше bufferOn:false давал defBuf() на каждый вызов → corr всегда 0
+            const buffer = getBuffer(key1, key2);
             
             // Если буфер отключен, мы просто считаем "в лоб" для переданных значений
             // Но так как corr2 принимает по одному числу, без буфера (истории) корреляцию не посчитать.

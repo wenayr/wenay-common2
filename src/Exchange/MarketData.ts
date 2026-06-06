@@ -390,7 +390,7 @@ export class CQuotesHistoryMutable extends CQuotesHistory
 		let tf= TF.S1;
 		let oldBars = this._GetBars(tf);
 		let newbarsArr : readonly CBar[]|undefined;
-		if (oldBars && oldBars.count>0 && Period.StartTime(tf,time)==oldBars.lastTime)
+		if (oldBars && oldBars.count>0 && Period.StartTime(tf,time).valueOf()==oldBars.lastTime!.valueOf())
 			newbarsArr= [oldBars.last!];
 		let newbars = new CBarsMutable(tf, newbarsArr); //oldBars.getArray(Period.StartTime(tf,time), ));
 		if (!newbars.AddTicks(ticks)) return false;

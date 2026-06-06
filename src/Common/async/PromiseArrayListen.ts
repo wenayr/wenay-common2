@@ -15,7 +15,8 @@ export function PromiseArrayListen<T extends any = unknown>(array: ((() => Promi
     const b = (error: any, i: number) => {
         ++errorCount;
         c[0](error, i, ok, errorCount, count)
-        throw error
+        // НЕ перевыбрасываем: иначе в режиме .all() каждое не-первое отклонение становится unhandled rejection.
+        // Ошибки доступны через listenError / .allSettled(); .all() теперь всегда резолвится.
     }
     const arr = array.map((e, i) => e instanceof Promise ? e.then(r => a(r, i)).catch((er: any) => b(er, i))
         : () => (async () => e())().then(r => a(r, i)).catch((er: any) => b(er, i)))

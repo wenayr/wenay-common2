@@ -157,7 +157,12 @@ export class CList<T, TNode extends ListNode<T> = ListNode<T>> implements Iterab
     deleteLast()  { if (this._last) this.delete(this._last); }
 
     clear() {
-        for(let node=this._first; node!=null; node=node.next) this.delete(node);
+        // только зануляем node.list (это guard в deleteNode), затем сбрасываем голову/хвост —
+        // раньше шли через delete() и читали node.next у уже удалённого узла (работало «по удаче»)
+        for (let node=this._first; node!=null; node=node.next) node.list= undefined;
+        this._first= this._last= undefined;
+        this._count= 0;
+        this._immutableList= undefined;
     }
 
 

@@ -68,29 +68,6 @@ export function funcTimeW() {
             return sum;
         },
 
-        // Аналогично, но «сейчас» (возможно, хотели слегка другой смысл?)
-        weightNow(type: tType, ms = 60 * 1000) {
-            const arr = dStatic[type];
-            if (!arr || arr.length === 0) return 0;
-
-            const timeStamp = Date.now();
-            let sum = 0;
-            let i = arr.length - 1;
-
-            // Продолжаем идти назад, суммируя, пока не выйдем за интервал (ms)
-            for (; i >= 0; i--) {
-                const [_time, _weight] = arr[i];
-                if (_time < timeStamp - ms) break;
-                sum += _weight;
-            }
-
-            // Спиливаем старые события
-            if (i >= 0) {
-                arr.splice(0, i + 1);
-            }
-            return sum;
-        },
-
         // Возвращает timestamp, когда сумма весов превысила weight
         byWeight(type: tType, weight = 50000) {
             const arr = dStatic[type];
@@ -103,8 +80,9 @@ export function funcTimeW() {
             for (; i >= 0; i--) {
                 sum += arr[i][1];
                 if (sum > weight) {
-                    // Проверяем, не выйдем ли за границы при i+1
-                    result = arr[i + 1]?.[0] ?? 0;
+                    // arr[i+1] — корректно (учитывает добавляемый новый запрос); НО если переполнил
+                    // самый свежий элемент (i=конец, arr[i+1] нет) — ждать его ts, а НЕ 0 (иначе LoadBase не подождёт → бан)
+                    result = arr[i + 1]?.[0] ?? arr[i][0];
                     break;
                 }
             }
@@ -133,7 +111,7 @@ export function funcTimeW() {
             for (; i >= 0; i--) {
                 sum += arr[i][1];
                 if (sum > weight) {
-                    result = arr[i + 1]?.[0] ?? 0;
+                    result = arr[i + 1]?.[0] ?? arr[i][0];   // фолбэк в ts текущего элемента, не 0 (см. byWeight)
                     break;
                 }
             }

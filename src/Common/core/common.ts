@@ -330,9 +330,10 @@ export function BSearchValueInRange(from: number, to: number, precision : number
     //if (from > 0) throw new Error(`BSearchVal: from > to : ${from} > ${to}`);
     if (precision==0) throw new Error("precision=0");
     let count= Math.round((to - from)/precision)+1;
-    const sortMode= count>=0 ? 1 : -1;
+    // знак шага задаёт направление поиска: precision<0 => убывающий диапазон (поддержка обратных диапазонов)
+    const sortMode= precision>0 ? E_SORTMODE.ASCEND : E_SORTMODE.DESCEND;
     count= Math.abs(count);
-    let i= BSearchIndex(count, (index)=>compare(from + precision * index),  matchMode);
+    let i= BSearchIndex(count, (index)=>compare(from + precision * index),  matchMode, sortMode);
     if (i==-1) return null;
     return from + precision * i;
 }

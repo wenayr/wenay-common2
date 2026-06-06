@@ -217,7 +217,7 @@ export abstract class IBars implements Iterable<CBar> // extends Array<CBar>
 		if (this.length==0) return;
 		let ibar= timeStart ? this.indexOf(timeStart, "greatOrEqual") : 0;
 		timeEnd ??= this.lastTime!
-		for(let i=ibar; this.data[i].time<=timeEnd; i++)
+		for(let i=ibar; i<this.length && this.data[i].time<=timeEnd; i++)
 			yield this.data[i];
 	}
 
@@ -272,7 +272,7 @@ export abstract class IBars implements Iterable<CBar> // extends Array<CBar>
 		let n=0;
 		for (let i=1; i<=count; i++)
 		{
-			let bartime = i<count ? src.time(i) : new Date(2100, 1, 1); //INT_MAX / TIME_D1 * TIME_D1;
+			let bartime = i<count ? src.time(i) : new Date(2100, 0, 1); //INT_MAX / TIME_D1 * TIME_D1;
 			if (endDayTime_s &&  bartime.valueOf() % D1_MS >= endDayTime_s*1000 % D1_MS) continue;
 
 			if (bartime >= nextPeriodTime) ///period > time/period)
@@ -485,6 +485,7 @@ export abstract class CBarsMutableBase extends CBarsBase
 		if (!this._data) this._data= [];
 		Object.freeze(bar);
 		this.data[i]= bar;
+		if (this._tickSizeAuto) this._ticksize= 0;  // новый/обновлённый бар меняет closes → сбросить кэш tickSize
 		return true;
 	}
 	// Добавить тики в конец
@@ -518,7 +519,7 @@ export function CreateRandomBars(tf: TF,  startTime: const_Date, endTimeOrCount:
 	if (! tf || tf.msec==0) return null;
 	console.log("Creating bars with parameters: ",...([...arguments].map(arg => arg instanceof TF ? arg.name : arg)));
     //tickSize ??= 10 ** Math.round(Math.log10(startPrice)-4);
-    const tickSizeNum = tickSize ?? 10 ** Math.min( Math.round(Math.log10(startPrice)-4), 0 );
+    const tickSizeNum = tickSize ?? 10 ** Math.min( Math.round(Math.log10(startPrice>0 ? startPrice : 1)-4), 0 );
 	//let endTime : const_Date;
 	let period= new Period(tf);
     let count : number;

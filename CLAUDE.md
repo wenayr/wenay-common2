@@ -2,6 +2,10 @@
 
 Write new code in this style by default — no need to ask.
 
+## Prohibited
+- Never write new logic without first checking if it already exists in the codebase
+- Never change public interfaces without explicit discussion
+
 ## Architecture
 - **Closure factories instead of classes.** `function createX(deps) { ... return { ... } }`.
   Keep state in the closure; avoid classes and `this`.

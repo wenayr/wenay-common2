@@ -90,12 +90,8 @@ export function deepMapByKeys<T, T2 extends Obj, T3>(
     obj2: T2,
     func: (a: T2) => T3,
 ): T3 | T | null {
-    if (isLeafValue(obj1)) return obj1 as any;
-    const keys = Object.keys(obj2);
-    if (matchKeysList(obj1 as Obj, keys)) return func(obj1 as unknown as T2);
-    return Object.fromEntries(
-        Object.entries(obj1 as Obj).map(([k, v]) => [k, deepMapByKeysList(v, keys, func)] as const),
-    ) as any;
+    // тонкая обёртка над deepMapByKeysList — единое тело рекурсии (раньше дублировалось)
+    return deepMapByKeysList(obj1, Object.keys(obj2), func as (a: any) => T3) as any;
 }
 
 // ── Deep-модификаторы ───────────────────────────────────────────

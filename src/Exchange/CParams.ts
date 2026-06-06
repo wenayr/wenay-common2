@@ -391,7 +391,7 @@ export function isSimpleParams2<TParams extends IParamsReadonly>(params: TParams
     let t = false
     for (let key in params) {
         const tr = (params[key] as any)["value"] as any
-        if (!tr) return true;
+        if (tr == null) return true;   // было !tr — 0/false/"" это валидные значения, не «простой» признак
         else {
             if (typeof tr == "object") {
                 const r = isSimpleParams(tr)
