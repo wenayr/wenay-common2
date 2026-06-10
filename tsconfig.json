@@ -21,7 +21,7 @@
     "outDir": "./lib",
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
-    //"skipLibCheck": true,
+    "skipLibCheck": true,
     "lib": [
       "esnext"
     ],
