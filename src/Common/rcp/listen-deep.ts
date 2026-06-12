@@ -14,6 +14,7 @@ export type DeepSocketListen<T> = {
     [K in keyof T]: T[K] extends { addListen: Function } 
         ? ReturnType<typeof listenSocket<InferArgs<T[K]>>>
         : T[K] extends (...a: any[]) => any ? T[K]
+        : T[K] extends Promise<any> ? T[K] // экземпляры Promise проходят как есть (typeof Promise ловил только конструктор)
         : T[K] extends typeof Promise ? T[K]
         : T[K] extends object ? DeepSocketListen<T[K]> 
         : T[K];
@@ -23,6 +24,7 @@ export type DeepSocketListenFirst<T> = {
     [K in keyof T]: T[K] extends { addListen: Function } 
         ? ReturnType<typeof listenSocketFirst<InferArgs<T[K]>>>
         : T[K] extends (...a: any[]) => any ? T[K]
+        : T[K] extends Promise<any> ? T[K] // экземпляры Promise проходят как есть (typeof Promise ловил только конструктор)
         : T[K] extends typeof Promise ? T[K]
         : T[K] extends object ? DeepSocketListenFirst<T[K]> 
         : T[K];
@@ -32,6 +34,7 @@ export type DeepSocketListenAll<T> = {
     [K in keyof T]: T[K] extends { addListen: Function } 
         ? ReturnType<typeof listenSocketAll<InferArgs<T[K]>>>
         : T[K] extends (...a: any[]) => any ? T[K]
+        : T[K] extends Promise<any> ? T[K] // экземпляры Promise проходят как есть (typeof Promise ловил только конструктор)
         : T[K] extends typeof Promise ? T[K]
         : T[K] extends object ? DeepSocketListenAll<T[K]> 
         : T[K];
@@ -49,6 +52,7 @@ export type DeepSocketListenSmart<T> = {
     [K in keyof T]: NonNullable<T[K]> extends { addListen: Function }
         ? ReturnType<typeof listenSocketSmart<InferArgs<NonNullable<T[K]>>>> | Extract<T[K], undefined | null>
         : NonNullable<T[K]> extends (...a: any[]) => any ? T[K]
+            : NonNullable<T[K]> extends Promise<any> ? T[K] // экземпляры Promise проходят как есть
             : NonNullable<T[K]> extends typeof Promise ? T[K]
                 : NonNullable<T[K]> extends object ? DeepSocketListenSmart<T[K]>
                     : T[K];

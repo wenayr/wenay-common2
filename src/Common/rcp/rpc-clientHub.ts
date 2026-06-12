@@ -45,8 +45,11 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
     })
     function setToken(token: string | null) {
         socket?.disconnect?.();
+        // клиенты прошлого токена: висящие запросы отклоняем, их пакеты дальше игнорируются
+        for (const key in schema) (facade[key] as { dispose?: (r?: string) => void } | undefined)?.dispose?.("token rotated");
+        // прошлый promise уже мог резолвиться — ожидающим НОВОГО подключения нужен свежий
+        if (!resolveFunc) promise = new Promise<FacadeClients>((resolve) => { resolveFunc = resolve; });
         socket = createSocket(token);
-
 
         for (const key in schema) {
             const targetSocketKey = schema[key].socketKey || key;

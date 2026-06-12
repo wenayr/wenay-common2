@@ -1,5 +1,6 @@
 import { idPool } from "../id-pool";
 import { isSafeKey, PayloadLimitError, type RpcLimits } from "./rpc-limits";
+import { RPC_STOP } from "./rpc-protocol";
 
 const FN_MARKER     = "$_f";
 const DATE_MARKER   = "$_d";
@@ -10,11 +11,17 @@ const BIGINT_MARKER = "$_b";
 
 const ALL_MARKERS = new Set([FN_MARKER, DATE_MARKER, MAP_MARKER, SET_MARKER, REGEXP_MARKER, BIGINT_MARKER]);
 
+// Вложенные значения внутри Map/Set тоже проходят (де)сериализацию рекурсивно —
+// иначе Date/Map внутри Map уходят сырыми и гибнут на JSON-транспорте.
+const deepSerialize = (v: any): any => walk(v, serializeLeaf);
+const deepDeserialize = (v: any, lim?: Required<RpcLimits>): any =>
+    walk(v, l => deserializeLeaf(l, undefined, lim), lim);
+
 // Маппинг маркер → десериализатор
-const DESERIALIZERS: Record<string, (v: any) => any> = {
+const DESERIALIZERS: Record<string, (v: any, lim?: Required<RpcLimits>) => any> = {
     [DATE_MARKER]:   (v) => new Date(v),
-    [MAP_MARKER]:    (v) => new Map(v),
-    [SET_MARKER]:    (v) => new Set(v),
+    [MAP_MARKER]:    (v, lim) => new Map(v.map(([k, val]: [any, any]) => [deepDeserialize(k, lim), deepDeserialize(val, lim)])),
+    [SET_MARKER]:    (v, lim) => new Set(v.map((x: any) => deepDeserialize(x, lim))),
     [REGEXP_MARKER]: (v) => new RegExp(v.source, v.flags),
     [BIGINT_MARKER]: (v) => BigInt(v),
 };
@@ -24,8 +31,8 @@ type Serializer = (v: any) => [string, any] | null;
 
 const SERIALIZERS: Serializer[] = [
     (v) => v instanceof Date    ? [DATE_MARKER,   v.valueOf()]                          : null,
-    (v) => v instanceof Map     ? [MAP_MARKER,    Array.from(v.entries())]              : null,
-    (v) => v instanceof Set     ? [SET_MARKER,    Array.from(v.values())]               : null,
+    (v) => v instanceof Map     ? [MAP_MARKER,    Array.from(v.entries(), ([k, val]: [any, any]) => [deepSerialize(k), deepSerialize(val)])] : null,
+    (v) => v instanceof Set     ? [SET_MARKER,    Array.from(v.values(), (x: any) => deepSerialize(x))] : null,
     (v) => v instanceof RegExp  ? [REGEXP_MARKER, { source: v.source, flags: v.flags }] : null,
     (v) => typeof v === "bigint" ? [BIGINT_MARKER, v.toString()]                        : null,
 ];
@@ -57,7 +64,7 @@ export function walk(
 }
 
 // Общая функция десериализации листа (используется в unpack и unpackResult)
-function deserializeLeaf(leaf: any, onCallback?: (id: number) => any): any {
+function deserializeLeaf(leaf: any, onCallback?: (id: number) => any, lim?: Required<RpcLimits>): any {
     if (leaf == null || typeof leaf !== "object") return leaf;
     const key = Object.keys(leaf)[0];
     if (!key) return leaf;
@@ -67,7 +74,7 @@ function deserializeLeaf(leaf: any, onCallback?: (id: number) => any): any {
     }
 
     const deserialize = DESERIALIZERS[key];
-    return deserialize ? deserialize(leaf[key]) : leaf;
+    return deserialize ? deserialize(leaf[key], lim) : leaf;
 }
 
 // Общая функция сериализации листа (используется в pack и packResult)
@@ -112,6 +119,7 @@ export function unpack(
     onEnd: (id: number) => void,
     lim?: Required<RpcLimits>,
 ): any[] {
+    if (lim && args.length > lim.maxArgs) throw new PayloadLimitError("too many args");
     let cbCount = 0;
     return args.map(v => walk(v, leaf => {
         if (leaf != null && typeof leaf == "object" && leaf[FN_MARKER] !== undefined) {
@@ -119,22 +127,31 @@ export function unpack(
             const id = leaf[FN_MARKER];
             if (typeof id !== "number" || !Number.isFinite(id)) throw new PayloadLimitError("invalid callback id");
             const wrapper = (...a: any[]) => {
-                if (a[0] == "___STOP") { onEnd(id); return; }
+                if (a[0] == RPC_STOP) { onEnd(id); return; }
                 sender(id, a);
             };
             _stopRegistry.set(wrapper, () => onEnd(id));
             return wrapper;
         }
-        return deserializeLeaf(leaf);
+        return deserializeLeaf(leaf, undefined, lim);
     }, lim));
 }
 
 export function unpackResult(value: any, lim?: Required<RpcLimits>): any {
-    return walk(value, leaf => deserializeLeaf(leaf), lim);
+    return walk(value, leaf => deserializeLeaf(leaf, undefined, lim), lim);
 }
 
-export const errToObj = (e: any) =>
-    e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : e;
+// code/data/cause — аддитивные поля провода: старые клиенты их просто игнорируют,
+// новые восстанавливают MyError (см. reviveErr в rpc-client).
+export const errToObj = (e: any): any => {
+    if (!(e instanceof Error)) return e;
+    const o: any = { name: e.name, message: e.message, stack: e.stack };
+    const { code, data, cause } = e as any;
+    if (code !== undefined) o.code = code;
+    if (data !== undefined) o.data = data;
+    if (cause !== undefined) o.cause = errToObj(cause);
+    return o;
+};
 
 export const resolveCA = (path: string[], args: any[]): [string[], any[]] => {
     const last = path[path.length - 1];

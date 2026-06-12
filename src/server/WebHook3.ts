@@ -34,9 +34,15 @@ const loadSubscribers = (): Map<string, Subscriber> => {
 };
 
 const Queue = createAsyncQueue(1);
+let _tmpSeq = 0;
 const saveSubscribers = (subs: Map<string, Subscriber>) => {
     const obj = Object.fromEntries([...subs].map(([k, s]) => [k, { url: s.url, tag: s.tag, expireAt: s.expireAt }]));
-    Queue.enqueue(() => fs.promises.writeFile(SUBSCRIBERS_FILE, JSON.stringify(obj, null, 2), 'utf-8'));
+    // атомарно: temp+rename — крах посреди записи не портит subscribers.json
+    Queue.enqueue(async () => {
+        const tmp = `${SUBSCRIBERS_FILE}.${++_tmpSeq}.tmp`;
+        await fs.promises.writeFile(tmp, JSON.stringify(obj, null, 2), 'utf-8');
+        await fs.promises.rename(tmp, SUBSCRIBERS_FILE);
+    });
 };
 
 const normalizeIP = (ip: string) => ip?.startsWith('::ffff:') ? ip.slice(7) : ip;
@@ -144,6 +150,10 @@ export const createWebhookClient = (options: WebhookClientOptions) => {
 
     const activeTags = new Set<string>();
     const timers = new Map<string, ReturnType<typeof setInterval>>();
+    // Один ПОСТОЯННЫЙ route на путь + карта tag→handler: Express 5 не даёт снимать
+    // route-слои (мутация app._router.stack удалена), а повторный app.post копил дубли.
+    const handlers = new Map<string, (payload: any) => void>();
+    const registeredPaths = new Set<string>();
 
     const headers = { authorization: authToken };
     const makeUrl = (tag: string) => `:${clientPort}/webHook_${tag}`;
@@ -152,7 +162,15 @@ export const createWebhookClient = (options: WebhookClientOptions) => {
         if (activeTags.has(tag)) { console.warn(`Тег ${tag} уже подписан`); return; }
 
         const path = `/webHook_${tag}`;
-        app.post(path, (req: Request, res: Response) => { handler(req.body); res.end(); });
+        handlers.set(tag, handler);
+        if (!registeredPaths.has(path)) {
+            registeredPaths.add(path);
+            app.post(path, (req: Request, res: Response) => {
+                const h = handlers.get(tag);
+                if (!h) { res.status(404).end(); return; } // отписан — маршрут инертен
+                h(req.body); res.end();
+            });
+        }
 
         await axios.post(`${serverUrl}/webHook_subscribe`, { url: makeUrl(tag), tag }, { headers });
         activeTags.add(tag);
@@ -174,13 +192,8 @@ export const createWebhookClient = (options: WebhookClientOptions) => {
             activeTags.delete(tag);
             // убиваем таймер
             const t = timers.get(tag); if (t) { clearInterval(t); timers.delete(tag); }
-            // удаляем route layer из стека express по path
-            const stack = app._router?.stack;
-            if (stack) {
-                const path = `/webHook_${tag}`;
-                const idx = stack.findIndex((layer: any) => layer.route?.path === path);
-                if (idx !== -1) stack.splice(idx, 1);
-            }
+            // маршрут остаётся, но становится инертным (handlers — единственный источник истины)
+            handlers.delete(tag);
         }));
     };
 

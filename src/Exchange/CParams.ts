@@ -35,8 +35,10 @@ export type DateTimeStr= `${Year}-${Month}-${Day} ${Hour}:${Minute}`;
 
 type DateTime = DateTimeStr | const_Date;
 
-{
-let ts : `${DateStr} ${TimeStr}` = "2025-06-01 16:25:25";
+// типовая проверка: компилируется, но НЕ исполняется при импорте
+function _typeCheck_DateTimeStr() {
+    let ts : `${DateStr} ${TimeStr}` = "2025-06-01 16:25:25";
+    return ts
 }
 //[12]\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01]) ([01][0-9]|2[0-3]):[0-5]\d:[0-5]\d
 
@@ -264,7 +266,8 @@ export interface IParamEnum2<T extends number|string> extends IParamBaseDefault 
     enabled? : undefined;
 }
 
-{ let x : IParamEnum2<5|6> = { value: 5, range : [5, 6] }; }
+// типовая проверка: компилируется, но НЕ исполняется при импорте
+function _typeCheck_IParamEnum2() { let x : IParamEnum2<5|6> = { value: 5, range : [5, 6] }; return x }
 
 //type TupleToUnion<T extends [...unknown[]]> = T extends [number,...infer T2] ? (T[0] | TupleToUnion<T2>) : never;
 
@@ -476,14 +479,16 @@ export function enableAllParams<T extends IParamsReadonly> (params :T, enabled=t
 //     [key :string] : IParam2;// & {[key in keyof { name?:any, value:any, range?:any, enabled?:any }] : any};
 // }
 
-class C extends CParams { lastBar = { name: "Last_Bar", value: 0, range: { defaultMin:-10000, max:0, step:1 } }; }
-
 type IParamsReadonly2= { readonly [key in string]: ReadonlyFull<IParam> }
 
-let xxx= {} as ReadonlyFull<C & IParamsReadonly2>;
-//xxx["lastBar"]= xxx["lastBar"];
-
-let bbb :IParamsReadonly2 = xxx; //paramsInfoToExt(aaa);
+// типовая проверка: компилируется, но НЕ исполняется при импорте
+function _typeCheck_CParamsReadonly() {
+    class C extends CParams { lastBar = { name: "Last_Bar", value: 0, range: { defaultMin:-10000, max:0, step:1 } }; }
+    let xxx= {} as ReadonlyFull<C & IParamsReadonly2>;
+    //xxx["lastBar"]= xxx["lastBar"];
+    let bbb :IParamsReadonly2 = xxx; //paramsInfoToExt(aaa);
+    return bbb
+}
 
 // export class CParams2<T> { // <T extends {[key in keyof T] : IParamEnum2<any>}> {//implements III2<T[keyof T]> {// & IParamEnum2<T[key]["range"]>} = any>  {
 //     [key : string] : T[keyof T] extends {readonly range : [...number[]]|[...string[]]} ? IParamEnum3<T[keyof T]["range"][number]> : T[keyof T]; //IParamEnum2<any>; //IParamExt<T>;// & {[key in keyof { name?:any, value:any, range?:any, enabled?:any }] : any};
@@ -641,17 +646,22 @@ export function GetSimpleParams<T extends ReadonlyFull<IParams>>(params : T) //:
     return simpleParams as SimpleParamsMutable<T>;
 }
 
-let p= GetSimpleParams(new Test());
+// типовая проверка GetSimpleParams: компилируется, но НЕ исполняется при импорте
+// (раньше new Test() + GetSimpleParams реально выполнялись на каждый импорт модуля)
+function _typeCheck_GetSimpleParams() {
+    let p= GetSimpleParams(new Test());
 
-let p0 : number = p.p1;
+    let p0 : number = p.p1;
 
-let p3 : string = p.p3;
+    let p3 : string = p.p3;
 
-let p4 : boolean= p.p4;
+    let p4 : boolean= p.p4;
 
-let p5 : number|undefined = p.p5?.p1;
+    let p5 : number|undefined = p.p5?.p1;
 
-//let p6 : number = p.p5.p1; // пример ошибки
+    //let p6 : number = p.p5.p1; // пример ошибки
+    return [p0, p3, p4, p5] as const
+}
 
 function convert_(valuesObj :{[key :string] :any}, srcObj : IParamsReadonly | readonly any[]) {
     let resObj : {[key :string] :IParamReadonly} = {};

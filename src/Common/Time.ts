@@ -477,21 +477,29 @@ function replaceConsoleCommands() {
 
 export function durationToStr(duration_ms :number) : string {
 	//if (duration_ms==null) return null;
+	// эвристики (намеренные): счёт <1.1 → выразить меньшей единицей ("65м", не "1ч 5м");
+	// счёт >10 → одна округлённая единица ("25ч"); иначе — две единицы ("1д 23ч").
 	let units : [number,string][] = [[D1_MS, "д"], [H1_MS, "ч"], [M1_MS, "м"], [1000, "c"], [1, "мс"]];
-	let lastUnit: [number,string]|null = null; //let passedDuration=0;
+	let firstUnit: [number,string]|null = null;
+	let firstCount = 0;
 	let str="";
 	for(let unit of units) {
 		let unitCountFloat = duration_ms / unit[0];
-		if (unitCountFloat<1.1 && lastUnit==null) continue;
-		let unitCount;
-		if (lastUnit || unitCountFloat > 10)
-		{ unitCount = Math.round(unitCountFloat);  lastUnit=unit; }
-		else unitCount = Math.floor(unitCountFloat);
-		str += unitCount + unit[1] + " ";  //passedDuration += unitCount * unit[0];
-		if (lastUnit) break;
-		duration_ms %= unit[0];
-		lastUnit = unit;
+		if (unitCountFloat<1.1 && firstUnit==null) continue;
+		if (firstUnit==null && unitCountFloat<=10) {
+			firstUnit = unit;
+			firstCount = Math.floor(unitCountFloat);
+			duration_ms %= unit[0];
+			continue;
+		}
+		// финальная единица — округляем; перенос при переполнении старшей ("1д 24ч" → "2д")
+		let unitCount = Math.round(unitCountFloat);
+		if (firstUnit && unitCount * unit[0] >= firstUnit[0]) { firstCount++; unitCount = 0; }
+		if (firstUnit) str += firstCount + firstUnit[1] + " ";
+		if (unitCount > 0 || firstUnit==null) str += unitCount + unit[1] + " ";
+		return str;
 	}
+	if (firstUnit) str += firstCount + firstUnit[1] + " ";
 	return str;
 	//let unit= period > Time.D1_MS*2 ?  Time.TIME_UNIT.Day :  period > Time.H1_MS*2 ?  Time.TIME_UNIT.Hour :  period>Time.M1_MS*2 ? Time.TIME_UNIT.Minute :
 }

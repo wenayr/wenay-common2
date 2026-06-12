@@ -19,9 +19,12 @@ export function SocketServerHook(opt?:{transformer?: transformer}) {
     return r
 }
 export function WebSocketServerHook(s: ReturnType<typeof SocketServerHook>, paramsSoc?: Parameters<typeof soc>[1], disconnect?:()=>any) {
+    // одна обёртка на тег: новая на каждый доступ теряла state (last/active),
+    // и переподписка не снимала старого слушателя → дублирующиеся вызовы
+    const wrappers: {[k: string]: ReturnType<typeof soc>} = {}
     const get = new Proxy(s.obj, {
         get(target: any, p: string, receiver: any): any {
-            return soc(s.get(p)[1], paramsSoc)
+            return wrappers[p] ??= soc(s.get(p)[1], paramsSoc)
         }
     }) as {[k: string]: ReturnType<typeof soc>}
     return {

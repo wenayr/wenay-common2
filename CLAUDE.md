@@ -14,10 +14,23 @@ Write new code in this style by default — no need to ask.
   *Inside* a factory, nesting is normal and encouraged — inner factories and helper
   functions freely close over the enclosing scope (that captured state is the whole point
   of closures). Factories don't have to be flat.
-- A factory's returned object is a namespace of arrow functions (functional style,
-  an "object with meaning"). When a factory serves two audiences, split the return by
-  audience — e.g. `control` (what goes *into* the owning unit) vs `api` (what's exposed
-  *outward*).
+- A factory's returned object is a namespace of functions (functional style,
+  an "object with meaning"). Split the return **by audience** when there's more than one —
+  `control` (what goes *into* the owning unit) vs `api` (what's exposed *outward*). The
+  number of facades follows the need: **one** flat object when there's a single audience,
+  **two** (`control`/`api`) for the common in/out split, **more** when distinct consumers
+  warrant it (e.g. `control` / `api` / `debug`). Don't force two if one is clearer.
+- **Layering — separate resource / utility / business logic.** Keep the *resource* part
+  (sockets, adapters, connections, stores) apart from *utilities* (pure, reusable helpers)
+  and from *business logic*. Business logic is **local**: each layer has its own — the
+  API-description layer carries the business rules for that API; a higher layer carries the
+  business rules of *using* those APIs. Wherever it lives, mark it clearly (section dividers).
+  Utility-leaning functions are better *extracted* (own function / file) so they don't blur
+  into business logic.
+- **Multi-level facades are fine** — `UseListen` (or other callbacks) may be installed at
+  any nesting depth. Closures are fine. Inner factories and captured state are encouraged.
+- **Expose callbacks outward.** `UseListen` streams that callers will subscribe to belong in
+  the `api` surface — prefer over-exposing event streams to hiding them.
 - Registries/tables — `as const` + inferred literal types (type-safe).
 
 ## Syntax
@@ -25,7 +38,10 @@ Write new code in this style by default — no need to ask.
 - **Don't annotate function return types** (`: Promise<void>`, `: number`, etc.) — let them
   be inferred. Exception: when the type genuinely helps the reader or narrows inference.
 - Single quotes, 4-space indent, no semicolons.
-- Arrow functions inside objects, concise.
+- **Named functions over anonymous arrows for anything non-trivial.** A named `function foo()`
+  shows up by name in stack traces / logs; an anonymous arrow is `<anonymous>`. So: real logic,
+  anything that can throw, async handlers, event callbacks → name them. Trivial one-liners where
+  an error is impossible (simple getters, mappers, predicates) — arrow is fine, no need to fuss.
 
 ## Types
 - Union and primitive aliases — `t` prefix: `tNum`, `tSide`, `tOrderId`.
@@ -35,7 +51,3 @@ Write new code in this style by default — no need to ask.
 ## Comments
 - Section dividers like `// ===...===` with a block heading.
 - Explain "why", not "what". Keep them short.
-
-## Author utilities
-- Frequently uses helpers from `wenay-common2` (`UseListen`, `sleepAsync`, `MyMap`, etc.).
-- Full library reference — see **`wenay-common2.md`** (read it when working with RPC/utilities).

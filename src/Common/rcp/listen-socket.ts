@@ -1,6 +1,7 @@
 // listen-socket.ts
 
 import { funcListenCallback, funcListenCallbackBase, type Listener } from "../events/Listen";
+import { RPC_STOP } from "./rpc-protocol";
 
 type ListenCallbackResult<T extends any[] = any[]> = ReturnType<typeof funcListenCallbackBase<T>>;
 
@@ -46,6 +47,8 @@ export function listenSocket<Z extends any[] = any[]>(
         }
         if (status) {
             const wrapped = handler;
+            // отписка ЛЕНИВАЯ by design: события смены статуса нет, поэтому false
+            // обнаруживается на ближайшей эмиссии — до неё слушатель остаётся подвешен
             handler = (...a: any[]) => {
                 if (status()) wrapped(...a);
                 else removeCallback();
@@ -54,7 +57,7 @@ export function listenSocket<Z extends any[] = any[]>(
 
         const inner = handler;
         active = (...a: any[]) => {
-            if (a[0] === "___STOP") {
+            if (a[0] === RPC_STOP) {
                 z(...a as Z);
                 if (last) { stop?.(last); }
                 last = null;

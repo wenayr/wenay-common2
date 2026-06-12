@@ -1,7 +1,7 @@
 import {isNoStrict} from "./rpc-dynamic";
-import { isSafeKey, resolveLimits, type RpcLimits } from "./rpc-limits";
+import { isSafeKey, resolveLimits, PayloadLimitError, type RpcLimits } from "./rpc-limits";
 import {unpack, errToObj, packResult} from "./rpc-walk";
-import { Pkt, type SocketTmpl } from "./rpc-protocol";
+import { Pkt, IS_RPC_LISTEN, type SocketTmpl } from "./rpc-protocol";
 
 type Func = (...args: any[]) => any;
 
@@ -10,6 +10,11 @@ type PromiseServerHooks<T> = {
     onInvalid?: (ctx: { reason: "invalid_payload" | "not_function" | "resolve_error" | "rate_limit"; key?: any; request?: any; error?: any }) => void | Promise<void>;
     resolveTransform?: (value: any) => any;
 };
+
+// Повторный createRpcServer на том же сокете+ключе раньше ДОБАВЛЯЛ второй socket.on
+// (каждый запрос исполнялся дважды). SocketTmpl не умеет off → последний выигрывает,
+// предыдущий обработчик становится инертным.
+const SERVERS = new WeakMap<object, Map<string, () => void>>();
 
 function createServer<T extends object>(
     socket: SocketTmpl,
@@ -22,6 +27,7 @@ function createServer<T extends object>(
     const methods: Function[] = [];
     const contexts: any[] = [];
     const routeMap: Record<string, number> = {};
+    const listenPaths: string[] = []; // адреса Listen-узлов — декларируются клиенту в Pkt.MAP (4-й элемент)
 
     function transformTree(obj: any): any {
         let current = obj;
@@ -30,6 +36,7 @@ function createServer<T extends object>(
         }
         if (current == null || typeof current != "object" || isNoStrict(current)) return current;
         const out: any = {};
+        if ((current as any)[IS_RPC_LISTEN]) out[IS_RPC_LISTEN] = true; // пометка — Symbol, Object.keys её не копирует
         for (const k of Object.keys(current)) {
             if (!isSafeKey(k)) continue;
             const v = current[k];
@@ -47,7 +54,10 @@ function createServer<T extends object>(
             const v = obj[k];
             const path = prefix ? prefix + "." + k : k;
             if (typeof v == "function") { routeMap[path] = methods.length; methods.push(v); contexts.push(obj); }
-            else if (v && typeof v == "object" && !isNoStrict(v)) index(v, path);
+            else if (v && typeof v == "object" && !isNoStrict(v)) {
+                if ((v as any)[IS_RPC_LISTEN]) listenPaths.push(path);
+                index(v, path);
+            }
         }
     }
     index(resolved, "");
@@ -72,10 +82,21 @@ function createServer<T extends object>(
     const send = (d: any) => socket.emit(key, d);
     const IS_RPC_PIPE = Symbol.for("isRpcPipe");
 
-    send([Pkt.MAP, routeMap, strictSchema]);
+    send([Pkt.MAP, routeMap, strictSchema, listenPaths]);
+
+    let detached = false;
+    let byKey = SERVERS.get(socket);
+    if (!byKey) { byKey = new Map(); SERVERS.set(socket, byKey); }
+    const detachPrev = byKey.get(key);
+    if (detachPrev) {
+        detachPrev();
+        console.warn(`[RPC] createRpcServer: повторная инициализация на socket+key "${key}" — предыдущий сервер отцеплен`);
+    }
+    byKey.set(key, () => { detached = true; });
 
     socket.on(key, async (msg: any) => {
-        if (msg == Pkt.STRICT) { send([Pkt.MAP, routeMap, strictSchema]); return; }
+        if (detached) return;
+        if (msg == Pkt.STRICT) { send([Pkt.MAP, routeMap, strictSchema, listenPaths]); return; }
         if (!Array.isArray(msg) || (msg[0] !== Pkt.CALL && msg[0] !== Pkt.PIPE)) return;
 
         const isPipe = msg[0] === Pkt.PIPE;
@@ -106,6 +127,11 @@ function createServer<T extends object>(
                 if (!ref.every((s: any) => typeof s == "string" && isSafeKey(s))) {
                     hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps });
                     if (wait) send([Pkt.RESP, reqId, null, errToObj(new Error("Forbidden path segment"))]);
+                    return;
+                }
+                if (ref.length > lim.maxPathLen) {
+                    hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "path too long" });
+                    if (wait) send([Pkt.RESP, reqId, null, errToObj(new PayloadLimitError("path too long"))]);
                     return;
                 }
                 const idx = routeMap[ref.join(".")];
@@ -166,7 +192,8 @@ function createServer<T extends object>(
                         current = current[step.prop];
                     } else if (step.type === 'call') {
                         if (typeof current !== "function") throw new Error("Attempted to call a non-function in pipe");
-                        const stepArgs = unpack(step.args, (cbId, cbArgs) => send([Pkt.CB, cbId, cbArgs]), (cbId) => send([Pkt.CB_END, cbId]), lim);
+                        // как в CALL: иначе Date/Map/BigInt в аргументах колбэка гибнут на JSON-транспорте
+                        const stepArgs = unpack(step.args, (cbId, cbArgs) => send([Pkt.CB, cbId, cbArgs.map(packResult)]), (cbId) => send([Pkt.CB_END, cbId]), lim);
                         current = current(...stepArgs);
                     }
                 }
