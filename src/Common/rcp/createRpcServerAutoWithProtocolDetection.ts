@@ -9,40 +9,6 @@ import { isSafeKey } from "./rpc-limits";
 
 type ListenCallbackBase<T extends any[] = any[]> = ReturnType<typeof funcListenCallbackBase<T>>;
 
-// ── Старая версия (без изменений) ──────────────────────────────────
-
-function createRpcServerAuto<T extends object>({ socket, object: target, socketKey: key, debug, hooks, disconnectListen, limits }: {
-    socket: SocketTmpl;
-    object: T;
-    socketKey: string;
-    debug?: boolean;
-    hooks?: Omit<PromiseServerHooks<DeepSocketListen<T>>, "resolveTransform">;
-    disconnectListen?: ListenCallbackBase<any>;
-    limits?: RpcLimits;
-}) {
-    const cache = new WeakMap<object, ReturnType<typeof listenSocket>>();
-
-    function getListenSocket(parent: any, disconnectListen?: ListenCallbackBase<any>): ReturnType<typeof listenSocket> {
-        let result = cache.get(parent);
-        if (!result) {
-            result = listenSocket(parent, { addListenClose: disconnectListen });
-            cache.set(parent, result);
-        }
-        return result;
-    }
-
-    createRpcServer({
-        socket, object: target as any, socketKey: key, debug, limits,
-        hooks: {
-            ...hooks,
-            resolveTransform: (obj: any) => {
-                if (!isListenCallback(obj)) return obj;
-                return getListenSocket(obj, disconnectListen);
-            },
-        } as any,
-    });
-}
-
 // ── Новая версия с совместимостью ───────────────────────────────────
 //
 // Определение протокола:
@@ -142,6 +108,8 @@ export function createRpcServerAuto2<T extends object>({
     let protocol: ClientProtocol = null;
     let v2Handler: ((msg: any) => void) | null = null;
     let legacyHandler: ((msg: any) => void) | null = null;
+    let disposed = false;
+    let activeHandler: ((msg: any) => void) | null = null; // делегат стабильного роутера; null = инертен
 
     /** Legacy клиент запрашивает схему строкой "___STRICTLY" */
     function isLegacyStrictRequest(msg: any): boolean {
@@ -158,10 +126,12 @@ export function createRpcServerAuto2<T extends object>({
         );
     }
 
-    /** V2 сообщение: Pkt.STRICT (число 4) или массив [Pkt.CALL|PIPE, ...] */
+    /** V2 сообщение: Pkt.STRICT (число 4) или массив [Pkt.CALL|PIPE|HELLO, ...].
+     *  HELLO — токен-клиент шлёт его ПЕРВЫМ (in-band auth); без него детектор ронял бы HELLO,
+     *  и auth() клиента висел бы. Внутренний createRpcServer обрабатывает HELLO сам. */
     function isV2Message(msg: any): boolean {
         if (msg === Pkt.STRICT) return true;
-        if (Array.isArray(msg) && (msg[0] === Pkt.CALL || msg[0] === Pkt.PIPE)) return true;
+        if (Array.isArray(msg) && (msg[0] === Pkt.CALL || msg[0] === Pkt.PIPE || msg[0] === Pkt.HELLO)) return true;
         return false;
     }
 
@@ -214,7 +184,9 @@ export function createRpcServerAuto2<T extends object>({
     }
 
     // ── Главный обработчик сообщений ────────────────────────────
-    socket.on(key, (msg: any) => {
+    // SocketTmpl не умеет off → регистрируем ОДИН стабильный роутер, делегирующий в activeHandler;
+    // dispose() обнуляет activeHandler → роутер становится инертным (идиома rpc-server.ts:26-29).
+    function handleMessage(msg: any) {
         if (debug) {
             console.log('[RPC-AUTO2 IN]', typeof msg === 'object' ? JSON.stringify(msg) : msg);
         }
@@ -264,11 +236,28 @@ export function createRpcServerAuto2<T extends object>({
 
         // Неизвестный формат
         if (debug) console.warn('[RPC-AUTO2] Unknown message format, ignoring:', msg);
-    });
+    }
+    activeHandler = handleMessage;
+    socket.on(key, (msg: any) => activeHandler?.(msg));
+
+    // reset() — сбросить латч детекции (reconnect: новый пир может говорить иным протоколом, и
+    // прежнее значение protocol латчилось бы навсегда, мисроутя). dispose() — отцепить (роутер
+    // инертен) + сброс. SocketTmpl без off, поэтому обнуляем делегата; ленивые внутренние серверы
+    // отдельного teardown не имеют, но остановка входящей диспетчеризации — та утечка, что важна.
+    function reset() { protocol = null; legacyHandler = null; v2Handler = null; }
+    function dispose(reason?: string) {
+        if (disposed) return;
+        disposed = true;
+        activeHandler = null;
+        reset();
+        if (debug) console.log('[RPC-AUTO2] disposed', reason ?? '');
+    }
 
     return {
         getProtocol: () => protocol,
         getLegacySchema: () => legacySchema,
         getResolved: () => resolved,
+        dispose,
+        reset,
     };
 }

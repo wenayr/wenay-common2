@@ -42,6 +42,10 @@ export * as Params from "./Exchange/CParams";
 export * as Time from "./Common/Time";
 export * as Color from "./Common/Color";
 
+// in-house reactive lib (observable/ sandbox) — namespaced to avoid colliding
+// with src exports (e.g. deepEqual). See observable/STORE-PLAN.md.
+export * as Observable from "../observable";
+
 
 
 

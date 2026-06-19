@@ -1,4 +1,6 @@
-export const Pkt = { CALL: 0, RESP: 1, CB: 2, MAP: 3, STRICT: 4, CB_END: 5, PIPE: 6 } as const;
+// HELLO — клиент предъявляет токен в самом канале (in-band): сервер verify → principal →
+// фасад, и отвечает Pkt.MAP с 5-м элементом authAck. Аддитивно: старые пиры HELLO не шлют/не ждут.
+export const Pkt = { CALL: 0, RESP: 1, CB: 2, MAP: 3, STRICT: 4, CB_END: 5, PIPE: 6, HELLO: 7 } as const;
 
 // Сентинел конца стрима. Едет ПО ПРОВОДУ первым аргументом колбэка —
 // поэтому строка (Symbol через JSON не проедет); значение менять нельзя (wire compat).

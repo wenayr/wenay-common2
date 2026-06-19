@@ -3,6 +3,7 @@ import {createIdPool, type idPool} from "../id-pool";
 import {pack, resolveCA, unpackResult} from "./rpc-walk";
 import {resolveLimits, type RpcLimits} from "./rpc-limits";
 import {MyError} from "../../toError/myThrow";
+import {makeOff} from "./rpc-off";
 
 // Общий пул id на (socket × key): два клиента на одном сокете+ключе делят id-пространство,
 // иначе их reqId коллизируют и чужой RESP резолвит оба ожидания.
@@ -96,7 +97,7 @@ type ClientApiHandle = {
 
 const IS_RPC_PIPE = Symbol.for("isRpcPipe");
 
-function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: { limit?: number; limits?: RpcLimits; dedupeListen?: boolean }) {
+function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: { limit?: number; limits?: RpcLimits; dedupeListen?: boolean; token?: any }) {
     const limit = opts?.limit ?? 10000;
     // opt-in: без опции limits поведение прежнее (ответы сервера не ограничиваются)
     const lim = opts?.limits ? resolveLimits(opts.limits) : undefined;
@@ -108,10 +109,29 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     const zombies = new Set<number>();
     const retire = (id: number) => { zombies.add(id); };
     let disposed = false;
+    // onDisconnect: тонкий регистратор в стиле strictWaiters/authWaiters этого файла.
+    // Зовётся ровно ОДИН раз из dispose() (teardown по разрыву/ротации). off()-хендл —
+    // через makeOff; промис резолвится на самом дисконнекте.
+    let disconnectCbs: ((reason: string) => void)[] = [];
+    let disconnectResolve: (reason: string) => void = () => {};
+    const disconnectPromise = new Promise<string>(res => { disconnectResolve = res; });
+    function onDisconnect(cb: (reason: string) => void) {
+        disconnectCbs.push(cb);
+        function offDisconnect() { const i = disconnectCbs.indexOf(cb); if (i >= 0) disconnectCbs.splice(i, 1); }
+        return makeOff(disconnectPromise, offDisconnect);
+    }
     const routeCache: Record<string, number> = {};
     let strictData: any = {};
     let strictWaiters: ((v: unknown) => void)[] = [];
     let debug = false;
+
+    // --- in-band auth (Pkt.HELLO/authAck) ---
+    let authToken: any = opts?.token ?? null;
+    let authStatus: any = undefined; // последний authAck сервера; null = сервер без auth (4-эл. MAP)
+    let authWaiters: ((s: any) => void)[] = [];
+    let authPending = false; // идёт HELLO/reauth → auth() ждёт свежий ack, а не отдаёт прошлый
+    const drainAuth = (s: any) => { authPending = false; const w = authWaiters; authWaiters = []; for (const r of w) r(s); };
+    const setAuthStatus = (s: any) => { authStatus = s; drainAuth(s); };
 
     socket.on(key, (msg: any) => {
         if (!Array.isArray(msg)) return;
@@ -155,7 +175,9 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 break;
             }
             case Pkt.MAP: {
-                if (msg[1]) Object.assign(routeCache, msg[1]);
+                // Чистим перед слиянием: при смене principal (re-auth) индексы routeMap другие —
+                // устаревшая запись увела бы числовой ref на чужой метод.
+                if (msg[1]) { for (const k of Object.keys(routeCache)) delete routeCache[k]; Object.assign(routeCache, msg[1]); }
                 // новый сервер декларирует адреса Listen-узлов — дедуп подписок становится точным
                 if (Array.isArray(msg[3])) { declaredListens ??= new Set(); for (const p of msg[3]) declaredListens.add(p); }
                 if (msg[2]) {
@@ -164,6 +186,10 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                     for (const r of strictWaiters) r(undefined);
                     strictWaiters = [];
                 }
+                // Ответ на HELLO ВСЕГДА 5-элементный (authAck или null для сервера без auth) — только он
+                // трогает auth. 4-элементный MAP (STRICT/начальный пуш) схема-only: не резолвит auth(),
+                // поэтому ожидающий auth() не словит преждевременный null от STRICT-компаньона.
+                if (msg.length > 4) setAuthStatus(msg[4]);
                 break;
             }
         }
@@ -185,6 +211,14 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             socket.emit(key, [Pkt.PIPE, 0, ref, cleanSteps, false]);
             return Promise.resolve();
         }
+        // Идиома off() НЕ распространяется на PIPE — осознанная граница слоёв:
+        //   1) pipe-прокси ЛЕНИВ: buildPipeProxy отдаёт прокси-цепочку, а sendPipe
+        //      вызывается лишь из геттера `.then`/`.catch` (для await) — любой makeOff-хендл
+        //      здесь до вызывающего НЕ доходит (его сразу оборачивает `(...a)=>p.then(...a)`).
+        //   2) протокол PIPE не даёт адресуемой точки teardown для непрозрачной цепочки:
+        //      один RESP, без серверного стопа (контраст с CALL `removeCallback`).
+        // Долгоживущие подписки с off() живут на CALL/listen-поверхности (subscribeShared
+        // + makeOff). PIPE — для трансформаций; богатые типы/лимиты в нём уже на паритете с CALL.
         return new Promise((resolve, reject) => {
             if (pending.size >= limit) return reject(new Error("RPC limit"));
             const reqId = pool.next();
@@ -292,14 +326,18 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         }
         const consumer: tConsumer = { fns: args.filter(a => typeof a == "function") as Function[], resolve: () => {} };
         sub.consumers.add(consumer);
-        const p: any = new Promise<void>(res => { consumer.resolve = res; });
-        // идиома Listen.addListen: подписка отдаёт отписку; тип callback не меняем — довешиваем на промис
-        p.unsubscribe = () => {
+        const p = new Promise<void>(res => { consumer.resolve = res; });
+        // отписка: ровно прежнее тело p.unsubscribe (сетевой стоп после ухода последнего)
+        const unsub = function unsubscribe() {
             if (!sub!.consumers.delete(consumer)) return;
             consumer.resolve();
             if (sub!.consumers.size == 0) sub!.stop();
         };
-        return p;
+        // идиома off = sub; off(): handle ВЫЗЫВАЕМ для отписки, await handle резолвится
+        // на конце стрима (p). .unsubscribe (старые вызовы) и .removeCallback (стиль
+        // listen-socket) сохранены — back-compat. off() идемпотентен; прежний guard
+        // `consumers.delete` тоже был идемпотентен — поведение то же.
+        return makeOff(p, unsub, { unsubscribe: unsub, removeCallback: unsub });
     }
 
     const sendCall = (path: string[], args: any[], wait: boolean): any => {
@@ -364,11 +402,39 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         callbacks.clear();
     }
 
-    // отцепить клиента: отклонить висящие, игнорировать дальнейшие пакеты, отбивать новые вызовы
-    function dispose(reason = "RPC client disposed") {
+    // Дренаж дедуп-подписок при teardown: ЧЕСТНО по умолчанию — не держим стримы живыми.
+    // Зеркалит created.stop()/finish(): (1) если сокет жив — wire removeCallback на КАЖДУЮ
+    // живую подписку через её собственный s.stop() (он шлёт removeCallback своим path и зовёт
+    // finish → резолвит+чистит потребителей); (2) если сокет мёртв — только резолвим потребителей,
+    // без бесполезного emit. БЕЗ авто-resubscribe.
+    function drainWireSubs(socketAlive: boolean) {
+        // Снять записи ДО отправки: поздний finish из .then(finish) по приходу RESP их уже не найдёт.
+        const subs = Array.from(wireSubs.values());
+        wireSubs.clear();
+        for (const s of subs) {
+            if (socketAlive) s.stop();                                  // честный teardown: removeCallback + finish
+            else { s.consumers.forEach(c => c.resolve()); s.consumers.clear(); } // мёртвый сокет: только settle
+        }
+    }
+
+    // отцепить клиента: отклонить висящие, игнорировать дальнейшие пакеты, отбивать новые вызовы.
+    // socketAlive (default true) — слать ли wire removeCallback; на заведомо мёртвом сокете
+    // передай { socketAlive: false } (потребители всё равно резолвятся).
+    function dispose(reason = "RPC client disposed", opts?: { socketAlive?: boolean }) {
         if (disposed) return;
+        const socketAlive = opts?.socketAlive ?? true;
         abortAll(reason);
+        // дренаж подписок ДО disposed=true: removeCallback должен уйти, пока sendCallWire разрешён
+        drainWireSubs(socketAlive);
         disposed = true;
+        // Снимаем висящих ожидающих рукопожатия/auth — иначе readyStrict()/auth()/reauth() зависнут навсегда
+        // (MAP после dispose уже игнорируется). strictData как при успешном MAP (undefined), auth — ok:false.
+        authPending = false;
+        const sw = strictWaiters; strictWaiters = []; for (const r of sw) r(undefined);
+        const aw = authWaiters; authWaiters = []; for (const r of aw) r({ ok: false, reason });
+        // onDisconnect — последним: подписки уже дренированы, ожидающие сняты; оповещаем наблюдателей.
+        const dc = disconnectCbs; disconnectCbs = []; for (const cb of dc) try { cb(reason) } catch {}
+        disconnectResolve(reason);
     }
 
     const api: ClientApiHandle = {
@@ -392,13 +458,29 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     let _ready: null | Promise<void> = null;
     let ready = () => _ready ? _ready : _ready = init()
     const init = async (obj?: object) => {
-        if (obj) { strictData = obj; }
-        else
-        {
-            socket.emit(key, Pkt.STRICT);
-            await new Promise(r => { strictWaiters.push(r); });
-        }
+        if (obj) { strictData = obj; return; }
+        // с токеном — предъявляем его (HELLO); ответ на HELLO всегда придёт 5-элементным (ack/null).
+        if (authToken != null) { authPending = true; socket.emit(key, [Pkt.HELLO, authToken]); }
+        // STRICT всегда: запрос схемы и fallback для СТАРОГО сервера, который HELLO не знает (не зависнем).
+        socket.emit(key, Pkt.STRICT);
+        await new Promise(r => { strictWaiters.push(r); });
     }
+
+    // Мягкий re-auth по ЖИВОМУ сокету: подписки не рвутся (тот же socket, те же cb-id);
+    // сервер пере-verify и шлёт новый MAP (routeMap нового principal) + authAck.
+    // ВНИМАНИЕ: не запускай конкурентные reauth — вейтеры общие, без корреляции; дожидайся каждый.
+    function reauth(token: any) {
+        if (disposed) return Promise.resolve({ ok: false, reason: "RPC client disposed" }); // как остальные emit-пути
+        authToken = token;
+        authPending = true;
+        socket.emit(key, [Pkt.HELLO, token]);
+        return new Promise<any>(res => authWaiters.push(res));
+    }
+    // Текущий authAck (null = сервер без auth); во время идущего reauth ждёт свежий, а не отдаёт прошлый.
+    // После dispose резолвимся сразу (иначе вейтер никогда не дренится — MAP уже игнорируется).
+    const auth = () => disposed
+        ? Promise.resolve(authStatus !== undefined ? authStatus : { ok: false, reason: "RPC client disposed" })
+        : (authStatus !== undefined && !authPending) ? Promise.resolve(authStatus) : new Promise<any>(res => authWaiters.push(res));
 
     return {
         func,           // <- Тип ClientAPI (нет цепочек)
@@ -413,6 +495,13 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         schema: () => strictData,
         readyStrict: ready,
         initStrict: init,
+        /** Мягкий re-auth по живому сокету (подписки сохраняются). Резолвится новым authAck. */
+        reauth,
+        /** Текущий authAck сервера; ждёт первого/свежего. Резолвится null против сервера без auth. */
+        auth,
+        /** Наблюдать teardown клиента (dispose/разрыв/ротация). Callable off-хендл; await — на
+         *  дисконнекте. Подписки к этому моменту уже сняты (честный teardown, без авто-resubscribe). */
+        onDisconnect,
     };
 }
 
@@ -426,14 +515,21 @@ export type RpcClientReturn<T extends object> = {
     strict: ClientAPIStrict<T>;
     api: ClientApiHandle;
     abortAll: (reason: string) => void;
-    /** Отцепить клиента: висящие отклоняются, дальнейшие пакеты игнорируются, новые вызовы отбиваются. */
-    dispose: (reason?: string) => void;
+    /** Отцепить клиента: висящие отклоняются, дальнейшие пакеты игнорируются, новые вызовы отбиваются.
+     *  Подписки дренируются (честный teardown). На заведомо мёртвом сокете — `{ socketAlive: false }`. */
+    dispose: (reason?: string, opts?: { socketAlive?: boolean }) => void;
     schema: () => any;
     readyStrict: () => Promise<void>;
     initStrict: (obj?: object) => Promise<void>;
+    /** Мягкий re-auth по живому сокету: предъявляет новый токен, подписки сохраняются. */
+    reauth: (token: any) => Promise<any>;
+    /** Текущий authAck сервера (5-й элемент Pkt.MAP); резолвится null против сервера без auth. */
+    auth: () => Promise<any>;
+    /** Наблюдать teardown клиента (dispose/разрыв/ротация). Callable off-хендл; await — на дисконнекте. */
+    onDisconnect: (cb: (reason: string) => void) => ReturnType<typeof makeOff>;
 };
 
-export function createRpcClient<T extends object>({ socket, socketKey: key, limit, limits, dedupeListen }: {
+export function createRpcClient<T extends object>({ socket, socketKey: key, limit, limits, dedupeListen, token }: {
     socket: SocketTmpl; socketKey: string; limit?: number;
     /** Opt-in лимиты на ВХОДЯЩИЕ данные (ответы/колбэки сервера); без опции — как раньше, без ограничений. */
     limits?: RpcLimits;
@@ -441,8 +537,12 @@ export function createRpcClient<T extends object>({ socket, socketKey: key, limi
      *  новые потребители ретранслируются локально, сетевой стоп — после ухода последнего.
      *  Подписка (`*.callback(cb)`) возвращает промис с методом `.unsubscribe()`. */
     dedupeListen?: boolean;
+    /** Токен авторизации: при initStrict() клиент предъявит его через Pkt.HELLO (in-band auth).
+     *  In-band auth подразумевает ОДИН логический клиент на socket+key (модель хаба): два
+     *  токен-клиента на одном сокете затирали бы routeCache/authAck друг друга при смене principal. */
+    token?: any;
 }): RpcClientReturn<T> {
-    return createClient<T>(socket, key, { limit, limits, dedupeListen });
+    return createClient<T>(socket, key, { limit, limits, dedupeListen, token });
 }
 
 export type { ClientApiHandle };

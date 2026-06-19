@@ -1,7 +1,19 @@
 // listen-deep.ts
 
 import { funcListenCallbackBase } from "../events/Listen";
-import { listenSocket, listenSocketFirst, listenSocketAll, listenSocketSmart } from "./listen-socket";
+import { listenSocket, listenSocketFirst, listenSocketAll, listenSocketSmart, type tSubHandle } from "./listen-socket";
+
+// Клиентская проекция результата listenSocket: callback(fn) отдаёт ВЫЗЫВАЕМЫЙ
+// хендл (off()/await/.unsubscribe/.removeCallback), removeCallback — как было.
+// Только ТИП: нужен потому, что БАЗОВЫЙ listenSocket намеренно типизирован как
+// Promise<void> (его ждёт rpc-server-auto: `done.then`), а клиентский слой должен
+// видеть хендл. First/All/Smart уже получают tSubHandle через свой каст.
+// callback отдаёт tSubHandle & Promise<void>: пересечение с Promise<void> хранит
+// строгую аддитивность — старое `const p: Promise<void> = deep.ev.callback(fn)` всё ещё
+// компилится, а вызываемость/await/.unsubscribe/.removeCallback доступны поверх.
+type WithSubHandle<R> = R extends { callback: (...a: infer A) => any }
+    ? Omit<R, 'callback'> & { callback: (...a: A) => tSubHandle & Promise<void> }
+    : R
 
 type Obj = Record<string, any>;
 type ListenBase<T extends any[]> = ReturnType<typeof funcListenCallbackBase<T>>;
@@ -11,8 +23,8 @@ type InferArgs<T> = T extends { addListen: (cb: (...args: infer R) => void, ...r
 
 // Типы для различных вариантов Socket-лиссенеров
 export type DeepSocketListen<T> = {
-    [K in keyof T]: T[K] extends { addListen: Function } 
-        ? ReturnType<typeof listenSocket<InferArgs<T[K]>>>
+    [K in keyof T]: T[K] extends { addListen: Function }
+        ? WithSubHandle<ReturnType<typeof listenSocket<InferArgs<T[K]>>>>
         : T[K] extends (...a: any[]) => any ? T[K]
         : T[K] extends Promise<any> ? T[K] // экземпляры Promise проходят как есть (typeof Promise ловил только конструктор)
         : T[K] extends typeof Promise ? T[K]
@@ -97,6 +109,14 @@ export function deepMapByKeys<T, T2 extends Obj, T3>(
     // тонкая обёртка над deepMapByKeysList — единое тело рекурсии (раньше дублировалось)
     return deepMapByKeysList(obj1, Object.keys(obj2), func as (a: any) => T3) as any;
 }
+
+// ── Дедуп: НАМЕРЕННО не здесь (layering) ────────────────────────
+// Эти deepListen*/listenSocket-обёртки в client-auto в итоге гонят тот же провод
+// `*.callback(fn)`, который УЖЕ дедупит rpc-client (subscribeShared, ветка sendCall
+// по path[-1]=="callback"). Дедуп на этом слое был бы повторным: задвоил бы счётчик
+// потребителей и развилку отписки и мог бы оборвать сетевую подписку, пока жив
+// соседний локальный потребитель. Владелец сокета/id-пула (rpc-client) и владеет
+// wire-дедупом; этот слой остаётся тонким per-subscriber мультиплексором.
 
 // ── Deep-модификаторы ───────────────────────────────────────────
 

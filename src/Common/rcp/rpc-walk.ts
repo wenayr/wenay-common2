@@ -51,7 +51,12 @@ export function walk(
     // Если объект уже упакован маркером — передаём как есть в onLeaf
     if (val instanceof Date || val instanceof Map || val instanceof Set || val instanceof RegExp) return onLeaf(val);
 
-    if (ALL_MARKERS.has(Object.keys(val)[0])) return onLeaf(val);
+    // Упакованный лист — это ВСЕГДА объект из одного ключа-маркера ({ $_d: ... }).
+    // Раньше проверяли только первый ключ → обычный объект, чей первый ключ случайно
+    // совпал с маркером ({ $_d: 5, name: "x" }), ошибочно считался листом и терял остальные
+    // ключи. Требуем ровно один ключ — многоключевые объекты идут в обычную рекурсию.
+    const ks0 = Object.keys(val);
+    if (ks0.length === 1 && ALL_MARKERS.has(ks0[0])) return onLeaf(val);
     if (Array.isArray(val)) {
         if (lim && val.length > lim.maxArrayLen) throw new PayloadLimitError("array too long");
         return val.map(v => walk(v, onLeaf, lim, depth + 1));

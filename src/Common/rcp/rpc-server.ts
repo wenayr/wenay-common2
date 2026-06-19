@@ -2,6 +2,7 @@ import {isNoStrict} from "./rpc-dynamic";
 import { isSafeKey, resolveLimits, PayloadLimitError, type RpcLimits } from "./rpc-limits";
 import {unpack, errToObj, packResult} from "./rpc-walk";
 import { Pkt, IS_RPC_LISTEN, type SocketTmpl } from "./rpc-protocol";
+import { MyError } from "../../toError/myThrow";
 
 type Func = (...args: any[]) => any;
 
@@ -9,6 +10,19 @@ type PromiseServerHooks<T> = {
     onRequest?: (ctx: { key: string[]; request: any[]; fnName: string; fn: Func }) => boolean | Promise<boolean>;
     onInvalid?: (ctx: { reason: "invalid_payload" | "not_function" | "resolve_error" | "rate_limit"; key?: any; request?: any; error?: any }) => void | Promise<void>;
     resolveTransform?: (value: any) => any;
+};
+
+// In-band авторизация (P3 «подтверждение»): клиент шлёт Pkt.HELLO с токеном, сервер его
+// проверяет и (опц.) подменяет обслуживаемый объект на фасад этого principal, затем шлёт
+// Pkt.MAP с authAck. Без auth поведение прежнее. Источник токена и admission — вне ядра.
+type RpcServerAuth = {
+    /** token → { object?: фасад principal, ack?: что отдать клиенту в authAck }. throw/ack.ok===false = отказ. */
+    resolveAuth: (token: any) => { object?: any; ack?: any } | Promise<{ object?: any; ack?: any }>;
+    /** true → до успешного HELLO CALL/PIPE отклоняются ("Unauthorized").
+     *  ОБЯЗАТЕЛЕН для контроля доступа: без gate начальный `object` вызывается ДО HELLO,
+     *  а его схема раскрывается в ответ на STRICT — поэтому начальный `object` держи ПУСТЫМ,
+     *  а защищённую поверхность отдавай фасадом из resolveAuth(principal). */
+    gate?: boolean;
 };
 
 // Повторный createRpcServer на том же сокете+ключе раньше ДОБАВЛЯЛ второй socket.on
@@ -22,12 +36,10 @@ function createServer<T extends object>(
     target: T,
     hooks?: PromiseServerHooks<T>,
     limits?: RpcLimits,
+    auth?: RpcServerAuth,
 ) {
     const lim = resolveLimits(limits);
-    const methods: Function[] = [];
-    const contexts: any[] = [];
-    const routeMap: Record<string, number> = {};
-    const listenPaths: string[] = []; // адреса Listen-узлов — декларируются клиенту в Pkt.MAP (4-й элемент)
+    const IS_RPC_PIPE = Symbol.for("isRpcPipe");
 
     function transformTree(obj: any): any {
         let current = obj;
@@ -46,22 +58,6 @@ function createServer<T extends object>(
         return out;
     }
 
-    const resolved = transformTree(target);
-
-    function index(obj: any, prefix: string) {
-        for (const k of Object.keys(obj)) {
-            if (!isSafeKey(k)) continue;
-            const v = obj[k];
-            const path = prefix ? prefix + "." + k : k;
-            if (typeof v == "function") { routeMap[path] = methods.length; methods.push(v); contexts.push(obj); }
-            else if (v && typeof v == "object" && !isNoStrict(v)) {
-                if ((v as any)[IS_RPC_LISTEN]) listenPaths.push(path);
-                index(v, path);
-            }
-        }
-    }
-    index(resolved, "");
-
     function serialize(obj: any): any {
         const out: any = {};
         for (const k of Object.keys(obj)) {
@@ -78,11 +74,42 @@ function createServer<T extends object>(
         return out;
     }
 
-    const strictSchema = serialize(resolved);
-    const send = (d: any) => socket.emit(key, d);
-    const IS_RPC_PIPE = Symbol.for("isRpcPipe");
+    // Таблицы диспетчеризации перестраиваются при смене principal (re-auth) → держим в let.
+    let methods: Function[] = [];
+    let contexts: any[] = [];
+    let routeMap: Record<string, number> = {};
+    let listenPaths: string[] = []; // адреса Listen-узлов — декларируются клиенту в Pkt.MAP (4-й элемент)
+    let strictSchema: any = {};
+    let currentTarget: any = target; // активный объект (фасад текущего principal)
 
-    send([Pkt.MAP, routeMap, strictSchema, listenPaths]);
+    function buildDispatch(t: any) {
+        const m: Function[] = [], cx: any[] = [], rm: Record<string, number> = {}, lp: string[] = [];
+        const resolved = transformTree(t);
+        (function index(obj: any, prefix: string) {
+            for (const k of Object.keys(obj)) {
+                if (!isSafeKey(k)) continue;
+                const v = obj[k];
+                const path = prefix ? prefix + "." + k : k;
+                if (typeof v == "function") { rm[path] = m.length; m.push(v); cx.push(obj); }
+                else if (v && typeof v == "object" && !isNoStrict(v)) {
+                    if ((v as any)[IS_RPC_LISTEN]) lp.push(path);
+                    index(v, path);
+                }
+            }
+        })(resolved, "");
+        methods = m; contexts = cx; routeMap = rm; listenPaths = lp; strictSchema = serialize(resolved); currentTarget = t;
+    }
+    buildDispatch(target);
+
+    const send = (d: any) => socket.emit(key, d);
+    // gate=true → до успешного HELLO вызовы отклоняются; без auth — открыто, как раньше.
+    let authed = !auth?.gate;
+    let authAck: any = undefined;
+    // 5-й элемент MAP появляется ТОЛЬКО когда есть authAck — иначе провод байт-в-байт как раньше.
+    const sendMap = () => send(authAck !== undefined
+        ? [Pkt.MAP, routeMap, strictSchema, listenPaths, authAck]
+        : [Pkt.MAP, routeMap, strictSchema, listenPaths]);
+    sendMap();
 
     let detached = false;
     let byKey = SERVERS.get(socket);
@@ -96,7 +123,25 @@ function createServer<T extends object>(
 
     socket.on(key, async (msg: any) => {
         if (detached) return;
-        if (msg == Pkt.STRICT) { send([Pkt.MAP, routeMap, strictSchema, listenPaths]); return; }
+        if (msg == Pkt.STRICT) { sendMap(); return; }
+        // HELLO: in-band авторизация. Без стратегии auth — игнор (старый клиент против сервера без auth).
+        if (Array.isArray(msg) && msg[0] === Pkt.HELLO) {
+            // Сервер без auth: ответ на HELLO всё равно 5-элементный (authAck=null) — чтобы клиент
+            // отличил «ответ на HELLO» от 4-элементного STRICT и не висел/не путал их.
+            if (!auth?.resolveAuth) { send([Pkt.MAP, routeMap, strictSchema, listenPaths, null]); return; }
+            try {
+                const r: any = await auth.resolveAuth(msg[1]);
+                if (r && r.object !== undefined) buildDispatch(r.object); // фасад нового principal
+                authAck = r && r.ack !== undefined ? r.ack : { ok: true };
+                authed = authAck?.ok !== false;
+                sendMap(); // principal-specific routeMap + authAck
+            } catch (e: any) {
+                // Отказ reauth НЕ роняет уже живую сессию: principal/authed/routeMap не трогаем,
+                // лишь сообщаем клиенту ok:false локальным ack (его reauth() так и резолвится).
+                send([Pkt.MAP, routeMap, strictSchema, listenPaths, { ok: false, reason: e?.message ?? String(e) }]);
+            }
+            return;
+        }
         if (!Array.isArray(msg) || (msg[0] !== Pkt.CALL && msg[0] !== Pkt.PIPE)) return;
 
         const isPipe = msg[0] === Pkt.PIPE;
@@ -105,6 +150,10 @@ function createServer<T extends object>(
 
         if (typeof reqId !== "number" || !Number.isFinite(reqId)) {
             hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "reqId is not a valid number" });
+            return;
+        }
+        if (!authed) { // gate: вызовы до успешного HELLO
+            if (wait) send([Pkt.RESP, reqId, null, errToObj(new MyError("Unauthorized", "E_UNAUTHORIZED"))]);
             return;
         }
         if (typeof ref !== "number" && !Array.isArray(ref)) {
@@ -138,7 +187,7 @@ function createServer<T extends object>(
                 if (idx !== undefined) {
                     fn = methods[idx]; ctx = contexts[idx];
                 } else {
-                    let curr: any = target;
+                    let curr: any = currentTarget;
                     for (let i = 0; i < ref.length - 1; i++) {
                         const seg = ref[i];
                         if (curr == null || typeof curr !== "object" || !(seg in curr)) { curr = undefined; break; }
@@ -216,15 +265,15 @@ function createServer<T extends object>(
     });
 }
 
-export function createRpcServer<T extends object>({ socket, object: target, socketKey: key, debug = false, hooks, limits }: {
-    socket: SocketTmpl; object: T; socketKey: string; debug?: boolean; hooks?: PromiseServerHooks<T>; limits?: RpcLimits;
+export function createRpcServer<T extends object>({ socket, object: target, socketKey: key, debug = false, hooks, limits, auth }: {
+    socket: SocketTmpl; object: T; socketKey: string; debug?: boolean; hooks?: PromiseServerHooks<T>; limits?: RpcLimits; auth?: RpcServerAuth;
 }) {
     if (debug) {
         const origOn = socket.on.bind(socket);
         socket.on = (e: string, cb: (d: any) => void) =>
             origOn(e, (d: any) => { console.log("[RPC IN]", typeof d == "object" ? JSON.stringify(d) : d); cb(d); });
     }
-    createServer(socket, key, target, hooks, limits);
+    createServer(socket, key, target, hooks, limits, auth);
 }
 
-export type { PromiseServerHooks, RpcLimits };
+export type { PromiseServerHooks, RpcLimits, RpcServerAuth };
