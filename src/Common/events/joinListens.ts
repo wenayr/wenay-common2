@@ -19,6 +19,9 @@ type JoinResult<R> = {
     listen: listen<[R, string]>[1],
     pending: Map<string, Map<string, any>>,
     clear: (tid?: string) => void,
+    // снести весь join: снять все подписки на порты + очистить бакеты.
+    // (раньше отсутствовал в типе — метод был в реализации, но невидим потребителю/типам)
+    destroy: () => void,
     // Перегрузка для объекта (требует ключ) и массива (ключ генерируется сам)
     addListen: (listener: listen<any>[1], key?: string) => void
 }
@@ -61,8 +64,8 @@ export function joinListens(
             ? keys.map(k => bucket.get(k))        // массив → массив данных
             : Object.fromEntries(bucket)           // объект → объект данных
 
-        bucket.clear() //uckets.delete(tid)
-        set(result, tid)
+        buckets.delete(tid)   // группа собрана и отправлена → удаляем бакет целиком
+        set(result, tid)      // (был bucket.clear() — пустой Map оставался в buckets навсегда → утечка по tid)
     }
 
     // храним отписки, чтобы destroy() реально снимал подписки (раньше это была пустая заглушка → утечка)
@@ -74,8 +77,8 @@ export function joinListens(
             buckets.get(tid)!.set(portId, data.length <= 1 ? data[0] : data)
             tryFire(tid)
         }
-        listener.addListen(cb)
-        unsubs.push(() => listener.removeListen(cb))
+        // off() из addListen — единственный путь отписки (идиома v2)
+        unsubs.push(listener.addListen(cb))
     }
 
     for (const portId of keys) {
@@ -88,11 +91,10 @@ export function joinListens(
         clear: (tid?: string) => {
             tid ? buckets.delete(tid) : buckets.clear()
         },
-        destroy: (_tid?: string) => {
+        destroy: () => {
             for (const u of unsubs) u()
             unsubs.length = 0
             buckets.clear()
-            
         },
         addListen: (listener: any, key?: string) => {
             // Если режим массива, генерируем индекс автоматически (текущая длина)

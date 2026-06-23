@@ -20,22 +20,24 @@ export function PromiseArrayListen<T extends any = unknown>(array: ((() => Promi
     }
     const arr = array.map((e, i) => e instanceof Promise ? e.then(r => a(r, i)).catch((er: any) => b(er, i))
         : () => (async () => e())().then(r => a(r, i)).catch((er: any) => b(er, i)))
-    return {
-        listenOk: (a: (...d: tOk) => any) => {
-            t[1].addListen(a)
-            return () => t[1].removeListen(a)
-        },
-        listenError: (a: (...d: tError) => any) => {
-            c[1].addListen(a)
-            return () => c[1].removeListen(a)
-        },
-        promise: {
-            all: () => Promise.all(arr),
 
-            allSettled: () => Promise.allSettled(arr),
+    // Promise-входы уже стартовали выше (eager). Фабрики-входы стали thunk'ами (lazy) — но
+    // Promise.all/allSettled НЕ вызывают thunk'и, поэтому без этого фабрика не запустится никогда
+    // (а .all() зарезолвится самой функцией). startAll() вызывает каждый thunk РОВНО ОДИН раз
+    // (мемоизация в `started`), так что all/allSettled/getData делят один и тот же запуск.
+    const started: Promise<any>[] = []
+    const startAll = () => arr.map((x, i) => started[i] ??= (typeof x === 'function' ? x() : x))
+
+    return {
+        listenOk: (a: (...d: tOk) => any) => t[1].addListen(a),
+        listenError: (a: (...d: tError) => any) => c[1].addListen(a),
+        promise: {
+            all: () => Promise.all(startAll()),
+
+            allSettled: () => Promise.allSettled(startAll()),
         },
         getData() {
-            return arr
+            return startAll()
         },
         status() {
             return {ok, error: errorCount, count}

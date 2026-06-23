@@ -153,7 +153,11 @@ export const errToObj = (e: any): any => {
     const o: any = { name: e.name, message: e.message, stack: e.stack };
     const { code, data, cause } = e as any;
     if (code !== undefined) o.code = code;
-    if (data !== undefined) o.data = data;
+    // data ПАКУЕМ тем же rich-walk, что и обычный результат: иначе BigInt/Date/Map/Set
+    // внутри data уходят сырыми в JSON.stringify на emit ошибки → throw ВНУТРИ catch →
+    // вылетает мимо RPC try/catch → коннект убит. Симметрично распаковывается в reviveErr.
+    // Для plain-JSON data packResult — identity (нет маркеров), старые пиры байт-в-байт.
+    if (data !== undefined) o.data = packResult(data);
     if (cause !== undefined) o.cause = errToObj(cause);
     return o;
 };

@@ -26,7 +26,9 @@ export function createIterableObject<V>(
         },
 
         deleteProperty(_, key: string | symbol) {
-            if (!onChange || typeof key !== "string") return false
+            // read-only режим / не-строковый ключ — тихий no-op. MUST вернуть true:
+            // false здесь => TypeError в strict-режиме на `delete obj[k]` (та же причина, что в set).
+            if (!onChange || typeof key !== "string") return true
             onChange("delete", key)
             return true
         },

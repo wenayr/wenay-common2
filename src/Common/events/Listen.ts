@@ -14,8 +14,10 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
     type Z = NormalizeTuple<T>
     type cbClose = ()=>void
     const obj = new Map<Listener<Z>|key, Listener<Z>>()
-    const evClose = new Map<cbClose|Listener<Z>|key, cbClose>()
-    const sinh = new Map<cbClose, Listener<Z>>()
+    // evClose/sinh are LAZY: allocated only when a cbClose is actually used.
+    // Most subscribers pass no cbClose, so these stay null — no empty Maps per Listen.
+    let evClose: Map<cbClose|Listener<Z>|key, cbClose> | null = null
+    let sinh: Map<cbClose, Listener<Z>> | null = null
     let a: Listener<Z> | null = (...e) => {obj.forEach(z => z(...e))}
     let close: (() => void) | null | undefined= null
     let cached: Listener<Z>[] | null = null
@@ -40,7 +42,23 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
     }
 
     const func: Listener<Z> = (...e) => { a?.(...e) }
-    const run = () => { 
+
+    // Реальная логика снятия одной подписки по ключу. Внутренняя, поэтому off()
+    // (то, что отдаёт addListen) и deprecated-метод removeListen бьют в неё оба —
+    // off() не «зажигает» deprecation-предупреждение на собственную реализацию.
+    function removeKey(k: Listener<Z> | null | key) {
+        obj.delete(k!)
+        const e = evClose?.get(k!)
+        if (fast) rebuild()
+        evClose?.delete(k!)
+        if (e) {
+            evClose?.delete(e)
+            sinh?.delete(e)
+        }
+        event?.("remove", obj.size, api)
+    }
+
+    const run = () => {
         close = (b(func) ?? (() => {})) as (() => void)
         
         // Подписываемся на событие закрытия
@@ -60,9 +78,8 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
             close = null
             obj.clear()
             if (fast) rebuild()
-            sinh.clear()
-            evClose.forEach(cb => cb())
-            evClose.clear()
+            sinh = null
+            if (evClose) { evClose.forEach(cb => cb()); evClose = null }
             
             // Отписываемся от события закрытия
             if (closeUnsubscribe) {
@@ -71,46 +88,53 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
             }
         },
         eventClose: (cb: ()=>void) => {
+            evClose = evClose ?? new Map()
             evClose.set(cb, cb)
-            return () => {evClose.delete(cb)}
+            return () => { evClose?.delete(cb) }
         },
+        /**
+         * @deprecated Скоро будет убран. Снимайте close-обработчик через `off()`,
+         * который возвращает `eventClose(cb)`. Сохранено для обратной совместимости.
+         */
         removeEventClose: (cb: (()=>void)) => {
-            const e=sinh.get(cb)
-            if (e) evClose.delete(e)
-            sinh.delete(cb)
-            evClose.delete(cb)
+            const e=sinh?.get(cb)
+            if (e) evClose?.delete(e)
+            sinh?.delete(cb)
+            evClose?.delete(cb)
         },
         addListen: (cb: Listener<Z>, {cbClose, key}: {cbClose?: () => void, key?: key } = {}) => {
             const k = key ?? cb
             obj.set(k, cb)
             if (cbClose) {
-                if (evClose.has(k)) {
+                if (evClose && evClose.has(k)) {
                     const r=evClose.get(k)!
                     if (r!==cbClose) {
                         evClose.delete(r)
                         evClose.delete(k)
-                        sinh.delete(r)
+                        sinh?.delete(r)
                     }
                 }
+                evClose = evClose ?? new Map()
                 evClose.set(k, cbClose)
+                sinh = sinh ?? new Map()
                 sinh.set(cbClose, cb)
             }
             if (fast) rebuild()
             event?.("add", obj.size, api)
-            return () => api.removeListen(k)
+            return () => removeKey(k)
         },
-        removeListen: (k: Listener<Z> | null| key) => {
-            obj.delete(k!)
-            const e=evClose.get(k!)
-            if (fast) rebuild()
-            evClose.delete(k!)
-            if (e) {
-                evClose.delete(e)
-                sinh.delete(e)
-            }
-            event?.("remove", obj.size, api)
-        },
+        /**
+         * @deprecated Скоро будет убран. Снимайте подписку через `off()`, который
+         * возвращает `addListen()` (идиома `const off = listen.addListen(cb); off()`),
+         * либо через slim-`Listen2`/`UseListen2`. Метод сохранён только для обратной
+         * совместимости и делегирует в ту же внутреннюю логику, что и `off()`.
+         */
+        removeListen: (k: Listener<Z> | null| key) => removeKey(k),
         count: () => obj.size,
+        /**
+         * @deprecated Скоро будет убран. Интроспекция ключей — не часть slim-API;
+         * сохранено для обратной совместимости.
+         */
         get getAllKeys(): (Listener<NormalizeTuple<T>>|key)[] { return [...obj.keys()] }
     }
     return api
@@ -126,6 +150,48 @@ export function UseListen<T>(data: Parameters<typeof funcListenCallbackBase<T>>[
     a.run()
     t = a.func
     return [t, a] as const
+}
+
+// =====================================================================
+// SLIM API v2 — минимальная поверхность подписчика (off()-only)
+// =====================================================================
+// Полный api (funcListenCallbackBase) исторически оброс методами, из которых
+// на практике используется горстка, а половина дублирует друг друга
+// (removeListen ≈ off(), removeEventClose ≈ off() от eventClose, getAllKeys).
+// Listen2 — это outward-фасад (audience-split по CLAUDE.md: control = emit,
+// api = подписка), который оставляет только нужное:
+//   • on(cb) -> off()  — единственный способ отписки (идиома off);
+//   • close()          — снести весь Listen (clean);
+//   • count()          — нагруженная семантика cold/hot (0↔1).
+// Это СТРОГО подмножество старого api поверх той же реализации — никакой новой
+// логики, полная совместимость поведения. Старые методы остаются и помечены
+// @deprecated (см. выше).
+
+export type Listen2<T> = {
+    /** Подписаться. Возвращает `off()` — ЕДИНСТВЕННЫЙ способ отписки в v2. */
+    on: (cb: Listener<NormalizeTuple<T>>, opts?: {key?: string}) => (() => void)
+    /** Снести весь Listen: close-обработчики + сброс всех подписчиков. */
+    close: () => void
+    /** Текущее число подписчиков (для cold/hot-переходов). */
+    count: () => number
+}
+
+/** Slim-вид поверх полного api funcListenCallbackBase. Без новой логики. */
+export function toListen2<T>(full: ReturnType<typeof funcListenCallbackBase<T>>): Listen2<T> {
+    return {
+        on: (cb, opts) => full.addListen(cb, opts),
+        close: () => full.close(),
+        count: () => full.count(),
+    }
+}
+
+/**
+ * Slim-аналог UseListen: возвращает `[emit, listen]`, где listen — это Listen2
+ * (только on/close/count). Для нового кода предпочтительнее полного UseListen.
+ */
+export function UseListen2<T>(data: Parameters<typeof funcListenCallbackBase<T>>[1] = {fast: true}) {
+    const [emit, full] = UseListen<T>(data)
+    return [emit, toListen2<T>(full)] as const
 }
 
 /** Проверяет, является ли объект результатом funcListenCallbackBase */

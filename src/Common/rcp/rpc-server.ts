@@ -1,6 +1,7 @@
 import {isNoStrict} from "./rpc-dynamic";
 import { isSafeKey, resolveLimits, PayloadLimitError, type RpcLimits } from "./rpc-limits";
 import {unpack, errToObj, packResult} from "./rpc-walk";
+import { isPlainObject, createCbShapeServer } from "./rpc-shape";
 import { Pkt, IS_RPC_LISTEN, type SocketTmpl } from "./rpc-protocol";
 import { MyError } from "../../toError/myThrow";
 
@@ -102,6 +103,22 @@ function createServer<T extends object>(
     buildDispatch(target);
 
     const send = (d: any) => socket.emit(key, d);
+
+    // Адаптивное уплотнение тиков подписки. compactOk — клиент прислал Pkt.CAPS (умеет компакт).
+    // sendCb: частый объект одной формы → Pkt.SHAPE(один раз) + Pkt.CBV(значения); иначе обычный Pkt.CB.
+    let compactOk = false;
+    const cbShapes = createCbShapeServer();
+    const sendCb = (cbId: number, cbArgs: any[]) => {
+        if (compactOk && cbArgs.length == 1 && isPlainObject(cbArgs[0])) {
+            const obj = cbArgs[0];
+            const r = cbShapes.offer(cbId, obj);
+            if (r.mode == "register") { send([Pkt.SHAPE, cbId, r.shapeId, r.keys]); send([Pkt.CBV, cbId, r.shapeId, r.keys.map(k => packResult(obj[k]))]); return; }
+            if (r.mode == "compact") { send([Pkt.CBV, cbId, r.shapeId, r.keys.map(k => packResult(obj[k]))]); return; }
+        }
+        send([Pkt.CB, cbId, cbArgs.map(packResult)]);
+    };
+    const sendCbEnd = (cbId: number) => { cbShapes.drop(cbId); send([Pkt.CB_END, cbId]); };
+
     // gate=true → до успешного HELLO вызовы отклоняются; без auth — открыто, как раньше.
     let authed = !auth?.gate;
     let authAck: any = undefined;
@@ -124,6 +141,8 @@ function createServer<T extends object>(
     socket.on(key, async (msg: any) => {
         if (detached) return;
         if (msg == Pkt.STRICT) { sendMap(); return; }
+        // CAPS: клиент умеет компактные тики (Pkt.SHAPE/CBV). Старый сервер этот msg игнорирует.
+        if (Array.isArray(msg) && msg[0] === Pkt.CAPS) { compactOk = true; return; }
         // HELLO: in-band авторизация. Без стратегии auth — игнор (старый клиент против сервера без auth).
         if (Array.isArray(msg) && msg[0] === Pkt.HELLO) {
             // Сервер без auth: ответ на HELLO всё равно 5-элементный (authAck=null) — чтобы клиент
@@ -242,7 +261,7 @@ function createServer<T extends object>(
                     } else if (step.type === 'call') {
                         if (typeof current !== "function") throw new Error("Attempted to call a non-function in pipe");
                         // как в CALL: иначе Date/Map/BigInt в аргументах колбэка гибнут на JSON-транспорте
-                        const stepArgs = unpack(step.args, (cbId, cbArgs) => send([Pkt.CB, cbId, cbArgs.map(packResult)]), (cbId) => send([Pkt.CB_END, cbId]), lim);
+                        const stepArgs = unpack(step.args, sendCb, sendCbEnd, lim);
                         current = current(...stepArgs);
                     }
                 }
@@ -254,7 +273,7 @@ function createServer<T extends object>(
 
             } else {
                 // --- СТАНДАРТНАЯ ЛОГИКА CALL ---
-                const args = unpack(rawArgsOrSteps, (cbId, cbArgs) => send([Pkt.CB, cbId, cbArgs.map(packResult)]), (cbId) => send([Pkt.CB_END, cbId]), lim);
+                const args = unpack(rawArgsOrSteps, sendCb, sendCbEnd, lim);
                 const res = await fn.apply(ctx, args);
                 if (wait) send([Pkt.RESP, reqId, packResult(res)]);
             }

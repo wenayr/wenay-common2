@@ -20,7 +20,10 @@ function sharedPool(socket: object, key: string) {
 // Не-объекты и чужие формы отдаём как есть.
 const reviveErr = (o: any): any => {
     if (o == null || typeof o != "object" || typeof o.message != "string" || typeof o.name != "string") return o;
-    const err = MyError.fromWire(o);
+    // data распаковываем симметрично errToObj (rich-типы: BigInt/Date/Map/Set). Для plain-JSON
+    // unpackResult — identity, поэтому со старым сервером (сырой data) тоже корректно.
+    const o2 = o.data !== undefined ? { ...o, data: unpackResult(o.data) } : o;
+    const err = MyError.fromWire(o2);
     if (o.cause !== undefined) (err as any).cause = reviveErr(o.cause);
     return err;
 };
@@ -104,6 +107,9 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     const pool = sharedPool(socket, key);
     const pending = new Map<number, { ok: Function; fail: Function; cbs: number[] }>();
     const callbacks = new Map<number, Function>();
+    // компактные тики подписки: cbId → (shapeId → порядок ключей), задекларированные сервером в Pkt.SHAPE
+    const compactShapes = new Map<number, string[][]>();
+    let capsSent = false; // CAPS («умею компакт») шлём один раз по приходу первого MAP
     // id отменённых запросов/колбэков: НЕ возвращаем в пул сразу — поздний RESP/CB_END
     // сервера по переиспользованному id угнал бы чужой новый запрос
     const zombies = new Set<number>();
@@ -166,8 +172,29 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 cb(...cbArgs);
                 break;
             }
+            case Pkt.SHAPE: {
+                // сервер задекларировал форму компактных тиков для cbId: shapeId → порядок ключей
+                let m = compactShapes.get(msg[1]);
+                if (!m) { m = []; compactShapes.set(msg[1], m); }
+                m[msg[2]] = msg[3];
+                break;
+            }
+            case Pkt.CBV: {
+                // компактный тик: восстанавливаем объект по форме + значениям и зовём колбэк как обычный CB
+                const cb = callbacks.get(msg[1]);
+                if (!cb) break;
+                const keys = compactShapes.get(msg[1])?.[msg[2]];
+                if (!keys) break;
+                const vals = msg[3] || [];
+                let obj: any;
+                try { obj = {}; keys.forEach((k: string, i: number) => { obj[k] = unpackResult(vals[i], lim); }); }
+                catch (e) { if (debug) console.log("[RPC CBV] dropped:", e); break; }
+                cb(obj);
+                break;
+            }
             case Pkt.CB_END: {
                 const cbId = msg[1] as number;
+                compactShapes.delete(cbId);
                 // release только если id наш (трекался) — чужой/поздний CB_END не должен
                 // освобождать id, занятый другим запросом
                 if (callbacks.delete(cbId)) pool.release(cbId);
@@ -190,6 +217,9 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 // трогает auth. 4-элементный MAP (STRICT/начальный пуш) схема-only: не резолвит auth(),
                 // поэтому ожидающий auth() не словит преждевременный null от STRICT-компаньона.
                 if (msg.length > 4) setAuthStatus(msg[4]);
+                // CAPS один раз по приходу MAP: соединение установлено, сервер слушает, тики ещё не шли.
+                // Здесь, а НЕ в init(): динамический c.func init() не вызывает (MAP сервер пушит сам).
+                if (!capsSent) { capsSent = true; socket.emit(key, [Pkt.CAPS, 1]); }
                 break;
             }
         }
