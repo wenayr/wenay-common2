@@ -98,6 +98,9 @@ export function listenSocket<Z extends any[] = any[]>(
     // НЕ async: иначе async-обёртка проглотила бы вызываемый makeOff-хендл и вернула
     // бы голый Promise<void> — off() перестал бы работать. В теле нет await, де-async безопасен.
     function callback(z: Listener<Z>) {
+        if (typeof z !== "function") {
+            throw new TypeError("listenSocket.callback expects a function");
+        }
         if (last) stop?.(last);
         if (active) removeListen(active);
         if (resolveWait) { resolveWait(); resolveWait = null; }
@@ -164,6 +167,9 @@ export function listenSocket<Z extends any[] = any[]>(
     // колбэка (client.func.stream.on(cb) === .callback(cb)). Тот же вызываемый off()/await-хендл.
     // once — однократная подписка: первое событие + конец стрима (RPC_STOP→CB_END), затем off.
     function once(z: Listener<Z>) {
+        if (typeof z !== "function") {
+            throw new TypeError("listenSocket.once expects a function");
+        }
         let fired = false;
         const oneShot = ((...a: any[]) => {
             if (fired) return; fired = true;

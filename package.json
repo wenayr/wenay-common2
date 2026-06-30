@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "1.0.46",
+  "version": "1.0.48",
   "description": "Common library",
   "strict": true,
   "main": "lib/index.js",
@@ -50,6 +50,7 @@
   },
   "exports": {
     ".": "./lib/index.js",
+    "./observe-all2": "./lib/Common/ObserveAll2/reactive2.js",
     "./lib/client": "./lib/client.js",
     "./lib/server": "./lib/server.js",
     "./client": "./lib/client.js",

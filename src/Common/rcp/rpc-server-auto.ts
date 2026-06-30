@@ -48,6 +48,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         if (!result) {
             const subs = new Map<Function, ReturnType<typeof listenSocket>>();
             function subscribe(z: any) {
+                if (typeof z !== "function") return Promise.reject(new TypeError("Listen callback expects a function"));
                 // Opt-in потолок на узел: лишнего подписчика тихо игнорируем — стрим для него
                 // не стартует, серверная подписка не создаётся. Без опции ветка не берётся.
                 if (maxPerListen != null && subs.size >= maxPerListen) return Promise.resolve();
@@ -64,6 +65,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
             }
             // once — однократная подписка: первое событие → CB, затем RPC_STOP→CB_END и off.
             function subscribeOnce(z: any) {
+                if (typeof z !== "function") return Promise.reject(new TypeError("Listen once expects a function"));
                 if (maxPerListen != null && subs.size >= maxPerListen) return Promise.resolve();
                 if (!registry.has(parent)) registry.set(parent, { subs });
                 const w = listenSocket(parent, { addListenClose: disconnectListen, throttle });
