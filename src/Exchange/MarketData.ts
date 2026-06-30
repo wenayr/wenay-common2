@@ -267,6 +267,7 @@ export class CQuotesHistory
 	}
 
 	//-----
+	/** @deprecated use {@link get} */
 	public Bars(tf :TF) : IBarsImmutable|null
 	{
 		let bars= this._GetBars(tf);
@@ -274,6 +275,9 @@ export class CQuotesHistory
 			bars.Mutable= false;  // Получена ссылка на объект
 		return bars as IBarsImmutable|null;
 	}
+
+	// per-timeframe bar accessor — builds/resamples on demand, returns null if unavailable
+	public get(tf :TF) { return this.Bars(tf); }
 
 	/*
 		{  return Info.bars; }
@@ -317,18 +321,34 @@ export class CQuotesHistoryMutable extends CQuotesHistory
 		super([], name);
 	}
 	// Добавить бары в конец
+	/** @deprecated use {@link append} */
 	public AddEndBars(bars: IBars) : boolean;
 	// Добавить бары в конец
+	/** @deprecated use {@link append} */
 	public AddEndBars(bars: readonly CBar[]|CBar, tf: TF) : boolean;
 	// Добавить бары в конец
 	public AddEndBars(bars: readonly CBar[]|CBar|IBars, tf?: TF) : boolean { return this._AddBarsExt(bars, tf, true); }
 
+	// append bars to the end
+	public append(bars: IBars) : boolean;
+	// append bars to the end
+	public append(bars: readonly CBar[]|CBar, tf: TF) : boolean;
+	public append(bars: readonly CBar[]|CBar|IBars, tf?: TF) { return this._AddBarsExt(bars, tf, true); }
+
 	// Добавить бары в начало
+	/** @deprecated use {@link prepend} */
 	public AddStartBars(bars: IBars) : boolean;
 	// Добавить бары в начало
+	/** @deprecated use {@link prepend} */
 	public AddStartBars(bars: readonly CBar[]|CBar,  tf: TF) : boolean;
 	// Добавить бары в начало
 	public AddStartBars(bars: readonly CBar[]|CBar|IBars,  tf?: TF) : boolean { return this._AddBarsExt(bars, tf, false); }
+
+	// prepend bars to the start
+	public prepend(bars: IBars) : boolean;
+	// prepend bars to the start
+	public prepend(bars: readonly CBar[]|CBar,  tf: TF) : boolean;
+	public prepend(bars: readonly CBar[]|CBar|IBars,  tf?: TF) { return this._AddBarsExt(bars, tf, false); }
 
 	private checkBars(bars :readonly CBar[], tf :TF)  {
 		let period= new Period(tf);
@@ -383,6 +403,7 @@ export class CQuotesHistoryMutable extends CQuotesHistory
 	}
 
 	// Добавить тики в конец, с возможностью замены предыдущих  баров
+	/** @deprecated use {@link addTicks} */
 	public AddTicks(ticks : readonly ITick[]) : boolean
 	{
 		if (!ticks || ticks.length==0) return true;
@@ -400,6 +421,9 @@ export class CQuotesHistoryMutable extends CQuotesHistory
 
 
 	public AddTick(tick : ITick) { return this.AddTicks([tick]); }
+
+	// append ticks to the end (replaces the last bar) — strict append-only variant is AddNewTicks
+	public addTicks(ticks : readonly ITick[]) { return this.AddTicks(ticks); }
 
 	private getOrSetMutableBars(tf :TF) {
 		let bars= this._GetBars(tf) ?? new CBarsInternal(tf);  //if (! bars) throw "bars is null!";

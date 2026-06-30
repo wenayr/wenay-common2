@@ -105,6 +105,7 @@ export function* colorGenerator2(data?: { min?: number, max?: number}): Generato
 }
 
 //светлость оттенков
+/** @deprecated use {@link hueRGB} */
 export function colorGeneratorByCount2(value=180, count=100, index=1): [number, number, number] {
     const step = Math.floor(value * 6 * index / count)
     const p = Math.floor(step / value) % 6   // на обороте (p==6) иначе чёрный [0,0,0] вместо красного
@@ -114,11 +115,17 @@ export function colorGeneratorByCount2(value=180, count=100, index=1): [number, 
     const b = (p==3 || p==4) ? value : (p==5) ? value-z : (p==2) ? z : 0
     return [r,g,b];
 }
+/** @deprecated use {@link hue} */
 export function colorGeneratorByCount(value=180, count=100, index=1) : ColorString {
     const [r,g,b] = colorGeneratorByCount2(value, count, index)
     return `rgb(${r},${g},${b})`;
 }
 
+// idiomatic aliases: HSV hue-wheel walk (no yield — a plain fn, not a generator)
+export const hue = colorGeneratorByCount        // -> ColorString
+export const hueRGB = colorGeneratorByCount2    // -> [r,g,b] tuple
+
+/** @deprecated use {@link toRGBA} */
 export function colorStringToRGBA(str :ColorString) : [number,number,number,number];
 export function colorStringToRGBA(str :string) : [number,number,number,number]|undefined;
 
@@ -144,6 +151,9 @@ export function colorStringToRGBA(str: string): [number, number, number, number]
 
     return undefined; // Возвращаем undefined для некорректных строк
 }
+
+// idiomatic alias (preserves both overloads via the value's type), pairs with rgb()
+export const toRGBA = colorStringToRGBA
 
 // Проверяет, является ли значение RGB допустимым (0-255)
 function isValidRGBValue(value: number): boolean {

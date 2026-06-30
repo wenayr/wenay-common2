@@ -157,7 +157,7 @@ export class TF implements IPeriod
     // гарантированное получение таймфрейма, иначе выбрасывается исключение
     static getAsserted(name :string) : TF { return TF.get(name) ?? (()=>{throw "Unknown timeframe: "+name;})(); }
 
-	// Получение таймфрейма по имени, иначе null
+	/** @deprecated use {@link TF.get} (this is a literal duplicate of it) */
 	static fromName<T extends string>(name : T)  { return this.get(name); }
 	// Получение таймфрейма из секунд
 	static fromSec(value : number) : TF|null { return this._mapBySec[value]; }
@@ -383,34 +383,77 @@ export class Period implements IPeriod //, MMM
 function str2(n :number) { return n<=9 ? '0'+n : ''+n; }
 function str3(n :number) { return (n<=9 ? '00' : n<=99 ? '0' : '') +n; }
 
+/** @deprecated use {@link format}(date, 'HH:mm:ss.SSS') */
 export function timeToStr_hhmmss_ms(date : const_Date) { return str2(date.getUTCHours())+":"+str2(date.getUTCMinutes())+":"+str2(date.getUTCSeconds())+"."+str3(date.getUTCMilliseconds()); }
 
+/** @deprecated use {@link format}(date, 'HH:mm:ss') */
 export function timeToStr_hhmmss(date : const_Date) { return str2(date.getUTCHours())+":"+str2(date.getUTCMinutes())+":"+str2(date.getUTCSeconds()); }
 
+/** @deprecated use {@link format}(date, 'yyyy-MM-dd HH:mm') */
 export function timeToStr_yyyymmdd_hhmm(date : const_Date, dateDelim="-") { return date.getUTCFullYear()+dateDelim+str2(date.getUTCMonth()+1)+dateDelim+str2(date.getUTCDate())+" "+str2(date.getUTCHours())+":"+str2(date.getUTCMinutes()); }
 
+/** @deprecated use {@link format}(date, 'yyyy-MM-dd HH:mm:ss') */
 export function timeToStr_yyyymmdd_hhmmss(date : const_Date, dateDelim="-") { return timeToStr_yyyymmdd_hhmm(date, dateDelim)+":"+str2(date.getUTCSeconds()); }
 
+/** @deprecated use {@link format}(date, 'yyyy-MM-dd HH:mm:ss.SSS') */
 export function timeToStr_yyyymmdd_hhmmss_ms(date : const_Date, dateDelim="-") { return timeToStr_yyyymmdd_hhmmss(date, dateDelim)+"."+str3(date.getUTCMilliseconds()); }
 
 
+/** @deprecated use {@link format}(date, 'HH:mm:ss', { utc:false }) */
 export function timeLocalToStr_hhmmss(date : const_Date) { return str2(date.getHours())+":"+str2(date.getMinutes())+":"+str2(date.getSeconds()); }
 
+/** @deprecated buggy (no '.' before ms) — use {@link format}(date, 'HH:mm:ss.SSS', { utc:false }) for the correct dotted form */
 export function timeLocalToStr_hhmmss_ms(date : const_Date) { return timeLocalToStr_hhmmss(date) + str3(date.getMilliseconds()); }
 
+/** @deprecated use {@link format}(date, 'yyyy-MM-dd', { utc:false }) */
 export function timeLocalToStr_yyyymmdd(date : const_Date, dateDelim="-") { return date.getFullYear()+dateDelim+str2(date.getMonth()+1)+dateDelim+str2(date.getDate()); }
 
+/** @deprecated use {@link format}(date, 'yyyy-MM-dd HH:mm', { utc:false }) */
 export function timeLocalToStr_yyyymmdd_hhmm(date : const_Date, dateDelim="-") { return timeLocalToStr_yyyymmdd(date, dateDelim)+" "+str2(date.getHours())+":"+str2(date.getMinutes()); }
 
+/** @deprecated use {@link format}(date, 'yyyy-MM-dd HH:mm:ss', { utc:false }) */
 export function timeLocalToStr_yyyymmdd_hhmmss(date : const_Date, dateDelim="-") { return timeLocalToStr_yyyymmdd_hhmm(date, dateDelim)+":"+str2(date.getSeconds()); }
 
+/** @deprecated use {@link format}(date, 'yyyy-MM-dd HH:mm:ss.SSS', { utc:false }) */
 export function timeLocalToStr_yyyymmdd_hhmmss_ms(date : const_Date, dateDelim="-") { return timeLocalToStr_yyyymmdd_hhmmss(date, dateDelim)+"."+str3(date.getMilliseconds()); }
 
 //export function timeToString_yyyymmdd_hhmm_offset(date : const_Date) { let offset=date.getTimezoneOffset(); return timeLocalToStr_yyyymmdd_hhmm(date).replace(" ","T")+ "GMT"+(offset<0 ?'+' :'')+(-offset/60);   }
+/** @deprecated use {@link format}(date, 'yyyy-MM-dd HH:mm O', { utc:false }) (still used as a Date.prototype patch target) */
 export function timeToString_yyyymmdd_hhmm_offset(date : const_Date) { let offset=date.getTimezoneOffset(); return timeLocalToStr_yyyymmdd_hhmm(date)+ " GMT"+(offset<0 ?'+' :'')+(-offset/60); }
 
 
+/** @deprecated use {@link format}(date, 'yyyy-MM-dd HH:mm:ss O', { utc:false }) (still used as a Date.prototype patch target) */
 export function timeToString_yyyymmdd_hhmmss_offset(date : const_Date) { let offset=date.getTimezoneOffset();  return timeLocalToStr_yyyymmdd_hhmmss(date)+ " GMT"+(offset<0 ?'+' :'')+(-offset/60); }
+
+
+// ===========================================================================
+// Idiomatic date formatter — date-fns/dayjs-style `format(date, pattern)`.
+// One entry point over the timeToStr_* / timeLocalToStr_* family. `utc` defaults
+// to true (the UTC variants are primary); `{ utc:false }` selects the local ones.
+// The `O` token appends the bespoke ' GMT+H' offset (local-only, see offset fns).
+// ===========================================================================
+
+export type tTimeFormatPattern =
+    'HH:mm:ss' | 'HH:mm:ss.SSS' |
+    'yyyy-MM-dd' |
+    'yyyy-MM-dd HH:mm' | 'yyyy-MM-dd HH:mm:ss' | 'yyyy-MM-dd HH:mm:ss.SSS' |
+    'yyyy-MM-dd HH:mm O' | 'yyyy-MM-dd HH:mm:ss O'
+
+export function format(date : const_Date, pattern : tTimeFormatPattern, opts? : { utc? : boolean }) {
+    let utc= opts?.utc ?? true
+    switch (pattern) {
+        case 'HH:mm:ss':                return utc ? timeToStr_hhmmss(date)             : timeLocalToStr_hhmmss(date)
+        // NOTE: the local 'HH:mm:ss.SSS' uses the correct dotted form here, unlike the
+        // legacy (buggy, dot-less) timeLocalToStr_hhmmss_ms export which is left untouched.
+        case 'HH:mm:ss.SSS':            return utc ? timeToStr_hhmmss_ms(date)          : (timeLocalToStr_hhmmss(date)+'.'+str3(date.getMilliseconds()))
+        case 'yyyy-MM-dd':              return utc ? timeToStr_yyyymmdd_hhmm(date).slice(0,10) : timeLocalToStr_yyyymmdd(date)
+        case 'yyyy-MM-dd HH:mm':        return utc ? timeToStr_yyyymmdd_hhmm(date)      : timeLocalToStr_yyyymmdd_hhmm(date)
+        case 'yyyy-MM-dd HH:mm:ss':     return utc ? timeToStr_yyyymmdd_hhmmss(date)    : timeLocalToStr_yyyymmdd_hhmmss(date)
+        case 'yyyy-MM-dd HH:mm:ss.SSS': return utc ? timeToStr_yyyymmdd_hhmmss_ms(date) : timeLocalToStr_yyyymmdd_hhmmss_ms(date)
+        case 'yyyy-MM-dd HH:mm O':      return timeToString_yyyymmdd_hhmm_offset(date)
+        case 'yyyy-MM-dd HH:mm:ss O':   return timeToString_yyyymmdd_hhmmss_offset(date)
+    }
+}
 
 Date.prototype.toString= function(this) { return timeToString_yyyymmdd_hhmmss_offset(this); }  //" GMT+0300 " +
 Date.prototype.toDateString= function(this) { return timeLocalToStr_yyyymmdd(this); }
@@ -507,11 +550,22 @@ export function durationToStr(duration_ms :number) : string {
 export function durationToStrNullable(duration_ms :number|null|undefined) : string|null { return duration_ms==null ? null : durationToStr(duration_ms); }
 
 
+/** @deprecated use {@link formatDuration}(ms) */
 export function durationToStr_h_mm_ss(duration_ms :number) { let time= new Date(duration_ms);
 	return Math.trunc(duration_ms/H1_MS) + ":"+str2(time.getUTCMinutes())+":"+str2(time.getUTCSeconds());
 }
 
+/** @deprecated use {@link formatDuration}(ms, 'H:mm:ss.SSS') */
 export function durationToStr_h_mm_ss_ms(duration_ms :number) { return durationToStr_h_mm_ss(duration_ms)+"."+str3(Math.trunc(duration_ms%1000)); }
+
+
+// Clock-style duration formatter. Hours are UNbounded (not %24); minutes/seconds
+// are the UTC fields of new Date(ms). 'H:mm:ss.SSS' appends the dotted milliseconds.
+export type tDurationFormatPattern = 'H:mm:ss' | 'H:mm:ss.SSS'
+
+export function formatDuration(duration_ms :number, pattern : tDurationFormatPattern = 'H:mm:ss') {
+	return pattern=='H:mm:ss.SSS' ? durationToStr_h_mm_ss_ms(duration_ms) : durationToStr_h_mm_ss(duration_ms)
+}
 
 
 
@@ -552,12 +606,20 @@ export class CDelayer
 
 type NullableTime = const_Date | undefined | null;
 
+/** @deprecated use {@link minDate} */
 export function MinTime<T1 extends NullableTime, T2 extends NullableTime>(time1: T1, time2: T2) {
     return time1 && time2 && time1.valueOf() <= time2.valueOf() ? time1 : time2 ?? time1;
 } //(!b || a < b  ? a  : b}
+/** @deprecated use {@link maxDate} */
 export function MaxTime<T1 extends NullableTime, T2 extends NullableTime>(time1: T1, time2: T2) {
     return time1 && time2 && time1.valueOf() >= time2.valueOf() ? time1 : time2 ?? time1;
 } //(!b || a < b  ? a  : b}
+
+// Lower-case idiomatic aliases (mirror Math.min/max). The `= MinTime/MaxTime`
+// value-assignment forwards the full generic signature (null-tolerant, narrowed
+// union return) — do NOT re-annotate as (Date,Date)=>Date or it loses that.
+export const minDate = MinTime
+export const maxDate = MaxTime
 
 
 

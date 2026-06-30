@@ -1,6 +1,7 @@
 
 export type ObjectKeyPath<TObject extends object=object, TValue=unknown> = readonly string[];
 
+/** @deprecated use {@link objectSet} */
 export function objectSetValueByPath<TObj extends {[key :string] :any}, TVal>
     (obj :TObj,  path :ObjectKeyPath<TObj,TVal>,  value :TVal)
     : void {
@@ -12,6 +13,10 @@ export function objectSetValueByPath<TObj extends {[key :string] :any}, TVal>
         return objectSetValueByPath(val, path.slice(1), value);
     }
 
+// path is a string[] (NOT a dotted 'a.b.c'); throws if an intermediate segment isn't an object (lodash auto-creates)
+export const objectSet= objectSetValueByPath
+
+/** @deprecated use {@link objectGet} */
 export function objectGetValueByPath<TObj extends {readonly [key :string] :any}, TVal>
     (object :TObj,  path :ObjectKeyPath<TObj,TVal>)
     : TVal {
@@ -25,6 +30,10 @@ export function objectGetValueByPath<TObj extends {readonly [key :string] :any},
         //throw "key path is not found: "+JSON.stringify(path);
     }
 
+// path is a string[]; THROWS on a missing/non-object segment (lodash get returns undefined)
+export const objectGet= objectGetValueByPath
+
+/** @deprecated use {@link objectUnset} */
 export function objectDeleteValueByPath<TObj extends {readonly [key :string] :any}, TVal>
     (object :TObj,  path :ObjectKeyPath<TObj,TVal>)
     : boolean {
@@ -38,7 +47,11 @@ export function objectDeleteValueByPath<TObj extends {readonly [key :string] :an
         return objectDeleteValueByPath(val, path.slice(1)) as boolean;
     }
 
+// returns boolean (matches lodash unset)
+export const objectUnset= objectDeleteValueByPath
 
+
+/** @deprecated use {@link deepEntries} */
 export function* iterateDeepObjectEntries<TObj extends object> (obj :TObj, filter? : (key :string, value :unknown, path :ObjectKeyPath<TObj>)=>boolean, currentPath : ObjectKeyPath<TObj> = [])
  : Generator<[key :string, value :unknown, path :ObjectKeyPath<TObj>]> {
     if (obj) // пришлось делать такую проверку, т.к. иначе почему-то выскакивает ошибка obj==undefined при рекурсии
@@ -49,3 +62,6 @@ export function* iterateDeepObjectEntries<TObj extends object> (obj :TObj, filte
             if (typeof(val)=="object") yield *iterateDeepObjectEntries(val, filter, keyPath);
         }
 }
+
+// recursive Object.entries; yields [key, value, path]
+export const deepEntries= iterateDeepObjectEntries

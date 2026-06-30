@@ -1,32 +1,47 @@
 import { sleepAsync } from "../core/common";
 
-/** Управляет запуском асинхронных функций с throttle/debounce. */
-export function enhancedWaitRun() {
+/**
+ * Управляет запуском асинхронных функций с throttle/debounce.
+ *
+ * Поведение отличается от lodash: вызовы chain'ятся (никаких перекрывающихся
+ * запусков); throttle = leading-edge fire-and-forget, debounce = trailing.
+ */
+export function createThrottle() {
     let last = 0, busy = false, pending: (() => any) | undefined;
     let chain: Promise<void> = Promise.resolve();
 
-    return {
-        throttleAsync: (ms: number, func: () => any) => {
-            if (busy || last + ms >= Date.now()) return;
-            busy = true;
-            chain = chain.then(async () => {
-                try { return await func(); }
-                finally { busy = false; last = Date.now(); }
-            });
-        },
+    const throttle = (ms: number, func: () => any) => {
+        if (busy || last + ms >= Date.now()) return;
+        busy = true;
+        chain = chain.then(async () => {
+            try { return await func(); }
+            finally { busy = false; last = Date.now(); }
+        });
+    };
 
-        debounceAsync: (ms: number, func: () => any) => {
-            if (!func) throw new Error("debounceAsync: func is undefined");
-            pending = func;
-            if (busy) return chain;
-            busy = true;
-            return chain = chain.finally(async () => {
-                try { await sleepAsync(ms); await pending?.(); }
-                finally { busy = false; chain = Promise.resolve(); }
-            });
-        },
+    const debounce = (ms: number, func: () => any) => {
+        if (!func) throw new Error("debounceAsync: func is undefined");
+        pending = func;
+        if (busy) return chain;
+        busy = true;
+        return chain = chain.finally(async () => {
+            try { await sleepAsync(ms); await pending?.(); }
+            finally { busy = false; chain = Promise.resolve(); }
+        });
+    };
+
+    return {
+        throttle,
+        debounce,
+        /** @deprecated use `throttle` */
+        throttleAsync: throttle,
+        /** @deprecated use `debounce` */
+        debounceAsync: debounce,
     };
 }
+
+/** @deprecated use `createThrottle` */
+export const enhancedWaitRun = createThrottle;
 
 /** Асинхронная очередь задач с ограничением параллелизма. */
 export function createAsyncQueue(concurrency = 1) {
@@ -51,7 +66,15 @@ export function createAsyncQueue(concurrency = 1) {
 
     const getQueueSize = () => queue.length;
 
-    return { enqueue, onIdle, getQueueSize };
+    return {
+        add: enqueue,
+        onIdle,
+        get size() { return queue.length; },
+        /** @deprecated use `add` */
+        enqueue,
+        /** @deprecated use `size` */
+        getQueueSize,
+    };
 }
 
 /** Контролирует выполнение задач в очереди с заданным параллелизмом. */
@@ -81,13 +104,20 @@ export function queueRun(n = 5) {
     };
 }
 
-export function createTaskQueue() {
-    let ready = false;
+/** Буфер задач, который копит fn'ы и спускает их по порядку при `ready()`. */
+export function createReadyGate() {
+    let isReadyFlag = false;
     const tasks: Array<() => any> = [];
+    const setReady = async () => { isReadyFlag = true; for (const fn of tasks) await fn(); tasks.length = 0; };
     return {
-        add: (fn: () => any) => ready ? void fn() : tasks.push(fn),
-        setReady: async () => { ready = true; for (const fn of tasks) await fn(); tasks.length = 0; },
-        isReady: () => ready,
+        add: (fn: () => any) => isReadyFlag ? void fn() : tasks.push(fn),
+        ready: setReady,
+        isReady: () => isReadyFlag,
         tasks: () => [...tasks],
+        /** @deprecated use `ready` */
+        setReady,
     };
 }
+
+/** @deprecated use `createReadyGate` */
+export const createTaskQueue = createReadyGate;

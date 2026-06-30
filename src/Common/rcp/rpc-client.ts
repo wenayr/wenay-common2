@@ -4,6 +4,7 @@ import {pack, resolveCA, unpackResult} from "./rpc-walk";
 import {resolveLimits, type RpcLimits} from "./rpc-limits";
 import {MyError} from "../../toError/myThrow";
 import {makeOff} from "./rpc-off";
+import { optToCaps, type tCaps, type RpcOpt } from "./rpc-caps";
 
 // Общий пул id на (socket × key): два клиента на одном сокете+ключе делят id-пространство,
 // иначе их reqId коллизируют и чужой RESP резолвит оба ожидания.
@@ -100,7 +101,7 @@ type ClientApiHandle = {
 
 const IS_RPC_PIPE = Symbol.for("isRpcPipe");
 
-function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: { limit?: number; limits?: RpcLimits; dedupeListen?: boolean; token?: any }) {
+function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: { limit?: number; limits?: RpcLimits; dedupeListen?: boolean; token?: any; opt?: RpcOpt }) {
     const limit = opts?.limit ?? 10000;
     // opt-in: без опции limits поведение прежнее (ответы сервера не ограничиваются)
     const lim = opts?.limits ? resolveLimits(opts.limits) : undefined;
@@ -109,7 +110,9 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     const callbacks = new Map<number, Function>();
     // компактные тики подписки: cbId → (shapeId → порядок ключей), задекларированные сервером в Pkt.SHAPE
     const compactShapes = new Map<number, string[][]>();
-    let capsSent = false; // CAPS («умею компакт») шлём один раз по приходу первого MAP
+    let capsSent = false; // CAPS (свой битсет фич) шлём один раз по приходу первого MAP
+    const clientCaps = optToCaps(opts?.opt); // что объявляем серверу (0 = ничего → сервер не уплотняет)
+    let peerServerCaps: tCaps = 0; // что объявил сервер (для двусторонних будущих фич)
     // id отменённых запросов/колбэков: НЕ возвращаем в пул сразу — поздний RESP/CB_END
     // сервера по переиспользованному id угнал бы чужой новый запрос
     const zombies = new Set<number>();
@@ -201,6 +204,12 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 else if (zombies.delete(cbId)) pool.release(cbId);
                 break;
             }
+            case Pkt.CAPS: {
+                // сервер объявил свой битсет договорных фич — запоминаем (двусторонняя половина
+                // рукопожатия). Для COMPACT клиент не гейтит: CBV приходит лишь если МЫ объявили COMPACT.
+                peerServerCaps = typeof msg[1] === "number" ? msg[1] : 0;
+                break;
+            }
             case Pkt.MAP: {
                 // Чистим перед слиянием: при смене principal (re-auth) индексы routeMap другие —
                 // устаревшая запись увела бы числовой ref на чужой метод.
@@ -219,7 +228,9 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 if (msg.length > 4) setAuthStatus(msg[4]);
                 // CAPS один раз по приходу MAP: соединение установлено, сервер слушает, тики ещё не шли.
                 // Здесь, а НЕ в init(): динамический c.func init() не вызывает (MAP сервер пушит сам).
-                if (!capsSent) { capsSent = true; socket.emit(key, [Pkt.CAPS, 1]); }
+                // Шлём CAPS только если есть что объявить: clientCaps==0 (opt.compact:false) → молчим,
+                // чтобы и СТАРЫЙ сервер (трактует сам факт CAPS как «умею компакт») остался на обычном CB.
+                if (!capsSent) { capsSent = true; if (clientCaps) socket.emit(key, [Pkt.CAPS, clientCaps]); }
                 break;
             }
         }
@@ -329,7 +340,9 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
 
     function subscribeShared(path: string[], args: any[]) {
         if (disposed) return Promise.reject(new Error("RPC client disposed"));
-        const skey = path.join(".") + "::" + JSON.stringify(args.map(a => typeof a == "function" ? "@fn" : a));
+        // dedup по АДРЕСУ УЗЛА (path без имени метода) — .on и .callback на один Listen-узел
+        // с теми же аргументами делят ОДНУ сетевую подписку. Сам вызов уходит проводом как есть.
+        const skey = path.slice(0, -1).join(".") + "::" + JSON.stringify(args.map(a => typeof a == "function" ? "@fn" : a));
         let sub = wireSubs.get(skey);
         if (!sub) {
             const created: tSub = { consumers: new Set(), stop: () => {} };
@@ -371,9 +384,13 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     }
 
     const sendCall = (path: string[], args: any[], wait: boolean): any => {
-        if (dedupe && wait && path.length > 1 && path[path.length - 1] == "callback" && args.some(a => typeof a == "function")) {
+        const last = path[path.length - 1];
+        // `.on(fn)` и `.callback(fn)` — обе «подписка по факту установки колбэка». Имя НЕ переписываем:
+        // `.on` уходит проводом КАК `.on` (сервер имеет оба метода). Дедуп — по АДРЕСУ УЗЛА
+        // (см. subscribeShared), поэтому on/callback на один Listen-узел делят одну сетевую подписку.
+        if (dedupe && wait && path.length > 1 && (last == "callback" || last == "on") && args.some(a => typeof a == "function")) {
             // точно: сервер задекларировал адрес как Listen (Pkt.MAP[3]);
-            // fallback для старого сервера — эвристика по форме маршрута `*.callback(fn)`
+            // fallback для старого сервера — эвристика по форме маршрута `*.callback(fn)`/`*.on(fn)`
             const isListen = declaredListens ? declaredListens.has(path.slice(0, -1).join(".")) : true;
             if (isListen) return subscribeShared(path, args);
         }
@@ -522,9 +539,17 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         api,
         abortAll,
         dispose,
+        /** Закрыть клиента (универсальный teardown, парный к onDisconnect): дренирует подписки,
+         *  отклоняет висящие, снимает ожидающих. Делегирует в {@link dispose}; продвинутый
+         *  `{ socketAlive:false }` — там же. */
+        close: dispose,
         schema: () => strictData,
         readyStrict: ready,
+        /** Дождаться рукопожатия/схемы (STRICT). Делегирует в {@link readyStrict}. */
+        ready,
         initStrict: init,
+        /** Инициализировать клиента (HELLO+STRICT) либо засеять схему объектом. Делегирует в {@link initStrict}. */
+        init,
         /** Мягкий re-auth по живому сокету (подписки сохраняются). Резолвится новым authAck. */
         reauth,
         /** Текущий authAck сервера; ждёт первого/свежего. Резолвится null против сервера без auth. */
@@ -546,11 +571,20 @@ export type RpcClientReturn<T extends object> = {
     api: ClientApiHandle;
     abortAll: (reason: string) => void;
     /** Отцепить клиента: висящие отклоняются, дальнейшие пакеты игнорируются, новые вызовы отбиваются.
-     *  Подписки дренируются (честный teardown). На заведомо мёртвом сокете — `{ socketAlive: false }`. */
+     *  Подписки дренируются (честный teardown). На заведомо мёртвом сокете — `{ socketAlive: false }`.
+     *  @deprecated используй {@link close} — тот же teardown с той же сигнатурой. */
     dispose: (reason?: string, opts?: { socketAlive?: boolean }) => void;
+    /** Закрыть клиента (универсальный teardown, парный к onDisconnect). Делегирует в {@link dispose}. */
+    close: (reason?: string, opts?: { socketAlive?: boolean }) => void;
     schema: () => any;
+    /** @deprecated используй {@link ready} — суффикс Strict не несёт смысла (нет не-strict варианта). */
     readyStrict: () => Promise<void>;
+    /** Дождаться рукопожатия/схемы. Делегирует в {@link readyStrict}. */
+    ready: () => Promise<void>;
+    /** @deprecated используй {@link init} — суффикс Strict не несёт смысла (нет не-strict варианта). */
     initStrict: (obj?: object) => Promise<void>;
+    /** Инициализировать клиента либо засеять схему объектом. Делегирует в {@link initStrict}. */
+    init: (obj?: object) => Promise<void>;
     /** Мягкий re-auth по живому сокету: предъявляет новый токен, подписки сохраняются. */
     reauth: (token: any) => Promise<any>;
     /** Текущий authAck сервера (5-й элемент Pkt.MAP); резолвится null против сервера без auth. */
@@ -559,7 +593,7 @@ export type RpcClientReturn<T extends object> = {
     onDisconnect: (cb: (reason: string) => void) => ReturnType<typeof makeOff>;
 };
 
-export function createRpcClient<T extends object>({ socket, socketKey: key, limit, limits, dedupeListen, token }: {
+export function createRpcClient<T extends object>({ socket, socketKey: key, limit, limits, dedupeListen, token, opt }: {
     socket: SocketTmpl; socketKey: string; limit?: number;
     /** Opt-in лимиты на ВХОДЯЩИЕ данные (ответы/колбэки сервера); без опции — как раньше, без ограничений. */
     limits?: RpcLimits;
@@ -571,8 +605,11 @@ export function createRpcClient<T extends object>({ socket, socketKey: key, limi
      *  In-band auth подразумевает ОДИН логический клиент на socket+key (модель хаба): два
      *  токен-клиента на одном сокете затирали бы routeCache/authAck друг друга при смене principal. */
     token?: any;
+    /** Оптимизации провода (договариваются рукопожатием): { compact?: false } отключает
+     *  адаптивное уплотнение тиков (Pkt.SHAPE/CBV) для этого соединения. По умолчанию — вкл. */
+    opt?: RpcOpt;
 }): RpcClientReturn<T> {
-    return createClient<T>(socket, key, { limit, limits, dedupeListen, token });
+    return createClient<T>(socket, key, { limit, limits, dedupeListen, token, opt });
 }
 
 export type { ClientApiHandle };

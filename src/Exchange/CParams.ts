@@ -390,6 +390,7 @@ export function isParamGroup<TParam extends IParamReadonly>(param :TParam) : par
     return isParamGroupOrArray(param) && !Array.isArray(param.value);
 }
 
+/** @deprecated use {@link isSimpleParams} */
 export function isSimpleParams2<TParams extends IParamsReadonly>(params: TParams | SimpleParams) {
     let t = false
     for (let key in params) {
@@ -619,6 +620,7 @@ export type SimpleParams<T=IParams> = ReadonlyFull<SimpleParamsMutable<T>>;
 
 
 
+/** @deprecated use {@link toValues} */
 export function GetSimpleParams<T extends ReadonlyFull<IParams>>(params : T) //: SimpleT<T>
     {
     //if (!params) return null;
@@ -645,6 +647,9 @@ export function GetSimpleParams<T extends ReadonlyFull<IParams>>(params : T) //:
     }
     return simpleParams as SimpleParamsMutable<T>;
 }
+
+// strip metadata to plain (enabled) values — pairs with fromValues
+export const toValues = GetSimpleParams
 
 // типовая проверка GetSimpleParams: компилируется, но НЕ исполняется при импорте
 // (раньше new Test() + GetSimpleParams реально выполнялись на каждый импорт модуля)
@@ -723,10 +728,14 @@ function convert_(valuesObj :{[key :string] :any}, srcObj : IParamsReadonly | re
 
 // слияние значений параметров
 
+/** @deprecated use {@link fromValues} */
 export function mergeParamValuesToInfos<TParams extends IParamsReadonly|IParams, TParams2 extends IParamsReadonly|IParams> (srcObj :TParams, valuesObj :SimpleParams<TParams2>|TParams2) {
 
     return convert_(isSimpleParams(valuesObj) ? valuesObj : GetSimpleParams(valuesObj as IParams), srcObj) as TParams;
 }
+
+// merge plain values back into a metadata-rich infos tree — inverse of toValues
+export const fromValues = mergeParamValuesToInfos
 
 function test(){
     {

@@ -1,12 +1,12 @@
-import { isListenCallback, funcListenCallbackBase } from "../events/Listen";
+import { isListenCallback, funcListenCallbackBase, isListenOn, getListenByOn } from "../events/Listen";
 import { listenSocket, } from "./listen-socket";
-import { createRpcServer, type PromiseServerHooks, type RpcLimits, type RpcServerAuth } from "./rpc-server";
+import { createRpcServer, type PromiseServerHooks, type RpcLimits, type RpcServerAuth, type RpcOpt } from "./rpc-server";
 import {DeepSocketListen} from "./listen-deep";
-import {SocketTmpl, IS_RPC_LISTEN} from "./rpc-protocol";
+import {SocketTmpl, IS_RPC_LISTEN, RPC_STOP} from "./rpc-protocol";
 
 type ListenCallbackBase<T extends any[] = any[]> = ReturnType<typeof funcListenCallbackBase<T>>;
 
-export function createRpcServerAuto<T extends object>({ socket, object: target, socketKey: key, debug, hooks, disconnectListen, limits, auth, maxPerListen, throttle }: {
+export function createRpcServerAuto<T extends object>({ socket, object: target, socketKey: key, debug, hooks, disconnectListen, limits, auth, maxPerListen, throttle, opt }: {
     socket: SocketTmpl;
     object: T;
     socketKey: string;
@@ -24,6 +24,8 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
      *  без троттлинга. Серверная сторона — лучшее место для back-to-back: лишние
      *  эмиссии гасятся ДО упаковки/отправки в провод. */
     throttle?: number;
+    /** Оптимизации провода (договорные): { compact?: false } отключает уплотнение тиков. */
+    opt?: RpcOpt;
 }) {
     // Один listenSocket-wrapper на Listen ЗАТИРАЛ предыдущего подписчика при повторной
     // подписке (его callback заменяет last/active). Мультиплексор: каждый подписчик
@@ -60,13 +62,32 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                 });
                 return done;
             }
+            // once — однократная подписка: первое событие → CB, затем RPC_STOP→CB_END и off.
+            function subscribeOnce(z: any) {
+                if (maxPerListen != null && subs.size >= maxPerListen) return Promise.resolve();
+                if (!registry.has(parent)) registry.set(parent, { subs });
+                const w = listenSocket(parent, { addListenClose: disconnectListen, throttle });
+                let fired = false;
+                const oneShot = (...a: any[]) => {
+                    if (fired) return;
+                    fired = true;
+                    z(...a);        // первое событие → CB
+                    z(RPC_STOP);    // конец стрима → CB_END
+                    w.removeCallback();
+                };
+                subs.set(z, w);
+                const done = w.callback(oneShot);
+                done.then(() => { subs.delete(z); if (subs.size == 0) registry.delete(parent); });
+                return done;
+            }
             function unsubscribeAll() {
                 subs.forEach(w => w.removeCallback());
                 subs.clear();
                 registry.delete(parent); // узел снесён — убираем из реестра
                 return true;
             }
-            result = { callback: subscribe, removeCallback: unsubscribeAll };
+            // close — закрыть весь Listen-источник (полный teardown; влияет на ВСЕХ потребителей узла).
+            result = { callback: subscribe, removeCallback: unsubscribeAll, on: subscribe, once: subscribeOnce, close: () => (parent as any).close?.() };
             (result as any)[IS_RPC_LISTEN] = true; // сервер задекларирует адрес узла в Pkt.MAP
             cache.set(parent, result);
         }
@@ -86,12 +107,15 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
     };
 
     createRpcServer({
-        socket, object: target as any, socketKey: key, debug, limits, auth,
+        socket, object: target as any, socketKey: key, debug, limits, auth, opt,
         hooks: {
             ...hooks,
             resolveTransform: (obj: any) => {
-                if (!isListenCallback(obj)) return obj;
-                return getListenSocket(obj, disconnectListen);
+                if (isListenCallback(obj)) return getListenSocket(obj, disconnectListen);
+                // bare `on`-функция: по реестру (WeakMap) находим её api и оборачиваем — позволяет
+                // прокинуть через веб ТОЛЬКО ссылку on, а клиент получит подписку {on, once, close}.
+                if (isListenOn(obj)) return getListenSocket(getListenByOn(obj), disconnectListen);
+                return obj;
             },
         } as any,
     });

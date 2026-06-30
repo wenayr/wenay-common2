@@ -440,6 +440,7 @@ export abstract class CBarsMutableBase extends CBarsBase
 	//readonly Mutable = true;
 
 	// Добавление баров в конец
+	/** @deprecated use {@link push} */
 	Add(Bars : readonly CBar[]|CBar) : void {
 		let bars= Bars instanceof Array ? Bars : [Bars];
 		if (! bars || bars.length==0) return;
@@ -465,6 +466,7 @@ export abstract class CBarsMutableBase extends CBarsBase
     }
 
 	// Добавить тик в конец
+	/** @deprecated use {@link addTick} */
 	AddTick(tick : ITick) : boolean {
 		if (! tick) return false;
 		if (this.count>0 && tick.time<this.lastTime!) {
@@ -489,7 +491,13 @@ export abstract class CBarsMutableBase extends CBarsBase
 		return true;
 	}
 	// Добавить тики в конец
+	/** @deprecated use {@link addTicks} */
 	AddTicks(ticks : readonly ITick[]) : boolean  { for(let tick of ticks) if (! this.AddTick(tick)) return false;  return true; }
+
+	// append a single tick
+	addTick(tick : ITick) { return this.AddTick(tick); }
+	// append ticks
+	addTicks(ticks : readonly ITick[]) { return this.AddTicks(ticks); }
 
 	// Клонирование объекта
 	//static Clone(source : CBars) : CBarsMutable { return (source instanceof CBarsMutable) ? { ...(new CBarsMutable) } : new CBarsMutable(source.Tf, source.tickSize, source.data); }
@@ -509,8 +517,10 @@ export class CBarsMutableExt extends CBarsMutable implements IBarsExt {
 
 
 // Создание рандомных баров
+/** @deprecated use {@link createRandomBars} */
 export function CreateRandomBars(tf: TF,  startTime: const_Date,  endTime: const_Date,  startPrice? :number,  volatility? :number|`${number}%`, ticksize? :number)  : CBars;
 // Создание рандомных баров
+/** @deprecated use {@link createRandomBars} */
 export function CreateRandomBars(tf: TF,  startTime: const_Date,  barsCount: number,  startPrice? :number,  volatility? :number|`${number}%`, ticksize? :number)  : CBars;
 
 // Создание рандомных баров
@@ -553,6 +563,9 @@ export function CreateRandomBars(tf: TF,  startTime: const_Date, endTimeOrCount:
 	}
 	return new CBars(tf, bars);
 }
+
+// house createX-style alias for CreateRandomBars (keeps the overloads)
+export const createRandomBars = CreateRandomBars
 
 
 

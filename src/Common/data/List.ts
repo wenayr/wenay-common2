@@ -37,8 +37,10 @@ export class CList<T, TNode extends ListNode<T> = ListNode<T>> implements Iterab
 
     get first() { return this._first; }
     get last() { return this._last; }
+    /** @deprecated use {@link size} or {@link length} */
     get count() { return this._count; }
     get length() { return this._count; }
+    get size() { return this._count; }
 
     readonly [Symbol.iterator] = this.nodes;
 
@@ -78,10 +80,12 @@ export class CList<T, TNode extends ListNode<T> = ListNode<T>> implements Iterab
         this._immutableList= undefined;
         return this._first= this._last= this.newNode(value);
     }
+    /** @deprecated use {@link unshift} */
     addFirst(value :T) : ListNode<T> {
         if (this._first) return this.addBefore(this._first, value);
         return this._addFirst(value);
     }
+    /** @deprecated use {@link push} */
     addLast(value :T) : ListNode<T> {
         if (this._last) return this.addAfter(this._last, value);
         return this._addFirst(value);
@@ -153,8 +157,20 @@ export class CList<T, TNode extends ListNode<T> = ListNode<T>> implements Iterab
         for(let node of this.nodes()) if (node.value==nodeOrValue) this.deleteNode(node);
     }
 
+    /** @deprecated use {@link shift} (note: shift returns the removed value) */
     deleteFirst() { if (this._first) this.delete(this._first); }
+    /** @deprecated use {@link pop} (note: pop returns the removed value) */
     deleteLast()  { if (this._last) this.delete(this._last); }
+
+    // ===== Array-like aliases (idiomatic surface) =====
+    /** Array.push — append a value at the end. Alias of {@link addLast}. */
+    push(value :T) { return this.addLast(value); }
+    /** Array.unshift — prepend a value at the start. Alias of {@link addFirst}. */
+    unshift(value :T) { return this.addFirst(value); }
+    /** Array.pop — remove and return the last value (or undefined if empty). */
+    pop() { let value= this._last?.value;  this.deleteLast();  return value; }
+    /** Array.shift — remove and return the first value (or undefined if empty). */
+    shift() { let value= this._first?.value;  this.deleteFirst();  return value; }
 
     clear() {
         // только зануляем node.list (это guard в deleteNode), затем сбрасываем голову/хвост —

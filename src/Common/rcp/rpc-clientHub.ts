@@ -1,6 +1,7 @@
 import {SocketTmpl} from "./rpc-protocol";
 import {createRpcClient} from "./rpc-client";
 import {DeepSocketListen, DeepSocketListenSmart} from "./listen-deep";
+import { type RpcOpt } from "./rpc-caps";
 
 export interface RpcHubSocket extends SocketTmpl {
     disconnect?: () => void;
@@ -20,6 +21,7 @@ type RpcClientResult<T extends object> = ReturnType<typeof createRpcClient<DeepS
 export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>, T2 extends RpcHubSocket>(
     createSocket: (token: string | null) => T2,
     schemaBuilder: (helper: typeof rpc) => T,
+    hubOpts?: { opt?: RpcOpt },
 ) {
     const schema = schemaBuilder(rpc);
 
@@ -62,7 +64,7 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
         for (const key in schema) {
             const targetSocketKey = schema[key].socketKey || key;
             // token → клиент предъявит его через Pkt.HELLO в initStrict() на "connect" (см. hi()).
-            const client = createRpcClient<any>({ socketKey: targetSocketKey, socket, token });
+            const client = createRpcClient<any>({ socketKey: targetSocketKey, socket, token, opt: hubOpts?.opt });
             facade[key] = client as FacadeClients[typeof key];
         }
         // порядок инициализации
@@ -103,7 +105,12 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
     const result = {
         get promise() { return promise; },
         facade,
+        /** @deprecated используй {@link connect} — то же жёсткое (пере)подключение по токену. */
         setToken,
+        /** Жёсткое (пере)подключение по токену: рвёт прежний сокет, дренирует фасад, поднимает
+         *  новый сокет и переинициализирует клиентов. `connect(null)` — анонимно. Парный к onConnect
+         *  (мягкая смена принципала — {@link reauth}). Делегирует в setToken. */
+        connect: setToken,
         /** Мягкий re-auth: меняет принципала по живому сокету, не рвёт подписки (vs жёсткий setToken). */
         reauth,
         get socket() { return socket as T2; },

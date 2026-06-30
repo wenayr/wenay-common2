@@ -124,7 +124,11 @@ export function _deepClone<T>(src :T, map? :Map<object,object>) {
 	return newobject as { [key in keyof T] : T[key] };
 }
 
+/** @deprecated use {@link clone} */
 export function deepClone<T>(object :T) { return _deepClone(object); }
+
+/** Deep clone: handles cycles + Map/Set/Date, rebinds functions to the new object. */
+export const clone = deepClone
 
 export function deepCloneMutable<T>(value :T) { return deepClone(value) as MutableFull<T>; }
 
@@ -157,6 +161,7 @@ export function readonlyFull<T>(arg :T) { return arg as ReadonlyFull<T>; }
 
 
 // глубокое сравнение структур
+/** @deprecated use {@link isEqual} */
 export function deepEqual<T extends { [key: string]: any }>(object1: T, object2: T) {//}, equalityComparer? :(a :any, b :any)=>boolean|undefined) {
     if (object1==object2) return true;
     // if (typeof object1!=typeof object2) return false;
@@ -180,6 +185,9 @@ export function deepEqual<T extends { [key: string]: any }>(object1: T, object2:
     }
     return true;
 }
+
+/** Deep structural equality of plain object/array trees (no Map/Set/Date/NaN special-casing). */
+export const isEqual = deepEqual
 
 // сравнение структур неглубокое
 export function shallowEqual<T extends { [key: string]: unknown }|undefined>(object1: T, object2: T) {
@@ -375,12 +383,16 @@ export function _BSearchNearest<T>(array :ArrayLike<T>, searchValue :number, arr
 //export function MathMin<T extends { valueOf() : number}> (a :T,  b :T)  { let x= a.valueOf(), y= b.valueOf();  return x }
 
 /** Нормализация точности числа
+ * @deprecated use {@link round}
 */
 export function NormalizeDouble(value :number, digits :number) { let factor= 10**digits;  return Math.round(value * factor)/factor; }
 
+/** Round to N decimals, returning a number (digits defaults to 0). */
+export function round(value :number, digits :number=0) { return NormalizeDouble(value, digits); }
+
 function fabs(value : number) { return Math.abs(value); }
 
-function round(value : number) { return Math.round(value); }
+function roundInt(value : number) { return Math.round(value); }
 
 
 function __GetMaxCommonDivisor(a :number,  b :number,  digits :number)    // a > b !!!
@@ -388,9 +400,9 @@ function __GetMaxCommonDivisor(a :number,  b :number,  digits :number)    // a >
 	let precis= 0.1**(digits)/2;
 	while(true) {  //b= NormalizeDouble(b, digits);
 		if (b < precis) return NormalizeDouble(a, digits);// b= NormalizeDouble(b, digits);  if (b==0) return a;
-		a= fabs(a-round(a/b)*b);  //a= NormalizeDouble(a, digits);
+		a= fabs(a-roundInt(a/b)*b);  //a= NormalizeDouble(a, digits);
 		if (a < precis) return NormalizeDouble(b, digits);
-		b= fabs(b-round(b/a)*a);
+		b= fabs(b-roundInt(b/a)*a);
 	}
 }
 
@@ -401,6 +413,7 @@ function __GetMaxCommonDivisorInteger(a :number, b :number)    // a > b !!!
 }
 
 /** Наибольший общий делитель двух чисел
+ * @deprecated use {@link gcd}
  */
 export function MaxCommonDivisor(a :number,  b :number,  digits :number=8)
 {
@@ -418,6 +431,7 @@ export function MaxCommonDivisor(a :number,  b :number,  digits :number=8)
 //console.log(MaxCommonDivisor(0, 301.84, 1));
 
 /** Наибольший общий делитель массива чисел
+ * @deprecated use {@link gcd}
  */
 export function MaxCommonDivisorOnArray(values : Iterable<number>,  precisDigits : number =8)
 {
@@ -428,12 +442,23 @@ export function MaxCommonDivisorOnArray(values : Iterable<number>,  precisDigits
 	return divis;
 }
 
+/** Greatest common divisor (works on floats via the digits-precision arg).
+ *  gcd(a, b, digits?) for a pair, or gcd(values, digits?) for an iterable.
+ */
+export function gcd(a :number, b :number, digits? :number) :number
+export function gcd(values :Iterable<number>, digits? :number) :number
+export function gcd(a :number|Iterable<number>, b? :number, digits? :number) {
+	if (typeof a=="number") return MaxCommonDivisor(a, b!, digits ?? 8)
+	return MaxCommonDivisorOnArray(a, b ?? 8)
+}
+
 
 
 /** Определение точности числа (число цифр после запятой)
  * @param value
  * @param mindigits - Минимальная точность
  * @param maxdigits - Максимальная точность
+ * @deprecated use {@link decimals}
  */
 export function GetDblPrecision2(value :number, mindigits :number, maxdigits :number)
 {
@@ -454,8 +479,12 @@ export function GetDblPrecision2(value :number, mindigits :number, maxdigits :nu
 /** Определение точности числа (число цифр после запятой)
  * @param value
  * @param maxdigits - Максимальная точность
+ * @deprecated use {@link decimals}
  */
 export function GetDblPrecision(value :number, maxdigits :number =8) { return GetDblPrecision2(value, 0, maxdigits); }
+
+/** Count of meaningful decimal places of a number. */
+export function decimals(value :number, maxDigits :number =8, minDigits :number =0) { return GetDblPrecision2(value, minDigits, maxDigits); }
 
 
 //-------------------------------------------------------
@@ -469,16 +498,21 @@ function DblToStrAuto2(value :number,  minprecis :number,  maxprecis :number)  {
 /** Преобразование числа в стринг с автоматической точностью
  * @param value
  * @param maxprecis - Максимальная точность (число цифр после запятой).  Если отрицательное число, то это минимально число значащих цифр
+ * @deprecated use {@link formatAuto}
  */
 export function DblToStrAuto(value :number, maxprecis :number=8) {
 	let digits= maxprecis;
 	if (digits<0) if (value!=0) maxprecis= Math.trunc( Math.max(0, -digits-Math.log10(fabs(value))) ); else maxprecis=0;
 	return DblToStrAuto2(value, 0, maxprecis);
 }
+
+/** Shortest decimal string at auto-detected precision (negative maxDigits = significant digits). */
+export const formatAuto = DblToStrAuto
 /** Нормализация точности числа
  * * @param value
  *  * @param digitsPoint - Максимальная точность (число цифр после первой значимой цифры, только для дробной части).
  *  * @param digitsR - Максимальная точность (число цифр после первой значимой цифры и для целых тоже, пример: 12340000).
+ *  @deprecated use {@link roundSig}
  *  */
 export function NormalizeDoubleAnd(a: number, options?: {digitsPoint?: number, digitsR?: number, type?: "max" | "min"}) {
 	if (a == 0) return a
@@ -492,10 +526,14 @@ export function NormalizeDoubleAnd(a: number, options?: {digitsPoint?: number, d
 	if (k >=0) return func(a / (10 ** (k-w))) * (10 ** (k-w))
 	return func(a / (10 ** (k-w))) * (10 ** (k-w))
 }
+
+/** Round to N significant digits, returning a number (significant-digit pair with {@link formatSig}). */
+export const roundSig = NormalizeDoubleAnd
 /** Преобразование числа в стринг с автоматической точностью
  * @param value
  * @param digitsPoint - Максимальная точность (число цифр после первой значимой цифры, только для дробной части).
  * @param digitsR - Максимальная точность (число цифр после первой значимой цифры и для целых тоже, пример: 12340000).
+ * @deprecated use {@link formatSig}
  */
 export function DblToStrAnd(a: number, options?: {digitsPoint?: number, digitsR?: number, type?: "max" | "min"}) {
 	let {digitsPoint:w = 4, digitsR:r} = options ?? {}
@@ -509,6 +547,9 @@ export function DblToStrAnd(a: number, options?: {digitsPoint?: number, digitsR?
 	if (k +1>= w && r) return (func(a / (10 ** (k-w +1))) * (10 ** (k-w +1))).toString()
 	return (func(a / (10 ** (k-w +1))) * (10 ** (k-w +1))).toFixed(w - k - 1)
 }
+
+/** Significant-digit string form (significant-digit pair with {@link roundSig}). */
+export const formatSig = DblToStrAnd
 
 function testDblToStrAnd(){
 	const r = 0.047952487787
@@ -639,19 +680,35 @@ export class __MyMap<K extends {valueOf():number},  V>  //(K extends {valueOf():
         }
 	}
 	protected OnModify?(key :K) { }
+	/** @deprecated use {@link set} */
 	public Set(key :K, value :V) :void  { this.map[key.valueOf()]= { key, value };  this.keys= null;  this.OnModify?.(key); }//this.pairs=null; }// this.keys= null;  this.values=null; }
+	/** @deprecated use {@link get} */
 	public Get(key :K) :V|undefined     { let pair = this.map[key.valueOf()];  return pair ? pair.value : undefined; }
+	/** @deprecated use {@link has} */
 	public Contains(key :K) : boolean { return this.map[key.valueOf()]!=undefined; }
 	public TryAdd(key :K, value :V) : boolean { if (this.Contains(key)) return false;  this.Set(key, value);  return true; }
 	public Add(key :K, value :V) : void { if (! this.TryAdd(key,value)) throw new Error(`Key ${key} is already exists for ${typeof value}`); }
+	/** @deprecated use {@link delete} */
 	public Remove(key :K)  { delete(this.map[key.valueOf()]);  this.keys= null;  this.OnModify?.(key); }
+	/** @deprecated use {@link clear} */
 	public Clear()    { let pairs= this.OnModify ? this.map.values() : [];  this.map.clear();  this.keys=undefined;  this.values=undefined;  for(let p of pairs) this.OnModify!(p.key); }
+	/** @deprecated use {@link size} */
 	public Count()    { return this.sortedKeys.length; }
 	get sortedKeys() :readonly K[]  { if (!this.keys) this.createArrays();  return this.keys!; }//{ this.keys=[]; for(let key in Object.keys(this.map)) if (!isNaN(key as any)) this.keys.push(this.strToKey(key));  return this.keys; }
 	//get sortedKeys() :K[] { if (!this.keys) this.keys= Object.keys(this.map).filter((key)=>!isNaN(key as any)) as any[];  return this.keys; }
+	/** @deprecated use {@link values} */
 	get Values() :readonly V[]  { if (!this.keys) this.createArrays();  return this.values!; }//{ this.values=[];  for(let key of this.sortedKeys) this.values.push(this.map[key.valueOf()].value); }  return this.values; }
 
     assign(other :__MyMap<K,V>) { this.map= other.map.clone();  this.keys= other.keys;  this.values= other.values; }
+
+	// ===== idiomatic JS Map surface (delegates to the PascalCase originals) =====
+	set(key :K, value :V)  { this.Set(key, value); }
+	get(key :K)            { return this.Get(key); }
+	has(key :K)            { return this.Contains(key); }
+	delete(key :K)         { this.Remove(key); }
+	clear()                { this.Clear(); }
+	/** Number of entries. */
+	get size()             { return this.Count(); }
 }
 //-------------------------------
 
@@ -659,7 +716,9 @@ export class MyMap<K extends {valueOf():number},  V>  extends __MyMap<K, V> //(K
 {
 	readonly [key :number]: void;
 
+	/** @deprecated use {@link clone} */
 	Clone() { let newobj= new MyMap<K,V>();  newobj.assign(this);  return newobj; }
+	clone() { return this.Clone(); }
 }
 
 //------------------------
@@ -671,7 +730,9 @@ export class MyNumMap<VAL> extends __MyMap<number, VAL>
 		super();
 		return CreateArrayProxy(this, (i)=>this.Get(i), (key, value)=>this.Set(key, value ??(()=>{throw new Error("undefined value")})())); //value!=undefined ? obj.Set(key,value) : obj.Remove(key));
 	}
+	/** @deprecated use {@link clone} */
 	Clone() { let newobj= new MyNumMap<VAL>();  newobj.assign(this);  return newobj; }
+	clone() { return this.Clone(); }
 
 	//static fromParsedJSON(data : ParsedUrlQueryInputMy) : MyNumMap<VAL> { let obj= new MyNumMap;   }
 }
@@ -931,6 +992,10 @@ export class CancelToken implements ICancelToken
 	private _cancel = false;
 	isCancelled() { return this._cancel; }
 	cancel()      { this._cancel= true; }
+	/** Whether cancellation was requested (idiomatic alias of {@link isCancelled}). */
+	get aborted() { return this.isCancelled(); }
+	/** Request cancellation (idiomatic alias of {@link cancel}). */
+	abort()       { this.cancel(); }
 	//static fromFunc(func : ()=>boolean)) : ICancelToken { return { isCancelled() { return }  }
 }
 
@@ -1018,6 +1083,9 @@ export class Mutex {
 			unlock();
 		}
 	}
+
+	/** Run fn with the lock held, auto-releasing afterward (alias of {@link dispatch}). */
+	runExclusive<T>(fn: ()=>T|PromiseLike<T>) { return this.dispatch(fn) }
 
 	static createLock() { return (new Mutex).lock(); }
 }

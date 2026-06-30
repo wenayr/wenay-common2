@@ -22,7 +22,9 @@ type JoinResult<R> = {
     // снести весь join: снять все подписки на порты + очистить бакеты.
     // (раньше отсутствовал в типе — метод был в реализации, но невидим потребителю/типам)
     destroy: () => void,
-    // Перегрузка для объекта (требует ключ) и массива (ключ генерируется сам)
+    // Подключить порт-источник (идиома `add`). Объект — нужен ключ, массив — ключ генерируется сам.
+    add: (port: listen<any>[1], key?: string) => void,
+    /** @deprecated Используйте `add(port, key?)`. */
     addListen: (listener: listen<any>[1], key?: string) => void
 }
 
@@ -85,6 +87,17 @@ export function joinListens(
         bindPort(portId, map[portId])
     }
 
+    // Подключить порт-источник: режим массива → индекс генерируется сам, объект → ключ.
+    function add(listener: any, key?: string) {
+        const portId = isArray ? String(keys.length) : (key ?? String(keys.length))
+
+        if (map[portId]) return // Защита от дублирования ключей или более верно очистить старый???
+
+        map[portId] = listener
+        keys.push(portId) // Расширяем размер ожидаемой группы
+        bindPort(portId, listener)
+    }
+
     return {
         listen: out,
         pending: buckets,
@@ -96,16 +109,9 @@ export function joinListens(
             unsubs.length = 0
             buckets.clear()
         },
-        addListen: (listener: any, key?: string) => {
-            // Если режим массива, генерируем индекс автоматически (текущая длина)
-            const portId = isArray ? String(keys.length) : (key ?? String(keys.length))
-            
-            if (map[portId]) return // Защита от дублирования ключей или более верно очистить старый???
-            
-            map[portId] = listener
-            keys.push(portId) // Расширяем размер ожидаемой группы
-            bindPort(portId, listener)
-        }
+        add,
+        /** @deprecated Используйте `add(port, key?)`. */
+        addListen: (listener: any, key?: string) => add(listener, key)
     }
 }
 

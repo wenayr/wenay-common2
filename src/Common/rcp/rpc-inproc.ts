@@ -1,4 +1,4 @@
-import { createRpcServer, type PromiseServerHooks, type RpcLimits, type RpcServerAuth } from './rpc-server'
+import { createRpcServer, type PromiseServerHooks, type RpcLimits, type RpcServerAuth, type RpcOpt } from './rpc-server'
 import { createRpcServerAuto } from './rpc-server-auto'
 import { createRpcClient } from './rpc-client'
 import type { SocketTmpl } from './rpc-protocol'
@@ -45,6 +45,7 @@ export function createRpcInProc<T extends object>({
     token,
     throttle,
     maxPerListen,
+    opt,
 }: {
     object: T
     socketKey?: string
@@ -61,15 +62,17 @@ export function createRpcInProc<T extends object>({
     /** Пробрасывается в серверный listen-слой (throttle стримов) при listen:true. */
     throttle?: number
     maxPerListen?: number
+    /** Оптимизации провода (договорные): { compact?: false } отключает уплотнение тиков. */
+    opt?: RpcOpt
 }) {
     const [clientSocket, serverSocket] = createInProcSocketPair()
     // Возвращаем КЛИЕНТ как SDK-хендл (то же место вызова, что и по сети). Серверный `{ api }`
     // от createRpcServerAuto (server-side stats) намеренно не пробрасываем — клиентский
     // api.subscriptions() даёт эквивалентный (дедуплицированный) вид; серверная сторона здесь.
     if (listen) {
-        createRpcServerAuto({ socket: serverSocket, object: target as any, socketKey, debug, hooks, limits, auth, throttle, maxPerListen })
+        createRpcServerAuto({ socket: serverSocket, object: target as any, socketKey, debug, hooks, limits, auth, throttle, maxPerListen, opt })
     } else {
-        createRpcServer({ socket: serverSocket, object: target as any, socketKey, debug, hooks: hooks as PromiseServerHooks<T>, limits, auth })
+        createRpcServer({ socket: serverSocket, object: target as any, socketKey, debug, hooks: hooks as PromiseServerHooks<T>, limits, auth, opt })
     }
-    return createRpcClient<DeepSocketListen<T>>({ socket: clientSocket, socketKey, limits, token })
+    return createRpcClient<DeepSocketListen<T>>({ socket: clientSocket, socketKey, limits, token, opt })
 }

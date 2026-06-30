@@ -88,6 +88,7 @@ function setupLogs(){
 if (1)
     setupLogs();
 
+/** @deprecated use {@link callerLine} (V8 impl) */
 export function __LineFile(lvl = 0){
     const stack = new Error().stack;
     if (!stack) return "";
@@ -110,6 +111,7 @@ export function __LineFile(lvl = 0){
 
 // возвращает файл, строчку и позицию где был вызван, либо выше вызванная функция по номеру уровня.
 // Позиции — как их видит V8: source maps применяются рантаймом (tsx / --enable-source-maps), не нами.
+/** @deprecated use {@link callerLine} */
 export function __LineFile2(lvl = 0){
     const originalPrepareStackTrace = Error.prepareStackTrace;
     Error.prepareStackTrace = (_, stack) => stack;
@@ -120,6 +122,7 @@ export function __LineFile2(lvl = 0){
 }
 
 // стек диапазоном уровней, формат как у __LineFile2
+/** @deprecated use {@link callerLines} */
 export function __LineFiles(lvlStart = 0, lvlEnd: number|undefined = 5){
     const originalPrepareStackTrace = Error.prepareStackTrace;
     Error.prepareStackTrace = (_, stack) => stack;
@@ -129,6 +132,10 @@ export function __LineFiles(lvlStart = 0, lvlEnd: number|undefined = 5){
     Error.prepareStackTrace = originalPrepareStackTrace;
     return msgs
 }
+
+// idiomatic aliases over the V8 impls (Error.captureStackTrace-style caller info)
+export const callerLine = __LineFile2     // (lvl=0) -> "file:line:col  func"
+export const callerLines = __LineFiles    // (start=0, end=5) -> string[]
 // // Tests:
 // function ttt(){
 //     console.log(__LineFile(1));

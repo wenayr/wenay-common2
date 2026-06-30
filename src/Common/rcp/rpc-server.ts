@@ -3,6 +3,7 @@ import { isSafeKey, resolveLimits, PayloadLimitError, type RpcLimits } from "./r
 import {unpack, errToObj, packResult} from "./rpc-walk";
 import { isPlainObject, createCbShapeServer } from "./rpc-shape";
 import { Pkt, IS_RPC_LISTEN, type SocketTmpl } from "./rpc-protocol";
+import { Caps, hasCap, optToCaps, type tCaps, type RpcOpt } from "./rpc-caps";
 import { MyError } from "../../toError/myThrow";
 
 type Func = (...args: any[]) => any;
@@ -38,6 +39,7 @@ function createServer<T extends object>(
     hooks?: PromiseServerHooks<T>,
     limits?: RpcLimits,
     auth?: RpcServerAuth,
+    opt?: RpcOpt,
 ) {
     const lim = resolveLimits(limits);
     const IS_RPC_PIPE = Symbol.for("isRpcPipe");
@@ -54,7 +56,10 @@ function createServer<T extends object>(
             if (!isSafeKey(k)) continue;
             const v = current[k];
             if (isNoStrict(v)) { out[k] = v; continue; }
-            out[k] = typeof v == "function" ? v : v != null && typeof v == "object" ? transformTree(v) : v;
+            // функции тоже прогоняем через resolveTransform: bare `on`-функция (в реестре по WeakMap)
+            // превращается в Listen-обёртку; обычная функция возвращается как есть → поведение прежнее.
+            out[k] = typeof v == "function" ? (hooks?.resolveTransform ? hooks.resolveTransform(v) : v)
+                : v != null && typeof v == "object" ? transformTree(v) : v;
         }
         return out;
     }
@@ -104,12 +109,15 @@ function createServer<T extends object>(
 
     const send = (d: any) => socket.emit(key, d);
 
-    // Адаптивное уплотнение тиков подписки. compactOk — клиент прислал Pkt.CAPS (умеет компакт).
+    // Адаптивное уплотнение тиков подписки. Договорное: эффективно, ТОЛЬКО если оба пира
+    // объявили Caps.COMPACT (serverCaps из opt, peerCaps из клиентского Pkt.CAPS).
     // sendCb: частый объект одной формы → Pkt.SHAPE(один раз) + Pkt.CBV(значения); иначе обычный Pkt.CB.
-    let compactOk = false;
+    const serverCaps = optToCaps(opt);
+    let peerCaps: tCaps = 0;
+    const compactOn = () => hasCap(serverCaps & peerCaps, Caps.COMPACT);
     const cbShapes = createCbShapeServer();
     const sendCb = (cbId: number, cbArgs: any[]) => {
-        if (compactOk && cbArgs.length == 1 && isPlainObject(cbArgs[0])) {
+        if (compactOn() && cbArgs.length == 1 && isPlainObject(cbArgs[0])) {
             const obj = cbArgs[0];
             const r = cbShapes.offer(cbId, obj);
             if (r.mode == "register") { send([Pkt.SHAPE, cbId, r.shapeId, r.keys]); send([Pkt.CBV, cbId, r.shapeId, r.keys.map(k => packResult(obj[k]))]); return; }
@@ -127,6 +135,9 @@ function createServer<T extends object>(
         ? [Pkt.MAP, routeMap, strictSchema, listenPaths, authAck]
         : [Pkt.MAP, routeMap, strictSchema, listenPaths]);
     sendMap();
+    // Объявляем СВОИ договорные фичи один раз (половина «ask» рукопожатия): новый клиент
+    // запомнит (peerServerCaps), старый — незнакомый Pkt.CAPS просто игнорирует.
+    if (serverCaps) send([Pkt.CAPS, serverCaps]);
 
     let detached = false;
     let byKey = SERVERS.get(socket);
@@ -141,8 +152,9 @@ function createServer<T extends object>(
     socket.on(key, async (msg: any) => {
         if (detached) return;
         if (msg == Pkt.STRICT) { sendMap(); return; }
-        // CAPS: клиент умеет компактные тики (Pkt.SHAPE/CBV). Старый сервер этот msg игнорирует.
-        if (Array.isArray(msg) && msg[0] === Pkt.CAPS) { compactOk = true; return; }
+        // CAPS: клиент объявил свой битсет фич. Легаси-клиент шлёт [CAPS,1]=COMPACT. Старый
+        // сервер игнорировал значение; теперь читаем его и пересекаем с serverCaps (compactOn()).
+        if (Array.isArray(msg) && msg[0] === Pkt.CAPS) { peerCaps = typeof msg[1] === "number" ? msg[1] : Caps.COMPACT; return; }
         // HELLO: in-band авторизация. Без стратегии auth — игнор (старый клиент против сервера без auth).
         if (Array.isArray(msg) && msg[0] === Pkt.HELLO) {
             // Сервер без auth: ответ на HELLO всё равно 5-элементный (authAck=null) — чтобы клиент
@@ -284,15 +296,16 @@ function createServer<T extends object>(
     });
 }
 
-export function createRpcServer<T extends object>({ socket, object: target, socketKey: key, debug = false, hooks, limits, auth }: {
-    socket: SocketTmpl; object: T; socketKey: string; debug?: boolean; hooks?: PromiseServerHooks<T>; limits?: RpcLimits; auth?: RpcServerAuth;
+export function createRpcServer<T extends object>({ socket, object: target, socketKey: key, debug = false, hooks, limits, auth, opt }: {
+    socket: SocketTmpl; object: T; socketKey: string; debug?: boolean; hooks?: PromiseServerHooks<T>; limits?: RpcLimits; auth?: RpcServerAuth; opt?: RpcOpt;
 }) {
     if (debug) {
         const origOn = socket.on.bind(socket);
         socket.on = (e: string, cb: (d: any) => void) =>
             origOn(e, (d: any) => { console.log("[RPC IN]", typeof d == "object" ? JSON.stringify(d) : d); cb(d); });
     }
-    createServer(socket, key, target, hooks, limits, auth);
+    createServer(socket, key, target, hooks, limits, auth, opt);
 }
 
 export type { PromiseServerHooks, RpcLimits, RpcServerAuth };
+export type { RpcOpt } from "./rpc-caps";

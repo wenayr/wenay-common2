@@ -16,6 +16,7 @@ type AsyncExtras<T extends (...args: any[]) => any> = ReturnType<T> extends Prom
 
 type EnhancedDecoratorOptions<T extends (...args: any[]) => any> = CommonOptions<T> & AsyncExtras<T>;
 
+/** @deprecated use {@link wrap} */
 export function enhancedDecorator<T extends (...args: any[]) => any>(
     fn: T,
     opt?: EnhancedDecoratorOptions<T>
@@ -45,8 +46,13 @@ export function enhancedDecorator<T extends (...args: any[]) => any>(
     };
 }
 
+// === wrap — idiomatic name for enhancedDecorator ===
+// Pure alias: preserves generics + hook semantics byte-for-byte (axios-interceptor shape).
+export const wrap = enhancedDecorator
+
 /**
  * Оборачивает функцию для выполнения определённой пост-обработки.
+ * @deprecated use {@link wrap}
  */
 export function enhancedTransformer<T extends (...args: any[]) => any, R>(
     fn: T,
@@ -61,6 +67,7 @@ export function enhancedTransformer<T extends (...args: any[]) => any, R>(
 
 /**
  * Поддержка старого метода `Decorator` через перенаправление на новую улучшенную версию.
+ * @deprecated use {@link wrap}
  */
 export function Decorator<T extends (...args: any[]) => any>(
     fn: T,
@@ -84,6 +91,7 @@ export function Decorator<T extends (...args: any[]) => any>(
 
 /**
  * Поддержка старого метода `Transformer` через перенаправление на новую улучшенную версию.
+ * @deprecated use {@link wrap}
  */
 export function TransformerResult<T extends (...args: any[]) => any, R>(
     fn: T,
@@ -92,9 +100,16 @@ export function TransformerResult<T extends (...args: any[]) => any, R>(
     return enhancedTransformer(fn, transform);
 }
 
-export function Transformer<T extends (...args: any[]) => any, R>(
+/**
+ * AOP "around advice": `transform` receives the UN-CALLED `fn`, so the caller
+ * controls timing (may skip / replace / defer the invocation). lodash `_.wrap` shape.
+ */
+export function around<T extends (...args: any[]) => any, R>(
     fn: T,
     transform: (data: [args: Parameters<T>, fn: T]) => R
 ): (...args: Parameters<T>) => R {
-    return (...args: Parameters<T>): R => transform([args, fn]) as R;
+    return (...args: Parameters<T>): R => transform([args, fn]) as R
 }
+
+/** @deprecated use {@link around} */
+export const Transformer = around

@@ -1,4 +1,22 @@
+/**
+ * @deprecated Legacy screener RPC compat layer. New code should use the hardened twin
+ *   `./oldСommonsServerMini` (promiseServer / wsWrapper / createClientProxy /
+ *   createAPIFacadeServer / createAPIFacadeClient), or the v2 RPC core in rpc-index
+ *   (createRpcServerAuto / createRpcClientHub).
+ *
+ *   The wire format is identical between this file and the Mini twin
+ *   ({mapId, data, callbacksId}; markers ___FUNC / ___STOP / ___STRICTLY / STRICTLY),
+ *   so the exported functions here are thin forwarders onto the Mini impl, which ADDS
+ *   payload validation + error serialization (it "catches" malformed input). Kept for
+ *   source archaeology and back-compat call sites.
+ */
 import {sleepAsync} from "../core/common";
+import {
+    promiseServer as miniPromiseServer,
+    wsWrapper as miniWsWrapper,
+    createClientProxy as miniCreateClientProxy,
+    createAPIFacadeServer as miniCreateAPIFacadeServer,
+} from "./oldСommonsServerMini"
 
 
 type tSocket = {emit: (marker: string, object: any) => any, on: (marker: string, callback: (a: any) => any) => any}
@@ -18,7 +36,15 @@ type tt = {[k: string]: any}
  *  Есть риск одноименных методов в разных объектах
  *  пока не думал как решить =)
  * */
+/**
+ * @deprecated forwards to `promiseServer` from `./oldСommonsServerMini` (adds payload
+ *   validation + error serialization). Same wire format, same signature.
+ */
 export function funcPromiseServer<T extends tt>(data: screenerSoc<tSocketData<tRequestScreenerT<T>>>, obj: T) {
+    return miniPromiseServer(data as any, obj as any)
+}
+
+function funcPromiseServerOld<T extends tt>(data: screenerSoc<tSocketData<tRequestScreenerT<T>>>, obj: T) {
     const buf = data;
     data.api({
         onMessage: async(datum) => {
@@ -85,6 +111,10 @@ export function funcPromiseServer<T extends tt>(data: screenerSoc<tSocketData<tR
     })
 }
 
+/**
+ * @deprecated legacy stripped single-key variant (flat `obj[key]`, no path walk). No exact
+ *   twin in `./oldСommonsServerMini` (its `promiseServer` is nested-only). Kept as-is.
+ */
 export function funcPromiseServer2<T extends object>(sendMessage: screenerSoc222<tSocketData<tRequestScreenerT<T>>>, obj: T) {
     return async(datum: any) => {
         const {key, request} = datum.data
@@ -139,8 +169,14 @@ type screenerPost<T> = {
 
 /**
  * для обертки над WebSocket чтобы получать callback по id
+ * @deprecated forwards to `wsWrapper` from `./oldСommonsServerMini` (adds abortAll;
+ *   the returned api method set is identical). Same wire format, same signature.
  * */
 export function funcForWebSocket<T>(data: screenerSoc<tSocketData<tRequestScreenerT<T>>> & {limit?: number}): screenerSoc2<T> {
+    return miniWsWrapper(data as any) as unknown as screenerSoc2<T>
+}
+
+function funcForWebSocketOld<T>(data: screenerSoc<tSocketData<tRequestScreenerT<T>>> & {limit?: number}): screenerSoc2<T> {
     const limit = data.limit
     // const sendMessage = (datum: tSocketData <tRequestScreenerT<T>>) => data.sendMessage(JSON.stringify(datum))
     const sendMessage = data.sendMessage // (datum: tSocketData <tRequestScreenerT<T>>) => data.sendMessage(datum)
@@ -291,10 +327,12 @@ export function funcForWebSocket<T>(data: screenerSoc<tSocketData<tRequestScreen
 // }
 
 type tFunc = (a: any) => any
+/** @deprecated use `ScreenerSoc2<T>` from `./oldСommonsServerMini` (adds `abortAll`) */
 export type screenerSoc2<T> = {
     send: (data: tRequestScreenerT<T>, wait?: boolean, callbacksId?: tFunc[]) => Promise<any>,
     api: screenerSocApi<T>,
 }
+/** @deprecated use `ScreenerSocApi<T>` from `./oldСommonsServerMini` */
 export type screenerSocApi<T> = {
     log: (status: boolean) => void,
     promiseTotal: () => number,
@@ -303,10 +341,14 @@ export type screenerSocApi<T> = {
     callbackDeleteAll: () => void,
     callbackDelete: (func: tFunc) => void,
 }
+/** @deprecated use `MethodToPromise<T>` from `./oldСommonsServerMini` */
 export type tMethodToPromise2<T extends object> = { [P in keyof T]: T[P] extends ((...args: infer Z) => infer X) ? X extends Promise<any> ? T[P] : (...args: Z) => Promise<X> : T[P] extends object ? tMethodToPromise2<T[P]> : never }
+/** @deprecated use `MethodToPromiseStrict<T>` from `./oldСommonsServerMini` */
 export type tMethodToPromise4<T extends object> = { [P in keyof T]: T[P] extends ((...args: infer Z) => infer X) ? X extends Promise<any> ? T[P] : (...args: Z) => Promise<X> : T[P] extends object ? tMethodToPromise4<T[P]> : T[P]}
 type tt5<T extends any> = T extends Promise<infer R> ? R : T
+/** @deprecated use `MethodToPromise<T>` from `./oldСommonsServerMini` */
 export type tMethodToPromise5<T extends object> = { [P in keyof T]: T[P] extends ((...args: infer Z) => infer X) ? (...args: Z) => Promise<tt5<X>> : T[P] extends object ? tMethodToPromise5<T[P]> : never }
+/** @deprecated use `MethodToPromiseStrict<T>` from `./oldСommonsServerMini` */
 export type tMethodToPromise6<T extends object> = { [P in keyof T]: T[P] extends ((...args: infer Z) => infer X) ? (...args: Z) => Promise<tt5<X>> : T[P] extends object ? tMethodToPromise6<T[P]> : T[P]}
 
 // export type tMethodToPromise2<T extends object> = { [P in keyof T]: T[P] extends ((...args: infer Z) => infer X) ? (...args: Z) => (X extends Promise<any> ? X : Promise<X>) : T[P] extends object ? tMethodToPromise2<T[P]> : never }
@@ -341,7 +383,15 @@ export type tMethodToPromise6<T extends object> = { [P in keyof T]: T[P] extends
 //     })
 // }
 
+/**
+ * @deprecated forwards to `createClientProxy` from `./oldСommonsServerMini`
+ *   (behaviorally equivalent proxy). Same wire format, same signature.
+ */
 export function funcScreenerClient2<T extends object>(data: screenerSoc2<T>, wait?: boolean) {
+    return miniCreateClientProxy<T>(data as any, wait) as unknown as tMethodToPromise5<T>
+}
+
+function funcScreenerClient2Old<T extends object>(data: screenerSoc2<T>, wait?: boolean) {
     const tr = (address: string[]) => new Proxy((()=>{}) as any, {
         get(target: any, p: string | symbol, receiver: any): any {
             address.push(p as string)
@@ -481,14 +531,22 @@ export type typeVoid2<T> = {
 export type typeNoVoid2<T> = {
     [P in Exclude<keyof T, { [P in keyof T]: T[P] extends (any: any) => any ? ReturnType<T[P]> extends void ? never : P : never; }[keyof T]>]: T[P];
 };
+/** @deprecated use the built-in `Awaited<T>` */
 export type UnAwaited<T extends Promise<any>> = T extends Promise<infer R> ? R : never
 export type UnAwaitedArr<T extends Promise<any>[]> = T extends Promise<infer R>[] ? R[] : never
 export type ReturnTypePromise<T extends (...args: any) => any> = T extends (...args: any) => infer R ? R extends Promise<any> ? UnAwaited<R> : R : any;
 export type UnObject<T extends object> = T extends {[k: string]: infer R} ? R : never;
+/** @deprecated use indexed access `T[number]` */
 export type UnArray<T extends any[]> = T extends (infer R)[] ? R : never
 export type tElArr<T extends any[]> = UnArray<T>
 
 // OmitTypes
+/**
+ * @deprecated prefer `createAPIFacadeClient` from `./oldСommonsServerMini`. NOT forwarded
+ *   here because the Mini facade renames the returned members (strict/infoStrict/strictInit
+ *   vs this file's strictly/infoStrictly/strictlyInit); kept as-is to preserve the old
+ *   return shape for existing callers.
+ */
 export function CreatAPIFacadeClientOld<T extends object>({socketKey, socket, limit}: {socket: tSocket, socketKey: string, limit?: number}) {
 
     let strictlyObj = {} as any
@@ -538,7 +596,20 @@ export function CreatAPIFacadeClientOld<T extends object>({socketKey, socket, li
     }
 }
 
-export function CreatAPIFacadeServerOld<T extends object>({object, socket, socketKey, debug = false}: {
+/**
+ * @deprecated forwards to `createAPIFacadeServer` from `./oldСommonsServerMini` (same
+ *   input shape, same wire format; the Mini impl adds payload validation). Same signature.
+ */
+export function CreatAPIFacadeServerOld<T extends object>(params: {
+    socket: tSocket,
+    object: T,
+    socketKey: string,
+    debug?: boolean
+}) {
+    return miniCreateAPIFacadeServer(params as any)
+}
+
+function CreatAPIFacadeServerOldImpl<T extends object>({object, socket, socketKey, debug = false}: {
     socket: tSocket,
     object: T,
     socketKey: string,

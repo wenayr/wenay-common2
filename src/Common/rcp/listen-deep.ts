@@ -1,6 +1,6 @@
 // listen-deep.ts
 
-import { funcListenCallbackBase } from "../events/Listen";
+import { funcListenCallbackBase, type ListenOn } from "../events/Listen";
 import { listenSocket, listenSocketFirst, listenSocketAll, listenSocketSmart, type tSubHandle } from "./listen-socket";
 
 // Клиентская проекция результата listenSocket: callback(fn) отдаёт ВЫЗЫВАЕМЫЙ
@@ -12,7 +12,13 @@ import { listenSocket, listenSocketFirst, listenSocketAll, listenSocketSmart, ty
 // строгую аддитивность — старое `const p: Promise<void> = deep.ev.callback(fn)` всё ещё
 // компилится, а вызываемость/await/.unsubscribe/.removeCallback доступны поверх.
 type WithSubHandle<R> = R extends { callback: (...a: infer A) => any }
-    ? Omit<R, 'callback'> & { callback: (...a: A) => tSubHandle & Promise<void> }
+    ? Omit<R, 'callback' | 'on' | 'once'> & {
+          callback: (...a: A) => tSubHandle & Promise<void>;
+          /** Идиоматичный алиас callback: подписка по факту установки колбэка. */
+          on: (...a: A) => tSubHandle & Promise<void>;
+          /** Однократная подписка: одно событие, затем стрим закрывается. */
+          once: (...a: A) => tSubHandle & Promise<void>;
+      }
     : R
 
 type Obj = Record<string, any>;
@@ -25,6 +31,8 @@ type InferArgs<T> = T extends { addListen: (cb: (...args: infer R) => void, ...r
 export type DeepSocketListen<T> = {
     [K in keyof T]: T[K] extends { addListen: Function }
         ? WithSubHandle<ReturnType<typeof listenSocket<InferArgs<T[K]>>>>
+        : T[K] extends ListenOn<infer Z>   // голый on (брендирован) → та же подписка {on, once, close, ...}
+        ? WithSubHandle<ReturnType<typeof listenSocket<Z>>>
         : T[K] extends (...a: any[]) => any ? T[K]
         : T[K] extends Promise<any> ? T[K] // экземпляры Promise проходят как есть (typeof Promise ловил только конструктор)
         : T[K] extends typeof Promise ? T[K]
@@ -33,8 +41,9 @@ export type DeepSocketListen<T> = {
 };
 
 export type DeepSocketListenFirst<T> = {
-    [K in keyof T]: T[K] extends { addListen: Function } 
+    [K in keyof T]: T[K] extends { addListen: Function }
         ? ReturnType<typeof listenSocketFirst<InferArgs<T[K]>>>
+        : T[K] extends ListenOn<infer Z> ? ReturnType<typeof listenSocketFirst<Z>>
         : T[K] extends (...a: any[]) => any ? T[K]
         : T[K] extends Promise<any> ? T[K] // экземпляры Promise проходят как есть (typeof Promise ловил только конструктор)
         : T[K] extends typeof Promise ? T[K]
@@ -43,8 +52,9 @@ export type DeepSocketListenFirst<T> = {
 };
 
 export type DeepSocketListenAll<T> = {
-    [K in keyof T]: T[K] extends { addListen: Function } 
+    [K in keyof T]: T[K] extends { addListen: Function }
         ? ReturnType<typeof listenSocketAll<InferArgs<T[K]>>>
+        : T[K] extends ListenOn<infer Z> ? ReturnType<typeof listenSocketAll<Z>>
         : T[K] extends (...a: any[]) => any ? T[K]
         : T[K] extends Promise<any> ? T[K] // экземпляры Promise проходят как есть (typeof Promise ловил только конструктор)
         : T[K] extends typeof Promise ? T[K]
@@ -63,6 +73,7 @@ export type DeepSocketListenAll<T> = {
 export type DeepSocketListenSmart<T> = {
     [K in keyof T]: NonNullable<T[K]> extends { addListen: Function }
         ? ReturnType<typeof listenSocketSmart<InferArgs<NonNullable<T[K]>>>> | Extract<T[K], undefined | null>
+        : NonNullable<T[K]> extends ListenOn<infer Z> ? ReturnType<typeof listenSocketSmart<Z>>
         : NonNullable<T[K]> extends (...a: any[]) => any ? T[K]
             : NonNullable<T[K]> extends Promise<any> ? T[K] // экземпляры Promise проходят как есть
             : NonNullable<T[K]> extends typeof Promise ? T[K]

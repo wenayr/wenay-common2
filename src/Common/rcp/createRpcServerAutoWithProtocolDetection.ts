@@ -1,4 +1,4 @@
-import { isListenCallback, funcListenCallbackBase } from "../events/Listen";
+import { isListenCallback, funcListenCallbackBase, isListenOn, getListenByOn } from "../events/Listen";
 import { listenSocket } from "./listen-socket";
 import { createRpcServer, type PromiseServerHooks, type RpcLimits } from "./rpc-server";
 import { DeepSocketListen } from "./listen-deep";
@@ -57,8 +57,9 @@ export function createRpcServerAuto2<T extends object>({
 
     /** Общий трансформер: Listen → listenSocket({ callback, removeCallback }) */
     function resolveTransform(obj: any): any {
-        if (!isListenCallback(obj)) return obj;
-        return getListenSocket(obj);
+        if (isListenCallback(obj)) return getListenSocket(obj);
+        if (isListenOn(obj)) return getListenSocket(getListenByOn(obj)); // bare `on` → Listen-обёртка по реестру
+        return obj;
     }
 
     // ── Трансформация дерева объекта (Listen → listenSocket) ─────
@@ -77,7 +78,7 @@ export function createRpcServerAuto2<T extends object>({
             if (!isSafeKey(k)) continue;
             const v = current[k];
             if (isNoStrict(v)) { out[k] = v; continue; }
-            out[k] = typeof v === 'function' ? v : (v != null && typeof v === 'object') ? transformTree(v) : v;
+            out[k] = typeof v === 'function' ? resolveTransform(v) : (v != null && typeof v === 'object') ? transformTree(v) : v;
         }
         return out;
     }

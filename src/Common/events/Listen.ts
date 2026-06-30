@@ -4,6 +4,28 @@ export type Listener<T extends any[]> = (...r: T) => void
 export type NormalizeTuple<T> = T extends any[] ? T : [T]
 
 type key = string
+
+// Фантомный бренд (ТОЛЬКО на уровне типов) функции on Listen: несёт типы аргументов Z, чтобы
+// wire-проекция (DeepSocketListen) узнала «голый on» среди обычных функций и развернула
+// подписочную поверхность {on, once, close, ...}. Бренд ОБЯЗАТЕЛЕН → обычная функция его не имеет,
+// поэтому под ветку ListenOn она не попадает (дискриминация). Рантайма у бренда нет.
+declare const LISTEN_ON_BRAND: unique symbol
+export type ListenOn<Z extends any[] = any[]> =
+    ((cb: Listener<Z>, opts?: { cbClose?: () => void; key?: string }) => (() => void))
+    & { readonly [LISTEN_ON_BRAND]: Z }
+
+// ============================================================
+// Реестр идентичности Listen: api.on → весь api (по ССЫЛКЕ, не по форме).
+// ============================================================
+// У каждого Listen УНИКАЛЬНАЯ функция on. Регистрируем её при создании → Listen можно
+// надёжно узнать по identity (а не хрупким duck-type) и достать его api. Назначение:
+// прокинуть через веб ТОЛЬКО ссылку `on`, а wire-слой по реестру восстановит slim {on, once, close}.
+const listenByOn = new WeakMap<Function, any>()
+/** api Listen по его функции `on` (или undefined, если fn — не зарегистрированный on). */
+export function getListenByOn(fn: any) { return typeof fn == "function" ? listenByOn.get(fn) : undefined }
+/** Является ли fn функцией `on` какого-то Listen (проверка по ссылке в реестре). */
+export function isListenOn(fn: any): boolean { return typeof fn == "function" && listenByOn.has(fn) }
+
 export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) => (void | (() => void)),
                                                             {fast = true, event, addListenClose}: {
                                                             event?: (type: "add" | "remove", count: number, api: ReturnType<typeof funcListenCallbackBase<T>>) => void,
@@ -87,11 +109,20 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
                 closeUnsubscribe = null
             }
         },
+        /**
+         * @deprecated Используйте `onClose(cb)` — та же семантика и тот же `off()`.
+         * Сохранено для обратной совместимости.
+         */
         eventClose: (cb: ()=>void) => {
             evClose = evClose ?? new Map()
             evClose.set(cb, cb)
             return () => { evClose?.delete(cb) }
         },
+        /**
+         * Подписка на закрытие потока (идиома `on('close')`). Возвращает `off()`.
+         * Делегирует в ту же логику, что и `eventClose`.
+         */
+        onClose: (cb: ()=>void) => api.eventClose(cb),
         /**
          * @deprecated Скоро будет убран. Снимайте close-обработчик через `off()`,
          * который возвращает `eventClose(cb)`. Сохранено для обратной совместимости.
@@ -102,6 +133,11 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
             sinh?.delete(cb)
             evClose?.delete(cb)
         },
+        /**
+         * @deprecated Используйте `on(cb, opts)` — та же подписка и тот же `off()`
+         * (идиома `const off = listen.on(cb); off()`). Сохранено для обратной
+         * совместимости и делегирует в ту же реализацию, что и `on`.
+         */
         addListen: (cb: Listener<Z>, {cbClose, key}: {cbClose?: () => void, key?: key } = {}) => {
             const k = key ?? cb
             obj.set(k, cb)
@@ -130,6 +166,22 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
          * совместимости и делегирует в ту же внутреннюю логику, что и `off()`.
          */
         removeListen: (k: Listener<Z> | null| key) => removeKey(k),
+        /**
+         * Подписаться. Возвращает `off()` — единственный способ отписки (идиома
+         * `const off = listen.on(cb); off()`). `opts.key` — перезапись по ключу,
+         * `opts.cbClose` — per-sub close-хук. Делегирует в ту же реализацию, что
+         * и `addListen`.
+         */
+        on: ((cb: Listener<Z>, opts: {cbClose?: () => void, key?: key } = {}) => api.addListen(cb, opts)) as ListenOn<Z>,
+        /**
+         * Подписаться ОДНОКРАТНО: после первого события автоматически отписывается.
+         * Возвращает `off()` (досрочная отписка). Идиома EventEmitter.once.
+         */
+        once: (cb: Listener<Z>, opts: {key?: key } = {}) => {
+            let off: () => void = () => {}
+            off = api.addListen(((...e: Z) => { off(); cb(...e) }), opts)
+            return off
+        },
         count: () => obj.size,
         /**
          * @deprecated Скоро будет убран. Интроспекция ключей — не часть slim-API;
@@ -137,6 +189,8 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
          */
         get getAllKeys(): (Listener<NormalizeTuple<T>>|key)[] { return [...obj.keys()] }
     }
+    // Идентичность: по api.on находим весь api (для slim-проксирования {on, once, close} через веб).
+    listenByOn.set(api.on, api)
     return api
 }
 export function funcListenCallbackFast<T>(a: (e: (Listener<NormalizeTuple<T>>|null))=>(void | (()=>void))) {
@@ -194,46 +248,25 @@ export function UseListen2<T>(data: Parameters<typeof funcListenCallbackBase<T>>
     return [emit, toListen2<T>(full)] as const
 }
 
-/** Проверяет, является ли объект результатом funcListenCallbackBase */
-let referenceKeys: string[] | null = null
-let referenceTypes: Map<string, string> | null = null
+// ===================================================================
+// isListenCallback — ДОЛЖЕН быть устойчив к АДДИТИВНОМУ росту full-api.
+// ===================================================================
+// Раньше сверяли ТОЧНЫЙ набор ключей с эталоном funcListenCallbackBase(). Это хрупко:
+// любой новый член (on/onClose/…) менял эталон и ломал детекцию у ВСЕХ конформеров,
+// которые руками воспроизводят форму (observable-узлы reactive.ts, wire-реконструкция
+// transit.ts) и про новый член не знают. Теперь проверяем СТАБИЛЬНОЕ ЯДРО — ровно ту
+// подписочную поверхность, которую реально потребляет listenSocket (listen-socket.ts:76).
+// Подмножество-контракт: лишние члены игнорируются; slim-Listen2 (on/close/count — без
+// addListen/func) корректно НЕ проходит; добавление новых членов детекцию больше не ломает.
+const LISTEN_CORE = ["func", "addListen", "removeListen", "eventClose", "removeEventClose"] as const
 
-function getReferenceData(): { keys: string[], types: Map<string, string> } {
-    if (!referenceKeys || !referenceTypes) {
-        const demo = funcListenCallbackBase(() => {})
-        referenceKeys = Object.keys(demo).sort()
-        referenceTypes = new Map()
-
-        // Сохраняем типы всех свойств
-        for (const key of referenceKeys) {
-            referenceTypes.set(key, typeof (demo as any)[key])
-        }
-    }
-    return { keys: referenceKeys, types: referenceTypes }
-}
-// 2. Безопасная проверка
 export function isListenCallback(obj: any): obj is ReturnType<typeof funcListenCallbackBase> {
     if (obj == null || typeof obj !== "object") return false
-
-    // Получаем ключи БЕЗ обращения к свойствам (безопасно от геттеров/Proxy)
-    const objKeys = Object.keys(obj).sort()
-    const { keys: refKeys, types: refTypes } = getReferenceData()
-
-    // Сравниваем количество ключей
-    if (objKeys.length !== refKeys.length) return false
-
-    // Сравниваем названия ключей
-    for (let i = 0; i < refKeys.length; i++) {
-        if (objKeys[i] !== refKeys[i]) return false
-    }
-
-    // Проверяем типы всех свойств
-    for (const key of refKeys) {
-        const expectedType = refTypes.get(key)
-        const actualType = typeof obj[key]
-
-        if (actualType !== expectedType) return false
-    }
-
+    // Сначала НАЛИЧИЕ core-ключей как собственных перечислимых (Object.keys не дёргает
+    // get-трапы по значениям) — чужой объект/Proxy без них отсекается, свойства не трогаем.
+    const ks = new Set(Object.keys(obj))
+    for (const k of LISTEN_CORE) if (!ks.has(k)) return false
+    // Затем убеждаемся, что core-члены — функции.
+    for (const k of LISTEN_CORE) if (typeof (obj as any)[k] !== "function") return false
     return true
 }

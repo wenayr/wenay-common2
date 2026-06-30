@@ -28,11 +28,16 @@ function set() {
 }
 
 let init = false;
+/** @deprecated use {@link installProxyTracking} */
 export function isProxyInit() {
     if (init || nodeIsProxy) return;
     init = true;
     set();
 }
+
+// idiomatic alias: one-time setup of the browser fallback (must run at startup,
+// before any Proxy is constructed). NOT lazy — see isProxy()'s throw.
+export const installProxyTracking = isProxyInit
 
 export function isProxy(a: any) {
     // Если мы в Node.js, используем встроенную магию

@@ -31,12 +31,20 @@ export class CObjectEventsArr<T extends object>{
         }
     }
     AddStart(data:tListEvent)               {this.data.unshift(data); this.setup(this.data[0])}
+    /** @deprecated Используйте `add(item, {at: 'end'})`. */
     AddEnd(data:tListEvent)                 {this.setup(this.data[this.data.push(data)-1])}
+    /** @deprecated Используйте `add(item)`. */
     Add(data:tListEvent)                    {this.setup(this.data[this.data.push(data)-1])}
+    /** Добавить обработчик (по умолчанию в конец). `at: 'start'` — в начало (unshift/prepend). */
+    add(data:tListEvent, opts:{at?:'start'|'end'} = {}) {opts.at == 'start' ? this.AddStart(data) : this.AddEnd(data)}
+    /** @deprecated Используйте `emit(data?)`. */
     OnEvent(data?:any)                      {[...this.data].forEach((e)=>{e.func?.(data); if (e.func2) {e.func2(data); e.del?.();}})}
+    /** Вызвать все обработчики (идиома `emit`). */
+    emit(data?:any)                         {this.OnEvent(data)}
 
     // OnSpecEvent<T extends object>(f:(e:T)=>void)           {this.data.forEach((e)=>{let l=e.func?.() as T; if (l) {f(l);}  e.func2?.();})}
     OnSpecEvent(f:(e:T)=>void)              {[...this.data].forEach((e)=>{const l= e.func?.() as unknown as (T|undefined); l&&f(l); if (e.func2) {e.func2(); e.del?.();}})} // l&&f(l);  if (l) {f(l);}
+    /** @deprecated Используйте `clear()`. */
     Clean()                                 {
         const a = [...this.data];
         this.data=[];
@@ -44,8 +52,12 @@ export class CObjectEventsArr<T extends object>{
             a[i].del?.();
         }
     }
+    /** Снести все обработчики (идиома `clear`, полный teardown через del()). */
+    clear()                                 {this.Clean()}
     count()                                 {return this.data.length}
     get length()                            {return this.count()}
+    /** Число обработчиков (идиома `size`). */
+    get size()                              {return this.count()}
 }
 
 
@@ -74,11 +86,23 @@ export class CObjectEventsList<T=unknown>{
 
     log()                       {const er:object[]=[]; this.data.forEach(e=>er.push(e)); console.log(er);}
     AddStart(data:tListEvent)   {this.setup(this.data.AddStart(data))}
+    /** @deprecated Используйте `add(item, {at: 'end'})`. */
     AddEnd(data:tListEvent)     {this.setup(this.data.AddEnd(data))}
+    /** @deprecated Используйте `add(item)`. */
     Add(data:tListEvent)        {this.setup(this.data.AddEnd(data))}
+    /** Добавить обработчик (по умолчанию в конец). `at: 'start'` — в начало. */
+    add(data:tListEvent, opts:{at?:'start'|'end'} = {}) {opts.at == 'start' ? this.AddStart(data) : this.AddEnd(data)}
+    /** @deprecated Используйте `emit(data?)`. */
     OnEvent(data?:T)            {const a:tListEvent<T>[]=[]; this.data.forEach(e=>a.push(e)); a.forEach(e=>{e.func?.(data); if (e.func2) {e.func2(data); e.del?.();}})}
+    /** Вызвать все обработчики (идиома `emit`). */
+    emit(data?:T)               {this.OnEvent(data)}
     OnSpecEvent<R>(f:(e?:R)=>void)  {const a:tListEvent<T>[]=[]; this.data.forEach(e=>a.push(e)); a.forEach((e)=>{const l: any=e.func?.(); if (l) {f(l as unknown as R);}  if (e.func2) {e.func2(); e.del?.();}})}
+    /** @deprecated Используйте `clear()`. */
     Clean()                     {let r:CListNodeAnd<any>|undefined =this.data.First(); while (r) {const buf = r; r=r?.Next(); buf.DeleteLink()}}
+    /** Снести все обработчики (идиома `clear`). */
+    clear()                     {this.Clean()}
     count()                     {return this.data.countRef()}
     get length()                {return this.count()}
+    /** Число обработчиков (идиома `size`). */
+    get size()                  {return this.count()}
 }

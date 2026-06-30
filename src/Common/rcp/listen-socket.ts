@@ -160,7 +160,20 @@ export function listenSocket<Z extends any[] = any[]>(
         return makeOff(wait, removeCallback, { unsubscribe: removeCallback, removeCallback }) as unknown as Promise<void>;
     }
 
-    return { callback, removeCallback };
+    // on — идиоматичный алиас callback: подписка «через веб» по самому факту установки
+    // колбэка (client.func.stream.on(cb) === .callback(cb)). Тот же вызываемый off()/await-хендл.
+    // once — однократная подписка: первое событие + конец стрима (RPC_STOP→CB_END), затем off.
+    function once(z: Listener<Z>) {
+        let fired = false;
+        const oneShot = ((...a: any[]) => {
+            if (fired) return; fired = true;
+            (z as Function)(...a); (z as Function)(RPC_STOP); removeCallback();
+        }) as Listener<Z>;
+        return callback(oneShot);
+    }
+    // close — закрыть весь Listen-источник (полный teardown, влияет на ВСЕХ потребителей узла).
+    function closeStream() { (e as any).close?.(); }
+    return { callback, removeCallback, on: callback, once, close: closeStream };
 }
 
 export function listenSocketFirst<Z extends any[] = any[]>(
@@ -174,6 +187,9 @@ export function listenSocketFirst<Z extends any[] = any[]>(
     type SingleArgCallback = (a: Z[0]) => void;
     return {
         callback: r.callback as unknown as (z: SingleArgCallback) => tSubHandle,
+        on: r.callback as unknown as (z: SingleArgCallback) => tSubHandle,
+        once: r.once as unknown as (z: SingleArgCallback) => tSubHandle,
+        close: r.close,
         removeCallback: r.removeCallback,
     };
 }
@@ -185,6 +201,9 @@ export function listenSocketAll<Z extends any[] = any[]>(
     const r = listenSocket(e, { ...options });
     return {
         callback: r.callback as unknown as (z: (...args: Z) => void) => tSubHandle,
+        on: r.callback as unknown as (z: (...args: Z) => void) => tSubHandle,
+        once: r.once as unknown as (z: (...args: Z) => void) => tSubHandle,
+        close: r.close,
         removeCallback: r.removeCallback,
     };
 }
@@ -200,6 +219,9 @@ export function listenSocketSmart<Z extends any[] = any[]>(
     const r = listenSocket(e, { ...options });
     return {
         callback: r.callback as unknown as (z: SmartCallback<Z>) => tSubHandle,
+        on: r.callback as unknown as (z: SmartCallback<Z>) => tSubHandle,
+        once: r.once as unknown as (z: SmartCallback<Z>) => tSubHandle,
+        close: r.close,
         removeCallback: r.removeCallback,
     };
 }

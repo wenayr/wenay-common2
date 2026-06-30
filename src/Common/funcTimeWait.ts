@@ -8,6 +8,7 @@ type tFunc = {
     weight: number;
 };
 
+/** @deprecated use {@link createRateWindow} */
 export function funcTimeW() {
     type tt1 = [tTime, tWeight];
     type ttt = { [key: tType]: tt1[] };
@@ -125,4 +126,27 @@ export function funcTimeW() {
 
 
 // Массив для хранения времени ожидания у асинхронных функций
+/** @deprecated use {@link rateWindow} */
 export const FuncTimeWait = funcTimeW()
+
+
+// ===========================================================================
+// Idiomatic surface — sliding-window rate limiter
+// ===========================================================================
+// Same instance as funcTimeW(), with self-documenting member names added on top
+// of the originals (kept for back-compat):
+//   prune     = cleanByTime  (drop entries older than the window)
+//   sumWeight = weight        (sum of weight over the window)
+//   readyAt   = byWeight      (timestamp when accumulated weight crosses the limit)
+export function createRateWindow() {
+    const w = funcTimeW()
+    return {
+        ...w,
+        prune: w.cleanByTime,
+        sumWeight: w.weight,
+        readyAt: w.byWeight,
+    }
+}
+
+// shared default instance (idiomatic alias for FuncTimeWait)
+export const rateWindow = createRateWindow()

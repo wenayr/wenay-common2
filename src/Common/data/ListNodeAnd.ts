@@ -1,9 +1,13 @@
-
+// =============================================================================
+// LEGACY — circular intrusive node list. Superseded by CList (data/List.ts).
+// Kept for backward compatibility; prefer CList for new code.
+// =============================================================================
 
 class CBaseList<T>{
     data:T|undefined;
 }
 
+/** @deprecated legacy circular intrusive list — use CList from data/List.ts */
 export class CListNodeAnd<T>  extends  CBaseList<T> implements iListNodeMini{
     get count(): number {
         return this._home?._count??-1;
