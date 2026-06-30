@@ -47,11 +47,11 @@ export class CList<T, TNode extends ListNode<T> = ListNode<T>> implements Iterab
 
     constructor(values :Iterable<T> =[])  { for(let value of values) this.add(value); }// this._immutableList= this; }
 
-    *nodes() { for(let node=this._first, next= node?.next; node!=null; node=next, next=next?.next) yield node as unknown as TNode ; }
+    *nodes() { for(let node=this._first; node!=null;) { yield node as unknown as TNode; node = node.next; } }
 
     *values() { for(let node of this) yield node.value; }
 
-    *reversedNodes() { for(let node=this._last, next= node?.prev; node!=null; node=next, next=next?.prev) yield node as unknown as TNode ; }
+    *reversedNodes() { for(let node=this._last; node!=null;) { yield node as unknown as TNode; node = node.prev; } }
 
     *reversedValues() { for(let node of this.reversedNodes()) yield node.value; }
 

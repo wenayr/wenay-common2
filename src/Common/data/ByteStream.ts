@@ -2,9 +2,12 @@
 
 import {const_Date} from "../core/BaseTypes";
 
-function createCopyOfBuffer(src : Readonly<ArrayBuffer>, length :number= src.byteLength)  {
+function createCopyOfBuffer(src : Readonly<ArrayBuffer|DataView>, length :number= src.byteLength)  {
 	let dst = new ArrayBuffer(length);
-	new Uint8Array(dst).set(new Uint8Array(src as ArrayBuffer));
+	const bytes = src instanceof DataView
+		? new Uint8Array(src.buffer, src.byteOffset, Math.min(src.byteLength, length))
+		: new Uint8Array(src as ArrayBuffer, 0, Math.min(src.byteLength, length));
+	new Uint8Array(dst).set(bytes);
 	return dst;
 }
 
@@ -56,7 +59,7 @@ export class ByteStreamW
 
 	protected resize(size :number) {
 		// if (!this._buffer()) throw "Buffer is not created";
-		let buf= createCopyOfBuffer(this._buffer() as Readonly<ArrayBuffer>, size);  this._view= new DataView(buf); }
+		let buf= createCopyOfBuffer(this._view, size);  this._view= new DataView(buf); }
 
 	constructor(view? :DataView) {
 		if (view) {
@@ -69,7 +72,7 @@ export class ByteStreamW
 	get length() { return this._pos; }
 	//get buffer() : Readonly<ArrayBuffer> { return this._buffer; }
 
-	get data() : Readonly<DataView> { return new DataView(this._buffer(), 0, this._pos); }
+	get data() : Readonly<DataView> { return new DataView(this._buffer(), this._view.byteOffset, this._pos); }
 
 	noThrow() : ByteStreamW { let other= new ByteStreamW(this._view);  other._pos= this._pos;  other._isThrowable= false;  return other; }
 	// Обеспечить наличие свободных байт
@@ -153,7 +156,13 @@ export class ByteStreamW
 
 		let typeInfo= getNumericTypeInfo(type)!; // ?? (()=>{throw("Wrong type: "+type)})
 		if (!typeInfo) throw("Wrong type: "+type);
-		return (stream :ByteStreamW, value :number)=> { return (isNullable ? stream.pushBool(value!=null) : stream)?._push(value, typeInfo.size, typeInfo.integer) !=null; }
+		return (stream :ByteStreamW, value :number | null)=> {
+			if (isNullable) {
+				if (stream.pushBool(value!=null) == null) return false;
+				if (value == null) return true;
+			}
+			return stream._push(value as number, typeInfo.size, typeInfo.integer) !=null;
+		}
 	}
 
 	pushArrayNumeric(array :Iterable<number>,  type : NumericTypes|Nullable<NumericTypes>,  maxlength? :number)
@@ -168,12 +177,8 @@ export class ByteStreamW
 			this._ensureAllocation(length+4);
 			this.pushInt32(length);
 			let arrayClass= (array instanceof Int8Array) ? Int8Array : Uint8Array;
-			if (length != array.length) {
-				// @ts-ignore
-				array = new arrayClass(array.buffer, 0, length);
-			}
 			// @ts-ignore
-			new arrayClass(this._buffer()).set(array, this._pos);
+			new arrayClass(this._buffer(), this._view.byteOffset + this._pos, length).set(array.subarray(0, length));
 			this._pos += length;
 			return this;
 		}
@@ -352,6 +357,8 @@ class ByteStreamR_<throwable extends boolean>
 		if (type=="int8" || type=="uint8") {
 			let arrayClass= type=="int8" ? Int8Array : Uint8Array;
 			let size= this.readUint32();  if (size==null) return null;
+			if (this._pos + size > this._view.byteLength)
+				if (this.isThrowable) throw("Array read out of range"); else return null;
 			let bufpos= this._view.byteOffset + this._pos;
 			// @ts-ignore
 			const out = new arrayClass(this._view.buffer.slice(bufpos, bufpos+size!));

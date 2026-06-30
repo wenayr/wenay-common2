@@ -8,6 +8,7 @@ import {PromiseArrayListen} from '../src/Common/async/PromiseArrayListen'
 import {joinListens} from '../src/Common/events/joinListens'
 import {UseListen} from '../src/Common/events/Listen'
 import {createIterableObject} from '../src/Common/async/createIterableObject'
+import {StructMap} from '../src/Common/core/common'
 
 let fails = 0
 function assert(cond: any, msg: string) {
@@ -70,6 +71,17 @@ async function main() {
         try { delete (ro as any)['a'] } catch { threw = true }
         assert(!threw, '#5 delete on read-only proxy does not throw')
         assert(store.has('a'), '#5 read-only delete is a no-op (key still present)')
+    }
+
+    // ===== #6 — StructMap.has prefix miss against primitive leaf returns false =====
+    {
+        const m = new StructMap<readonly number[], number>()
+        m.set([1], 42)
+        let threw = false
+        let has = true
+        try { has = m.has([1, 2]) } catch { threw = true }
+        assert(!threw, '#6 StructMap.has([1, 2]) does not throw when [1] stores a primitive')
+        assert(has === false, '#6 StructMap.has([1, 2]) returns false for a missing composite key')
     }
 
     console.log(`\n${fails === 0 ? 'ALL GREEN' : fails + ' FAILURE(S)'}`)

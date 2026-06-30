@@ -12,6 +12,7 @@ type PromiseServerHooks<T> = {
     onRequest?: (ctx: { key: string[]; request: any[]; fnName: string; fn: Func }) => boolean | Promise<boolean>;
     onInvalid?: (ctx: { reason: "invalid_payload" | "not_function" | "resolve_error" | "rate_limit"; key?: any; request?: any; error?: any }) => void | Promise<void>;
     resolveTransform?: (value: any) => any;
+    onDispose?: () => void;
 };
 
 // In-band авторизация (P3 «подтверждение»): клиент шлёт Pkt.HELLO с токеном, сервер его
@@ -147,7 +148,7 @@ function createServer<T extends object>(
         detachPrev();
         console.warn(`[RPC] createRpcServer: повторная инициализация на socket+key "${key}" — предыдущий сервер отцеплен`);
     }
-    byKey.set(key, () => { detached = true; });
+    byKey.set(key, () => { detached = true; hooks?.onDispose?.(); });
 
     socket.on(key, async (msg: any) => {
         if (detached) return;

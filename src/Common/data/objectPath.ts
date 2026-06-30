@@ -9,7 +9,7 @@ export function objectSetValueByPath<TObj extends {[key :string] :any}, TVal>
         let key= path[0];
         if (path.length==1) { (obj as any)[key]= value; return; }
         let val= obj[key];
-        if (typeof val!="object") throw "value is not an object: "+val;
+        if (val == null || typeof val!="object") throw "value is not an object: "+val;
         return objectSetValueByPath(val, path.slice(1), value);
     }
 
@@ -25,7 +25,7 @@ export function objectGetValueByPath<TObj extends {readonly [key :string] :any},
         if (! (key in object)) throw "key is not in object: "+key;
         let val= object[key];
         if (path.length==1) return val;
-        if (typeof val!="object") throw "value is not an object: "+val;
+        if (val == null || typeof val!="object") throw "value is not an object: "+val;
         return objectGetValueByPath(val, path.slice(1));
         //throw "key path is not found: "+JSON.stringify(path);
     }
@@ -43,7 +43,7 @@ export function objectDeleteValueByPath<TObj extends {readonly [key :string] :an
             if (! (key in object)) return false;
             else { delete (object as any)[key]; return true; }
         let val= object[key];
-        if (typeof val!="object") throw "value is not an object: "+val;
+        if (val == null || typeof val!="object") throw "value is not an object: "+val;
         return objectDeleteValueByPath(val, path.slice(1)) as boolean;
     }
 

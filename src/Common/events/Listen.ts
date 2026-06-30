@@ -3,7 +3,7 @@ export type Listener<T extends any[]> = (...r: T) => void
 /** Нормализация: если T уже кортеж — оставляем, иначе оборачиваем в [T] */
 export type NormalizeTuple<T> = T extends any[] ? T : [T]
 
-type key = string
+type key = string | symbol
 
 // Фантомный бренд (ТОЛЬКО на уровне типов) функции on Listen: несёт типы аргументов Z, чтобы
 // wire-проекция (DeepSocketListen) узнала «голый on» среди обычных функций и развернула
@@ -36,6 +36,7 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
     type Z = NormalizeTuple<T>
     type cbClose = ()=>void
     const obj = new Map<Listener<Z>|key, Listener<Z>>()
+    const cbKeys = new Map<Listener<Z>, Array<Listener<Z>|key>>()
     // evClose/sinh are LAZY: allocated only when a cbClose is actually used.
     // Most subscribers pass no cbClose, so these stay null — no empty Maps per Listen.
     let evClose: Map<cbClose|Listener<Z>|key, cbClose> | null = null
@@ -68,15 +69,29 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
     // Реальная логика снятия одной подписки по ключу. Внутренняя, поэтому off()
     // (то, что отдаёт addListen) и deprecated-метод removeListen бьют в неё оба —
     // off() не «зажигает» deprecation-предупреждение на собственную реализацию.
-    function removeKey(k: Listener<Z> | null | key) {
-        obj.delete(k!)
-        const e = evClose?.get(k!)
-        if (fast) rebuild()
-        evClose?.delete(k!)
+    function forgetKey(k: Listener<Z> | key) {
+        const removed = obj.get(k)
+        if (typeof removed == "function") {
+            const keys = cbKeys.get(removed)
+            if (keys) {
+                const i = keys.indexOf(k)
+                if (i >= 0) keys.splice(i, 1)
+                if (keys.length == 0) cbKeys.delete(removed)
+            }
+        }
+        const e = evClose?.get(k)
+        evClose?.delete(k)
         if (e) {
             evClose?.delete(e)
             sinh?.delete(e)
         }
+    }
+
+    function removeKey(k: Listener<Z> | null | key) {
+        if (!obj.has(k!)) return
+        obj.delete(k!)
+        forgetKey(k!)
+        if (fast) rebuild()
         event?.("remove", obj.size, api)
     }
 
@@ -99,6 +114,7 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
             close?.()
             close = null
             obj.clear()
+            cbKeys.clear()
             if (fast) rebuild()
             sinh = null
             if (evClose) { evClose.forEach(cb => cb()); evClose = null }
@@ -139,17 +155,13 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
          * совместимости и делегирует в ту же реализацию, что и `on`.
          */
         addListen: (cb: Listener<Z>, {cbClose, key}: {cbClose?: () => void, key?: key } = {}) => {
-            const k = key ?? cb
+            const k = key ?? Symbol()
+            if (obj.has(k)) forgetKey(k)
             obj.set(k, cb)
+            let keys = cbKeys.get(cb)
+            if (!keys) cbKeys.set(cb, keys = [])
+            keys.push(k)
             if (cbClose) {
-                if (evClose && evClose.has(k)) {
-                    const r=evClose.get(k)!
-                    if (r!==cbClose) {
-                        evClose.delete(r)
-                        evClose.delete(k)
-                        sinh?.delete(r)
-                    }
-                }
                 evClose = evClose ?? new Map()
                 evClose.set(k, cbClose)
                 sinh = sinh ?? new Map()
@@ -165,7 +177,10 @@ export function funcListenCallbackBase<T>(b: (e: Listener<NormalizeTuple<T>>) =>
          * либо через slim-`Listen2`/`UseListen2`. Метод сохранён только для обратной
          * совместимости и делегирует в ту же внутреннюю логику, что и `off()`.
          */
-        removeListen: (k: Listener<Z> | null| key) => removeKey(k),
+        removeListen: (k: Listener<Z> | null| key) => {
+            if (typeof k == "function" && !obj.has(k)) for (const kk of [...(cbKeys.get(k) ?? [])]) removeKey(kk)
+            else removeKey(k)
+        },
         /**
          * Подписаться. Возвращает `off()` — единственный способ отписки (идиома
          * `const off = listen.on(cb); off()`). `opts.key` — перезапись по ключу,

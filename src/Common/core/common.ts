@@ -101,26 +101,39 @@ export function shallowClone<T>(val :T) : Mutable<T> {
 
 export function _deepClone<T>(src :T, map? :Map<object,object>) {
 	if (!src || typeof src!="object") return src;
-    //function createObjectOfType
-	let newobject : { [key: string]:any; } = src instanceof Array ? [] : { }
-	if (src instanceof Set) newobject= new Set(src.values()); else
-	if (src instanceof Map) newobject= new Map(src.entries()); else { }
-	if (src instanceof Date) newobject= new Date(src);
-    let first=true;
-    function getMap() {
-        map??=new Map();
-        if (first) { map.set(src as unknown as object, newobject);  first=false; }
-        return map;
+    const srcObj = src as unknown as object;
+    const cached = map?.get(srcObj);
+    if (cached) return cached as any;
+
+    const cloneValue = (value: any) =>
+        value && typeof value=="object"
+            ? _deepClone(value, map)
+            : typeof value=="function"
+                ? value.bind(newobject)
+                : value;
+
+	let newobject : any = src instanceof Array ? [] : { }
+    map??=new Map();
+    map.set(srcObj, newobject);
+
+	if (src instanceof Date) {
+        newobject = new Date(src);
+        map.set(srcObj, newobject);
+        return newobject;
     }
-    function mapGetOrSet(key :object, valFunc :()=>object) { let val= map?.get(key);  if (!val) getMap().set(key, val=valFunc());  return val; }
-	for(let [key,value] of Object.entries(src)) {
-		newobject[key] =
-			typeof(value)=="object"
-				? mapGetOrSet(value, ()=>_deepClone(value, map))
-				: typeof(value)=="function"
-					? value.bind(newobject)
-					: value;
-	}
+	if (src instanceof Set) {
+        newobject = new Set();
+        map.set(srcObj, newobject);
+        for (const value of src) newobject.add(cloneValue(value));
+        return newobject;
+    }
+	if (src instanceof Map) {
+        newobject = new Map();
+        map.set(srcObj, newobject);
+        for (const [key, value] of src) newobject.set(cloneValue(key), cloneValue(value));
+        return newobject;
+    }
+	for(let [key,value] of Object.entries(src)) newobject[key] = cloneValue(value);
 	return newobject as { [key in keyof T] : T[key] };
 }
 
@@ -162,11 +175,22 @@ export function readonlyFull<T>(arg :T) { return arg as ReadonlyFull<T>; }
 
 // глубокое сравнение структур
 /** @deprecated use {@link isEqual} */
-export function deepEqual<T extends { [key: string]: any }>(object1: T, object2: T) {//}, equalityComparer? :(a :any, b :any)=>boolean|undefined) {
+export function deepEqual(object1: any, object2: any) {//}, equalityComparer? :(a :any, b :any)=>boolean|undefined) {
     if (object1==object2) return true;
-    // if (typeof object1!=typeof object2) return false;
-    // if (typeof object1!="object") return object1===object2;
-    // console.log(typeof object1, typeof object2,  object1!=null, object2!=null);
+    if (object1 == null || object2 == null) return false;
+    if (typeof object1!="object" || typeof object2!="object") return false;
+    if (object1.constructor !== object2.constructor) return false;
+    if (object1 instanceof Date) return object1.getTime() === object2.getTime();
+    if (object1 instanceof Map) {
+        if (object1.size !== object2.size) return false;
+        for (const [k, v] of object1) if (!object2.has(k) || !deepEqual(v, object2.get(k))) return false;
+        return true;
+    }
+    if (object1 instanceof Set) {
+        if (object1.size !== object2.size) return false;
+        for (const v of object1) if (!object2.has(v)) return false;
+        return true;
+    }
     const keys1 = Object.keys(object1);
     const keys2 = Object.keys(object2);
 
@@ -776,7 +800,17 @@ export class StructMap<TKey extends Required<TKey> & { [key:string]:number|strin
 		return obj as TResult;
 	}
 
-	has(key :TKey) { return this.get(key)!=null; }
+	has(key :TKey) {
+		let items= key instanceof Array ? key : Object.values(key);
+		if (items.length==0) return false;
+		let obj= this._data;
+		for(let item of items) {
+            if (typeof obj != "object" && typeof obj != "function") return false;
+			if (obj == null || !(item in obj)) return false;
+			obj= obj[item];
+		}
+		return true;
+	}
 
 	keys() { return this._keys; }
 	values() { return this._values; }
@@ -1002,15 +1036,15 @@ export class CancelToken implements ICancelToken
 
 
 export class CancelablePromise<T> extends Promise<T> {
-	private static _rejectTmp : (reason?: any) => void;
 	private readonly _reject? : (reason?: any) => void;
 	private readonly _onCancel? : ()=>void;
 	constructor(
 		executor: (resolve: (value: T | PromiseLike<T>) => void, reject: (reason?: any) => void) => void,
 		onCancel?: ()=>void
 	){
-		super( (resolve, reject)=>{ CancelablePromise._rejectTmp= reject;  executor(resolve, reject); } );
-		this._reject= CancelablePromise._rejectTmp;
+		let rejectCaptured!: (reason?: any) => void;
+		super( (resolve, reject)=>{ rejectCaptured= reject;  executor(resolve, reject); } );
+		this._reject= rejectCaptured;
 		this._onCancel= onCancel;
 	}
 	cancel(msg?:string) { if (this._onCancel) this._onCancel();  return this._reject!(msg); } //if (this.oncancel)
@@ -1170,7 +1204,16 @@ export class CObjectID<TObject, TOwner> implements ObjectID<TObject, TOwner> {
 // заменяем stringify, т.к. иначе может быть рекурсивная обработка id в других объектах
 const stringifyDefault= JSON.stringify;
 
-JSON.stringify= (value, replacer, space)=>stringifyDefault(value, (key,val)=>val instanceof CObjectID ? val.value+"" : typeof replacer=="function" ? replacer(key,val) : val, space);
+JSON.stringify= (value, replacer, space)=>{
+    const allow = Array.isArray(replacer)
+        ? new Set(replacer.filter(v => typeof v == "string" || typeof v == "number").map(String))
+        : null;
+    return stringifyDefault(value, (key,val)=>{
+        if (allow && key !== "" && !allow.has(key)) return undefined;
+        const next = val instanceof CObjectID ? val.value+"" : val;
+        return typeof replacer=="function" ? replacer(key,next) : next;
+    }, space);
+};
 
 
 
@@ -1178,6 +1221,7 @@ export class MapExt<K,V> extends Map<K,V> {
     private immutArray? :readonly V[];
     override set(key :K, value :V) { this.immutArray=undefined;  return super.set(key, value); }
     override delete(key :K) { this.immutArray=undefined;  return super.delete(key); }
+    override clear() { this.immutArray=undefined; return super.clear(); }
     valuesArrayImmutable() { return this.immutArray ??= [...this.values()]; }
     getOrSetFunc(key :K, val :()=>V) {
         let v= this.get(key);  if (v===undefined && !this.has(key)) this.set(key, v= val());

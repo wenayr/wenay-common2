@@ -55,6 +55,7 @@ function scheduler(drain: Drain): (f: Fn) => void {
 type Node = {
     target: any
     parent: Node | null
+    active: boolean
     level: number
     subs: Set<Fn>
     kids: Map<PropertyKey, Node>
@@ -106,12 +107,15 @@ export function reactive<T extends object>(root: T, opts: Opts = {}) {
 }
 
 function makeNode(target: any, parent: Node | null, level: number, eng: Eng): Node {
-    const node: Node = {target, parent, level, subs: new Set(), kids: new Map(), proxy: null, eng}
-    // proxy target is a dummy {}; every trap reads/writes node.target (the CURRENT
-    // value) so the proxy survives node.target being rebound on a wholesale replace.
-    node.proxy = new Proxy({} as any, {
+    const node: Node = {target, parent, active: true, level, subs: new Set(), kids: new Map(), proxy: null, eng}
+    // proxy target is a dummy with the right broad shape. Every trap reads/writes
+    // node.target (the CURRENT value), so the proxy survives wholesale replace.
+    const proxyTarget = (Array.isArray(target) ? [] : {}) as any
+    node.proxy = new Proxy(proxyTarget, {
         get(_, k) {
             if (k == NODE) return node
+            if (k == 'toJSON' && Array.isArray(proxyTarget) && !Array.isArray(node.target) && node.target?.toJSON === undefined)
+                return () => node.target
             const v = node.target[k]
             if (isReactiveObj(v) && level < eng.depth) {
                 let kid = node.kids.get(k)
@@ -124,22 +128,53 @@ function makeNode(target: any, parent: Node | null, level: number, eng: Eng): No
         set(_, k, v) {
             if (Object.is(node.target[k], v)) return true
             node.target[k] = v
+            if (Array.isArray(proxyTarget) && k == "length") proxyTarget.length = v
             const kid = node.kids.get(k)
             if (kid) rebind(kid, v)                  // an existing child slot got a whole new value
             if (eng.live > 0) bubble(node)
+            return true
+        },
+        defineProperty(_, k, d) {
+            const old = node.target[k]
+            const ok = Reflect.defineProperty(node.target, k, d)
+            if (!ok) return false
+            if (d.configurable === false) {
+                const mirror = Reflect.defineProperty(proxyTarget, k, d)
+                if (!mirror) return false
+            }
+            const v = node.target[k]
+            if (!Object.is(old, v)) {
+                const kid = node.kids.get(k)
+                if (kid) {
+                    if (isReactiveObj(v)) rebind(kid, v)
+                    else { node.kids.delete(k); markChanged(kid); detachTree(kid) }
+                }
+                if (eng.live > 0) bubble(node)
+            }
             return true
         },
         deleteProperty(_, k) {
             if (!(k in node.target)) return true
             delete node.target[k]
             const kid = node.kids.get(k)
-            if (kid) { node.kids.delete(k); markChanged(kid) }
+            if (kid) { node.kids.delete(k); markChanged(kid); detachTree(kid) }
             if (eng.live > 0) bubble(node)
             return true
         },
         has(_, k) { return k in node.target },
-        ownKeys() { return Reflect.ownKeys(node.target) },
+        ownKeys() {
+            const keys = Reflect.ownKeys(node.target)
+            for (const k of Reflect.ownKeys(proxyTarget)) {
+                const d = Reflect.getOwnPropertyDescriptor(proxyTarget, k)
+                if (d?.configurable === false && !keys.includes(k)) keys.push(k)
+            }
+            return keys
+        },
         getOwnPropertyDescriptor(_, k) {
+            if (Array.isArray(proxyTarget) && k == "length")
+                return Reflect.getOwnPropertyDescriptor(proxyTarget, k)
+            const pd = Reflect.getOwnPropertyDescriptor(proxyTarget, k)
+            if (pd && pd.configurable === false) return pd
             const d = Reflect.getOwnPropertyDescriptor(node.target, k)
             if (d) d.configurable = true              // proxy invariant vs the empty dummy target
             return d
@@ -151,7 +186,7 @@ function makeNode(target: any, parent: Node | null, level: number, eng: Eng): No
 // the fact bubbles UP: this node + every ancestor that has subscribers fires once
 function bubble(from: Node) {
     const eng = from.eng
-    for (let n: Node | null = from; n; n = n.parent) if (n.subs.size) eng.dirty.add(n)
+    for (let n: Node | null = from; n && n.active; n = n.parent) if (n.subs.size) eng.dirty.add(n)
     eng.schedule()
 }
 
@@ -163,12 +198,19 @@ function rebind(node: Node, next: any) {
     for (const [k, kid] of [...node.kids]) {
         const cv = isReactiveObj(next) ? next[k] : undefined
         if (isReactiveObj(cv)) rebind(kid, cv)
-        else { node.kids.delete(k); markChanged(kid) }   // child is gone / no longer a branch
+        else { node.kids.delete(k); markChanged(kid); detachTree(kid) }   // child is gone / no longer a branch
     }
 }
 function markChanged(node: Node) {
     if (node.subs.size) node.eng.dirty.add(node)
     for (const kid of node.kids.values()) markChanged(kid)
+}
+
+function detachTree(node: Node) {
+    if (!node.active) return
+    node.active = false
+    node.parent = null
+    for (const kid of node.kids.values()) detachTree(kid)
     node.kids.clear()
 }
 
@@ -187,10 +229,12 @@ function prewalk(node: Node) {
 export function onUpdate(p: any, cb: Fn) {
     const node: Node | undefined = p && p[NODE]
     if (!node) throw new Error('onUpdate: not a reactive object')
-    node.subs.add(cb)
+    if (!node.active) throw new Error('onUpdate: reactive object is detached')
+    const sub = () => cb()
+    node.subs.add(sub)
     node.eng.live++
     let done = false
-    return () => { if (done) return; done = true; node.subs.delete(cb); node.eng.live-- }
+    return () => { if (done) return; done = true; if (node.subs.delete(sub)) node.eng.live-- }
 }
 
 export function flushReactive(p: any) {
@@ -202,8 +246,12 @@ export function flushReactive(p: any) {
 }
 
 export function listenUpdate(p: any) {
-    const listen = funcListenCallbackBase<[]>((emit) => onUpdate(p, () => emit()))
-    listen.run()
+    const listen = funcListenCallbackBase<[]>((emit) => onUpdate(p, () => emit()), {
+        event: (type, count, api) => {
+            if (type == "add" && count == 1 && !api.isRun()) api.run()
+            if (type == "remove" && count == 0 && api.isRun()) api.close()
+        },
+    })
     return listen
 }
 

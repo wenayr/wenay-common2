@@ -47,7 +47,6 @@ export class CObjectEventsArr<T extends object>{
     /** @deprecated Используйте `clear()`. */
     Clean()                                 {
         const a = [...this.data];
-        this.data=[];
         for (let i = a.length - 1; i >= 0; i--) {
             a[i].del?.();
         }
@@ -98,7 +97,7 @@ export class CObjectEventsList<T=unknown>{
     emit(data?:T)               {this.OnEvent(data)}
     OnSpecEvent<R>(f:(e?:R)=>void)  {const a:tListEvent<T>[]=[]; this.data.forEach(e=>a.push(e)); a.forEach((e)=>{const l: any=e.func?.(); if (l) {f(l as unknown as R);}  if (e.func2) {e.func2(); e.del?.();}})}
     /** @deprecated Используйте `clear()`. */
-    Clean()                     {let r:CListNodeAnd<any>|undefined =this.data.First(); while (r) {const buf = r; r=r?.Next(); buf.DeleteLink()}}
+    Clean()                     {const a:tListEvent<T>[]=[]; this.data.forEach(e=>a.push(e)); for (let i = a.length - 1; i >= 0; i--) a[i].del?.()}
     /** Снести все обработчики (идиома `clear`). */
     clear()                     {this.Clean()}
     count()                     {return this.data.countRef()}

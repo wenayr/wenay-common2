@@ -43,13 +43,43 @@ export function createRpcServerAuto2<T extends object>({
     limits?: RpcLimits;
     onProtocolDetect?: (protocol: 'v2' | 'legacy') => void;
 }) {
-    // ── Общий кэш listenSocket для обоих протоколов ─────────────
+    // ── Общий кэш Listen-мультиплексоров для обоих протоколов ─────────────
     const cache = new WeakMap<object, ReturnType<typeof listenSocket>>();
+    const listenSockets = new Set<ReturnType<typeof listenSocket>>();
+    function unsubscribeAllActive() {
+        for (const w of [...listenSockets]) w.removeCallback();
+    }
 
     function getListenSocket(parent: any): ReturnType<typeof listenSocket> {
         let result = cache.get(parent);
+        if (result) listenSockets.add(result);
         if (!result) {
-            result = listenSocket(parent, { addListenClose: disconnectListen });
+            const subs = new Map<Function, ReturnType<typeof listenSocket>>();
+            function subscribe(z: any) {
+                if (typeof z !== "function") return Promise.reject(new TypeError("Listen callback expects a function"));
+                subs.get(z)?.removeCallback();
+                const w = listenSocket(parent, { addListenClose: disconnectListen });
+                subs.set(z, w);
+                const done = w.callback(z);
+                done.then(() => { if (subs.get(z) == w) subs.delete(z); });
+                return done;
+            }
+            function subscribeOnce(z: any) {
+                if (typeof z !== "function") return Promise.reject(new TypeError("Listen once expects a function"));
+                subs.get(z)?.removeCallback();
+                const w = listenSocket(parent, { addListenClose: disconnectListen });
+                subs.set(z, w);
+                const done = w.once(z);
+                done.then(() => { if (subs.get(z) == w) subs.delete(z); });
+                return done;
+            }
+            function unsubscribeAll() {
+                subs.forEach(w => w.removeCallback());
+                subs.clear();
+                return true;
+            }
+            result = { callback: subscribe, removeCallback: unsubscribeAll, on: subscribe, once: subscribeOnce, close: () => (parent as any).close?.() } as ReturnType<typeof listenSocket>;
+            listenSockets.add(result);
             cache.set(parent, result);
         }
         return result;
@@ -174,6 +204,7 @@ export function createRpcServerAuto2<T extends object>({
             limits,
             hooks: {
                 ...hooks,
+                onDispose: () => { unsubscribeAllActive(); hooks?.onDispose?.(); },
                 resolveTransform,
             } as any,
         });
@@ -245,7 +276,7 @@ export function createRpcServerAuto2<T extends object>({
     // прежнее значение protocol латчилось бы навсегда, мисроутя). dispose() — отцепить (роутер
     // инертен) + сброс. SocketTmpl без off, поэтому обнуляем делегата; ленивые внутренние серверы
     // отдельного teardown не имеют, но остановка входящей диспетчеризации — та утечка, что важна.
-    function reset() { protocol = null; legacyHandler = null; v2Handler = null; }
+    function reset() { unsubscribeAllActive(); protocol = null; legacyHandler = null; v2Handler = null; }
     function dispose(reason?: string) {
         if (disposed) return;
         disposed = true;

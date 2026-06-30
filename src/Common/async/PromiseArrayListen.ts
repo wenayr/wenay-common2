@@ -15,11 +15,11 @@ export function PromiseArrayListen<T extends any = unknown>(array: ((() => Promi
     const b = (error: any, i: number) => {
         ++errorCount;
         c[0](error, i, ok, errorCount, count)
-        // НЕ перевыбрасываем: иначе в режиме .all() каждое не-первое отклонение становится unhandled rejection.
-        // Ошибки доступны через listenError / .allSettled(); .all() теперь всегда резолвится.
     }
-    const arr = array.map((e, i) => e instanceof Promise ? e.then(r => a(r, i)).catch((er: any) => b(er, i))
-        : () => (async () => e())().then(r => a(r, i)).catch((er: any) => b(er, i)))
+    const wrap = (promise: Promise<T>, i: number) =>
+        promise.then(r => { a(r, i); return r }).catch((er: any) => { b(er, i); throw er })
+    const arr = array.map((e, i) => e instanceof Promise ? wrap(e, i)
+        : () => wrap((async () => e())(), i))
 
     // Promise-входы уже стартовали выше (eager). Фабрики-входы стали thunk'ами (lazy) — но
     // Promise.all/allSettled НЕ вызывают thunk'и, поэтому без этого фабрика не запустится никогда

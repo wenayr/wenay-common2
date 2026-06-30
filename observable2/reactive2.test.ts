@@ -108,6 +108,17 @@ async function main() {
         s.arr.push({x: 3})
         flush()
         ok(hits == 1 && s.arr.length == 2 && s.arr[0].x == 2, 'index write + push coalesce on array: ' + hits)
+        ok(Array.isArray(s.arr), 'wrapped array still passes Array.isArray')
+        ok(JSON.stringify(s.arr) == '[{"x":2},{"x":3}]', 'wrapped array JSON stays array-shaped')
+    }
+
+    console.log('\n[9b] captured array proxy follows object rebind without array invariant throws')
+    {
+        const s = reactive<any>({arr: [{x: 1}]}, manual)
+        const a = s.arr
+        s.arr = {x: 1}
+        ok(JSON.stringify(a) == '{"x":1}', 'captured array proxy serializes current object target')
+        ok(JSON.stringify(Object.keys(a)) == '["x"]', 'Object.keys on rebound array proxy returns object keys')
     }
 
     console.log('\n[10] Date/Map/class instances are opaque leaves, not proxied')
@@ -153,16 +164,64 @@ async function main() {
     console.log('\n[13] listenUpdate exposes updates as project Listen')
     {
         const s = reactive({a: {b: 1}}, manual)
+        pending = null
         const updates = listenUpdate(s.a)
+        s.a.b = 2
+        ok(pending == null, 'listenUpdate is cold until it has downstream listeners')
         let hits = 0
         const off = updates.addListen(() => hits++)
-        s.a.b = 2
+        s.a.b = 3
         flush()
         ok(hits == 1, 'listenUpdate fired through addListen')
         off()
-        s.a.b = 3
+        pending = null
+        s.a.b = 4
+        ok(pending == null, 'listenUpdate returns cold after last listener leaves')
         flush()
         ok(hits == 1, 'listenUpdate off() removed subscriber')
+    }
+
+    console.log('\n[14] descriptor writes go to the reactive target')
+    {
+        const s = reactive<{x: number; y?: number}>({x: 1}, manual)
+        let hits = 0
+        onUpdate(s, () => hits++)
+        Object.defineProperty(s, 'y', {value: 2, enumerable: true, configurable: true, writable: true})
+        flush()
+        ok(s.y == 2 && Object.keys(s).includes('y'), 'defineProperty creates visible reactive property')
+        ok(hits == 1, 'defineProperty notifies subscribers')
+    }
+
+    console.log('\n[15] deleted child proxies do not bubble into the live tree')
+    {
+        const s = reactive<{a?: {x: number}}>({a: {x: 1}}, manual)
+        const oldA = s.a!
+        let root = 0, child = 0
+        onUpdate(s, () => root++)
+        onUpdate(oldA, () => child++)
+        delete s.a
+        flush()
+        ok(root == 1 && child == 1 && !('a' in s), 'delete notifies root and deleted child once')
+        oldA.x = 2
+        flush()
+        ok(root == 1 && child == 1, 'mutating captured deleted child is detached')
+    }
+
+    console.log('\n[16] duplicate onUpdate callbacks are independent subscriptions')
+    {
+        const s = reactive({x: 0}, manual)
+        let hits = 0
+        const cb = () => hits++
+        const off1 = onUpdate(s, cb)
+        const off2 = onUpdate(s, cb)
+        off1()
+        s.x = 1
+        flush()
+        ok(hits == 1, 'second duplicate subscription remains after first off')
+        off2()
+        s.x = 2
+        flush()
+        ok(hits == 1, 'second off removes remaining duplicate subscription')
     }
 
     console.log(`\n${fails == 0 ? 'ALL GREEN' : fails + ' FAILURE(S)'}`)

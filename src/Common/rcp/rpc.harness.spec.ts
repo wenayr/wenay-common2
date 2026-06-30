@@ -536,6 +536,20 @@ export async function runHarness() {
         await check("auto2+token: auth() резолвится (null)", () => Promise.race([c.auth(), delay(60).then(() => "hung")]), null)
         await check("auto2+token: вызов работает", () => c.func.add(2, 3), 5)
     }
+    { // auto2 делегирует .once в базовый listenSocket.once: первое событие должно прислать CB_END
+        const [cs, ss] = createLoopback()
+        const [emit, listen] = UseListen<number>()
+        const obj = { stream: listen }
+        createRpcServerAuto2({ socket: ss, object: obj, socketKey: "rpc" })
+        const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "rpc" })
+        await delay(0)
+        const got: number[] = []
+        const done = webListen(c).stream.once((v) => got.push(v))
+        await delay(10)
+        emit(1); await delay(3); emit(2)
+        await check("auto2 once: ровно одно событие", async () => got, [1])
+        await check("auto2 once: handle завершился", () => Promise.race([done.then(() => "ended"), delay(60).then(() => "hung")]), "ended")
+    }
 
     console.log("--- adaptive подписочное уплотнение (Pkt.SHAPE/CBV: частая форма → компакт) ---")
     { // частый объект одной формы стандартизируется после порога; значения (вкл. Date) целы

@@ -2,7 +2,7 @@
 
 import { funcListenCallback, funcListenCallbackBase, type Listener } from "../events/Listen";
 import { RPC_STOP } from "./rpc-protocol";
-import { makeOff, type Off } from "./rpc-off";
+import { endCallback, makeOff, type Off } from "./rpc-off";
 
 type ListenCallbackResult<T extends any[] = any[]> = ReturnType<typeof funcListenCallbackBase<T>>;
 
@@ -172,8 +172,10 @@ export function listenSocket<Z extends any[] = any[]>(
         }
         let fired = false;
         const oneShot = ((...a: any[]) => {
+            if (a[0] === RPC_STOP) { removeCallback(); return; }
             if (fired) return; fired = true;
-            (z as Function)(...a); (z as Function)(RPC_STOP); removeCallback();
+            try { (z as Function)(...a); }
+            finally { endCallback(z as Function); removeCallback(); }
         }) as Listener<Z>;
         return callback(oneShot);
     }

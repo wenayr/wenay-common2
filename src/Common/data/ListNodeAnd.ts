@@ -80,8 +80,8 @@ export class CListNodeAnd<T>  extends  CBaseList<T> implements iListNodeMini{
     isExists():boolean      {return this.isForbidden() || this._prev._stop || this._next._stop;}
     //надо дописать для возможного забирания всех элементов списка, ну типо если добавляем целый списко в этотм список, чтобы происходило
     private static _Add<T>(prev:CListNodeAnd<T>,next:CListNodeAnd<T>,home:CListNodeAnd<T>,a:T):CListNodeAnd<T> {let buf=new CListNodeAnd<T>(prev,next, home); buf.data=a; return buf;}
-    AddNext(a?:CListNodeAnd<T>|T):CListNodeAnd<T>   {return a instanceof CListNodeAnd? a._Init(this,this._next, this): a? CListNodeAnd._Add<T>(this,this._next,this._home!,a) : new CListNodeAnd<T>(this,this._next);}
-    AddPrev(a?:CListNodeAnd<T>|T):CListNodeAnd<T>   {return a instanceof CListNodeAnd? a._Init(this._prev,this, this): a? CListNodeAnd._Add<T>(this._prev,this,this._home!,a) : new CListNodeAnd<T>(this._prev,this);}
+    AddNext(a?:CListNodeAnd<T>|T):CListNodeAnd<T>   {return a instanceof CListNodeAnd? a._Init(this,this._next, this): arguments.length ? CListNodeAnd._Add<T>(this,this._next,this._home!,a as T) : new CListNodeAnd<T>(this,this._next);}
+    AddPrev(a?:CListNodeAnd<T>|T):CListNodeAnd<T>   {return a instanceof CListNodeAnd? a._Init(this._prev,this, this): arguments.length ? CListNodeAnd._Add<T>(this._prev,this,this._home!,a as T) : new CListNodeAnd<T>(this._prev,this);}
     AddEnd(a?:CListNodeAnd<T>|T):CListNodeAnd<T>    {return this._stop? this.AddPrev(a): this._End().  AddNext(a);}
     AddStart(a?:CListNodeAnd<T>|T):CListNodeAnd<T>  {return this._stop? this.AddNext(a): this._First().AddPrev(a);}
     forEach(el:(item:T,e?:CListNodeAnd<T>)=>void)                         {

@@ -28,6 +28,21 @@ const reviveErr = (o: any): any => {
     if (o.cause !== undefined) (err as any).cause = reviveErr(o.cause);
     return err;
 };
+
+function listenKeyArg(a: any): any {
+    if (typeof a == "function") return "@fn";
+    if (typeof a == "bigint") return {$_b: a.toString()};
+    if (a instanceof Date) return {$_d: a.valueOf()};
+    if (a instanceof Map) return {$_m: [...a.entries()].map(([k, v]) => [listenKeyArg(k), listenKeyArg(v)])};
+    if (a instanceof Set) return {$_s: [...a.values()].map(listenKeyArg)};
+    if (Array.isArray(a)) return a.map(listenKeyArg);
+    if (a && typeof a == "object") {
+        const out: any = {};
+        for (const k of Object.keys(a).sort()) out[k] = listenKeyArg(a[k]);
+        return out;
+    }
+    return a;
+}
 // Вспомогательные типы
 type UnwrapPromise<T> = T extends Promise<infer R> ? R : T;
 
@@ -342,7 +357,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         if (disposed) return Promise.reject(new Error("RPC client disposed"));
         // dedup по АДРЕСУ УЗЛА (path без имени метода) — .on и .callback на один Listen-узел
         // с теми же аргументами делят ОДНУ сетевую подписку. Сам вызов уходит проводом как есть.
-        const skey = path.slice(0, -1).join(".") + "::" + JSON.stringify(args.map(a => typeof a == "function" ? "@fn" : a));
+        const skey = path.slice(0, -1).join(".") + "::" + JSON.stringify(args.map(listenKeyArg));
         let sub = wireSubs.get(skey);
         if (!sub) {
             const created: tSub = { consumers: new Set(), stop: () => {} };
@@ -352,7 +367,14 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 if (typeof a != "function") return a;
                 const i = fnPos++;
                 // единый сетевой колбэк — ретранслирует событие всем локальным потребителям
-                return (...ev: any[]) => { created.consumers.forEach(c => c.fns[i]?.(...ev)); };
+                return (...ev: any[]) => {
+                    let err: any;
+                    created.consumers.forEach(c => {
+                        try { c.fns[i]?.(...ev); }
+                        catch (e) { err ??= e; }
+                    });
+                    if (err !== undefined) setTimeout(() => { throw err }, 0);
+                };
             });
             const finish = () => {
                 if (wireSubs.get(skey) == created) wireSubs.delete(skey);

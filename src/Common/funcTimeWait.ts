@@ -14,6 +14,7 @@ export function funcTimeW() {
     type ttt = { [key: tType]: tt1[] };
     const dStatic: ttt = {};
     const data: any[] = [];
+    const sortByTime = (arr: tt1[]) => arr.sort((a, b) => a[0] - b[0]);
 
     return {
         dStatic,
@@ -25,11 +26,13 @@ export function funcTimeW() {
                 dStatic[item.type] = [];
             }
             dStatic[item.type].push([item.timeStamp ?? Date.now(), item.weight]);
+            sortByTime(dStatic[item.type]);
         },
 
         cleanByTime(type: tType, ms = 60 * 1000) {
             const arr = dStatic[type];
             if (!arr || arr.length === 0) return;
+            sortByTime(arr);
 
             const timeStamp = Date.now();
             // то чистить нечего:
@@ -49,6 +52,7 @@ export function funcTimeW() {
         weight(type: tType, ms = 60 * 1000) {
             const arr = dStatic[type];
             if (!arr || arr.length === 0) return 0;
+            sortByTime(arr);
 
             const timeStamp = Date.now();
             let sum = 0;
@@ -73,6 +77,7 @@ export function funcTimeW() {
         byWeight(type: tType, weight = 50000) {
             const arr = dStatic[type];
             if (!arr || arr.length === 0) return 0;
+            sortByTime(arr);
 
             let sum = 0;
             let i = arr.length - 1;
@@ -98,6 +103,7 @@ export function funcTimeW() {
         byWeightTimeNow(type: tType, timeNow = Date.now(), weight = 50000) {
             const arr = dStatic[type];
             if (!arr || arr.length === 0) return 0;
+            sortByTime(arr);
 
             let sum = 0;
             let i = arr.length - 1;

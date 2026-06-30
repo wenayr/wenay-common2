@@ -227,6 +227,7 @@ function funcForWebSocketOld<T>(data: screenerSoc<tSocketData<tRequestScreenerT<
                 if (data.data == "___STOP") {
                     callbackMany.delete(mapId);
                     free.numsSet(mapId);
+                    return;
                 }
                 buf?.(data.data)
             } else {

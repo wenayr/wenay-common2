@@ -139,7 +139,7 @@ export function wsWrapper<T>(soc: ScreenerSoc<SocketData<RequestScreener<T>>> & 
             else if (cbsMap.has(id)) {
                 const cb = cbsMap.get(id)!;
                 // @ts-ignore
-                if (msg.data === "___STOP") { cbsMap.delete(id); pool.release(id); }
+                if (msg.data === "___STOP") { cbsMap.delete(id); pool.release(id); return; }
                 cb(msg.data);
             } else console.error("Неожиданный ответ", msg);
         }

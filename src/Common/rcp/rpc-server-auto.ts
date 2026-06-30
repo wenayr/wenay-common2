@@ -42,6 +42,13 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
     // поэтому регистрация там (а) показала бы в stats нулевые узлы и (б) пинила бы узлы старого
     // principal на сильной Map → утечка по числу re-auth. Регистрируем только реальную подписку.
     const registry = new Map<object, { subs: Map<Function, ReturnType<typeof listenSocket>> }>();
+    function unsubscribeAllActive() {
+        for (const {subs} of registry.values()) {
+            subs.forEach(w => w.removeCallback());
+            subs.clear();
+        }
+        registry.clear();
+    }
 
     function getListenSocket(parent: any, disconnectListen?: ListenCallbackBase<any>): ReturnType<typeof listenSocket> {
         let result = cache.get(parent);
@@ -54,11 +61,12 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                 if (maxPerListen != null && subs.size >= maxPerListen) return Promise.resolve();
                 // ленивая (ре-)регистрация узла при РЕАЛЬНОЙ подписке — переживает drain→re-sub
                 if (!registry.has(parent)) registry.set(parent, { subs });
+                subs.get(z)?.removeCallback();
                 const w = listenSocket(parent, { addListenClose: disconnectListen, throttle });
                 subs.set(z, w);
                 const done = w.callback(z);
                 done.then(() => {
-                    subs.delete(z);
+                    if (subs.get(z) == w) subs.delete(z);
                     if (subs.size == 0) registry.delete(parent); // узел опустел — снимаем со счёта stats()
                 });
                 return done;
@@ -68,18 +76,23 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                 if (typeof z !== "function") return Promise.reject(new TypeError("Listen once expects a function"));
                 if (maxPerListen != null && subs.size >= maxPerListen) return Promise.resolve();
                 if (!registry.has(parent)) registry.set(parent, { subs });
+                subs.get(z)?.removeCallback();
                 const w = listenSocket(parent, { addListenClose: disconnectListen, throttle });
                 let fired = false;
                 const oneShot = (...a: any[]) => {
                     if (fired) return;
                     fired = true;
-                    z(...a);        // первое событие → CB
-                    z(RPC_STOP);    // конец стрима → CB_END
-                    w.removeCallback();
+                    try {
+                        z(...a);        // первое событие → CB
+                        z(RPC_STOP);    // конец стрима → CB_END
+                    }
+                    finally {
+                        w.removeCallback();
+                    }
                 };
                 subs.set(z, w);
                 const done = w.callback(oneShot);
-                done.then(() => { subs.delete(z); if (subs.size == 0) registry.delete(parent); });
+                done.then(() => { if (subs.get(z) == w) subs.delete(z); if (subs.size == 0) registry.delete(parent); });
                 return done;
             }
             function unsubscribeAll() {
@@ -112,6 +125,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         socket, object: target as any, socketKey: key, debug, limits, auth, opt,
         hooks: {
             ...hooks,
+            onDispose: () => { unsubscribeAllActive(); hooks?.onDispose?.(); },
             resolveTransform: (obj: any) => {
                 if (isListenCallback(obj)) return getListenSocket(obj, disconnectListen);
                 // bare `on`-функция: по реестру (WeakMap) находим её api и оборачиваем — позволяет

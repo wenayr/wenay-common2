@@ -13,10 +13,10 @@ export function createThrottle() {
     const throttle = (ms: number, func: () => any) => {
         if (busy || last + ms >= Date.now()) return;
         busy = true;
-        chain = chain.then(async () => {
+        chain = chain.catch(() => {}).then(async () => {
             try { return await func(); }
             finally { busy = false; last = Date.now(); }
-        });
+        }).catch(() => {});
     };
 
     const debounce = (ms: number, func: () => any) => {
@@ -45,6 +45,7 @@ export const enhancedWaitRun = createThrottle;
 
 /** Асинхронная очередь задач с ограничением параллелизма. */
 export function createAsyncQueue(concurrency = 1) {
+    if (concurrency < 1) throw new Error("createAsyncQueue: concurrency must be >= 1");
     type Task<T = any> = () => Promise<T>;
     const queue: Task[] = [];
     let active = 0, resolveIdle: (() => void) | null = null, idle: Promise<void> | null = null;
@@ -82,7 +83,7 @@ export function enhancedQueueRun(maxParallelTasks = 5) {
     const q = createAsyncQueue(maxParallelTasks);
     return {
         get queueSize() { return q.getQueueSize(); },
-        enqueue: (task: () => Promise<any>) => { q.enqueue(task); },
+        enqueue: (task: () => Promise<any>) => { q.enqueue(task).catch(() => {}); },
         // в отличие от enqueue (fire-and-forget) возвращает промис задачи — можно дождаться её выполнения
         enqueueAndRun: (task: () => Promise<any>) => q.enqueue(task),
         runAll: () => q.onIdle(),
@@ -108,7 +109,16 @@ export function queueRun(n = 5) {
 export function createReadyGate() {
     let isReadyFlag = false;
     const tasks: Array<() => any> = [];
-    const setReady = async () => { isReadyFlag = true; for (const fn of tasks) await fn(); tasks.length = 0; };
+    const setReady = async () => {
+        isReadyFlag = true;
+        const run = tasks.splice(0);
+        let err: any;
+        for (const fn of run) {
+            try { await fn(); }
+            catch (e) { err ??= e; }
+        }
+        if (err !== undefined) throw err;
+    };
     return {
         add: (fn: () => any) => isReadyFlag ? void fn() : tasks.push(fn),
         ready: setReady,
