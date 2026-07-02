@@ -73,10 +73,15 @@ export function listenSocket<Z extends any[] = any[]>(
     },
 ) {
     const { stop, addListenClose, status, paramsModify, throttle } = d ?? {};
-    const { addListen, removeListen, eventClose, removeEventClose } = e;
+    const subscribe = (cb: Listener<any>, opts?: {cbClose?: () => void}) =>
+        typeof (e as any).on == "function" ? (e as any).on(cb, opts) : e.addListen(cb as any, opts as any);
+    const subscribeClose = addListenClose && ((cb: () => void) =>
+        typeof (addListenClose as any).on == "function" ? (addListenClose as any).on(cb) : addListenClose.addListen(cb as any));
 
     let last: Listener<Z> | null = null;
     let active: Listener<any> | null = null;
+    let activeOff: (() => void) | null = null;
+    let closeSignalOff: (() => void) | null = null;
     let resolveWait: (() => void) | null = null;
     // активный throttle-канал текущей подписки (null без опции) — чтобы removeCallback/STOP
     // могли cancel() подвешенный trailing-таймер и не прислать эмиссию после off().
@@ -89,8 +94,8 @@ export function listenSocket<Z extends any[] = any[]>(
     function removeCallback() {
         if (throttleCh) { throttleCh.cancel(); throttleCh = null; }
         if (last) { stop?.(last); last = null; }
-        if (active) { removeListen(active); active = null; }
-        addListenClose?.removeListen(removeCallback);
+        if (activeOff) { activeOff(); activeOff = null; active = null; }
+        if (closeSignalOff) { closeSignalOff(); closeSignalOff = null; }
         finish();
         return true;
     }
@@ -102,7 +107,8 @@ export function listenSocket<Z extends any[] = any[]>(
             throw new TypeError("listenSocket.callback expects a function");
         }
         if (last) stop?.(last);
-        if (active) removeListen(active);
+        if (activeOff) { activeOff(); activeOff = null; active = null; }
+        if (closeSignalOff) { closeSignalOff(); closeSignalOff = null; }
         if (resolveWait) { resolveWait(); resolveWait = null; }
 
         last = z;
@@ -138,16 +144,16 @@ export function listenSocket<Z extends any[] = any[]>(
                 z(...a as Z);
                 if (last) { stop?.(last); }
                 last = null;
-                if (active) { removeListen(active); active = null; }
-                addListenClose?.removeListen(removeCallback);
+                if (activeOff) { activeOff(); activeOff = null; active = null; }
+                if (closeSignalOff) { closeSignalOff(); closeSignalOff = null; }
                 finish();
                 return;
             }
             inner(...a);
         };
 
-        addListen(active, {cbClose: removeCallback});
-        addListenClose?.addListen(removeCallback);
+        activeOff = subscribe(active, {cbClose: removeCallback});
+        closeSignalOff = subscribeClose?.(removeCallback) ?? null;
 
         const wait = new Promise<void>((resolve) => {
             resolveWait = () => { resolve() };

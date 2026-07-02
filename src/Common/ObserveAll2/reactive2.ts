@@ -226,6 +226,11 @@ function prewalk(node: Node) {
 //  subscribe — the FACT of update
 // ============================================================
 
+export function isReactive(p: any) {
+    const node: Node | undefined = p && p[NODE]
+    return !!node && node.active
+}
+
 export function onUpdate(p: any, cb: Fn) {
     const node: Node | undefined = p && p[NODE]
     if (!node) throw new Error('onUpdate: not a reactive object')

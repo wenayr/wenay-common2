@@ -11,7 +11,7 @@ Bidirectional, strongly-typed RPC protocol over sockets (Socket.IO or similar).
 ## 1. Architecture and Limitations
 
 *   **Multiplexing:** A single physical socket hosts independent channels (`socketKey`), each with its own API object.
-*   **Data Types:** Works with JSON-compatible data. `Date`, `Map`, `Set`, `Class` **cannot** be transmitted.
+*   **Data Types:** Works with JSON-compatible data plus `Date`, `Map`, `Set`, `RegExp`, and `BigInt`. Class instances are sent as plain enumerable object data; methods/prototypes are not preserved.
 *   **Security (RpcLimits):** Server is protected from DDoS attacks. Strict limits on: `maxDepth`, `maxKeys`, `maxArrayLen`, `maxStringLen`, `maxCallbacks`. Exceeding throws `PayloadLimitError`.
 
 ---
@@ -65,7 +65,7 @@ export function buildFacade(client) {
     dbRef: noStrict(getProxyDb()),
 
     // 4. Events
-    // Client will receive an object with .callback() and .removeCallback() methods
+    // Client will receive a Listen surface: .on(cb), .once(cb), .close()
     events: { listenEvent },
 
     // 5. Method with callback in arguments
@@ -104,7 +104,7 @@ createRpcServerAuto({
 ### 3.1 Hub Initialization
 ```typescript
 import { io } from "socket.io-client";
-import { createRpcClientHub, clientApi } from "wenay-common2";
+import { createRpcClientHub, rpc } from "wenay-common2";
 import type { MainFacade } from "../server/facade";
 
 export const Api = createRpcClientHub(
@@ -115,9 +115,9 @@ export const Api = createRpcClientHub(
   }),
 
   // 2. Channel registration
-  // clientApi() accepts Facade type. Property name ("mainAPI") becomes socketKey.
-  (clientApi) => ({
-    mainAPI: clientApi<MainFacade>(),
+  // rpc() accepts Facade type. Property name ("mainAPI") becomes socketKey.
+  (rpc) => ({
+    mainAPI: rpc<MainFacade>(),
   })
 );
 ```
@@ -128,20 +128,20 @@ export const Api = createRpcClientHub(
 Api.onConnect((count) => console.log(`Socket connected (attempt ${count})`));
 
 // Initiate connect. Creates socket, all channels automatically start.
-Api.setToken("USER_SECRET_TOKEN");
+await Api.connect("USER_SECRET_TOKEN");
 
 // Disconnect
-// Api.setToken(null);
+// await Api.connect(null);
 ```
 
 ### 3.3 Call Modes
-Access API channel: `Api.facade.mainAPI`. Hub automatically calls `initStrict()`, so schema loads automatically.
+Access API channel: `Api.facade.mainAPI`. Hub initializes all channels, so schema loads automatically.
 
 ```typescript
 const api = Api.facade.mainAPI;
 
 // Wait for schema (REQUIRED before UI render)
-await api.readyStrict();
+await api.ready();
 
 // --- 1. STRICT (Recommended) ---
 // Safe call. Use `?.` since method may be `null` (closed by roles).
@@ -174,16 +174,33 @@ api.space.admin.logAction("clicked");
 ```
 
 ### 3.4 Client Subscriptions (Listen)
-Hub automatically wraps methods in `createRpcClientAuto`, providing convenient API for events:
+`createRpcServerAuto` exposes server `UseListen` values as RPC Listen nodes. New code uses `on`/`once` and keeps the returned `off` handle. For TypeScript, project `client.func` to `DeepSocketListen<ServerFacade>`; this mirrors the runtime shape and keeps event argument types.
 ```typescript
+import type { DeepSocketListen } from "wenay-common2";
+
+function webListen<T extends object>(client: { func: unknown }) {
+  return client.func as DeepSocketListen<T>;
+}
+
+const events = webListen<MainFacade>(api).events;
+
 // Subscribe
-api.events.listenEvent.callback((msg) => {
+const off = events.listenEvent.on((msg) => {
   console.log("Push from server:", msg);
 });
 
-// Unsubscribe (sends `___STOP` packet to server)
-api.events.listenEvent.removeCallback();
+// Unsubscribe. The handle is callable and also thenable.
+off();
+// await off; // waits until the stream ends
+
+// One event, then automatic unsubscribe
+const done = events.listenEvent.once((msg) => {
+  console.log("First push:", msg);
+});
+await done;
 ```
+
+Compatibility names `.callback(cb)`, `.removeCallback()`, and `.unsubscribe()` still exist for old clients, but they are not the recommended API.
 
 
 ### 3.5 Request Management and Debug
@@ -194,16 +211,16 @@ const { api, abortAll, schema } = Api.facade.mainAPI;
 
 // --- 1. Monitoring and Debug ---
 api.pending();          // Current number of pending responses (Promises)
-api.callbacks();        // Current number of live callbacks in memory
+api.callbacks();        // Current number of live callback ids in memory
 api.log(true);          // Enable logging of all incoming/outgoing packets to console
 
 // --- 2. Targeted cleanup (inside .api) ---
 api.clearPromises(true); // Reject (cancel) all current requests
 api.clearCallbacks();    // Force clear all callbacks
-api.remove(myFunc);      // Free memory from specific callback (alias: .end)
+api.remove(myFunc);      // Force-release a specific callback id (alias: .end)
 
 // --- 3. Global facade methods ---
-abortAll("User logout"); // Hard reset: reject all promises with RPC_ABORT error + clear all callbacks
+abortAll("User logout"); // Hard reset: reject all promises with RPC_ABORT error + clear all callback ids
 const map = schema();    // Get raw schema tree (MAP) sent by server
 ```
 
@@ -216,25 +233,24 @@ const map = schema();    // Get raw schema tree (MAP) sent by server
 When using events, the client auto-handler (`mode: "smart"`) by default flexibly adapts arguments. If server sends one argument — it comes as a value, if multiple — as an array.
 If you create a client manually without Hub, you can set a strict mode:
 ```typescript
-// "first" — callback always receives only the first argument
-// "all" — callback always receives all arguments
+// "first" — listener always receives only the first argument
+// "all" — listener always receives all arguments
 // "smart" — (default) auto-detection
-const autoApi = createRpcClientAuto(clientApi.func, { mode: "first" });
+const autoApi = createRpcClientAuto(api.func, { mode: "first" });
 ```
 
 
 ### 4.2 Manual Callback Termination from Server
-If you passed a callback in function arguments, the server can forcibly terminate it and clear memory on the client before the function completes, by sending a special packet:
+This is a low-level escape hatch for callbacks passed as ordinary function arguments. For Listen subscriptions prefer `off()`/`.once()`.
 ```typescript
-import { rpcEndCallback } from "wenay-common2";
+import { endCallback } from "wenay-common2";
 
 async function myMethod(cb: (data: any) => void) {
   cb("chunk 1");
-  rpcEndCallback(cb); // Sends "___STOP" to client
-  // Client callback is deleted, subsequent cb() calls won't go anywhere
+  endCallback(cb); // Alias: rpcEndCallback. Sends "___STOP" to client.
+  // Client callback id is deleted, subsequent cb() calls won't go anywhere.
 }
 ```
-
 
 ### 4.3 Call / Apply Support on Client
 The client proxy can transparently handle standard JS `call` and `apply` calls. Server correctly normalizes them ("collapses" the path):
@@ -247,9 +263,7 @@ await api.func.users.create.apply(null, ["Ivan"]);
 
 ### 4.4 Transparent PIPE Request Transit
 For microservice architecture. If your Node server itself is a client of another RPC node (via `pipe`), it can "pass through" the remainder of the pipe chain further using `__executeRemainingPipe`, without waiting for an intermediate response.
-```
-This covers absolutely all library mechanics (Listen modes, `rpcEndCallback`, `call/apply`, `pipe-transit`), while maintaining readability!
-```
+This covers the important RPC mechanics (Listen `on/once/off`, `endCallback`, `call/apply`, `pipe-transit`) while maintaining readability.
 ```typescript
 
 /**
@@ -264,8 +278,8 @@ export function useOrchestrator() {
     const [rpcInitialized, setRpcInitialized] = useState(false);
 
     useEffect(() => {
-        Api.setToken(null); // Connect without token
-        Api.facade.orchestrator?.readyStrict().then(() => {
+        Api.connect(null); // Connect without token
+        Api.facade.orchestrator?.ready().then(() => {
             setRpcInitialized(true);
         });
     }, []);
