@@ -45,6 +45,8 @@ function createServer<T extends object>(
     const lim = resolveLimits(limits);
     const IS_RPC_PIPE = Symbol.for("isRpcPipe");
 
+    const hasRpcListen = (obj: any) => !!obj && typeof obj == "object" && Object.prototype.hasOwnProperty.call(obj, IS_RPC_LISTEN);
+
     function transformTree(obj: any): any {
         let current = obj;
         if (hooks?.resolveTransform && !isNoStrict(current)) {
@@ -52,7 +54,7 @@ function createServer<T extends object>(
         }
         if (current == null || typeof current != "object" || isNoStrict(current)) return current;
         const out: any = {};
-        if ((current as any)[IS_RPC_LISTEN]) out[IS_RPC_LISTEN] = true; // пометка — Symbol, Object.keys её не копирует
+        if (hasRpcListen(current)) out[IS_RPC_LISTEN] = true; // пометка — Symbol, Object.keys её не копирует
         for (const k of Object.keys(current)) {
             if (!isSafeKey(k)) continue;
             const v = current[k];
@@ -99,7 +101,7 @@ function createServer<T extends object>(
                 const path = prefix ? prefix + "." + k : k;
                 if (typeof v == "function") { rm[path] = m.length; m.push(v); cx.push(obj); }
                 else if (v && typeof v == "object" && !isNoStrict(v)) {
-                    if ((v as any)[IS_RPC_LISTEN]) lp.push(path);
+                    if (hasRpcListen(v)) lp.push(path);
                     index(v, path);
                 }
             }

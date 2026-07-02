@@ -34,7 +34,7 @@ import { UseListen, isListenOn, getListenByOn } from "../events/Listen"
 import { UseListenTransform } from "../events/UseListenTransform"
 import { joinListens } from "../events/joinListens"
 import { noStrict } from "./rpc-dynamic"
-import { Pkt, type SocketTmpl } from "./rpc-protocol"
+import { Pkt, IS_RPC_LISTEN, type SocketTmpl } from "./rpc-protocol"
 import type { DeepSocketListen } from "./listen-deep"
 import { MyError } from "../../toError/myThrow"
 // Observable (in-house reactive lib) — каждый узел отдаёт настоящий Listen через .listen(),
@@ -89,6 +89,19 @@ function eq(a: any, b: any): boolean {
 }
 
 const delay = (ms = 0) => new Promise(r => setTimeout(r, ms))
+
+function proxyRejectingSymbolGet<T extends object>(target: T, stats = { symbolGets: 0, stringGets: 0 }): T {
+    return new Proxy(target, {
+        get(t, k, r) {
+            if (typeof k != "string") {
+                stats.symbolGets++
+                throw new TypeError("Cannot convert a symbol to a string")
+            }
+            stats.stringGets++
+            return Reflect.get(t, k, r)
+        },
+    })
+}
 
 export async function runHarness() {
     let fails = 0
@@ -233,6 +246,60 @@ export async function runHarness() {
         await check("double-init client: первый получает своё", () => pa, "A")
         await check("double-init client: второй получает своё", () => pb, "B")
     }
+    { // proxy-regression: createRpcServer не читает symbol через Proxy.get на root-фасаде
+        const [cs, ss] = createLoopback()
+        const stats = { symbolGets: 0, stringGets: 0 }
+        const api = proxyRejectingSymbolGet({ ping: () => "pong", nested: { add: (a: number, b: number) => a + b } }, stats)
+        const c = createRpcClient<typeof api>({ socket: cs, socketKey: "rpc" })
+        createRpcServer({ socket: ss, object: api, socketKey: "rpc" })
+        await delay(0)
+        await check("proxy/root: прямой сервер вызывает метод", () => c.func.ping(), "pong")
+        await check("proxy/root: nested метод жив", () => c.func.nested.add(2, 4), 6)
+        await check("proxy/root: symbol-get не было", async () => stats.symbolGets, 0)
+    }
+    { // proxy-regression: createRpcServerAuto не читает symbol через Proxy.get на root-фасаде
+        const [cs, ss] = createLoopback()
+        const stats = { symbolGets: 0, stringGets: 0 }
+        const api = proxyRejectingSymbolGet({ ping: () => "pong", nested: { add: (a: number, b: number) => a + b } }, stats)
+        const c = createRpcClient<typeof api>({ socket: cs, socketKey: "rpc" })
+        createRpcServerAuto({ socket: ss, object: api, socketKey: "rpc" })
+        await delay(0)
+        await check("proxy/root-auto: вызывает метод", () => c.func.ping(), "pong")
+        await check("proxy/root-auto: nested метод жив", () => c.func.nested.add(3, 4), 7)
+        await check("proxy/root-auto: symbol-get не было", async () => stats.symbolGets, 0)
+    }
+    { // proxy-regression: nested Proxy рядом с Listen не ломает MAP и подписки
+        const [cs, ss] = createLoopback()
+        const [emit, listen] = UseListen<number>()
+        const stats = { symbolGets: 0, stringGets: 0 }
+        const proxied = proxyRejectingSymbolGet({ ping: () => "pong" }, stats)
+        const obj = { proxied, stream: listen }
+        const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "rpc" })
+        createRpcServerAuto({ socket: ss, object: obj, socketKey: "rpc" })
+        await delay(0)
+        const got: number[] = []
+        webListen(c).stream.on((v) => got.push(v))
+        await delay(10)
+        emit(11)
+        await delay(10)
+        await check("proxy/nested-auto: обычный метод", () => c.func.proxied.ping(), "pong")
+        await check("proxy/nested-auto: Listen работает", async () => got, [11])
+        await check("proxy/nested-auto: symbol-get не было", async () => stats.symbolGets, 0)
+    }
+    { // proxy-regression: proxied own-marker IS_RPC_LISTEN определяется без Proxy.get(symbol)
+        const [, ss] = createLoopback()
+        const stats = { symbolGets: 0, stringGets: 0 }
+        const marked: any = { callback: () => true }
+        marked[IS_RPC_LISTEN] = true
+        const obj = { stream: proxyRejectingSymbolGet(marked, stats) }
+        let listenPaths: any[] | undefined
+        const origEmit = ss.emit.bind(ss)
+        ss.emit = (e, d) => { if (Array.isArray(d) && d[0] === Pkt.MAP) listenPaths = d[3]; origEmit(e, d) }
+        createRpcServer({ socket: ss, object: obj, socketKey: "rpc" })
+        await delay(0)
+        await check("proxy/marker: listen path объявлен", async () => listenPaths, ["stream"])
+        await check("proxy/marker: symbol-get не было", async () => stats.symbolGets, 0)
+    }
     { // rpc-server-auto: вторая подписка на тот же Listen не затирает первую
         const [cs, ss] = createLoopback()
         const [emit, listen] = UseListen<number>()
@@ -270,6 +337,21 @@ export async function runHarness() {
         emit(9)
         await delay(10)
         await check("server-auto: emit после bad безопасен", async () => wireSubs, 0)
+    }
+    { // rpc-server-auto: пользовательский Proxy может не поддерживать symbol-ключи в get()
+        const [cs, ss] = createLoopback()
+        const target = { ping: () => "pong" }
+        const proxied = new Proxy(target, {
+            get(t, k, r) {
+                if (typeof k != "string") throw new TypeError("Cannot convert a symbol to a string")
+                return Reflect.get(t, k, r)
+            },
+        })
+        const obj = { proxied }
+        const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "rpc" })
+        createRpcServerAuto({ socket: ss, object: obj, socketKey: "rpc" })
+        await delay(0)
+        await check("server-auto: Proxy без symbol-get", () => c.func.proxied.ping(), "pong")
     }
     { // дедуп подписок: 1 сетевое соединение на клиента на Listen; отписка — функцией; stats
         const [cs, ss] = createLoopback()
@@ -426,6 +508,24 @@ export async function runHarness() {
         await delay(10)
         await check("reauth: подписка пережила reauth", async () => got, [1, 2])
         await check("reauth: новый principal видит write", () => c.func.write(7), 7)
+    }
+    { // proxy-regression: reauth перестраивает dispatch на Proxy-фасаде без symbol-get
+        const [cs, ss] = createLoopback()
+        const statsByWho: Record<string, { symbolGets: number; stringGets: number }> = {}
+        const mk = (who: string) => {
+            const stats = { symbolGets: 0, stringGets: 0 }
+            statsByWho[who] = stats
+            return proxyRejectingSymbolGet({ who: () => who, write: (x: number) => `${who}:${x}` }, stats)
+        }
+        const resolveAuth = (t: string) => ({ object: mk(t), ack: { ok: true, who: t } })
+        type Princ = { who: () => string; write: (x: number) => string }
+        createRpcServerAuto({ socket: ss, object: mk("initial"), socketKey: "rpc", auth: { resolveAuth } })
+        const c = createRpcClient<Princ>({ socket: cs, socketKey: "rpc", token: "user" })
+        await c.initStrict()
+        await check("proxy/reauth: initial auth facade", () => c.func.who(), "user")
+        await c.reauth("admin")
+        await check("proxy/reauth: новый facade", () => c.func.write(5), "admin:5")
+        await check("proxy/reauth: symbol-get не было", async () => Object.values(statsByWho).reduce((n, s) => n + s.symbolGets, 0), 0)
     }
     { // backward-compat: клиент С токеном против сервера БЕЗ auth — работает, authAck нет
         const [cs, ss] = createLoopback()
