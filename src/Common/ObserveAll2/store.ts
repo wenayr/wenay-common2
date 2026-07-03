@@ -1,5 +1,4 @@
-import {funcListenCallbackBase} from "../events/Listen";
-import {listenUpdate, onUpdate, reactive, isReactive} from "./reactive2";
+import {listenUpdate, listenUpdatePaths, onUpdate, reactive, isReactive, toRaw, ReactiveChange} from "./reactive2";
 
 export type StorePath = readonly PropertyKey[]
 export type StoreDrain = "micro" | "immediate" | number | ((flush: () => void) => void)
@@ -8,6 +7,12 @@ export type StoreSubOpts = {
     current?: boolean
     drain?: StoreDrain
     key?: string
+}
+
+export type StoreChange = ReactiveChange
+export type StoreSyncOpts = StoreSubOpts & {
+    partial?: boolean
+    onError?: (error: any) => void
 }
 
 export type StoreCtx<T = any> = {
@@ -40,6 +45,7 @@ export type StoreNodeApi<T> = {
     get(): T
     has(): boolean
     snapshot(): T
+    /** @deprecated alias of replace() */
     set(value: T): void
     replace(value: T): void
     on(cb: (value: T, ctx: StoreCtx<T>) => void, opts?: StoreSubOpts): () => void
@@ -75,6 +81,7 @@ export type Store<T extends object> = {
     once(cb: (value: T, ctx: StoreCtx<T>) => void, opts?: StoreSubOpts): () => void
     update<M extends StoreMask<T>>(mask: M, opts?: StoreSubOpts): StoreSelection<T, M>
     listen(): ReturnType<typeof listenUpdate>
+    listenPaths(): ReturnType<typeof listenUpdatePaths>
     count(): number
 }
 
@@ -87,12 +94,31 @@ type StoreInternal<T extends object> = Store<T> & {
 type RemoteStore<T extends object> = {
     get(mask?: any): T | Promise<T>
     changed: any
+    changedPaths?: any
 }
+
+// ============================================================
+//  utilities — scheduling & paths (pure)
+// ============================================================
 
 const hasSetImmediate = typeof setImmediate == "function"
 
-function pathKey(path: StorePath) {
+// human-readable route ('data.BTC') — the PUBLIC pathString format
+function pathText(path: StorePath) {
     return path.map(String).join(".")
+}
+
+const symbolIds = new Map<symbol, number>()
+let nextSymbolId = 1
+function symbolKey(k: symbol) {
+    let id = symbolIds.get(k)
+    if (id == null) { id = nextSymbolId++; symbolIds.set(k, id) }
+    return id
+}
+
+// internal cache/count key — collision-free (['a.b'] vs ['a','b'], Symbol('x') vs Symbol('x'))
+function pathKey(path: StorePath) {
+    return JSON.stringify(path.map(k => typeof k == "symbol" ? ["symbol", symbolKey(k)] : ["key", String(k)]))
 }
 
 function schedule(drain: StoreDrain | undefined, flush: () => void) {
@@ -168,7 +194,14 @@ function setAt(root: any, path: StorePath, value: any) {
     p[path[path.length - 1] as any] = value
 }
 
+// ============================================================
+//  utilities — snapshot & masks (pure)
+//  snapshot/pick always walk RAW targets (toRaw) — reading through
+//  the proxy would materialize a lazy node per object visited.
+// ============================================================
+
 function snapshotValue<T>(value: T, seen = new WeakMap<object, any>()): T {
+    value = toRaw(value)
     if (!isObj(value)) return value
     if (value instanceof Date) return new Date(value.valueOf()) as T
     if (value instanceof RegExp) return new RegExp(value.source, value.flags) as T
@@ -196,21 +229,80 @@ function maskPaths(mask: any, base: PropertyKey[] = []): PropertyKey[][] {
     if (mask === true || mask == null) return [base]
     if (!isObj(mask)) return [base]
     const out: PropertyKey[][] = []
-    for (const k of Object.keys(mask)) out.push(...maskPaths((mask as any)[k], [...base, k]))
+    for (const k of Reflect.ownKeys(mask)) out.push(...maskPaths((mask as any)[k as any], [...base, k]))
     return out
 }
 
 function pickSnapshot(root: any, mask: any, base: PropertyKey[] = []): any {
+    root = toRaw(root)
     if (mask === true || mask == null) return snapshotValue(getAt(root, base))
     const out: any = {}
-    for (const k of Object.keys(mask)) out[k] = pickSnapshot(root, (mask as any)[k], [...base, k])
+    for (const k of Reflect.ownKeys(mask)) out[k as any] = pickSnapshot(root, (mask as any)[k as any], [...base, k])
     return out
 }
 
-function applyMask(root: any, mask: any, data: any, base: PropertyKey[] = []) {
-    if (mask === true || mask == null) { setAt(root, base, snapshotValue(data)); return }
-    for (const k of Object.keys(mask)) applyMask(root, (mask as any)[k], (data as any)?.[k], [...base, k])
+function deleteAt(root: any, path: StorePath) {
+    if (path.length == 0) { replaceRoot(root, {}); return }
+    const parent = getAt(root, path.slice(0, -1))
+    if (isObj(parent)) delete (parent as any)[path[path.length - 1] as any]
 }
+
+function applyMask(root: any, mask: any, data: any, base: PropertyKey[] = []) {
+    if (mask === true || mask == null) {
+        if (data === undefined && base.length) deleteAt(root, base)
+        else setAt(root, base, snapshotValue(data))
+        return
+    }
+    for (const k of Reflect.ownKeys(mask)) applyMask(root, (mask as any)[k as any], (data as any)?.[k as any], [...base, k])
+}
+
+function pathToMask(path: StorePath): any {
+    let out: any = true
+    for (let i = path.length - 1; i >= 0; i--) out = {[path[i] as any]: out}
+    return out
+}
+
+function hasMaskKey(mask: any, key: PropertyKey) {
+    return isObj(mask) && Reflect.ownKeys(mask).some(k => Object.is(k, key))
+}
+
+function mergeMasks(a: any, b: any): any {
+    if (a === undefined) return b
+    if (b === undefined) return a
+    if (a === true || a == null || b === true || b == null) return true
+    if (!isObj(a) || !isObj(b)) return true
+    const out: any = {}
+    for (const k of Reflect.ownKeys(a)) out[k as any] = (a as any)[k as any]
+    for (const k of Reflect.ownKeys(b)) {
+        out[k as any] = hasMaskKey(a, k) ? mergeMasks((a as any)[k as any], (b as any)[k as any]) : (b as any)[k as any]
+    }
+    return out
+}
+
+function startsWithPath(path: StorePath, prefix: StorePath) {
+    return prefix.length <= path.length && prefix.every((k, i) => Object.is(k, path[i]))
+}
+
+function intersectMaskWithPaths(mask: any, dirtyPaths?: PropertyKey[][]) {
+    const baseMask = mask ?? true
+    if (!Array.isArray(dirtyPaths)) return baseMask
+    if (dirtyPaths.length == 0) return undefined
+    const selected = maskPaths(baseMask)
+    let out: any = undefined
+    for (const dirty of dirtyPaths) {
+        if (!Array.isArray(dirty)) continue
+        if (dirty.length == 0) { out = mergeMasks(out, baseMask); continue }
+        for (const selectedPath of selected) {
+            if (startsWithPath(dirty, selectedPath)) out = mergeMasks(out, pathToMask(dirty))
+            else if (startsWithPath(selectedPath, dirty)) out = mergeMasks(out, pathToMask(selectedPath))
+        }
+    }
+    return out
+}
+
+// ============================================================
+//  subscription engine
+// ============================================================
 
 function watchTarget(root: any, path: StorePath) {
     let cur = root
@@ -235,7 +327,7 @@ function makeCtx<T>(store: StoreInternal<any>, path: PropertyKey[]): StoreCtx<T>
         store,
         node: getNode<T>(store, path),
         path: [...path],
-        pathString: pathKey(path),
+        pathString: pathText(path),
         exists: hasAt(store._state, path),
     }
 }
@@ -302,6 +394,10 @@ function subscribePath<T>(store: StoreInternal<any>, path: PropertyKey[], cb: (v
     return off
 }
 
+// ============================================================
+//  node facade & selections
+// ============================================================
+
 function getNode<T>(store: StoreInternal<any>, path: PropertyKey[]): StoreNode<T> {
     const k = pathKey(path)
     const cached = store._nodeCache.get(k)
@@ -309,7 +405,7 @@ function getNode<T>(store: StoreInternal<any>, path: PropertyKey[]): StoreNode<T
 
     const api: StoreNodeApi<T> = {
         get path() { return [...path] },
-        get pathString() { return pathKey(path) },
+        get pathString() { return pathText(path) },
         get: () => getAt(store._state, path),
         has: () => hasAt(store._state, path),
         snapshot: () => snapshotValue(getAt(store._state, path)),
@@ -357,8 +453,12 @@ function createSelection<T, M>(store: StoreInternal<any>, base: PropertyKey[], m
             return () => { drained.close(); for (const off of offs) off() }
         },
         once(cb, opts = {}) {
+            // `current` may fire synchronously inside this.on, BEFORE `off` is
+            // assigned — the `done` flag keeps that first call from repeating.
+            let done = false
             let off = () => {}
-            off = this.on((v, c) => { off(); cb(v, c) }, {...opts, current: opts.current ?? defaults.current})
+            off = this.on(function fireOnce(v, c) { if (done) return; done = true; off(); cb(v, c) }, {...opts, current: opts.current ?? defaults.current})
+            if (done) off()
             return off
         },
         onEach(cb, opts = {}) {
@@ -368,6 +468,10 @@ function createSelection<T, M>(store: StoreInternal<any>, base: PropertyKey[], m
         },
     }
 }
+
+// ============================================================
+//  store
+// ============================================================
 
 export function createStore<T extends object>(initial: T, opts: Parameters<typeof reactive<T>>[1] = {}): Store<T> {
     const state = reactive(initial, opts)
@@ -385,14 +489,20 @@ export function createStore<T extends object>(initial: T, opts: Parameters<typeo
         once: (cb, opts) => getNode<T>(store, []).once(cb, opts),
         update: (mask, opts) => createSelection<T, any>(store, [], mask, opts),
         listen: () => listenUpdate(state),
+        listenPaths: () => listenUpdatePaths(state),
         count: () => Array.from(store._counts.values()).reduce((a: number, b: number) => a + b, 0),
     }
     return store
 }
 
+// ============================================================
+//  remote: expose & mirror
+// ============================================================
+
 export function exposeStore<T extends object>(store: Store<T>) {
     return {
         get: (mask?: StoreMask<T>) => mask ? store.update(mask as any).get() : store.snapshot(),
+        // `set` kept as a wire alias of `replace` — remote clients may call either
         set: (path: StorePath, value: any) => {
             let node: StoreNode<any> = store.node
             for (const k of path) node = node.at(k)
@@ -404,25 +514,60 @@ export function exposeStore<T extends object>(store: Store<T>) {
             node.replace(value)
         },
         changed: store.listen(),
+        changedPaths: store.listenPaths(),
+    }
+}
+
+function subscribeRemote(listen: any, cb: (...args: any[]) => void) {
+    let handle: any
+    if (typeof listen?.on == "function") handle = listen.on(cb)
+    else if (typeof listen?.addListen == "function") handle = listen.addListen(cb)
+    else return () => {}
+    return () => {
+        if (typeof handle == "function") handle()
+        else if (typeof handle?.off == "function") handle.off()
+        else if (typeof listen?.off == "function") listen.off(cb)
+        else if (typeof listen?.removeListen == "function") listen.removeListen(cb)
     }
 }
 
 export function createStoreMirror<T extends object>(remote: RemoteStore<T>, initial = {} as T, opts: Parameters<typeof createStore<T>>[1] = {}) {
     const store = createStore<T>(initial, opts)
-    async function sync<M extends StoreMask<T>>(mask: M, subOpts: StoreSubOpts = {current: true}) {
-        async function pull() {
-            const snap = await remote.get(mask)
-            applyMask(store.state, mask, snap)
+    async function sync<M extends StoreMask<T>>(mask: M, subOpts: StoreSyncOpts = {current: true}) {
+        const baseMask = mask ?? true
+        const report = (error: any) => {
+            if (subOpts.onError) subOpts.onError(error)
+            else setTimeout(() => { throw error }, 0)
         }
-        if (subOpts.current !== false) await pull()
-        const drained = createDrained(() => { void pull() }, subOpts.drain)
-        const changed = remote.changed
-        const off = typeof changed?.on == "function"
-            ? changed.on(() => drained.push())
-            : typeof changed?.addListen == "function"
-                ? changed.addListen(() => drained.push())
-                : (() => {})
-        return () => { drained.close(); off?.() }
+        async function pull(nextMask: any = baseMask) {
+            const snap = await remote.get(nextMask)
+            applyMask(store.state, nextMask, snap)
+        }
+        if (subOpts.current !== false) await pull(baseMask)
+
+        let pendingMask: any = undefined
+        // pulls are chained: a slow (stale) response can never land on top
+        // of a newer one that resolved first
+        let chain: Promise<void> = Promise.resolve()
+        const drained = createDrained(() => {
+            const nextMask = pendingMask === undefined ? baseMask : pendingMask
+            pendingMask = undefined
+            chain = chain.then(() => pull(nextMask)).catch(report)
+        }, subOpts.drain)
+        const queue = (nextMask: any) => {
+            pendingMask = pendingMask === undefined ? nextMask : mergeMasks(pendingMask, nextMask)
+            drained.push()
+        }
+
+        const changedPaths = remote.changedPaths
+        const usePaths = subOpts.partial !== false && (typeof changedPaths?.on == "function" || typeof changedPaths?.addListen == "function")
+        const off = usePaths
+            ? subscribeRemote(changedPaths, (change?: StoreChange) => {
+                const nextMask = intersectMaskWithPaths(baseMask, change?.paths)
+                if (nextMask !== undefined) queue(nextMask)
+            })
+            : subscribeRemote(remote.changed, () => queue(baseMask))
+        return () => { drained.close(); off() }
     }
     return Object.assign(store, {sync})
 }

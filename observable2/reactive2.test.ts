@@ -3,7 +3,7 @@
 //   npx tsx observable2/reactive2.test.ts
 // ============================================================
 
-import {reactive, onUpdate, flushReactive, listenUpdate} from './reactive2'
+import {reactive, onUpdate, onUpdatePaths, flushReactive, listenUpdate, listenUpdatePaths, toRaw} from './reactive2'
 
 type Fn = () => void
 let fails = 0
@@ -190,6 +190,10 @@ async function main() {
         flush()
         ok(s.y == 2 && Object.keys(s).includes('y'), 'defineProperty creates visible reactive property')
         ok(hits == 1, 'defineProperty notifies subscribers')
+
+        const child = reactive({z: 1}, manual)
+        Object.defineProperty(s, 'box' as any, {value: child, enumerable: true, configurable: true, writable: true})
+        ok((toRaw(s) as any).box === toRaw(child) && (toRaw(s) as any).box !== child, 'defineProperty stores raw values, not reactive proxies')
     }
 
     console.log('\n[15] deleted child proxies do not bubble into the live tree')
@@ -222,6 +226,41 @@ async function main() {
         s.x = 2
         flush()
         ok(hits == 1, 'second off removes remaining duplicate subscription')
+    }
+
+    console.log('\n[17] optional dirty paths are relative to the subscribed node')
+    {
+        const s = reactive<any>({strategies: {a: {status: false}}, rows: [1]}, manual)
+        const got: string[][] = []
+        onUpdatePaths(s.strategies, change => got.push(change.paths.map(p => p.join('.')).sort()))
+        s.strategies.a.status = true
+        flush()
+        s.strategies.b = {status: false}
+        flush()
+        delete s.strategies.a
+        flush()
+        ok(JSON.stringify(got) == '[["a.status"],["b"],["a"]]', 'object set/add/delete paths: ' + JSON.stringify(got))
+
+        const rootGot: string[][] = []
+        onUpdatePaths(s, change => rootGot.push(change.paths.map(p => p.join('.')).sort()))
+        s.rows.push(2)
+        flush()
+        ok(JSON.stringify(rootGot) == '[["rows"]]', 'array mutation dirties the array branch, not splice internals: ' + JSON.stringify(rootGot))
+    }
+
+    console.log('\n[18] listenUpdatePaths exposes dirty paths as a cold Listen')
+    {
+        const s = reactive({a: {b: 1}}, manual)
+        pending = null
+        const updates = listenUpdatePaths(s.a)
+        s.a.b = 2
+        ok(pending == null, 'listenUpdatePaths is cold until it has downstream listeners')
+        let got = ''
+        const off = updates.addListen(change => { got = change.paths.map(p => p.join('.')).join(',') })
+        s.a.b = 3
+        flush()
+        ok(got == 'b', 'listenUpdatePaths fired with relative dirty path: ' + got)
+        off()
     }
 
     console.log(`\n${fails == 0 ? 'ALL GREEN' : fails + ' FAILURE(S)'}`)

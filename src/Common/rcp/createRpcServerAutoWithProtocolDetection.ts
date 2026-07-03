@@ -47,7 +47,7 @@ export function createRpcServerAuto2<T extends object>({
     const cache = new WeakMap<object, ReturnType<typeof listenSocket>>();
     const listenSockets = new Set<ReturnType<typeof listenSocket>>();
     function unsubscribeAllActive() {
-        for (const w of [...listenSockets]) w.removeCallback();
+        for (const w of [...listenSockets]) w.off();
     }
 
     function getListenSocket(parent: any): ReturnType<typeof listenSocket> {
@@ -57,16 +57,16 @@ export function createRpcServerAuto2<T extends object>({
             const subs = new Map<Function, ReturnType<typeof listenSocket>>();
             function subscribe(z: any) {
                 if (typeof z !== "function") return Promise.reject(new TypeError("Listen callback expects a function"));
-                subs.get(z)?.removeCallback();
+                subs.get(z)?.off();
                 const w = listenSocket(parent, { addListenClose: disconnectListen });
                 subs.set(z, w);
-                const done = w.callback(z);
+                const done = w.on(z);
                 done.then(() => { if (subs.get(z) == w) subs.delete(z); });
                 return done;
             }
             function subscribeOnce(z: any) {
                 if (typeof z !== "function") return Promise.reject(new TypeError("Listen once expects a function"));
-                subs.get(z)?.removeCallback();
+                subs.get(z)?.off();
                 const w = listenSocket(parent, { addListenClose: disconnectListen });
                 subs.set(z, w);
                 const done = w.once(z);
@@ -74,11 +74,11 @@ export function createRpcServerAuto2<T extends object>({
                 return done;
             }
             function unsubscribeAll() {
-                subs.forEach(w => w.removeCallback());
+                subs.forEach(w => w.off());
                 subs.clear();
                 return true;
             }
-            result = { callback: subscribe, removeCallback: unsubscribeAll, on: subscribe, once: subscribeOnce, close: () => (parent as any).close?.() } as ReturnType<typeof listenSocket>;
+            result = { on: subscribe, off: unsubscribeAll, callback: subscribe, removeCallback: unsubscribeAll, once: subscribeOnce, close: () => (parent as any).close?.() } as ReturnType<typeof listenSocket>;
             listenSockets.add(result);
             cache.set(parent, result);
         }

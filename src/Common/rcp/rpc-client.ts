@@ -402,7 +402,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         // на конце стрима (p). .unsubscribe (старые вызовы) и .removeCallback (стиль
         // listen-socket) сохранены — back-compat. off() идемпотентен; прежний guard
         // `consumers.delete` тоже был идемпотентен — поведение то же.
-        return makeOff(p, unsub, { unsubscribe: unsub, removeCallback: unsub });
+        return makeOff(p, unsub, { off: unsub, unsubscribe: unsub, removeCallback: unsub });
     }
 
     const sendCall = (path: string[], args: any[], wait: boolean): any => {
@@ -621,7 +621,7 @@ export function createRpcClient<T extends object>({ socket, socketKey: key, limi
     limits?: RpcLimits;
     /** Дедуп подписок (по умолчанию ВКЛЮЧЁН): одно сетевое соединение на Listen-адрес,
      *  новые потребители ретранслируются локально, сетевой стоп — после ухода последнего.
-     *  Подписка (`*.callback(cb)`) возвращает промис с методом `.unsubscribe()`. */
+     *  Подписка (`*.on(cb)`, legacy `*.callback(cb)`) возвращает callable off-handle с `.off()/.unsubscribe()`. */
     dedupeListen?: boolean;
     /** Токен авторизации: при initStrict() клиент предъявит его через Pkt.HELLO (in-band auth).
      *  In-band auth подразумевает ОДИН логический клиент на socket+key (модель хаба): два

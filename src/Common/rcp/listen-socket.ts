@@ -9,16 +9,17 @@ type ListenCallbackResult<T extends any[] = any[]> = ReturnType<typeof funcListe
 // ===================================================================
 // Тип хендла подписки — ровно рантайм-форма makeOff (Off из rpc-off)
 // ===================================================================
-// callback(fn) на КЛИЕНТСКОМ слое отдаёт ВЫЗЫВАЕМЫЙ хендл:
+// on(fn) на КЛИЕНТСКОМ слое отдаёт ВЫЗЫВАЕМЫЙ хендл:
 //   off = sub; off()      // отписка
 //   await sub             // ждёт завершения стрима (thenable)
+//   sub.off()             // явное имя для того же stop
 //   sub.unsubscribe()     // back-compat-имя (rpc-client дедуп)
 //   sub.removeCallback()  // back-compat-имя (listen-socket)
-// Это в точности Off<void, { unsubscribe; removeCallback }> из rpc-off — поэтому
+// Это в точности Off<void, { off; unsubscribe; removeCallback }> из rpc-off — поэтому
 // рантайм makeOff(...) и ЭТОТ тип согласованы (один и тот же контракт).
-// Здесь только ТИП: на listen-socket-слое callback в рантайме отдаёт
-// makeOff(wait, removeCallback) (см. ниже), а вызываемость материализует он же.
-export type tSubHandle = Off<void, { unsubscribe: () => void; removeCallback: () => void }>
+// Здесь только ТИП: на listen-socket-слое on в рантайме отдаёт
+// makeOff(wait, off) (см. ниже), а вызываемость материализует он же.
+export type tSubHandle = Off<void, { off: () => void; unsubscribe: () => void; removeCallback: () => void }>
 
 // ===================================================================
 // Утилита: throttle с trailing-latest (leading + trailing-latest)
@@ -34,7 +35,7 @@ function createThrottleLatest<A extends any[]>(ms: number, sink: (...a: A) => vo
     let timer: ReturnType<typeof setTimeout> | null = null
     let pending: A | null = null
     let killed = false // терминальный флаг: после cancel() канал мёртв навсегда (listenSocket
-                       // строит свежий канал на каждый callback(), так что переиспользования нет)
+                       // строит свежий канал на каждый on(), так что переиспользования нет)
     function flush() {
         timer = null
         if (pending) { const a = pending; pending = null; emit(...a) }
@@ -83,7 +84,7 @@ export function listenSocket<Z extends any[] = any[]>(
     let activeOff: (() => void) | null = null;
     let closeSignalOff: (() => void) | null = null;
     let resolveWait: (() => void) | null = null;
-    // активный throttle-канал текущей подписки (null без опции) — чтобы removeCallback/STOP
+    // активный throttle-канал текущей подписки (null без опции) — чтобы off()/STOP
     // могли cancel() подвешенный trailing-таймер и не прислать эмиссию после off().
     let throttleCh: ReturnType<typeof createThrottleLatest<any>> | null = null;
 
@@ -91,7 +92,7 @@ export function listenSocket<Z extends any[] = any[]>(
         if (resolveWait) { resolveWait(); resolveWait = null; }
     }
 
-    function removeCallback() {
+    function off() {
         if (throttleCh) { throttleCh.cancel(); throttleCh = null; }
         if (last) { stop?.(last); last = null; }
         if (activeOff) { activeOff(); activeOff = null; active = null; }
@@ -100,11 +101,14 @@ export function listenSocket<Z extends any[] = any[]>(
         return true;
     }
 
+    /** @deprecated Используйте off(). */
+    const removeCallback = off
+
     // НЕ async: иначе async-обёртка проглотила бы вызываемый makeOff-хендл и вернула
     // бы голый Promise<void> — off() перестал бы работать. В теле нет await, де-async безопасен.
-    function callback(z: Listener<Z>) {
+    function on(z: Listener<Z>) {
         if (typeof z !== "function") {
-            throw new TypeError("listenSocket.callback expects a function");
+            throw new TypeError("listenSocket.on expects a function");
         }
         if (last) stop?.(last);
         if (activeOff) { activeOff(); activeOff = null; active = null; }
@@ -124,7 +128,7 @@ export function listenSocket<Z extends any[] = any[]>(
             // обнаруживается на ближайшей эмиссии — до неё слушатель остаётся подвешен
             handler = (...a: any[]) => {
                 if (status()) wrapped(...a);
-                else removeCallback();
+                else off();
             };
         }
 
@@ -152,25 +156,24 @@ export function listenSocket<Z extends any[] = any[]>(
             inner(...a);
         };
 
-        activeOff = subscribe(active, {cbClose: removeCallback});
-        closeSignalOff = subscribeClose?.(removeCallback) ?? null;
+        activeOff = subscribe(active, {cbClose: off});
+        closeSignalOff = subscribeClose?.(off) ?? null;
 
         const wait = new Promise<void>((resolve) => {
             resolveWait = () => { resolve() };
         });
-        // off = sub; off(): handle == removeCallback(), при этом await handle резолвится
+        // off = sub; off(): handle == off(), при этом await handle резолвится
         // на завершении стрима (wait) ровно как прежний Promise<void>. Отдельный
-        // removeCallback из { callback, removeCallback } по-прежнему доступен.
+        // removeCallback из { callback, removeCallback } по-прежнему доступен как legacy.
         // Алиасы .unsubscribe/.removeCallback вешаем на сам handle — чтобы РАНТАЙМ совпал
         // с типом tSubHandle, который обещают клиентские обёртки (иначе sub.removeCallback()
         // тип-чек проходит, но падает в рантайме). Каст хранит публичную сигнатуру callback
         // (Promise<void>) байт-в-байт: базовый listenSocket ждёт rpc-server-auto (done.then);
         // вызываемость тип-видна только на обёртках (First/All/Smart) и Deep.
-        return makeOff(wait, removeCallback, { unsubscribe: removeCallback, removeCallback }) as unknown as Promise<void>;
+        return makeOff(wait, off, { off, unsubscribe: off, removeCallback }) as unknown as Promise<void>;
     }
 
-    // on — идиоматичный алиас callback: подписка «через веб» по самому факту установки
-    // колбэка (client.func.stream.on(cb) === .callback(cb)). Тот же вызываемый off()/await-хендл.
+    // callback — legacy-алиас: новые вызовы должны идти через on(cb), тот же off()/await-хендл.
     // once — однократная подписка: первое событие + конец стрима (RPC_STOP→CB_END), затем off.
     function once(z: Listener<Z>) {
         if (typeof z !== "function") {
@@ -178,16 +181,20 @@ export function listenSocket<Z extends any[] = any[]>(
         }
         let fired = false;
         const oneShot = ((...a: any[]) => {
-            if (a[0] === RPC_STOP) { removeCallback(); return; }
+            if (a[0] === RPC_STOP) { off(); return; }
             if (fired) return; fired = true;
             try { (z as Function)(...a); }
-            finally { endCallback(z as Function); removeCallback(); }
+            finally { endCallback(z as Function); off(); }
         }) as Listener<Z>;
-        return callback(oneShot);
+        return on(oneShot);
     }
     // close — закрыть весь Listen-источник (полный teardown, влияет на ВСЕХ потребителей узла).
     function closeStream() { (e as any).close?.(); }
-    return { callback, removeCallback, on: callback, once, close: closeStream };
+    function callback(z: Listener<Z>) {
+        if (typeof z !== "function") throw new TypeError("listenSocket.callback expects a function");
+        return on(z);
+    }
+    return { on, off, callback, removeCallback, once, close: closeStream };
 }
 
 export function listenSocketFirst<Z extends any[] = any[]>(
@@ -201,9 +208,10 @@ export function listenSocketFirst<Z extends any[] = any[]>(
     type SingleArgCallback = (a: Z[0]) => void;
     return {
         callback: r.callback as unknown as (z: SingleArgCallback) => tSubHandle,
-        on: r.callback as unknown as (z: SingleArgCallback) => tSubHandle,
+        on: r.on as unknown as (z: SingleArgCallback) => tSubHandle,
         once: r.once as unknown as (z: SingleArgCallback) => tSubHandle,
         close: r.close,
+        off: r.off,
         removeCallback: r.removeCallback,
     };
 }
@@ -215,9 +223,10 @@ export function listenSocketAll<Z extends any[] = any[]>(
     const r = listenSocket(e, { ...options });
     return {
         callback: r.callback as unknown as (z: (...args: Z) => void) => tSubHandle,
-        on: r.callback as unknown as (z: (...args: Z) => void) => tSubHandle,
+        on: r.on as unknown as (z: (...args: Z) => void) => tSubHandle,
         once: r.once as unknown as (z: (...args: Z) => void) => tSubHandle,
         close: r.close,
+        off: r.off,
         removeCallback: r.removeCallback,
     };
 }
@@ -233,9 +242,10 @@ export function listenSocketSmart<Z extends any[] = any[]>(
     const r = listenSocket(e, { ...options });
     return {
         callback: r.callback as unknown as (z: SmartCallback<Z>) => tSubHandle,
-        on: r.callback as unknown as (z: SmartCallback<Z>) => tSubHandle,
+        on: r.on as unknown as (z: SmartCallback<Z>) => tSubHandle,
         once: r.once as unknown as (z: SmartCallback<Z>) => tSubHandle,
         close: r.close,
+        off: r.off,
         removeCallback: r.removeCallback,
     };
 }

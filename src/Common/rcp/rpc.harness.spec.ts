@@ -42,6 +42,7 @@ import { MyError } from "../../toError/myThrow"
 import { createCell, createRObject, createRMap, combine, computed } from "../../../observable/reactive"
 import { computedAuto } from "../../../observable/autotrack"
 import { createReactive, listen as rxListen, listenValue as rxListenValue } from "../../../observable/native"
+import { createStore, createStoreMirror, exposeStore, flushReactive } from "../ObserveAll2"
 
 // --- loopback: emit одного конца доставляется в on другого (асинхронно, как реальный сокет) ---
 // Каждое сообщение проходит JSON-клон: реальный транспорт сериализует, и сырые Date/Map/BigInt
@@ -1041,6 +1042,39 @@ export async function runHarness() {
     // форму сервера, подписки через webListen. Домен — трейдинг (для наглядности).
     // ===========================================================================
     console.log("--- COOKBOOK: реальные паттерны использования ---")
+
+    { // ObserveAll2 store mirror over the real RPC loopback: get() stays a normal call, changedPaths stays a normal Listen.
+        const [cs, ss] = createLoopback()
+        const serverStore = createStore<any>({strategies: {a: {status: false}}, meta: {status: "ok"}}, {drain: "micro"})
+        const facade = exposeStore(serverStore)
+        createRpcServerAuto({ socket: ss, object: facade, socketKey: "store2" })
+        const c = createRpcClient<typeof facade>({ socket: cs, socketKey: "store2" })
+        await delay(0)
+
+        const listen = webListen(c)
+        const remote = {
+            get: (mask?: any) => c.func.get(mask),
+            changed: listen.changed,
+            changedPaths: listen.changedPaths,
+        }
+        const mirror = createStoreMirror<any>(remote, {strategies: {}, meta: {}}, {drain: "micro"})
+        const stop = await mirror.sync({strategies: true, meta: {status: true}}, {current: true, drain: "micro"})
+
+        serverStore.state.strategies.a.status = true
+        await flushReactive(serverStore.state); await delay(10)
+        serverStore.state.strategies.b = {status: true}
+        await flushReactive(serverStore.state); await delay(10)
+        delete serverStore.state.strategies.b
+        serverStore.state.meta.status = "warn"
+        await flushReactive(serverStore.state); await delay(10)
+        stop()
+
+        await check("cookbook: ObserveAll2 mirror по RPC", async () => ({
+            a: mirror.state.strategies.a.status,
+            hasB: "b" in mirror.state.strategies,
+            meta: mirror.state.meta.status,
+        }), {a: true, hasB: false, meta: "warn"})
+    }
 
     { // 1) ОБЫЧНЫЙ ЗАПРОС-ОТВЕТ (замена REST/fetch-ручек, но типизированно и без URL).
       //    Делаем: зовём функцию сервера как локальную — c.func.setLimit("BTC",100), а выполняется

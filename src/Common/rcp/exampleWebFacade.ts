@@ -98,16 +98,19 @@ export function getFacadeServerAdmin(
         const res = listenSocket<T>(original, { addListenClose: listenStop });
         if (isAdmin) return res;
 
+        const on = (fn: Parameters<typeof res.on>[0]) => {
+            res.off()
+            return res.on((...z) => {
+                const sid = z[0]?.id;
+                if (sid && !checkExist(sid)) return;
+                fn(...z);
+            })
+        }
         return {
-            async callback(fn: Parameters<typeof res.callback>[0]) {
-                res.removeCallback()
-                await res.callback((...z) => {
-                    const sid = z[0]?.id;
-                    if (sid && !checkExist(sid)) return;
-                    fn(...z);
-                })
-            },
-            removeCallback: res.removeCallback
+            on,
+            off: res.off,
+            callback: on,
+            removeCallback: res.off
         };
     }
     const commentsMy = saveCommentById(userId);
@@ -123,7 +126,7 @@ export function getFacadeServerAdmin(
     // Подписка на сервера
     const [callbackServers, getCallbackServers] = UseListen<[tServerRegru[]]>();
     const sc = listenSocketFirst(api.onCallbackServers, { addListenClose: listenStop });
-    sc.callback((servers) => {
+    sc.on((servers) => {
         callbackServers(isAdmin ? servers : servers.filter((s) => checkExist(s.id)));
     });
 

@@ -44,7 +44,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
     const registry = new Map<object, { subs: Map<Function, ReturnType<typeof listenSocket>> }>();
     function unsubscribeAllActive() {
         for (const {subs} of registry.values()) {
-            subs.forEach(w => w.removeCallback());
+            subs.forEach(w => w.off());
             subs.clear();
         }
         registry.clear();
@@ -61,10 +61,10 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                 if (maxPerListen != null && subs.size >= maxPerListen) return Promise.resolve();
                 // ленивая (ре-)регистрация узла при РЕАЛЬНОЙ подписке — переживает drain→re-sub
                 if (!registry.has(parent)) registry.set(parent, { subs });
-                subs.get(z)?.removeCallback();
+                subs.get(z)?.off();
                 const w = listenSocket(parent, { addListenClose: disconnectListen, throttle });
                 subs.set(z, w);
-                const done = w.callback(z);
+                const done = w.on(z);
                 done.then(() => {
                     if (subs.get(z) == w) subs.delete(z);
                     if (subs.size == 0) registry.delete(parent); // узел опустел — снимаем со счёта stats()
@@ -76,7 +76,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                 if (typeof z !== "function") return Promise.reject(new TypeError("Listen once expects a function"));
                 if (maxPerListen != null && subs.size >= maxPerListen) return Promise.resolve();
                 if (!registry.has(parent)) registry.set(parent, { subs });
-                subs.get(z)?.removeCallback();
+                subs.get(z)?.off();
                 const w = listenSocket(parent, { addListenClose: disconnectListen, throttle });
                 let fired = false;
                 const oneShot = (...a: any[]) => {
@@ -87,22 +87,22 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                         z(RPC_STOP);    // конец стрима → CB_END
                     }
                     finally {
-                        w.removeCallback();
+                        w.off();
                     }
                 };
                 subs.set(z, w);
-                const done = w.callback(oneShot);
+                const done = w.on(oneShot);
                 done.then(() => { if (subs.get(z) == w) subs.delete(z); if (subs.size == 0) registry.delete(parent); });
                 return done;
             }
             function unsubscribeAll() {
-                subs.forEach(w => w.removeCallback());
+                subs.forEach(w => w.off());
                 subs.clear();
                 registry.delete(parent); // узел снесён — убираем из реестра
                 return true;
             }
             // close — закрыть весь Listen-источник (полный teardown; влияет на ВСЕХ потребителей узла).
-            result = { callback: subscribe, removeCallback: unsubscribeAll, on: subscribe, once: subscribeOnce, close: () => (parent as any).close?.() };
+            result = { on: subscribe, off: unsubscribeAll, callback: subscribe, removeCallback: unsubscribeAll, once: subscribeOnce, close: () => (parent as any).close?.() };
             (result as any)[IS_RPC_LISTEN] = true; // сервер задекларирует адрес узла в Pkt.MAP
             cache.set(parent, result);
         }

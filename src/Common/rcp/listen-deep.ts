@@ -3,18 +3,18 @@
 import { funcListenCallbackBase, type ListenOn } from "../events/Listen";
 import { listenSocket, listenSocketFirst, listenSocketAll, listenSocketSmart, type tSubHandle } from "./listen-socket";
 
-// Клиентская проекция результата listenSocket: callback(fn) отдаёт ВЫЗЫВАЕМЫЙ
-// хендл (off()/await/.unsubscribe/.removeCallback), removeCallback — как было.
+// Клиентская проекция результата listenSocket: on(fn) отдаёт ВЫЗЫВАЕМЫЙ
+// хендл (off()/await/.off/.unsubscribe/.removeCallback), callback/removeCallback — legacy.
 // Только ТИП: нужен потому, что БАЗОВЫЙ listenSocket намеренно типизирован как
 // Promise<void> (его ждёт rpc-server-auto: `done.then`), а клиентский слой должен
 // видеть хендл. First/All/Smart уже получают tSubHandle через свой каст.
-// callback отдаёт tSubHandle & Promise<void>: пересечение с Promise<void> хранит
+// on/callback отдают tSubHandle & Promise<void>: пересечение с Promise<void> хранит
 // строгую аддитивность — старое `const p: Promise<void> = deep.ev.callback(fn)` всё ещё
-// компилится, а вызываемость/await/.unsubscribe/.removeCallback доступны поверх.
+// компилится, а вызываемость/await/.off/.unsubscribe/.removeCallback доступны поверх.
 type WithSubHandle<R> = R extends { callback: (...a: infer A) => any }
     ? Omit<R, 'callback' | 'on' | 'once'> & {
           callback: (...a: A) => tSubHandle & Promise<void>;
-          /** Идиоматичный алиас callback: подписка по факту установки колбэка. */
+          /** Основное имя подписки по факту установки колбэка. */
           on: (...a: A) => tSubHandle & Promise<void>;
           /** Однократная подписка: одно событие, затем стрим закрывается. */
           once: (...a: A) => tSubHandle & Promise<void>;
