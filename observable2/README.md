@@ -208,5 +208,7 @@ the client.
 
 ```bash
 npx tsx observable2/reactive2.test.ts
+npx tsx observable2/store.test.ts
 npx tsx observable2/usage.ts
+npx tsx observable2/usage-real-socket.ts
 ```

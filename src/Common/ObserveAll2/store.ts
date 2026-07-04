@@ -1,3 +1,4 @@
+import {funcListenCallbackBase} from "../events/Listen";
 import {listenUpdate, listenUpdatePaths, onUpdate, reactive, isReactive, toRaw, ReactiveChange} from "./reactive2";
 
 export type StorePath = readonly PropertyKey[]
@@ -10,9 +11,21 @@ export type StoreSubOpts = {
 }
 
 export type StoreChange = ReactiveChange
+export type StorePatch = {
+    path: PropertyKey[]
+    value: any
+    exists: boolean
+}
+export type StoreChangedData<M = any> = {
+    mask: M
+    data: any
+}
 export type StoreSyncOpts = StoreSubOpts & {
     partial?: boolean
     onError?: (error: any) => void
+}
+export type StoreExposeOpts = {
+    push?: boolean
 }
 
 export type StoreCtx<T = any> = {
@@ -95,6 +108,19 @@ type RemoteStore<T extends object> = {
     get(mask?: any): T | Promise<T>
     changed: any
     changedPaths?: any
+    patches?: any
+    changedData?: any
+}
+
+export type StoreRemoteApi<T extends object> = {
+    get(): T
+    get<M extends StoreMask<T>>(mask: M): StorePick<T, M>
+    set(path: StorePath, value: any): void
+    replace(path: StorePath, value: any): void
+    changed: any
+    changedPaths: any
+    patches?: any
+    changedData?: any
 }
 
 // ============================================================
@@ -256,6 +282,19 @@ function applyMask(root: any, mask: any, data: any, base: PropertyKey[] = []) {
     for (const k of Reflect.ownKeys(mask)) applyMask(root, (mask as any)[k as any], (data as any)?.[k as any], [...base, k])
 }
 
+export function applyStoreMask<T extends object>(store: Store<T>, mask: StoreMask<T> | any, data: any) {
+    applyMask(store.state, mask ?? true, data)
+}
+
+export function applyStorePatch<T extends object>(store: Store<T>, patch: StorePatch) {
+    if (patch.exists === false) deleteAt(store.state, patch.path)
+    else setAt(store.state, patch.path, snapshotValue(patch.value))
+}
+
+export function applyStorePatches<T extends object>(store: Store<T>, patches: readonly StorePatch[]) {
+    for (const patch of patches) applyStorePatch(store, patch)
+}
+
 function pathToMask(path: StorePath): any {
     let out: any = true
     for (let i = path.length - 1; i >= 0; i--) out = {[path[i] as any]: out}
@@ -300,6 +339,74 @@ function intersectMaskWithPaths(mask: any, dirtyPaths?: PropertyKey[][]) {
     return out
 }
 
+function maskFromPaths(paths: PropertyKey[][]) {
+    let out: any = undefined
+    for (const path of paths) out = mergeMasks(out, pathToMask(path))
+    return out ?? true
+}
+
+function makePatch(root: any, path: StorePath): StorePatch {
+    root = toRaw(root)
+    const exists = hasAt(root, path)
+    return {
+        path: [...path],
+        exists,
+        value: exists ? snapshotValue(getAt(root, path)) : undefined,
+    }
+}
+
+function patchesForMask(patch: StorePatch, mask: any) {
+    const selected = maskPaths(mask ?? true)
+    const out: StorePatch[] = []
+    let emittedWholePatch = false
+    for (const selectedPath of selected) {
+        if (startsWithPath(patch.path, selectedPath)) {
+            if (!emittedWholePatch) {
+                out.push(patch)
+                emittedWholePatch = true
+            }
+            continue
+        }
+        if (!startsWithPath(selectedPath, patch.path)) continue
+        const rel = selectedPath.slice(patch.path.length)
+        const exists = patch.exists && hasAt(patch.value, rel)
+        out.push({
+            path: [...selectedPath],
+            exists,
+            value: exists ? snapshotValue(getAt(patch.value, rel)) : undefined,
+        })
+    }
+    return out
+}
+
+function createPatchesListen<T extends object>(store: Store<T>) {
+    return funcListenCallbackBase<[StorePatch]>((emit) => {
+        const off = store.listenPaths().on((change: StoreChange) => {
+            for (const path of change.paths) emit(makePatch(store.state, path))
+        })
+        return off
+    }, {
+        event: (type, count, api) => {
+            if (type == "add" && count == 1 && !api.isRun()) api.run()
+            if (type == "remove" && count == 0 && api.isRun()) api.close()
+        },
+    })
+}
+
+function createChangedDataListen<T extends object>(store: Store<T>) {
+    return funcListenCallbackBase<[StoreChangedData]>((emit) => {
+        const off = store.listenPaths().on((change: StoreChange) => {
+            const mask = maskFromPaths(change.paths)
+            emit({mask, data: pickSnapshot(store.state, mask)})
+        })
+        return off
+    }, {
+        event: (type, count, api) => {
+            if (type == "add" && count == 1 && !api.isRun()) api.run()
+            if (type == "remove" && count == 0 && api.isRun()) api.close()
+        },
+    })
+}
 // ============================================================
 //  subscription engine
 // ============================================================
@@ -499,9 +606,10 @@ export function createStore<T extends object>(initial: T, opts: Parameters<typeo
 //  remote: expose & mirror
 // ============================================================
 
-export function exposeStore<T extends object>(store: Store<T>) {
-    return {
-        get: (mask?: StoreMask<T>) => mask ? store.update(mask as any).get() : store.snapshot(),
+export function exposeStore<T extends object>(store: Store<T>, opts: StoreExposeOpts = {}): StoreRemoteApi<T> {
+    const get = ((mask?: StoreMask<T>) => mask ? store.update(mask as any).get() : store.snapshot()) as StoreRemoteApi<T>["get"]
+    const api: StoreRemoteApi<T> = {
+        get,
         // `set` kept as a wire alias of `replace` — remote clients may call either
         set: (path: StorePath, value: any) => {
             let node: StoreNode<any> = store.node
@@ -516,6 +624,15 @@ export function exposeStore<T extends object>(store: Store<T>) {
         changed: store.listen(),
         changedPaths: store.listenPaths(),
     }
+    if (opts.push) {
+        api.patches = createPatchesListen(store)
+        api.changedData = createChangedDataListen(store)
+    }
+    return api
+}
+
+function isRemoteListen(listen: any) {
+    return typeof listen?.on == "function" || typeof listen?.addListen == "function"
 }
 
 function subscribeRemote(listen: any, cb: (...args: any[]) => void) {
@@ -533,16 +650,19 @@ function subscribeRemote(listen: any, cb: (...args: any[]) => void) {
 
 export function createStoreMirror<T extends object>(remote: RemoteStore<T>, initial = {} as T, opts: Parameters<typeof createStore<T>>[1] = {}) {
     const store = createStore<T>(initial, opts)
+    const makeReport = (subOpts: StoreSyncOpts) => (error: any) => {
+        if (subOpts.onError) subOpts.onError(error)
+        else setTimeout(() => { throw error }, 0)
+    }
+
+    async function pull(mask: any) {
+        const snap = await remote.get(mask)
+        applyMask(store.state, mask, snap)
+    }
+
     async function sync<M extends StoreMask<T>>(mask: M, subOpts: StoreSyncOpts = {current: true}) {
         const baseMask = mask ?? true
-        const report = (error: any) => {
-            if (subOpts.onError) subOpts.onError(error)
-            else setTimeout(() => { throw error }, 0)
-        }
-        async function pull(nextMask: any = baseMask) {
-            const snap = await remote.get(nextMask)
-            applyMask(store.state, nextMask, snap)
-        }
+        const report = makeReport(subOpts)
         if (subOpts.current !== false) await pull(baseMask)
 
         let pendingMask: any = undefined
@@ -560,7 +680,7 @@ export function createStoreMirror<T extends object>(remote: RemoteStore<T>, init
         }
 
         const changedPaths = remote.changedPaths
-        const usePaths = subOpts.partial !== false && (typeof changedPaths?.on == "function" || typeof changedPaths?.addListen == "function")
+        const usePaths = subOpts.partial !== false && isRemoteListen(changedPaths)
         const off = usePaths
             ? subscribeRemote(changedPaths, (change?: StoreChange) => {
                 const nextMask = intersectMaskWithPaths(baseMask, change?.paths)
@@ -569,5 +689,50 @@ export function createStoreMirror<T extends object>(remote: RemoteStore<T>, init
             : subscribeRemote(remote.changed, () => queue(baseMask))
         return () => { drained.close(); off() }
     }
-    return Object.assign(store, {sync})
+
+    async function syncPatches<M extends StoreMask<T>>(mask: M, subOpts: StoreSyncOpts = {current: true}) {
+        if (!isRemoteListen(remote.patches)) throw new Error("createStoreMirror.syncPatches: remote.patches is not exposed")
+        const baseMask = mask ?? true
+        const report = makeReport(subOpts)
+        if (subOpts.current !== false) await pull(baseMask)
+
+        const pending: StorePatch[] = []
+        const drained = createDrained(() => {
+            const batch = pending.splice(0)
+            try { applyStorePatches(store, batch) }
+            catch (e) { report(e) }
+        }, subOpts.drain)
+        const off = subscribeRemote(remote.patches, (patch: StorePatch) => {
+            const next = patchesForMask(patch, baseMask)
+            if (next.length == 0) return
+            pending.push(...next)
+            drained.push()
+        })
+        return () => { drained.close(); off() }
+    }
+
+    async function syncChangedData<M extends StoreMask<T>>(mask: M, subOpts: StoreSyncOpts = {current: true}) {
+        if (!isRemoteListen(remote.changedData)) throw new Error("createStoreMirror.syncChangedData: remote.changedData is not exposed")
+        const baseMask = mask ?? true
+        const report = makeReport(subOpts)
+        if (subOpts.current !== false) await pull(baseMask)
+
+        const pending: StoreChangedData[] = []
+        const drained = createDrained(() => {
+            const batch = pending.splice(0)
+            try {
+                for (const change of batch) {
+                    const nextMask = intersectMaskWithPaths(baseMask, maskPaths(change?.mask ?? true))
+                    if (nextMask !== undefined) applyMask(store.state, nextMask, change.data)
+                }
+            } catch (e) { report(e) }
+        }, subOpts.drain)
+        const off = subscribeRemote(remote.changedData, (change: StoreChangedData) => {
+            pending.push(change)
+            drained.push()
+        })
+        return () => { drained.close(); off() }
+    }
+
+    return Object.assign(store, {sync, syncPatches, syncChangedData})
 }
