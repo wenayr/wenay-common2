@@ -229,6 +229,10 @@ function setAt(root: any, path: StorePath, value: any) {
 function snapshotValue<T>(value: T, seen = new WeakMap<object, any>()): T {
     value = toRaw(value)
     if (!isObj(value)) return value
+    // cycle check BEFORE the Map/Set branches: a self-containing Map/Set must hit the
+    // already-created copy, not recurse forever; shared refs keep one output identity
+    const old = seen.get(value)
+    if (old) return old
     if (value instanceof Date) return new Date(value.valueOf()) as T
     if (value instanceof RegExp) return new RegExp(value.source, value.flags) as T
     if (value instanceof Map) {
@@ -243,8 +247,6 @@ function snapshotValue<T>(value: T, seen = new WeakMap<object, any>()): T {
         value.forEach(v => out.add(snapshotValue(v, seen)))
         return out as T
     }
-    const old = seen.get(value)
-    if (old) return old
     const out: any = Array.isArray(value) ? [] : {}
     seen.set(value, out)
     for (const k of Reflect.ownKeys(value)) out[k as any] = snapshotValue((value as any)[k as any], seen)

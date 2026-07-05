@@ -333,6 +333,14 @@ npx tsx observable2/store-mirror.example.ts
 withReplayListen(base, {current?, history?, getSince?, onJournal?, now?}) · UseReplayListen   // layer A: journal {seq, ts, event}; on(cb, {since, onSeq}); head()/getSince()/keyframe()/hasKeyframe
 exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?}) -> off         // wire pair over the EXISTING rpc: line = plain Listen, since/keyframe = plain methods
   // off.ready (catch-up done) · off.seq() (reconnect point); reconnect = call again with {since: prev.seq()}
+  // DELIVERY CONTRACT (guaranteed, not best-effort): the subscriber's cb sees ONE uniform stream —
+  //   first delivery = the snapshot (keyframe as an event of the SAME type; store: root patch),
+  //   then only strictly-newer events, seq-ascending, no gaps, no dups. Live events racing ahead of the
+  //   keyframe over the wire are queued during catch-up and seq-deduped — they can NEVER arrive first.
+  //   With {since: K}: same fold, journal tail after K instead of a keyframe (evicted -> keyframe fallback,
+  //   visible to the client as a seq jump > +1). Requires an ORDERED transport (socket.io / TCP / in-proc).
+  //   Net effect: one client fold `state = apply(state, event)` handles cold start, reconnect,
+  //   conflation recovery and archive playback identically — snapshot is not a special case.
 exposeStoreReplay(store, opts?)  <->  syncStoreReplay(mirror, remote, opts?)            // layer B: patch line; keyframe = root patch ({path: [], value: snapshot})
 conflateReplay(replay, {pending, highWater, lowWater?, pollMs?, keyOf?, maxKeys?}) -> {api, close, stats}  // layer D.1: per-connection gate — pending() over highWater -> deltas DROP (never queue);
   // drained -> fresh keyframe on the SAME line, seq dedup cuts the overlap; pending() = e.g. socket.conn.writeBuffer.length

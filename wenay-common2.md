@@ -165,7 +165,7 @@ ObserveAll2.exposeStoreReplay(store, {history? = 1024}) -> { api /* spread into 
 ObserveAll2.syncStoreReplay(mirror, remote /*{line, since, keyframe} of api.replay*/, {since?, onSeq?}) -> off
   // off.ready (catch-up done) · off.seq() (save for reconnect: syncStoreReplay(..., {since: prev.seq()}))
   // lagging/late client NEVER gets a backlog: evicted seq -> ONE fresh keyframe + live
-// Full generic surface (any event line, per-client conflation, history/time-travel) -> Replay namespace, 🎞️ in rare docs.
+// Slow-client conflation: recipe section 🎞️ below. Full generic surface (any event line, history/time-travel) -> Replay namespace, 🎞️ in rare docs.
 // Object add/delete/deep set are paths. Array mutation dirties the whole array branch, not splice internals.
 ```
 ```
@@ -187,6 +187,60 @@ mirror.node.data.BTC.on(v => {}, {current: true})
 stop()
 ```
 Runnable example: `npx tsx observable2/store-mirror.example.ts`.
+
+## 🎞️ Fast ticks vs slow client — replay + per-connection conflation (recipe)
+> The problem: the producer emits faster than a bad link drains. Naive streaming grows an unbounded
+> outgoing queue per slow client. The replay stack solves it: a seq-numbered line + keyframe, plus a
+> per-connection gate that **drops** deltas while this client's outgoing buffer is over a threshold
+> (nothing is ever queued for a laggard) and, once the buffer drains, recovers with ONE envelope —
+> a fresh keyframe, or (with `keyOf`) a short tail of last-values-per-key. The client code has no
+> conflation logic at all: recovery arrives on the same line and seq dedup cuts the overlap.
+```ts
+import { ObserveAll2, Replay } from 'wenay-common2'
+
+// ---- backend, ONCE per store: hot seq-numbered patch line (journal) ----
+const store = ObserveAll2.createStore<World>(initial, { drain: 'micro' })
+const exposed = ObserveAll2.exposeStoreReplay(store, { history: 1024 })
+
+// ---- per CONNECTION, where the rpc server is built: a personal gate ----
+io.on('connection', socket => {
+    const gated = Replay.conflateReplay(exposed.replay, {
+        pending: () => socket.conn.writeBuffer.length,   // THIS client's outgoing buffer (ws: bufferedAmount)
+        highWater: 64,             // pending() above this -> deltas STOP for this client (dropped, never queued)
+        lowWater: 8,               // recover only after a real drain — hysteresis (default 0)
+        keyOf: ObserveAll2.storePatchKey,   // optional: coalesce per path -> tail of last values instead of a full keyframe
+    })
+    socket.on('disconnect', () => gated.close())         // REQUIRED: stops the gate's poll timer + frees the key map
+    createRpcServerAuto({
+        socket: { emit: (k, d) => socket.emit(k, d), on: (k, cb) => socket.on(k, cb) },
+        socketKey: 'world',
+        object: { ...exposed.api, replay: gated.api },   // gated.api REPLACES the shared replay facade
+    })
+})
+
+// ---- client: just a mirror — nothing conflation-specific here ----
+const mirror = ObserveAll2.createStore<World>(empty)
+const sub = ObserveAll2.syncStoreReplay(mirror, remote)  // remote = deep.replay: {line, since, keyframe}
+await sub.ready                                          // keyframe catch-up done, live from here
+// delivery contract: cb's FIRST delivery is always the snapshot (same event type — store: root patch),
+// then only strictly-newer events, seq-ascending, deduped; ticks racing the keyframe can never arrive first
+// reconnect: syncStoreReplay(mirror, remote, {since: prev.seq()}) -> journal tail, not a full snapshot
+```
+Rules that make it correct (violating any of these silently breaks convergence):
+- **A keyframe source is mandatory.** `exposeStoreReplay` provides it (root patch = snapshot); a bare
+  `UseReplayListen` line needs `current()` — `conflateReplay` throws at construction without one.
+- **With `keyOf`, every event must be ABSOLUTE for its key** (fully define that key's state). Store
+  patches are — use `storePatchKey`. Relative/incremental events must NOT be coalesced (return `null`).
+- **`pending()` and the watermarks share units** (bytes, packets, frames — anything, but the same).
+- **One gate per client per line, never shared**; `close()` on disconnect, always.
+- Gate drops never hole the journal — they are per-client. Reconnect via `{since}` still gets every
+  patch the gate dropped; only an evicted `history` window degrades reconnect to one fresh keyframe.
+- Unkeyable event or > `maxKeys` (1024) distinct keys in one episode -> degrades to keyframe recovery
+  (still correct, just heavier); memory stays bounded by keys, not by event rate.
+
+Wire-level proof/oracles: `npx ts-node replay/conflate-socket.test.ts` (real Socket.IO: keyOf tails,
+maxKeys degradation, two clients on one line, reconnect mid-episode), `replay/conflate.test.ts`,
+`replay/coalesce.test.ts`. Full generic surface (history/time-travel, archive) → 🎞️ in rare docs.
 
 
 

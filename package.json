@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "1.0.55",
+  "version": "1.0.56",
   "description": "Common library",
   "strict": true,
   "main": "lib/index.js",
@@ -17,7 +17,8 @@
     "build & publish": "npm run build  &&  npm run _publish",
     "_clearDir": "IF exist lib (rd /s /q lib)  &&  mkdir lib  &&  copy tsconfig_lib.json lib\\tsconfig.json  &&  echo:",
     "test:rpc-guards": "node scripts/assert-rpc-symbol-guard.cjs",
-    "test:rpc": "node node_modules/ts-node/dist/bin.js --transpile-only src/Common/rcp/rpc.harness.spec.ts"
+    "test:rpc": "node node_modules/ts-node/dist/bin.js --transpile-only src/Common/rcp/rpc.harness.spec.ts",
+    "test:all": "npm run test:rpc-guards && npm run test:rpc && node scripts/run-oracles.mjs"
   },
   "files": [
     "lib/**/*",
