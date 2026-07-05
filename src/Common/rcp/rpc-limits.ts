@@ -9,6 +9,8 @@ export type RpcLimits = {
     maxStringLen?: number;
     maxCallbacks?: number;
     maxPathLen?: number;
+    /** Потолок БАЙТ одного бинарного листа (TypedArray/ArrayBuffer/Buffer). */
+    maxBinaryLen?: number;
 };
 
 const DEFAULT_LIMITS: Required<RpcLimits> = {
@@ -19,6 +21,7 @@ const DEFAULT_LIMITS: Required<RpcLimits> = {
     maxStringLen: 1_000_000,
     maxCallbacks: 100,
     maxPathLen: 16,
+    maxBinaryLen: 8_000_000,
 };
 
 export const resolveLimits = (opts?: RpcLimits): Required<RpcLimits> =>

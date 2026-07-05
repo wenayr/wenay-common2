@@ -159,6 +159,13 @@ ObserveAll2.exposeStore(store, opts?) -> { get(mask?), set(path,value), replace(
 ObserveAll2.createStoreMirror(remote, initial, opts?) -> store & { sync(mask, opts?) -> Promise<off>; syncPatches(mask, opts?) -> Promise<off>; syncChangedData(mask, opts?) -> Promise<off> }
 // changedPaths is optional optimization: mirror pulls mask ∩ dirty paths; fallback is changed -> get(mask).
 // Optional push-data mode: exposeStore(store,{push:true}) + syncPatches/syncChangedData; details in rare docs.
+
+// Sequenced sync (replay line): seq-numbered patch stream — keyframe catch-up, reconnect by seq (tail, not snapshot)
+ObserveAll2.exposeStoreReplay(store, {history? = 1024}) -> { api /* spread into the RPC server object */, replay, close }
+ObserveAll2.syncStoreReplay(mirror, remote /*{line, since, keyframe} of api.replay*/, {since?, onSeq?}) -> off
+  // off.ready (catch-up done) · off.seq() (save for reconnect: syncStoreReplay(..., {since: prev.seq()}))
+  // lagging/late client NEVER gets a backlog: evicted seq -> ONE fresh keyframe + live
+// Full generic surface (any event line, per-client conflation, history/time-travel) -> Replay namespace, 🎞️ in rare docs.
 // Object add/delete/deep set are paths. Array mutation dirties the whole array branch, not splice internals.
 ```
 ```

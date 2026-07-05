@@ -166,6 +166,11 @@ RPC Listen surface on client: stream.on(cb)->off · stream.once(cb)->off · stre
   // off is callable + thenable: off() unsubscribes; await off waits for stream end. Legacy .callback/.removeCallback/.unsubscribe exist for old code only.
   // *First/*All/*Smart differ only in callback arity: first arg / all args / single-vs-tuple smart.
 matchKeys(a,b) · matchKeysList(a, keys) · deepMapByKeys · deepMapByKeysList
+// wire serialization (rpc-walk): Date/Map/Set/RegExp/BigInt are marked+restored; functions -> callback refs.
+//   TypedArray/DataView/Buffer/ArrayBuffer pass through as BINARY leaves (socket.io carries them natively;
+//   never rebuilt into {0:…,1:…} dicts — raw canvas/video byte payloads are wire-safe and cheap).
+RpcLimits (opt, per server/client): maxDepth 32 · maxKeys 1000 · maxArgs 64 · maxArrayLen 10k
+  · maxStringLen 1M · maxCallbacks 100 · maxPathLen 16 · maxBinaryLen 8MB (bytes per binary leaf)
 // modes: func (proxy) · strict (schema-safe) · pipe (whole chain in one packet) · space (fire-and-forget)
 // legacy (oldCommonsServer.ts, @deprecated forwarders onto oldСommonsServerMini — identical wire):
 //   funcPromiseServer->promiseServer · funcForWebSocket->wsWrapper · funcScreenerClient2->createClientProxy
@@ -317,6 +322,33 @@ npx tsx observable2/store-mirror.example.ts
 > The old `observable/` tree remains in the repo for regression/sandbox work only.
 > Do not document it as package API and do not teach it in new examples. Use root-exported `ObserveAll2` instead.
 > Existing tests may still import `observable/*` directly while the replacement surface settles.
+
+## 🎞️ Replay — snapshot + sequenced delta line
+> Keyframe + seq-numbered deltas + recovery via a fresh keyframe — one pattern for store sync,
+> ticks and video-like frame streams. `import { Replay } from "wenay-common2"` or
+> `import { ... } from "wenay-common2/replay"`; the store pair lives in `ObserveAll2`.
+> Design: `REPLAY-PLAN.md`; oracles: `replay/` (import the canonical `src/` modules).
+```
+withReplayListen(base, {current?, history?, getSince?, onJournal?, now?}) · UseReplayListen   // layer A: journal {seq, ts, event}; on(cb, {since, onSeq}); head()/getSince()/keyframe()/hasKeyframe
+exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?}) -> off         // wire pair over the EXISTING rpc: line = plain Listen, since/keyframe = plain methods
+  // off.ready (catch-up done) · off.seq() (reconnect point); reconnect = call again with {since: prev.seq()}
+exposeStoreReplay(store, opts?)  <->  syncStoreReplay(mirror, remote, opts?)            // layer B: patch line; keyframe = root patch ({path: [], value: snapshot})
+conflateReplay(replay, {pending, highWater, lowWater?, pollMs?, keyOf?, maxKeys?}) -> {api, close, stats}  // layer D.1: per-connection gate — pending() over highWater -> deltas DROP (never queue);
+  // drained -> fresh keyframe on the SAME line, seq dedup cuts the overlap; pending() = e.g. socket.conn.writeBuffer.length
+  // build per connection where the rpc server is built; api spreads in place of exposeReplay(...); close() on disconnect
+  // keyOf (key-level coalescing): while lagged keep the LAST envelope per key, drain -> tail of those (ascending seq) instead of a full keyframe;
+  //   events must be ABSOLUTE per key (store patches are — use storePatchKey from ObserveAll2); keyOf -> null or over maxKeys (1024) -> degrade to keyframe recovery
+ReplayStorage = {putEvent, putKeyframe, getKeyframe({seq?|ts?}?), getEvents(from, to)}   // layer C: archive behind 4 lambdas (file/DB/anything); createMemoryReplayStorage(caps?) = reference impl
+archiveReplay(replay, {storage, everyEvents? = 64, everyMs?}) -> {close, stats}          // event log + keyframe cadence (every N events OR T ms of line-ts, whichever first; frames only ON events)
+openHistory(storage, live?) -> {at({seq?|ts?}?), subscribe(cb, {since?|ts?, onSeq?}) -> off}   // seek + playback, SAME subscriber interface; with live: archive -> live journal -> live handover
+  // seamless rewind->live: create the line with getSince reading the same storage («memory outside»); else the gap closes with a keyframe jump (still consistent)
+storeReplayAt(storage, {seq?|ts?}?) -> snapshot | undefined                              // store time machine: bit-exact state at any archived moment (same applyStorePatch mechanism)
+```
+> Killer property: a lagging/late/stalled consumer never gets a queue backlog — evicted seq / full outgoing buffer -> fresh keyframe + live from it.
+> Files: `src/Common/events/replay-{listen,wire,conflate,history,index}.ts` + `src/Common/ObserveAll2/store-replay.ts`;
+> everything is additive (Listen3 gained only `registerListenOn`/`ListenOnBrand`; Listen2/exposeStore/mirror untouched).
+> Oracles: `npx ts-node replay/<f>.ts` — replay-listen / store-replay / socket-replay / conflate / conflate-socket / coalesce / history / canvas-socket (raw bytes) / video-socket.demo;
+> wire coverage also lives in the RPC harness cookbook (`npm run test:rpc`).
 
 ## 🔁 ObserveAll2 — coarse reactive object (`ObserveAll2`, fact-based)
 > `import { ObserveAll2 } from "wenay-common2"` → `ObserveAll2.reactive(...)`.

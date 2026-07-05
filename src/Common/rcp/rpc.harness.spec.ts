@@ -42,7 +42,7 @@ import { MyError } from "../../toError/myThrow"
 import { createCell, createRObject, createRMap, combine, computed } from "../../../observable/reactive"
 import { computedAuto } from "../../../observable/autotrack"
 import { createReactive, listen as rxListen, listenValue as rxListenValue } from "../../../observable/native"
-import { createStore, createStoreMirror, exposeStore, flushReactive } from "../ObserveAll2"
+import { createStore, createStoreMirror, exposeStore, exposeStoreReplay, flushReactive, syncStoreReplay } from "../ObserveAll2"
 
 // --- loopback: emit одного конца доставляется в on другого (асинхронно, как реальный сокет) ---
 // Каждое сообщение проходит JSON-клон: реальный транспорт сериализует, и сырые Date/Map/BigInt
@@ -1074,6 +1074,52 @@ export async function runHarness() {
             hasB: "b" in mirror.state.strategies,
             meta: mirror.state.meta.status,
         }), {a: true, hasB: false, meta: "warn"})
+    }
+
+    { // Replay-линия стора по RPC: keyframe + seq-дельты; reconnect по since = хвост патчей, НЕ снапшот.
+      //   Провод НЕ менялся: line — обычный Listen, since/keyframe — обычные методы (exposeStoreReplay).
+        const [cs, ss] = createLoopback()
+        const world = createStore<any>({units: {a: {hp: 100}}, tick: 0}, {drain: "micro"})
+        const exposed = exposeStoreReplay(world, {history: 64})
+        const counters = {keyframe: 0}
+        const facade = {...exposed.api, replay: {...exposed.api.replay, keyframe: () => { counters.keyframe++; return exposed.api.replay.keyframe() }}}
+        createRpcServerAuto({ socket: ss, object: facade, socketKey: "replay" })
+        const c = createRpcClient<typeof facade>({ socket: cs, socketKey: "replay" })
+        await delay(0)
+
+        const listen = webListen(c)
+        const remote = {
+            line: (listen as any).replay.line,
+            since: (s: number) => c.func.replay.since(s),
+            keyframe: () => c.func.replay.keyframe(),
+        }
+        const mirror = createStore<any>({})
+        let lastSeq = -1
+        const sub = syncStoreReplay(mirror, remote as any, {onSeq: (s: number) => lastSeq = s})
+        await sub.ready
+        world.state.tick = 1
+        await flushReactive(world.state); await delay(10)
+        const liveOk = eq(mirror.snapshot(), world.snapshot())
+
+        // обрыв: зеркало оффлайн, мир живёт дальше — реконнект доезжает ХВОСТОМ
+        sub()
+        world.state.units.a.hp = 50
+        await flushReactive(world.state)
+        world.state.tick = 2
+        await flushReactive(world.state); await delay(10)
+        const kfBefore = counters.keyframe
+        let tailPatches = 0
+        const sub2 = syncStoreReplay(mirror, remote as any, {since: lastSeq, onSeq: (s: number) => { lastSeq = s; tailPatches++ }})
+        await sub2.ready
+        await delay(10)
+        sub2()
+        exposed.close()
+        await check("cookbook: replay-линия — live-патчи + реконнект хвостом без снапшота", async () => ({
+            live: liveOk,
+            converged: eq(mirror.snapshot(), world.snapshot()),
+            tailOnly: counters.keyframe === kfBefore,
+            tail: tailPatches,
+        }), {live: true, converged: true, tailOnly: true, tail: 2})
     }
 
     { // 1) ОБЫЧНЫЙ ЗАПРОС-ОТВЕТ (замена REST/fetch-ручек, но типизированно и без URL).

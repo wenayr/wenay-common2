@@ -37,6 +37,14 @@ const SERIALIZERS: Serializer[] = [
     (v) => typeof v === "bigint" ? [BIGINT_MARKER, v.toString()]                        : null,
 ];
 
+// Бинарный лист: TypedArray/DataView/Buffer (isView) и голый ArrayBuffer.
+// null = не бинарь; число = byteLength (для лимита).
+function binaryByteLength(v: any): number | null {
+    if (ArrayBuffer.isView(v)) return v.byteLength;
+    if (v instanceof ArrayBuffer) return v.byteLength;
+    return null;
+}
+
 export function walk(
     val: any,
     onLeaf: (v: any) => any,
@@ -48,6 +56,15 @@ export function walk(
         if (typeof val == "string" && val.length > lim.maxStringLen) throw new PayloadLimitError("string too long");
     }
     if (val == null || typeof val !== "object") return onLeaf(val);
+    // Бинарь — passthrough МИМО onLeaf и ДО Object.keys: socket.io возит его нативно,
+    // ни один (де)сериализатор бинарь не метит (identity by design), а Object.keys
+    // у большого буфера — это массив из миллионов строк-ключей ({0:…,1:…}-раздувание,
+    // которое здесь и лечим). Проверка байтового потолка — единственное, что нужно.
+    const bin = binaryByteLength(val);
+    if (bin != null) {
+        if (lim && bin > lim.maxBinaryLen) throw new PayloadLimitError("binary too long");
+        return val;
+    }
     // Если объект уже упакован маркером — передаём как есть в onLeaf
     if (val instanceof Date || val instanceof Map || val instanceof Set || val instanceof RegExp) return onLeaf(val);
 

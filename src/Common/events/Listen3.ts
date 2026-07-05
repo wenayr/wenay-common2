@@ -79,6 +79,10 @@ const listenByOn = new WeakMap<Function, any>()
 export function getListenByOn(fn: any) { return typeof fn == 'function' ? listenByOn.get(fn) : undefined }
 /** Является ли fn функцией `on` какого-то Listen (проверка по ссылке в реестре). */
 export function isListenOn(fn: any): boolean { return typeof fn == 'function' && listenByOn.has(fn) }
+/** (additive, replay) Регистрация on→api для декораторов, живущих вне этого файла. */
+export function registerListenOn(on: Function, api: any) { listenByOn.set(on, api) }
+/** (additive, replay) Фантомный бренд отдельно — чтобы внешний декоратор мог собрать свой ListenOn-тип. */
+export type ListenOnBrand<Z extends any[] = any[]> = { readonly [LISTEN_ON_BRAND]: Z }
 
 // =====================================================================
 // СЛОЙ 1: ядро — реестр подписчиков (utility, без жизненного цикла)
