@@ -275,6 +275,7 @@ const pushed = ObserveAll2.exposeStore(store, {push: true})
 pushed.patches!.on((patch) => {
   ObserveAll2.applyStorePatch(mirror, patch)       // exists:false means delete path
 })
+ObserveAll2.applyStorePatches(mirror, patches)     // batch variant: apply an array of patches in order
 
 // Batch-shaped dirty data: one event has dirty mask + snapshot for that mask.
 pushed.changedData!.on(({mask, data}) => {
