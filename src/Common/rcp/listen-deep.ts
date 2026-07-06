@@ -26,7 +26,7 @@ type Obj = Record<string, any>;
 type ListenBase<T extends any[]> = ReturnType<typeof funcListenCallbackBase<T>>;
 
 // Надежно достаем типы аргументов из метода addListen
-type InferArgs<T> = T extends { addListen: (cb: (...args: infer R) => void, ...rest: any[]) => any } ? R : never;
+export type InferArgs<T> = T extends { addListen: (cb: (...args: infer R) => void, ...rest: any[]) => any } ? R : never;
 
 // Клиентская проекция merged replay-узла (rpc-server-auto, Feature A): ПОД ТЕМ ЖЕ
 // ключом легаси Listen-поверхность (байт-в-байт plain) плюс replay-провод.
@@ -45,7 +45,7 @@ export type ReplaySocketListen<Z extends any[]> = WithSubHandle<ReturnType<typeo
 }
 // Детекция replay-члена на уровне типов — зеркалит рантайм-бренд (структурно:
 // plain Listen не имеет getSince/keyframe/line, store-Listen — getSince/line).
-type IsReplayMember<V> = V extends { addListen: Function; getSince: Function; keyframe: Function; line: object } ? true : false
+export type IsReplayMember<V> = V extends { addListen: Function; getSince: Function; keyframe: Function; line: object } ? true : false
 
 // Типы для различных вариантов Socket-лиссенеров
 export type DeepSocketListen<T> = {

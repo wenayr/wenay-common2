@@ -6,7 +6,7 @@
 // applyStorePatch и для снапшота, и для дельт. Реконнект перестаёт стоить полного
 // снапшота, когда хватает хвоста журнала.
 
-import {Store, StorePatch, applyStorePatch, createStore, exposeStore} from './store'
+import {Store, StorePatch, StoreDrain, StoreEachCtx, applyStorePatch, createStore, exposeStore} from './store'
 import {UseReplayListen, ReplayListenOptions, ReplayEvent} from '../events/replay-listen'
 import {exposeReplay, replaySubscribe, ReplayRemote, ReplaySubscribeOpts} from '../events/replay-wire'
 import {openHistory, ReplayStorage} from '../events/replay-history'
@@ -82,6 +82,35 @@ export function exposeStoreReplay<T extends object>(store: Store<T>, opts: Store
  */
 export function syncStoreReplay<T extends object>(store: Store<T>, remote: ReplayRemote<[StorePatch]>, opts: ReplaySubscribeOpts = {}) {
     return replaySubscribe<[StorePatch]>(remote, function applyLine(patch) { applyStorePatch(store, patch) }, opts)
+}
+
+/**
+ * Однострочный remote-fold: зеркало по линии → колбэк per ИЗМЕНЁННЫЙ топ-ключ
+ * (createStore + syncStoreReplay + store.each().on одним вызовом). Keyframe на старте
+ * разворачивается по ключам, удаление ключа = (key, undefined), value = store.state[key]
+ * на момент flush. Все ReplaySubscribeOpts едут насквозь (since/policy/staleMs/onError...).
+ * Возврат — композитный off (снимает и подписку each, и wire-подписку) с зеркалом
+ * для прямых чтений (off.store.state.BTCUSDT) и ready/seq/isStale/lastTs провода.
+ */
+export function syncStoreReplayEach<T extends object>(
+    remote: ReplayRemote<[StorePatch]>,
+    cb: (key: string, value: T[keyof T] | undefined, ctx: StoreEachCtx) => void,
+    opts: ReplaySubscribeOpts & {drain?: StoreDrain, initial?: T} = {},
+) {
+    const {drain, initial, ...wireOpts} = opts
+    const store = createStore<T>((initial ?? {}) as T, drain !== undefined ? {drain} : {})
+    // each ДО провода: keyframe первого catch-up обязан развернуться в колбэки
+    const offEach = store.each().on(cb)
+    const sub = syncStoreReplay(store, remote, wireOpts)
+    function off() { offEach(); sub() }
+    return Object.assign(off, {
+        /** Зеркало — для прямых чтений и дополнительных подписок. */
+        store,
+        ready: sub.ready,
+        seq: sub.seq,
+        isStale: sub.isStale,
+        lastTs: sub.lastTs,
+    })
 }
 
 /**

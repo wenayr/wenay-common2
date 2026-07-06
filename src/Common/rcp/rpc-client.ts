@@ -5,6 +5,9 @@ import {resolveLimits, type RpcLimits} from "./rpc-limits";
 import {MyError} from "../../toError/myThrow";
 import {makeOff} from "./rpc-off";
 import { optToCaps, type tCaps, type RpcOpt } from "./rpc-caps";
+// только типы (без рантайм-цикла): replay-члены API проецируются в клиентскую
+// replay-поверхность (line/since/keyframe/frame) — replaySubscribe(client.func.key) без кастов
+import type { IsReplayMember, InferArgs, ReplaySocketListen } from "./listen-deep";
 
 // Общий пул id на (socket × key): два клиента на одном сокете+ключе делят id-пространство,
 // иначе их reqId коллизируют и чужой RESP резолвит оба ожидания.
@@ -59,12 +62,16 @@ export type DeepDataOnly<T> = T extends Function
 // --- 1. ТИПИЗАЦИЯ ДЛЯ ОБЫЧНЫХ ВЫЗОВОВ (БЕЗ PIPE) ---
 export type ClientAPIAll<T> = {
     [K in keyof T as T[K] extends Function ? K : T[K] extends object ? K : never]:
-        T[K] extends (...args: infer A) => infer R
-            // Обычный вызов возвращает ТОЛЬКО Promise с чистыми данными. Никакого продолжения цепочки.
-            ? (...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>>
-            : T[K] extends object
-                ? ClientAPIAll<T[K]>
-                : never;
+        // replay-член (детекция как в listen-deep) → клиентская replay-поверхность,
+        // структурно совместимая с ReplayRemote: replaySubscribe(client.func.key) без кастов
+        IsReplayMember<T[K]> extends true
+            ? ReplaySocketListen<InferArgs<T[K]>>
+            : T[K] extends (...args: infer A) => infer R
+                // Обычный вызов возвращает ТОЛЬКО Promise с чистыми данными. Никакого продолжения цепочки.
+                ? (...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>>
+                : T[K] extends object
+                    ? ClientAPIAll<T[K]>
+                    : never;
 };
 
 type NonFalsy<T> = Exclude<T, false | null | 0 | "" | undefined>;
@@ -75,11 +82,15 @@ export type ClientAPIStrict<T> = {
         : NonFalsy<T[K]> extends object
             ? K
             : never]:
-    NonFalsy<T[K]> extends (...args: infer A) => infer R
-        ? (...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>>
-        : NonFalsy<T[K]> extends object
-            ? ClientAPIStrict<NonFalsy<T[K]>>
-            : never;
+    // replay-член — как в ClientAPIAll; уже спроецированный ReplaySocketListen (auto-путь,
+    // ClientAPIStrict<DeepSocketListen<T>>) сюда не попадает (у него нет getSince) и мапится ниже
+    IsReplayMember<NonFalsy<T[K]>> extends true
+        ? ReplaySocketListen<InferArgs<NonFalsy<T[K]>>>
+        : NonFalsy<T[K]> extends (...args: infer A) => infer R
+            ? (...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>>
+            : NonFalsy<T[K]> extends object
+                ? ClientAPIStrict<NonFalsy<T[K]>>
+                : never;
 };
 
 

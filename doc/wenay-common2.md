@@ -138,6 +138,7 @@ l.ticks.once(v => console.log(v))                         // one event, then aut
 const [tick, ticks] = UseReplayListen<[number]>({history: 1024, current: 'last'})    // after — same facade, same key
 // legacy subscribers unchanged (byte-for-byte). Replay consumers now also get:
 const sub = replaySubscribe(l.ticks, v => {}, {since: saved, onSeq: s => saved = s})  // catch-up + live, no gaps/dups
+const sub2 = replaySubscribe(c.math.func.ticks, v => {})  // replay members project on func/strict directly — no cast needed
 await l.ticks.frame(mySeq)                                // pull at YOUR pace (50ms timer etc.) — server condenses via the line's frame lambda
 // full guide + examples → rpc.md; frame model / lag policies → 🎞️ recipe below and rare docs
 ```
@@ -164,6 +165,8 @@ store.node.path.to.leaf.on((value, ctx) => {}, {current?, drain?, key?}) -> off
 store.node.path.to.leaf.once(cb, opts?) -> off
 store.update(mask, opts?) -> selection                         // typed selected snapshot
 selection.get() · selection.on((snap, ctx)=>{}, opts?) -> off · selection.onEach((value, ctx)=>{}, opts?) -> off
+store.each().on((key, value, ctx) => {}) -> off                // per CHANGED top-level key per drain window; undefined = key deleted;
+  // root replace (mirror keyframe) expands per key. NOT update(true).onEach — that fires ONCE with the whole dict (per selected path)
 store.count() -> number
 
 // network shape: backend exposes snapshots + changed Listen; frontend mirrors selected masks locally
@@ -178,6 +181,10 @@ ObserveAll2.exposeStoreReplay(store, {history? = 1024}) -> { api /* spread into 
   //   lag recovery arrive as a mini-frame (changed paths only), zero config
 ObserveAll2.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?} of api.replay*/, {since?, onSeq?}) -> off
   // off.ready (catch-up done) · off.seq() (save for reconnect: syncStoreReplay(..., {since: prev.seq()}))
+ObserveAll2.syncStoreReplayEach<T>(remote, (key, value, ctx) => {}, opts?) -> off & {store, ready, seq(), isStale(), lastTs()}
+  // one-call remote fold: mirror store + syncStoreReplay + store.each() — callback per CHANGED top-level key
+  //   (keyframe expands per key, undefined = deleted); opts = replaySubscribe opts + {drain?, initial?};
+  //   direct reads via off.store.state; reconnect: {since: prev.seq(), initial: prev.store.snapshot()}
   // lagging/late client NEVER gets a backlog: evicted seq -> ONE fresh keyframe + live
   // freshness is an option, not consumer boilerplate: {staleMs, onStale} flags a silent line / stale keyframe (edge-triggered both ways; 🎞️ in rare docs)
 // Slow-client conflation: recipe section 🎞️ below. Full generic surface (any event line, history/time-travel) -> Replay namespace, 🎞️ in rare docs.

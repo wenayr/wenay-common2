@@ -84,6 +84,12 @@ export type StoreSelectionCtx<T, M> = {
     paths: PropertyKey[][]
 }
 
+export type StoreEachOpts = {
+    /** Reserved: only 1 (top-level keys) is supported today. */
+    depth?: number
+}
+export type StoreEachCtx = {path: PropertyKey[]}
+
 export type Store<T extends object> = {
     readonly state: T
     readonly node: StoreNode<T>
@@ -93,6 +99,9 @@ export type Store<T extends object> = {
     on(cb: (value: T, ctx: StoreCtx<T>) => void, opts?: StoreSubOpts): () => void
     once(cb: (value: T, ctx: StoreCtx<T>) => void, opts?: StoreSubOpts): () => void
     update<M extends StoreMask<T>>(mask: M, opts?: StoreSubOpts): StoreSelection<T, M>
+    // key типизирован string (не keyof T): keyof в контравариантной позиции Listen
+    // сломал бы Store<T> -> Store<any>; symbol-ключи в рантайме проходят как есть
+    each(opts?: StoreEachOpts): ReturnType<typeof funcListenCallbackBase<[key: string, value: T[keyof T] | undefined, ctx: StoreEachCtx]>>
     listen(): ReturnType<typeof listenUpdate>
     listenPaths(): ReturnType<typeof listenUpdatePaths>
     count(): number
@@ -395,6 +404,46 @@ function createPatchesListen<T extends object>(store: Store<T>) {
     })
 }
 
+// Изменённые ТОП-ключи как обычный Listen: (key, value | undefined, {path}).
+// Тонкий слой над listenPaths: движок сам рассыпает root replace (keyframe зеркала)
+// в per-key пути, включая удаления — cold start и reconnect не спец-кейсы.
+// Ключ с НЕизменившимся примитивом при root replace не стреляет (set-трап
+// пропускает Object.is-равные записи) — потребителю и не нужно.
+function createEachListen<T extends object>(store: Store<T>, opts: StoreEachOpts = {}) {
+    if (opts.depth != null && opts.depth != 1) throw new Error("store.each: only depth 1 is supported (reserved option)")
+    return funcListenCallbackBase<[key: string, value: T[keyof T] | undefined, ctx: StoreEachCtx]>((emit) => {
+        // ключи, о которых потребители уже знают — чтобы гипотетический root-путь []
+        // (array-root / будущий движок) мог отдать (key, undefined) за исчезнувшие
+        const known = new Set<PropertyKey>(Reflect.ownKeys(toRaw(store.state)))
+        function emitKey(key: PropertyKey) {
+            const raw: any = toRaw(store.state)
+            const exists = isObj(raw) && key in raw
+            if (exists) known.add(key)
+            else known.delete(key)
+            emit(key as any, exists ? (store.state as any)[key] : undefined, {path: [key]})
+        }
+        const off = store.listenPaths().on(function eachStoreChange(change: StoreChange) {
+            const keys = new Set<PropertyKey>()
+            let root = false
+            for (const path of change.paths) {
+                if (path.length == 0) root = true
+                else keys.add(path[0])
+            }
+            if (root) {
+                for (const key of Reflect.ownKeys(toRaw(store.state))) keys.add(key)
+                for (const key of known) keys.add(key)
+            }
+            for (const key of keys) emitKey(key)
+        })
+        return off
+    }, {
+        event: (type, count, api) => {
+            if (type == "add" && count == 1 && !api.isRun()) api.run()
+            if (type == "remove" && count == 0 && api.isRun()) api.close()
+        },
+    })
+}
+
 function createChangedDataListen<T extends object>(store: Store<T>) {
     return funcListenCallbackBase<[StoreChangedData]>((emit) => {
         const off = store.listenPaths().on((change: StoreChange) => {
@@ -544,6 +593,9 @@ function getNode<T>(store: StoreInternal<any>, path: PropertyKey[]): StoreNode<T
     return proxy as StoreNode<T>
 }
 
+// guardrail-варн onEach-по-корню — один раз на процесс, не спамить
+let warnedRootOnEach = false
+
 function createSelection<T, M>(store: StoreInternal<any>, base: PropertyKey[], mask: M, defaults: StoreSubOpts = {}): StoreSelection<T, M> {
     const fullPaths = maskPaths(mask, base)
     const rootNode = getNode<T>(store, base)
@@ -571,6 +623,12 @@ function createSelection<T, M>(store: StoreInternal<any>, base: PropertyKey[], m
             return off
         },
         onEach(cb, opts = {}) {
+            // частая ловушка: onEach стреляет per ВЫБРАННЫЙ путь, mask true выбирает
+            // сам корень выборки → ОДИН вызов за drain-окно с целым значением
+            if (fullPaths.some(p => p.length == base.length) && !warnedRootOnEach) {
+                warnedRootOnEach = true
+                console.warn("store: update(true).onEach fires ONCE per drain window with the WHOLE value (per selected path, not per key). For per-changed-key delivery use store.each(); for a subset — an explicit key mask.")
+            }
             const o = {...defaults, ...opts}
             const offs = fullPaths.map(p => subscribePath<any>(store, p, cb, o, false))
             return () => { for (const off of offs) off() }
@@ -597,6 +655,7 @@ export function createStore<T extends object>(initial: T, opts: Parameters<typeo
         on: (cb, opts) => getNode<T>(store, []).on(cb, opts),
         once: (cb, opts) => getNode<T>(store, []).once(cb, opts),
         update: (mask, opts) => createSelection<T, any>(store, [], mask, opts),
+        each: (opts?: StoreEachOpts) => createEachListen<T>(store, opts),
         listen: () => listenUpdate(state),
         listenPaths: () => listenUpdatePaths(state),
         count: () => Array.from(store._counts.values()).reduce((a: number, b: number) => a + b, 0),
