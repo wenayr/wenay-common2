@@ -7,7 +7,7 @@
 // снапшота, когда хватает хвоста журнала.
 
 import {Store, StorePatch, applyStorePatch, createStore, exposeStore} from './store'
-import {UseReplayListen, ReplayListenOptions} from '../events/replay-listen'
+import {UseReplayListen, ReplayListenOptions, ReplayEvent} from '../events/replay-listen'
 import {exposeReplay, replaySubscribe, ReplayRemote, ReplaySubscribeOpts} from '../events/replay-wire'
 import {openHistory, ReplayStorage} from '../events/replay-history'
 
@@ -26,11 +26,26 @@ export type StoreReplayOpts = Pick<ReplayListenOptions<[StorePatch]>, 'history' 
  * Патч абсолютен по своему пути, а порядок последних касаний = порядок по seq,
  * поэтому «последний патч каждого пути» даёт то же состояние, что вся линия —
  * включая перекрытия предок/потомок (патч предка несёт всё поддерево целиком).
+ * В новом пути (frame на линии) — внутренняя деталь condensePatchTail ниже.
  */
 export function storePatchKey(patch: StorePatch) {
     // symbol в JSON.stringify стал бы null → коллизии; такой патч не схлопываем
     for (const k of patch.path) if (typeof k == 'symbol') return null
     return JSON.stringify(patch.path)
+}
+
+// Уплотнитель кадра патч-линии (frame-лямбда для UseReplayListen): последний патч
+// каждого точного пути, порядок последних касаний = порядок по seq (delete+re-insert).
+// Несхлопываемый патч (symbol в пути) → честный полный хвост, без частичной магии.
+function condensePatchTail(tail: ReplayEvent<[StorePatch]>[]) {
+    const held = new Map<string, ReplayEvent<[StorePatch]>>()
+    for (const ev of tail) {
+        const k = storePatchKey(ev.event[0])
+        if (k == null) return tail
+        held.delete(k)
+        held.set(k, ev)
+    }
+    return [...held.values()]
 }
 
 /**
@@ -41,6 +56,9 @@ export function storePatchKey(patch: StorePatch) {
 export function exposeStoreReplay<T extends object>(store: Store<T>, opts: StoreReplayOpts = {}) {
     const [emitPatch, lineApi] = UseReplayListen<[StorePatch]>({
         current: () => [{path: [], exists: true, value: store.snapshot()}],
+        // store-слой знает семантику своих событий → объявляет уплотнитель кадра сам:
+        // мини-кадрик (последний патч на путь) вместо полного keyframe, ноль конфигурации
+        frame: condensePatchTail,
         history: opts.getSince ? undefined : (opts.history ?? 1024),
         getSince: opts.getSince,
         onJournal: opts.onJournal,

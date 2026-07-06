@@ -46,13 +46,18 @@ export type ConflateOpts<Z extends any[] = any[]> = {
     /** Период опроса pending() в режиме conflation, мс (default 25) — восстановление и при тихой линии. */
     pollMs?: number
     /**
+     * @deprecated Уплотнение переехало на линию: объявите `frame` в опциях
+     * UseReplayListen/withReplayListen (там же, где current) — его подхватят и эти ворота
+     * (recovery через replay.frame), и авто-путь rpc-server-auto, и клиентский catch-up.
+     * keyOf-механика (held-карта) остаётся рабочей для старых вызовов.
+     *
      * Схлопывание по ключу: во время conflation хранится ПОСЛЕДНИЙ конверт каждого
      * ключа, восстановление = хвост этих конвертов вместо полного keyframe.
      * Событие обязано быть абсолютным по своему ключу (store-патч: storePatchKey).
      * null/undefined = событие не схлопывается → эпизод деградирует до keyframe.
      */
     keyOf?: (...event: Z) => PropertyKey | null | undefined
-    /** Потолок карты ключей эпизода (default 1024): больше → деградация до keyframe. */
+    /** @deprecated Вместе с keyOf. Потолок карты ключей эпизода (default 1024): больше → деградация до keyframe. */
     maxKeys?: number
 }
 
@@ -152,6 +157,7 @@ export function conflateReplay<T>(replay: ListenReplayApi<T>, opts: ConflateOpts
             line: gate,
             since: (seq: number) => replay.getSince(seq) ?? null,
             keyframe: () => replay.keyframe() ?? null,
+            frame: (seq: number, hint?: unknown) => replay.frame(seq, hint),
         },
         close,
         /** Интроспекция для метрик/тестов. */

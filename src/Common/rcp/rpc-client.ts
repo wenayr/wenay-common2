@@ -48,8 +48,10 @@ type UnwrapPromise<T> = T extends Promise<infer R> ? R : T;
 
 export type DeepDataOnly<T> = T extends Function
     ? never
-    : T extends Array<infer U>
-        ? Array<DeepDataOnly<U>>
+    : T extends readonly any[]
+        // mapped tuple: кортежи сохраняются ([string, number] не деградирует в (string|number)[] —
+        // важно для replay-конвертов {seq, ts, event: Z}); обычные массивы мапятся как раньше
+        ? { [I in keyof T]: DeepDataOnly<T[I]> }
         : T extends object
             ? { [K in keyof T as T[K] extends Function ? never : K]: DeepDataOnly<T[K]> }
             : T;

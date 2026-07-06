@@ -147,6 +147,12 @@ toError = { ... }                                          // build/normalize My
 ```
 // servers
 createRpcServerAuto(opts)                           // canonical: nested object -> typed client proxy (auto Listen handling)
+  // replay-transparent exposure: facade members that are replay listens (UseReplayListen — brand-detected,
+  //   opts.replay: false|'auto'|'force') are exposed with BOTH surfaces under the SAME key: the legacy plain-Listen
+  //   path stays byte-for-byte (Pkt.MAP only grows additively), plus line/frameLine/since/keyframe/frame — so
+  //   upgrading UseListen -> UseReplayListen is a declaration-site-only change; replaySubscribe(client.func.key) works as is.
+  //   opts.replayOpts {pending?, highWater?, lowWater?, pollMs?} arms the per-connection lag gate on frameLine
+  //   (consumer picks policy 'queue'|'frame' at subscribe time); the replay `line` is never throttled (no seq holes).
 createRpcServer(opts)                               // lower-level core
 createRpcServerAuto2(opts)                          // + legacy/v2 protocol auto-detection (createRpcServerAutoWithProtocolDetection)
 createRpcServerInProc(...)                          // in-process fast path (no socket)
@@ -163,6 +169,8 @@ listenSocket(parent, opts?) · listenSocketFirst · listenSocketAll · listenSoc
 deepListenFirst(obj, opts?) · deepListenAll · deepListenSmart
 RPC Listen surface on client: stream.on(cb)->off · stream.once(cb)->off · stream.close()
   // typed projection: client.func as unknown as DeepSocketListen<ServerFacade> (usually hidden behind a local webListen(client) helper).
+  //   replay members project as ReplaySocketListen<Z> automatically (legacy surface + line/frameLine/since/keyframe/frame,
+  //   tuples preserved end-to-end) — client.func.key passes to replaySubscribe as is, no casts.
   // off is callable + thenable: off() unsubscribes; await off waits for stream end. Legacy .callback/.removeCallback/.unsubscribe exist for old code only.
   // *First/*All/*Smart differ only in callback arity: first arg / all args / single-vs-tuple smart.
 matchKeys(a,b) · matchKeysList(a, keys) · deepMapByKeys · deepMapByKeysList
@@ -330,8 +338,26 @@ npx tsx observable2/store-mirror.example.ts
 > `import { ... } from "wenay-common2/replay"`; the store pair lives in `ObserveAll2`.
 > Design: `REPLAY-PLAN.md`; oracles: `replay/` (import the canonical `src/` modules).
 ```
-withReplayListen(base, {current?, history?, getSince?, onJournal?, now?, staleMs?, onStale?}) · UseReplayListen   // layer A: journal {seq, ts, event}; on(cb, {since, onSeq}); head()/getSince()/keyframe()/hasKeyframe · isStale()/lastTs()
-exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?, staleMs?, onStale?, skewMs?, now?}) -> off   // wire pair over the EXISTING rpc: line = plain Listen, since/keyframe = plain methods
+withReplayListen(base, {current?, frame?, history?, getSince?, onJournal?, now?, staleMs?, onStale?}) · UseReplayListen   // layer A: journal {seq, ts, event}; on(cb, {since, onSeq}); head()/getSince()/keyframe()/hasKeyframe · isStale()/lastTs()
+  // FRAME MODEL — one method, two sources, three triggers. frame(sinceSeq, hint?) -> envelopes bringing a consumer
+  //   from sinceSeq to head, as compact as the line allows; default = exact journal tail ?? keyframe.
+  //   Source 1 (keyframe): `current` — full state SAMPLED from the owner of truth (never computed from deltas);
+  //     sugar `current: 'last'` — single-entity lines: keyframe = last journaled envelope, no hand-kept state.
+  //   Source 2 (mini-frame): `frame` lambda — gets the raw tail, returns a state-equivalent compact
+  //     (last-per-entity, gap aggregate...); cost ~ touched entities, wins over keyframe while the journal covers.
+  //   Line classes FOLLOW from declared lambdas (no mode flags): current+frame = condensable; current only =
+  //     snapshot-recoverable; neither = sacred queue — full tail only, evicted -> frame() THROWS (loud, never silent loss).
+  //   Triggers: reconnect (`since`), client pull (own timer — replaces any server-side interval mode), server gate drain.
+  //   The transport sees ONLY seq; entity keys/skip rules live in producer lambdas (hint = opaque per-subscriber pass-through).
+exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?, staleMs?, onStale?, skewMs?, now?, policy?, hint?}) -> off   // wire pair over the EXISTING rpc: line = plain Listen, since/keyframe/frame = plain methods
+  // NORMAL PATH: createRpcServerAuto exposes replay listens automatically (see rpc section) — exposeReplay stays
+  //   as the manual/custom-transport path. replaySubscribe prefers `frame` when the server has it (one round trip,
+  //   server picks tail/mini-frame/keyframe; sacred throw -> onError), falls back to since/keyframe on old servers.
+  //   policy: 'queue' (default — socket buffers everything, nothing skipped) | 'frame' (subscribes frameLine when
+  //   present: on lag the server drops and recovers via frame(lastSent) — mini-frame, no backlog). A non-envelope
+  //   on the line (RPC_STOP — e.g. the gate's loud sacred failure) surfaces via onError + off, never silence.
+  //   hint reaches the frame lambda on catch-up and on every explicit frame(seq, hint) call (pull); the push-gate's
+  //   drain recovery uses the line's DEFAULT condensation — client-specific rules/pace = the pull path.
   // off.ready (catch-up done) · off.seq() (reconnect point) · off.isStale()/off.lastTs(); reconnect = call again with {since: prev.seq()}
   // DELIVERY CONTRACT (guaranteed, not best-effort): the subscriber's cb sees ONE uniform stream —
   //   first delivery = the snapshot (keyframe as an event of the SAME type; store: root patch),
@@ -357,8 +383,10 @@ conflateReplay(replay, {pending, highWater, lowWater?, pollMs?, keyOf?, maxKeys?
   // build per connection where the rpc server is built; api spreads in place of exposeReplay(...); close() on disconnect
   // one-call form: exposeReplay(replay, {conflate: opts}) -> {line, since, keyframe, close, stats} — same gate, wiring collapsed;
   //   destructure aside (const {close, stats, ...api} = ...) — close/stats must NOT reach the rpc object (they'd become remotely callable)
-  // keyOf (key-level coalescing): while lagged keep the LAST envelope per key, drain -> tail of those (ascending seq) instead of a full keyframe;
+  // keyOf (@deprecated — declare `frame` on the LINE instead; held-map path kept working for old calls):
+  //   while lagged keep the LAST envelope per key, drain -> tail of those (ascending seq) instead of a full keyframe;
   //   events must be ABSOLUTE per key (store patches are — use storePatchKey from ObserveAll2); keyOf -> null or over maxKeys (1024) -> degrade to keyframe recovery
+  //   exposeStoreReplay declares its condensing frame automatically (last patch per exact path) — zero config for stores
 ReplayStorage = {putEvent, putKeyframe, getKeyframe({seq?|ts?}?), getEvents(from, to)}   // layer C: archive behind 4 lambdas (file/DB/anything); createMemoryReplayStorage(caps?) = reference impl
 archiveReplay(replay, {storage, everyEvents? = 64, everyMs?}) -> {close, stats}          // event log + keyframe cadence (every N events OR T ms of line-ts, whichever first; frames only ON events)
 openHistory(storage, live?) -> {at({seq?|ts?}?), subscribe(cb, {since?|ts?, onSeq?}) -> off}   // seek + playback, SAME subscriber interface; with live: archive -> live journal -> live handover

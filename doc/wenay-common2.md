@@ -101,7 +101,12 @@ const:  H1_S D1_S W1_S · M1_MS H1_MS D1_MS W1_MS
 ## 🌐 rpc (brief) — transport is ALWAYS caller-supplied (`{emit,on}`); there is NO url / built-in socket
 ```
 // SERVER: `object` is the impl tree, `socket` is a {emit,on} transport adapter
-createRpcServerAuto({ socket: {emit, on}, object, socketKey: string, auth?, limits?, maxPerListen?, throttle?, opt? }) -> { api, ... }
+createRpcServerAuto({ socket: {emit, on}, object, socketKey: string, auth?, limits?, maxPerListen?, throttle?, opt?, replay?, replayOpts? }) -> { api, ... }
+  // replay: false|'auto' (default)|'force' — facade members that are replay lines (UseReplayListen) are exposed
+  //   with BOTH surfaces under the SAME key: legacy plain-Listen path byte-for-byte + line/frameLine/since/keyframe/frame.
+  //   Upgrading UseListen -> UseReplayListen is a declaration-site-only change; the facade and clients don't move.
+  // replayOpts: {pending?, highWater?, lowWater?, pollMs?} — per-connection lag gate for 'frame'-policy subscribers
+  //   (pending defaults to socket.io writeBuffer; gates close on disconnect automatically). Replay lines are never throttled.
 createRpcServer(opts)        // lower-level core (same { socket, object, socketKey })
 noStrict(obj)                // mark a dynamic subtree (no schema)
 endCallback(fn)              // mark an RPC stream-callback's end   (alias: rpcEndCallback)
@@ -127,7 +132,14 @@ const l = c.math.func as unknown as DeepSocketListen<Api>  // typed Listen proje
 const off = l.ticks.on(v => console.log(v))                // canonical stream subscribe; off is callable and awaitable
 off()                                                     // unsubscribe; .callback/.removeCallback are legacy compat, don't teach them
 l.ticks.once(v => console.log(v))                         // one event, then auto-off
-// full guide + examples → rpc.md
+
+// replay upgrade — ONE WORD at the declaration site, everything below follows automatically:
+// const [tick, ticks] = UseListen<[number]>()                                       // before
+const [tick, ticks] = UseReplayListen<[number]>({history: 1024, current: 'last'})    // after — same facade, same key
+// legacy subscribers unchanged (byte-for-byte). Replay consumers now also get:
+const sub = replaySubscribe(l.ticks, v => {}, {since: saved, onSeq: s => saved = s})  // catch-up + live, no gaps/dups
+await l.ticks.frame(mySeq)                                // pull at YOUR pace (50ms timer etc.) — server condenses via the line's frame lambda
+// full guide + examples → rpc.md; frame model / lag policies → 🎞️ recipe below and rare docs
 ```
 
 ## 🔁 ObserveAll2 — reactive state + store/mirror API
@@ -162,7 +174,9 @@ ObserveAll2.createStoreMirror(remote, initial, opts?) -> store & { sync(mask, op
 
 // Sequenced sync (replay line): seq-numbered patch stream — keyframe catch-up, reconnect by seq (tail, not snapshot)
 ObserveAll2.exposeStoreReplay(store, {history? = 1024}) -> { api /* spread into the RPC server object */, replay, close }
-ObserveAll2.syncStoreReplay(mirror, remote /*{line, since, keyframe} of api.replay*/, {since?, onSeq?}) -> off
+  // the patch line declares its condensing `frame` itself (last patch per exact path) — reconnect tails and
+  //   lag recovery arrive as a mini-frame (changed paths only), zero config
+ObserveAll2.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?} of api.replay*/, {since?, onSeq?}) -> off
   // off.ready (catch-up done) · off.seq() (save for reconnect: syncStoreReplay(..., {since: prev.seq()}))
   // lagging/late client NEVER gets a backlog: evicted seq -> ONE fresh keyframe + live
   // freshness is an option, not consumer boilerplate: {staleMs, onStale} flags a silent line / stale keyframe (edge-triggered both ways; 🎞️ in rare docs)
@@ -189,60 +203,68 @@ stop()
 ```
 Runnable example: `npx tsx observable2/store-mirror.example.ts`.
 
-## 🎞️ Fast ticks vs slow client — replay + per-connection conflation (recipe)
+## 🎞️ Fast ticks vs slow client — replay lines + server-owned lag gate (recipe)
 > The problem: the producer emits faster than a bad link drains. Naive streaming grows an unbounded
-> outgoing queue per slow client. The replay stack solves it: a seq-numbered line + keyframe, plus a
-> per-connection gate that **drops** deltas while this client's outgoing buffer is over a threshold
-> (nothing is ever queued for a laggard) and, once the buffer drains, recovers with ONE envelope —
-> a fresh keyframe, or (with `keyOf`) a short tail of last-values-per-key. The client code has no
-> conflation logic at all: recovery arrives on the same line and seq dedup cuts the overlap.
+> outgoing queue per slow client. The replay stack solves it with ONE mental model — the FRAME:
+> `frame(sinceSeq, hint?)` on the line returns envelopes bringing a consumer from `sinceSeq` to now,
+> as compact as the line allows (exact tail -> condensed mini-frame -> keyframe fallback). The same
+> method serves reconnect (`since`), client pull (own pace) and lag recovery. The transport sees only
+> `seq`; ALL event semantics live in two lambdas declared on the line: `current` (keyframe = pointer
+> to truth) and `frame` (condenser — may honor a client-supplied `hint`, see below).
 ```ts
 import { ObserveAll2, Replay } from 'wenay-common2'
 
-// ---- backend, ONCE per store: hot seq-numbered patch line (journal) ----
+// ---- producer: declare what the line HAS (its class follows — no mode flags) ----
+const [emitQuote, quotes] = Replay.UseReplayListen<[string, number]>({
+    history: 4096,
+    frame: (tail, hint) => lastPerSymbol(tail, hint),  // mini-frame; hint = client's pick of the condensation rule
+})   // current+frame = condensable · current only = keyframe recovery · neither = sacred queue (never skipped, loud on eviction)
+// store lines: exposeStoreReplay already declares current + frame (last patch per path) — zero config
 const store = ObserveAll2.createStore<World>(initial, { drain: 'micro' })
 const exposed = ObserveAll2.exposeStoreReplay(store, { history: 1024 })
 
-// ---- per CONNECTION, where the rpc server is built: a personal gate ----
+// ---- per CONNECTION: the rpc server owns the gate; the facade does NOT change ----
 io.on('connection', socket => {
-    const gated = Replay.conflateReplay(exposed.replay, {
-        pending: () => socket.conn.writeBuffer.length,   // THIS client's outgoing buffer (ws: bufferedAmount)
-        highWater: 64,             // pending() above this -> deltas STOP for this client (dropped, never queued)
-        lowWater: 8,               // recover only after a real drain — hysteresis (default 0)
-        keyOf: ObserveAll2.storePatchKey,   // optional: coalesce per path -> tail of last values instead of a full keyframe
-    })
-    socket.on('disconnect', () => gated.close())         // REQUIRED: stops the gate's poll timer + frees the key map
-    // one-call form: const {close, stats, ...api} = Replay.exposeReplay(exposed.replay, {conflate: {...}})
-    //   -> use `api` as the facade below; keep close/stats OUT of the rpc object
+    const [disconnect, disconnectListen] = UseListen<[]>()
+    socket.on('disconnect', () => disconnect())
     createRpcServerAuto({
         socket: { emit: (k, d) => socket.emit(k, d), on: (k, cb) => socket.on(k, cb) },
         socketKey: 'world',
-        object: { ...exposed.api, replay: gated.api },   // gated.api REPLACES the shared replay facade
+        object: { ...exposed.api, quotes },       // replay lines auto-exposed: both surfaces, same key
+        disconnectListen,                          // gates close on disconnect automatically
+        replayOpts: { highWater: 64, lowWater: 8 },// arms frameLine; pending defaults to socket.io writeBuffer
     })
 })
 
-// ---- client: just a mirror — nothing conflation-specific here ----
-const mirror = ObserveAll2.createStore<World>(empty)
-const sub = ObserveAll2.syncStoreReplay(mirror, remote)  // remote = deep.replay: {line, since, keyframe}
-await sub.ready                                          // keyframe catch-up done, live from here
-// delivery contract: cb's FIRST delivery is always the snapshot (same event type — store: root patch),
-// then only strictly-newer events, seq-ascending, deduped; ticks racing the keyframe can never arrive first
-// reconnect: syncStoreReplay(mirror, remote, {since: prev.seq()}) -> journal tail, not a full snapshot
+// ---- client: picks its LAG POLICY per subscription; no conflation logic anywhere ----
+const sub = Replay.replaySubscribe(deep.quotes, cb, {since: saved, policy: 'frame'}) // server may skip; drain -> mini-frame
+const sub2 = Replay.replaySubscribe(deep.quotes, cb2, {since: saved})                // 'queue' (default): nothing ever skipped
+// own pace (e.g. 50ms skips + condensation): pull on YOUR timer — hint picks the rule, server condenses:
+//   every(50, async () => { for (const ev of await deep.quotes.frame(mySeq, hint)) apply(ev); })
+// store mirror: ObserveAll2.syncStoreReplay(mirror, deep.replay, {since: prev.seq()}) — same contract
+// delivery contract: FIRST delivery = snapshot/tail start (same event type), then strictly-newer,
+// seq-ascending, deduped; reconnect via {since} = mini-frame/tail, not a full snapshot
 ```
 Rules that make it correct (violating any of these silently breaks convergence):
-- **A keyframe source is mandatory.** `exposeStoreReplay` provides it (root patch = snapshot); a bare
-  `UseReplayListen` line needs `current()` — `conflateReplay` throws at construction without one.
-- **With `keyOf`, every event must be ABSOLUTE for its key** (fully define that key's state). Store
-  patches are — use `storePatchKey`. Relative/incremental events must NOT be coalesced (return `null`).
-- **`pending()` and the watermarks share units** (bytes, packets, frames — anything, but the same).
-- **One gate per client per line, never shared**; `close()` on disconnect, always.
-- Gate drops never hole the journal — they are per-client. Reconnect via `{since}` still gets every
-  patch the gate dropped; only an evicted `history` window degrades reconnect to one fresh keyframe.
-- Unkeyable event or > `maxKeys` (1024) distinct keys in one episode -> degrades to keyframe recovery
-  (still correct, just heavier); memory stays bounded by keys, not by event rate.
+- **The line declares its recovery sources.** `current` (keyframe: SAMPLED from truth, never computed
+  from deltas; `'last'` = last envelope for single-entity lines) and/or `frame` (condenser). A line
+  with neither is a sacred queue: full tails only, evicted journal -> `frame()` THROWS (loud) — a
+  lagging `'frame'`-policy subscriber gets a stream end, never silent loss.
+- **A `frame` result must be state-equivalent to the tail it replaces** (per the line's own semantics).
+  "Can't condense THIS tail" is legal and simple: return the tail as-is. Refuse-loudly is `throw`.
+  Multiple condensation standards live INSIDE the lambda, dispatched by the client-supplied `hint`
+  (opaque to the transport): `frame(tail, hint)`.
+- **Events must be ABSOLUTE per their entity** for last-per-entity condensing (store patches are).
+- Gate drops never hole the journal — it is written BEFORE any gate. Reconnect via `{since}` still
+  gets everything; only an evicted `history` window degrades to keyframe (visible as a seq jump).
+- `pending()` and the watermarks share units (bytes, packets, frames — anything, but the same).
 
-Wire-level proof/oracles: `npx ts-node replay/conflate-socket.test.ts` (real Socket.IO: keyOf tails,
-maxKeys degradation, two clients on one line, reconnect mid-episode), `replay/conflate.test.ts`,
+Manual path (pre-rev2, still works, `keyOf` @deprecated): build the gate yourself with
+`Replay.conflateReplay(exposed.replay, {pending, highWater, keyOf})` and spread `gated.api` into the
+facade — details in rare docs. New code should declare `frame` on the line instead.
+
+Wire-level proof/oracles: `npx ts-node replay/rpc-auto.test.ts` (real Socket.IO: auto-exposure, legacy
+parity, frame equivalence, gate lag sim), plus `replay/conflate-socket.test.ts`, `replay/conflate.test.ts`,
 `replay/coalesce.test.ts`. Full generic surface (history/time-travel, archive) → 🎞️ in rare docs.
 
 

@@ -1,6 +1,7 @@
 // listen-deep.ts
 
 import { funcListenCallbackBase, type ListenOn } from "../events/Listen";
+import type { ReplayEvent } from "../events/replay-listen";
 import { listenSocket, listenSocketFirst, listenSocketAll, listenSocketSmart, type tSubHandle } from "./listen-socket";
 
 // Клиентская проекция результата listenSocket: on(fn) отдаёт ВЫЗЫВАЕМЫЙ
@@ -27,16 +28,37 @@ type ListenBase<T extends any[]> = ReturnType<typeof funcListenCallbackBase<T>>;
 // Надежно достаем типы аргументов из метода addListen
 type InferArgs<T> = T extends { addListen: (cb: (...args: infer R) => void, ...rest: any[]) => any } ? R : never;
 
+// Клиентская проекция merged replay-узла (rpc-server-auto, Feature A): ПОД ТЕМ ЖЕ
+// ключом легаси Listen-поверхность (байт-в-байт plain) плюс replay-провод.
+// Структурно совместим с ReplayRemote — deep.key отдаётся в replaySubscribe как есть.
+export type ReplaySocketListen<Z extends any[]> = WithSubHandle<ReturnType<typeof listenSocket<Z>>> & {
+    /** Линия конвертов {seq, ts, event} — live-часть replay-клиента (политика 'queue'). */
+    line: WithSubHandle<ReturnType<typeof listenSocket<[ReplayEvent<Z>]>>>
+    /** Линия политики 'frame': на лаге сервер вправе пропускать, восстанавливая кадром. */
+    frameLine: WithSubHandle<ReturnType<typeof listenSocket<[ReplayEvent<Z>]>>>
+    /** Хвост журнала после seq. null = вытеснено. */
+    since: (seq: number) => Promise<ReplayEvent<Z>[] | null>
+    /** Свежий keyframe. null = current-провайдер не задан. */
+    keyframe: () => Promise<ReplayEvent<Z> | null>
+    /** Кадр: catch-up одним вызовом (хвост/мини-кадрик/keyframe — выбирает линия). */
+    frame: (seq: number, hint?: unknown) => Promise<ReplayEvent<Z>[]>
+}
+// Детекция replay-члена на уровне типов — зеркалит рантайм-бренд (структурно:
+// plain Listen не имеет getSince/keyframe/line, store-Listen — getSince/line).
+type IsReplayMember<V> = V extends { addListen: Function; getSince: Function; keyframe: Function; line: object } ? true : false
+
 // Типы для различных вариантов Socket-лиссенеров
 export type DeepSocketListen<T> = {
-    [K in keyof T]: T[K] extends { addListen: Function }
+    [K in keyof T]: IsReplayMember<T[K]> extends true
+        ? ReplaySocketListen<InferArgs<T[K]>>
+        : T[K] extends { addListen: Function }
         ? WithSubHandle<ReturnType<typeof listenSocket<InferArgs<T[K]>>>>
         : T[K] extends ListenOn<infer Z>   // голый on (брендирован) → та же подписка {on, once, close, ...}
         ? WithSubHandle<ReturnType<typeof listenSocket<Z>>>
         : T[K] extends (...a: any[]) => any ? T[K]
         : T[K] extends Promise<any> ? T[K] // экземпляры Promise проходят как есть (typeof Promise ловил только конструктор)
         : T[K] extends typeof Promise ? T[K]
-        : T[K] extends object ? DeepSocketListen<T[K]> 
+        : T[K] extends object ? DeepSocketListen<T[K]>
         : T[K];
 };
 
@@ -71,7 +93,9 @@ export type DeepSocketListenAll<T> = {
 //         : T[K];
 // };
 export type DeepSocketListenSmart<T> = {
-    [K in keyof T]: NonNullable<T[K]> extends { addListen: Function }
+    [K in keyof T]: IsReplayMember<NonNullable<T[K]>> extends true
+        ? ReplaySocketListen<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null>
+        : NonNullable<T[K]> extends { addListen: Function }
         ? ReturnType<typeof listenSocketSmart<InferArgs<NonNullable<T[K]>>>> | Extract<T[K], undefined | null>
         : NonNullable<T[K]> extends ListenOn<infer Z> ? ReturnType<typeof listenSocketSmart<Z>>
         : NonNullable<T[K]> extends (...a: any[]) => any ? T[K]

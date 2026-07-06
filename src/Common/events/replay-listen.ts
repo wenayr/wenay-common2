@@ -25,6 +25,15 @@ import {
 type key = string | symbol
 type cbClose = () => void
 
+// Бренд replay-линии (Symbol.for — переживает дубли модуля src/dist). Нужен проводу:
+// replay-api структурно проходит isListenCallback, поэтому автодетекция в rpc-server-auto
+// обязана проверять бренд, а не форму. Читать через hasOwnProperty (конвенция rpc-гуарда).
+export const IS_REPLAY_LISTEN = Symbol.for('isReplayListen')
+/** Является ли значение replay-линией (бренд, не структурный снифф). */
+export function isReplayListen(obj: any): obj is ListenReplayApi<any> {
+    return !!obj && typeof obj == 'object' && Object.prototype.hasOwnProperty.call(obj, IS_REPLAY_LISTEN)
+}
+
 /** Единица журнала: seq — монотонная координата, ts — атрибут для людей. */
 export type ReplayEvent<Z extends any[] = any[]> = { seq: number, ts: number, event: Z }
 
@@ -32,8 +41,19 @@ export type ReplayEvent<Z extends any[] = any[]> = { seq: number, ts: number, ev
 export type StaleInfo = {stale: boolean, lastTs: number, age: number}
 
 export type ReplayListenOptions<Z extends any[]> = {
-    /** Поставщик keyframe (полное состояние как событие того же типа). Нужен для fallback и {current}. */
-    current?: ListenCurrentProvider<Z>
+    /**
+     * Поставщик keyframe (полное состояние как событие того же типа). Нужен для fallback и {current}.
+     * `'last'` — сахар для одно-сущностных линий: keyframe = последнее журнальное событие
+     * (последний тик и есть полное состояние); продьюсер не хранит его руками.
+     */
+    current?: ListenCurrentProvider<Z> | 'last'
+    /**
+     * Уплотнитель кадра (accumulation mini-frame): получает точный хвост журнала после seq,
+     * возвращает состояние-эквивалентный компакт (последнее-на-сущность, агрегат дыры и т.п.).
+     * Семантику события знает только продьюсер — транспорт этих лямбд не видит.
+     * hint — сквозной opaque от подписчика (произвольные правила скипа), провод не заглядывает.
+     */
+    frame?: (tail: ReplayEvent<Z>[], hint?: unknown) => ReplayEvent<Z>[]
     /** Внутренний журнал: кольцо на N последних событий. */
     history?: number
     /**
@@ -75,7 +95,12 @@ export type ListenOnReplay<Z extends any[] = any[]> =
 
 export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOptions<NormalizeTuple<T>> = {}) {
     type Z = NormalizeTuple<T>
-    const {current, history = 0, getSince, onJournal, now = Date.now, staleMs, onStale} = options
+    const {current: currentOpt, frame: condense, history = 0, getSince, onJournal, now = Date.now, staleMs, onStale} = options
+    // 'last' — keyframe из последнего журнального события: одно-сущностная линия,
+    // последний тик = полное состояние. lastEv пишется в нумерующем emit ниже.
+    let lastEv: ReplayEvent<Z> | undefined
+    const current: ListenCurrentProvider<Z> | undefined =
+        currentOpt == 'last' ? () => lastEv?.event : currentOpt
 
     // === журнал ===
     let head = 0
@@ -145,6 +170,7 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
         func: function emitJournaled(...e: Z) {
             const ev: ReplayEvent<Z> = {seq: ++head, ts: now(), event: e}
             if (history > 0) ring[(ev.seq - 1) % history] = ev
+            if (currentOpt == 'last') lastEv = ev
             onJournal?.(ev)
             touchStale(ev.ts)  // fresh-грань ПЕРЕД fan-out: подписчик видит «линия ожила», потом событие
             // линия ПЕРЕД локальным fan-out: бросок локального cb не оставит провод без события
@@ -171,6 +197,21 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
         keyframe: () => {
             const m = current?.()
             return m ? {seq: head, ts: now(), event: m} as ReplayEvent<Z> : undefined
+        },
+        /**
+         * Кадр: конверты, доводящие потребителя с sinceSeq до head, настолько компактно,
+         * насколько линия умеет. Единственный метод для трёх триггеров: reconnect (since),
+         * клиентский pull (свой темп) и осушение серверных ворот после лага.
+         * Дефолт: точный хвост журнала (через уплотнитель, если объявлен) ?? keyframe.
+         * Священная линия (ни frame, ни current) с вытесненным журналом — ГРОМКИЙ отказ:
+         * молча выдумывать нечего, потеря событий на такой линии запрещена.
+         */
+        frame: function frameSince(sinceSeq: number, hint?: unknown) {
+            const tail = journalSince(sinceSeq)
+            if (tail) return condense ? condense(tail, hint) : tail
+            const m = current?.()
+            if (m) return [{seq: head, ts: now(), event: m} as ReplayEvent<Z>]
+            throw new Error(`replay frame(${sinceSeq}): journal evicted and no keyframe (sacred line)`)
         },
         on: ((cb: Listener<Z>, {cbClose, key, current: cur, since, onSeq}: ReplayOnOptions<Z> = {}) => {
             if (since == null) {
@@ -237,6 +278,8 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
         // Спред «сфотографировал» бы геттер base.getAllKeys — восстанавливаем живой.
         get getAllKeys(): key[] { return base.getAllKeys },
     }
+    // бренд для провода: автодетекция в rpc-server-auto — по нему, не по форме
+    Object.defineProperty(api, IS_REPLAY_LISTEN, {value: true})
     registerListenOn(api.on, api)
     return api
 }
@@ -246,10 +289,10 @@ export type ReplayListenUseOptions<T> = ListenOptions<T> & ReplayListenOptions<N
 
 /** [emit, listen]: emit нумерует и журналирует (идёт через декоратор, не мимо). */
 export function UseReplayListen<T>(options: ReplayListenUseOptions<T> = {}) {
-    const {current, history, getSince, onJournal, now, staleMs, onStale, ...listenOptions} = options
+    const {current, frame, history, getSince, onJournal, now, staleMs, onStale, ...listenOptions} = options
     let t: ((...a: NormalizeTuple<T>) => void)
     const base = funcListenCallbackBase<T>((e) => { t = e }, {fast: true, ...listenOptions})
-    const listen = withReplayListen<T>(base, {current, history, getSince, onJournal, now, staleMs, onStale})
+    const listen = withReplayListen<T>(base, {current, frame, history, getSince, onJournal, now, staleMs, onStale})
     base.run()
     t = listen.func  // ВАЖНО: сквозь декоратор — иначе события мимо журнала
     return [t!, listen] as const

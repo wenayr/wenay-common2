@@ -24,6 +24,7 @@ export type ReplayExpose<T> = {
     line: ListenReplayApi<T>['line']
     since: (seq: number) => ReplayEvent<NormalizeTuple<T>>[] | null
     keyframe: () => ReplayEvent<NormalizeTuple<T>> | null
+    frame: ListenReplayApi<T>['frame']
 }
 
 function exposeReplayPlain<T>(replay: ListenReplayApi<T>): ReplayExpose<T> {
@@ -33,6 +34,9 @@ function exposeReplayPlain<T>(replay: ListenReplayApi<T>): ReplayExpose<T> {
         since: (seq: number) => replay.getSince(seq) ?? null,
         /** Свежий keyframe + его seq. null = current-провайдер не задан. */
         keyframe: () => replay.keyframe() ?? null,
+        /** Кадр (см. replay-listen): компактный catch-up одним вызовом. Бросок (священная
+         *  линия + вытеснение) едет клиенту rejected promise — громко by design. */
+        frame: (seq: number, hint?: unknown) => replay.frame(seq, hint),
     }
 }
 
@@ -62,6 +66,10 @@ export type ReplayRemote<Z extends any[] = any[]> = {
     line: {on: (cb: (ev: ReplayEvent<Z>) => void) => any}
     since: (seq: number) => Promise<ReplayEvent<Z>[] | null | undefined> | ReplayEvent<Z>[] | null | undefined
     keyframe: () => Promise<ReplayEvent<Z> | null | undefined> | ReplayEvent<Z> | null | undefined
+    /** (additive) Кадр: catch-up одним вызовом; предпочитается перед since/keyframe, когда сервер его даёт. */
+    frame?: (seq: number, hint?: unknown) => Promise<ReplayEvent<Z>[] | null | undefined> | ReplayEvent<Z>[] | null | undefined
+    /** (additive) Push-линия политики 'frame': на лаге сервер может пропускать, восстанавливая кадром. */
+    frameLine?: {on: (cb: (ev: ReplayEvent<Z>) => void) => any}
 }
 
 export type ReplaySubscribeOpts = {
@@ -81,6 +89,14 @@ export type ReplaySubscribeOpts = {
     skewMs?: number
     /** Локальные часы (по умолчанию Date.now) — подменяемы в тестах. */
     now?: () => number
+    /**
+     * Политика лага — выбор ПОТРЕБИТЕЛЯ: 'queue' (default, сегодняшнее поведение —
+     * сокет буферизует всё, ничего не пропускается) | 'frame' (сервер вправе пропустить
+     * и восстановить кадром — подписка идёт на frameLine, если сервер её даёт).
+     */
+    policy?: 'queue' | 'frame'
+    /** Opaque-подсказка frame-лямбде продьюсера (произвольные правила скипа). Провод не заглядывает. */
+    hint?: unknown
 }
 
 // хендл отписки бывает функцией (Listen3) или объектом (tSubHandle провода)
@@ -97,7 +113,7 @@ function unsubscribeHandle(handle: any) {
  * .seq() (последний доставленный — для реконнекта), .isStale() и .lastTs().
  */
 export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Listener<Z>, opts: ReplaySubscribeOpts = {}) {
-    const {since = -1, onSeq, onError, staleMs, onStale, skewMs = 0, now = Date.now} = opts
+    const {since = -1, onSeq, onError, staleMs, onStale, skewMs = 0, now = Date.now, policy = 'queue', hint} = opts
     let lastDelivered = since
     let replaying = true
     let closed = false
@@ -152,27 +168,57 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
         onSeq?.(ev.seq)
         if (!replaying) assessStale()
     }
-    const handle = remote.line.on(function liveTap(ev: ReplayEvent<Z>) {
+    // политика 'frame' — подписка на гейтуемую линию (сервер вправе пропускать,
+    // восстанавливая кадром); старый сервер без frameLine → обычная line (queue-семантика)
+    const liveLine = policy == 'frame' && remote.frameLine ? remote.frameLine : remote.line
+    const handle = liveLine.on(function liveTap(ev: ReplayEvent<Z>) {
+        if (ev == null || typeof (ev as any).seq != 'number') {
+            // не-конверт = конец стрима с сервера (RPC_STOP; напр. громкий отказ священной
+            // линии в воротах). Молчать нельзя: наружу и закрываемся; seq() сохранён для реконнекта.
+            if (closed) return
+            const err = new Error('replaySubscribe: line ended by server (' + String(ev) + ')')
+            off()
+            if (onError) onError(err)
+            else setTimeout(function rethrowLineEnd() { throw err }, 0)
+            return
+        }
         lastArrival = now()                    // конверт ПОЛУЧЕН — провод жив, даже если ждёт очереди
         if (replaying) queue.push(ev)
         else deliver(ev)
     })
     async function catchUp() {
         try {
-            const tail = since >= 0 ? await remote.since(since) : null
-            if (closed) return
-            if (tail) {
-                for (const ev of tail) deliver(ev)
-            } else {
-                const kf = await remote.keyframe()
+            let done = false
+            if (since >= 0 && remote.frame) {
+                // один вызов: сервер сам выбрал хвост/мини-кадр/keyframe (frame из replay-listen);
+                // священная линия с вытесненным журналом — rejected promise → onError (громко)
+                const envs = await remote.frame(since, hint)
                 if (closed) return
-                if (kf) {
-                    // новая точка отсчёта (сброс возможен и ВНИЗ — «другая жизнь» сервера)
-                    lastDelivered = kf.seq
-                    lastTs = kf.ts
-                    lastArrival = now()
-                    cb(...kf.event)
-                    onSeq?.(kf.seq)
+                if (envs) {
+                    if (envs.length) {
+                        // новая точка отсчёта: сброс возможен и ВНИЗ («другая жизнь» сервера)
+                        lastDelivered = envs[0].seq - 1
+                        for (const ev of envs) deliver(ev)
+                    }
+                    done = true
+                }
+            }
+            if (!done) {
+                const tail = since >= 0 ? await remote.since(since) : null
+                if (closed) return
+                if (tail) {
+                    for (const ev of tail) deliver(ev)
+                } else {
+                    const kf = await remote.keyframe()
+                    if (closed) return
+                    if (kf) {
+                        // новая точка отсчёта (сброс возможен и ВНИЗ — «другая жизнь» сервера)
+                        lastDelivered = kf.seq
+                        lastTs = kf.ts
+                        lastArrival = now()
+                        cb(...kf.event)
+                        onSeq?.(kf.seq)
+                    }
                 }
             }
         } catch (e) {
