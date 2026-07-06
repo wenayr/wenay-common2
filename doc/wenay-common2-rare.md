@@ -261,27 +261,16 @@ sel.on((snap, ctx) => {})                          // aggregated selected snapsh
 sel.once((snap) => {}, {current: true})
 sel.onEach((value, ctx) => { ctx.pathString })      // one event per SELECTED path, with route (explicit masks only)
 ```
-Changed keys as a listen (`each` — the per-key feed):
-```
-type Rows = Record<string, {hp: number}>
-const rows = ObserveAll2.createStore<Rows>({})
+`store.each()` — extended notes (the per-key feed itself: signature, expansion contract and the
+canonical example live in wenay-common2.md):
+- A key whose primitive value is unchanged by a root replace does not fire (the set trap skips
+  `Object.is`-equal writes); object values always fire — replay patches apply fresh snapshot copies.
+- `each({depth})` is reserved: only `1` (top-level keys) is accepted today, anything else throws.
+- `ctx` is `{path: [key]}`. `key` is typed `string`; symbol top-level keys pass through at runtime as-is.
+- The `update(true).onEach` dev warn fires once per process (explicit key masks never warn —
+  `onEach` stays correct for them).
+- `{'*': true}` is not a wildcard — it subscribes a literal `'*'` key (zero calls, no warn).
 
-// canonical per-key consumer: one call per CHANGED top-level key per drain window
-const off = rows.each().on((key, row, ctx) => {
-  if (row === undefined) grid.removeRow(key)        // key deleted
-  else grid.upsertRow(key, row)                     // row = current rows.state[key] at flush time
-})
-```
-- Root replace (`store.replace(...)` — e.g. a mirror keyframe) expands per key of the new state,
-  including `(key, undefined)` for keys the replace removed — cold start / reconnect are not special cases.
-  A key whose primitive value is unchanged by the replace does not fire (object values always do:
-  patches apply fresh snapshot copies).
-- Deeper dirt (`state.a.b = ...`) reports the top-level key once, coalesced per drain window;
-  two writes to one key in a window = ONE call with the last value. `each({depth})` is reserved (only 1).
-- Shape is a plain Listen (`on(cb) -> off`, `once`, `count`); zero cost while it has no subscribers.
-- TRAP (the reason `each` exists): `update(true).onEach` is NOT a per-key feed — `onEach` fires per
-  SELECTED path and mask `true` selects the root, so it fires ONCE per window with the whole dict
-  (a dev warn now points to `each()`). `{'*': true}` is not a wildcard either (subscribes a literal `'*'` key).
 Backend expose + frontend mirror:
 ```
 const facade = { market: ObserveAll2.exposeStore(store) }
@@ -402,9 +391,7 @@ exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?, staleMs?
   //   IMMEDIATELY; clock-skew caveat: producer/client clocks may disagree, skewMs tolerance absorbs it, default 0).
   //   A since-tail's historical ts never flaps mid-catch-up (one assessment after handover); off() disarms the timer.
 exposeStoreReplay(store, opts?)  <->  syncStoreReplay(mirror, remote, opts?)            // layer B: patch line; keyframe = root patch ({path: [], value: snapshot})
-syncStoreReplayEach<T>(remote, (key, value, ctx) => {}, opts?) -> off & {store, ready, seq(), isStale(), lastTs()}   // one-call remote fold: mirror + syncStoreReplay + store.each();
-  // callback per CHANGED top-level key (keyframe expands per key, undefined = deleted); opts = ReplaySubscribeOpts & {drain?, initial?};
-  // off tears down BOTH the store sub and the wire sub; reconnect: {since: prev.seq(), initial: prev.store.snapshot()}
+syncStoreReplayEach<T>(remote, cb, opts?) -> off & {store, ready, seq(), isStale(), lastTs()}   // one-call per-key fold over the patch line (mirror + syncStoreReplay + store.each()); most-used surface — full contract + example in wenay-common2.md
 conflateReplay(replay, {pending, highWater, lowWater?, pollMs?, keyOf?, maxKeys?}) -> {api, close, stats}  // layer D.1: per-connection gate — pending() over highWater -> deltas DROP (never queue);
   // drained -> fresh keyframe on the SAME line, seq dedup cuts the overlap; pending() = e.g. socket.conn.writeBuffer.length
   // build per connection where the rpc server is built; api spreads in place of exposeReplay(...); close() on disconnect
