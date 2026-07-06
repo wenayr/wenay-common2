@@ -76,6 +76,8 @@ type Eng = {
     pathLive: number
     dirty: Set<Node>
     dirtyPaths: PropertyKey[][]
+    dirtyPathKeys: Set<string>   // keyed dedup за O(1) на путь — линейный скан по dirtyPaths квадратичен на hot-write
+    pathKey: (path: PropertyKey[]) => string
     scheduled: boolean
     waiters: Set<Fn>
     depth: number
@@ -90,7 +92,9 @@ export function reactive<T extends object>(root: T, opts: Opts = {}) {
     const {drain = 'immediate', depth = Infinity, eager = false} = opts
     const fire = scheduler(drain)
     const eng: Eng = {
-        live: 0, pathLive: 0, dirty: new Set(), dirtyPaths: [], scheduled: false, waiters: new Set(), depth,
+        live: 0, pathLive: 0, dirty: new Set(), dirtyPaths: [],
+        dirtyPathKeys: new Set(), pathKey: createPathKeyer(),
+        scheduled: false, waiters: new Set(), depth,
         schedule() {
             if (eng.scheduled) return
             eng.scheduled = true
@@ -100,6 +104,8 @@ export function reactive<T extends object>(root: T, opts: Opts = {}) {
                 eng.scheduled = false
                 const batch = [...eng.dirty]; eng.dirty.clear()
                 const dirtyPaths = eng.dirtyPaths; eng.dirtyPaths = []
+                // свежий keyer на окно: карта symbol-идентичности не копит чужие символы
+                eng.dirtyPathKeys = new Set(); eng.pathKey = createPathKeyer()
                 let err: any
                 for (const n of batch) {
                     for (const cb of [...n.subs]) {
@@ -152,12 +158,11 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
         set(_, k, v) {
             v = toRaw(v)                             // no reactive-in-reactive: state holds raw values only
             if (Object.is(node.target[k], v)) return true
-            const dirtyPath = dirtyPathFor(node, k)
             node.target[k] = v
             if (Array.isArray(proxyTarget) && k == "length") proxyTarget.length = v
             const kid = node.kids.get(k)
             if (kid) rebind(kid, v)                  // an existing child slot got a whole new value
-            if (eng.live > 0) bubble(node, dirtyPath)
+            if (eng.live > 0) bubble(node, k)        // путь считается ВНУТРИ и только при pathLive — cold write не аллоцирует
             return true
         },
         defineProperty(_, k, d) {
@@ -171,23 +176,21 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
             }
             const v = node.target[k]
             if (!Object.is(old, v)) {
-                const dirtyPath = dirtyPathFor(node, k)
                 const kid = node.kids.get(k)
                 if (kid) {
                     if (isReactiveObj(v)) rebind(kid, v)
                     else { node.kids.delete(k); markChanged(kid); detachTree(kid) }
                 }
-                if (eng.live > 0) bubble(node, dirtyPath)
+                if (eng.live > 0) bubble(node, k)
             }
             return true
         },
         deleteProperty(_, k) {
             if (!(k in node.target)) return true
-            const dirtyPath = dirtyPathFor(node, k)
             delete node.target[k]
             const kid = node.kids.get(k)
             if (kid) { node.kids.delete(k); markChanged(kid); detachTree(kid) }
-            if (eng.live > 0) bubble(node, dirtyPath)
+            if (eng.live > 0) bubble(node, k)
             return true
         },
         has(_, k) { return k in node.target },
@@ -212,10 +215,11 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
     return node
 }
 
-// the fact bubbles UP: this node + every ancestor that has subscribers fires once
-function bubble(from: Node, dirtyPath?: PropertyKey[]) {
+// the fact bubbles UP: this node + every ancestor that has subscribers fires once.
+// Полный путь материализуется только когда его кто-то потребит (pathLive > 0).
+function bubble(from: Node, key: PropertyKey) {
     const eng = from.eng
-    if (eng.pathLive > 0 && dirtyPath) addDirtyPath(eng, dirtyPath)
+    if (eng.pathLive > 0) addDirtyPath(eng, dirtyPathFor(from, key))
     for (let n: Node | null = from; n && n.active; n = n.parent)
         if (n.subs.size || n.pathSubs.size) eng.dirty.add(n)
     eng.schedule()
@@ -241,12 +245,33 @@ function dirtyPathFor(node: Node, key: PropertyKey) {
     return Array.isArray(node.target) ? [...node.path] : [...node.path, key]
 }
 
-function addDirtyPath(eng: Eng, path: PropertyKey[]) {
-    if (!eng.dirtyPaths.some(p => samePath(p, path))) eng.dirtyPaths.push([...path])
+// collision-proof строковый ключ пути: length-prefixed сегменты (строка с любым
+// содержимым не склеится через границу), символы — по identity через карту keyer'а.
+// Keyer живёт одно drain-окно / один вызов, поэтому символы в карте не копятся.
+function createPathKeyer() {
+    let symIds: Map<symbol, number> | null = null
+    return function pathKey(path: PropertyKey[]) {
+        let out = ''
+        for (const p of path) {
+            if (typeof p == 'symbol') {
+                symIds ??= new Map()
+                let id = symIds.get(p)
+                if (id == null) { id = symIds.size; symIds.set(p, id) }
+                out += 'y' + id + '|'
+            } else {
+                const s = String(p)
+                out += (typeof p)[0] + s.length + ':' + s + '|'
+            }
+        }
+        return out
+    }
 }
 
-function samePath(a: PropertyKey[], b: PropertyKey[]) {
-    return a.length == b.length && a.every((k, i) => Object.is(k, b[i]))
+function addDirtyPath(eng: Eng, path: PropertyKey[]) {
+    const k = eng.pathKey(path)
+    if (eng.dirtyPathKeys.has(k)) return
+    eng.dirtyPathKeys.add(k)
+    eng.dirtyPaths.push(path)     // path — свежий массив из dirtyPathFor, копия не нужна
 }
 
 function startsWithPath(path: PropertyKey[], prefix: PropertyKey[]) {
@@ -255,11 +280,17 @@ function startsWithPath(path: PropertyKey[], prefix: PropertyKey[]) {
 
 function pathsForNode(node: Node, dirtyPaths: PropertyKey[][]) {
     const out: PropertyKey[][] = []
+    const seen = new Set<string>()
+    const pathKey = createPathKeyer()
     for (const path of dirtyPaths) {
         let next: PropertyKey[] | null = null
         if (startsWithPath(path, node.path)) next = path.slice(node.path.length)
         else if (startsWithPath(node.path, path)) next = []
-        if (next && !out.some(p => samePath(p, next))) out.push(next)
+        if (next == null) continue
+        const k = pathKey(next)
+        if (seen.has(k)) continue
+        seen.add(k)
+        out.push(next)
     }
     return out
 }

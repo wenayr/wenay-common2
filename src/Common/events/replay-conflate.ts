@@ -31,10 +31,10 @@
 //     const gated = conflateReplay(exposed.replay, {pending, highWater})
 //     object = {...exposed.api, replay: gated.api}   // вместо exposeReplay
 //     disconnect → gated.close()
+// Однострочная альтернатива — exposeReplay(replay, {conflate: opts}) в replay-wire.
 
 import {funcListenCallbackBase, NormalizeTuple} from './Listen3'
 import {ListenReplayApi, ReplayEvent} from './replay-listen'
-import {exposeReplay} from './replay-wire'
 
 export type ConflateOpts<Z extends any[] = any[]> = {
     /** Заполненность исходящего буфера ЭТОГО клиента (единицы те же, что у порогов). */
@@ -146,8 +146,13 @@ export function conflateReplay<T>(replay: ListenReplayApi<T>, opts: ConflateOpts
     }
 
     return {
-        /** Провод-фасад ЭТОГО клиента: как exposeReplay, но line — персональные ворота. */
-        api: {...exposeReplay(replay), line: gate},
+        /** Провод-фасад ЭТОГО клиента: форма exposeReplay, но line — персональные ворота.
+         *  Форма инлайнится (не импортируется), чтобы граф replay-wire → replay-conflate остался ацикличным. */
+        api: {
+            line: gate,
+            since: (seq: number) => replay.getSince(seq) ?? null,
+            keyframe: () => replay.keyframe() ?? null,
+        },
         close,
         /** Интроспекция для метрик/тестов. */
         stats: () => ({conflating, dropped, keyframes, coalesced, flushes}),

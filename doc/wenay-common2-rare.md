@@ -330,9 +330,9 @@ npx tsx observable2/store-mirror.example.ts
 > `import { ... } from "wenay-common2/replay"`; the store pair lives in `ObserveAll2`.
 > Design: `REPLAY-PLAN.md`; oracles: `replay/` (import the canonical `src/` modules).
 ```
-withReplayListen(base, {current?, history?, getSince?, onJournal?, now?}) · UseReplayListen   // layer A: journal {seq, ts, event}; on(cb, {since, onSeq}); head()/getSince()/keyframe()/hasKeyframe
-exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?}) -> off         // wire pair over the EXISTING rpc: line = plain Listen, since/keyframe = plain methods
-  // off.ready (catch-up done) · off.seq() (reconnect point); reconnect = call again with {since: prev.seq()}
+withReplayListen(base, {current?, history?, getSince?, onJournal?, now?, staleMs?, onStale?}) · UseReplayListen   // layer A: journal {seq, ts, event}; on(cb, {since, onSeq}); head()/getSince()/keyframe()/hasKeyframe · isStale()/lastTs()
+exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?, staleMs?, onStale?, skewMs?, now?}) -> off   // wire pair over the EXISTING rpc: line = plain Listen, since/keyframe = plain methods
+  // off.ready (catch-up done) · off.seq() (reconnect point) · off.isStale()/off.lastTs(); reconnect = call again with {since: prev.seq()}
   // DELIVERY CONTRACT (guaranteed, not best-effort): the subscriber's cb sees ONE uniform stream —
   //   first delivery = the snapshot (keyframe as an event of the SAME type; store: root patch),
   //   then only strictly-newer events, seq-ascending, no gaps, no dups. Live events racing ahead of the
@@ -341,10 +341,22 @@ exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?}) -> off 
   //   visible to the client as a seq jump > +1). Requires an ORDERED transport (socket.io / TCP / in-proc).
   //   Net effect: one client fold `state = apply(state, event)` handles cold start, reconnect,
   //   conflation recovery and archive playback identically — snapshot is not a special case.
+  // FRESHNESS (staleMs/onStale — an option, not consumer boilerplate): delivery is consistent but silent
+  //   about staleness. Two failure modes it would otherwise hide: a SILENT LINE (producer died, line stays
+  //   open, no envelopes) and a STALE KEYFRAME (arrives now, but its ts is old — "fresh over the wire" while
+  //   minutes stale). onStale({stale, lastTs, age}) is edge-triggered BOTH ways, never a repeating alarm.
+  //   Producer side: no journal event for staleMs -> stale; the timer exists only with onStale and arms after
+  //   the first event (a cold line stays free); isStale()/lastTs() are lazy getters, no timer needed.
+  //   Client side, two signals: ARRIVAL GAP (local clock, the only timer — catches the silent line regardless
+  //   of clock skew) + ENVELOPE-TS AGE checked at delivery (producer clock — a stale keyframe reports stale
+  //   IMMEDIATELY; clock-skew caveat: producer/client clocks may disagree, skewMs tolerance absorbs it, default 0).
+  //   A since-tail's historical ts never flaps mid-catch-up (one assessment after handover); off() disarms the timer.
 exposeStoreReplay(store, opts?)  <->  syncStoreReplay(mirror, remote, opts?)            // layer B: patch line; keyframe = root patch ({path: [], value: snapshot})
 conflateReplay(replay, {pending, highWater, lowWater?, pollMs?, keyOf?, maxKeys?}) -> {api, close, stats}  // layer D.1: per-connection gate — pending() over highWater -> deltas DROP (never queue);
   // drained -> fresh keyframe on the SAME line, seq dedup cuts the overlap; pending() = e.g. socket.conn.writeBuffer.length
   // build per connection where the rpc server is built; api spreads in place of exposeReplay(...); close() on disconnect
+  // one-call form: exposeReplay(replay, {conflate: opts}) -> {line, since, keyframe, close, stats} — same gate, wiring collapsed;
+  //   destructure aside (const {close, stats, ...api} = ...) — close/stats must NOT reach the rpc object (they'd become remotely callable)
   // keyOf (key-level coalescing): while lagged keep the LAST envelope per key, drain -> tail of those (ascending seq) instead of a full keyframe;
   //   events must be ABSOLUTE per key (store patches are — use storePatchKey from ObserveAll2); keyOf -> null or over maxKeys (1024) -> degrade to keyframe recovery
 ReplayStorage = {putEvent, putKeyframe, getKeyframe({seq?|ts?}?), getEvents(from, to)}   // layer C: archive behind 4 lambdas (file/DB/anything); createMemoryReplayStorage(caps?) = reference impl
@@ -356,7 +368,7 @@ storeReplayAt(storage, {seq?|ts?}?) -> snapshot | undefined                     
 > Killer property: a lagging/late/stalled consumer never gets a queue backlog — evicted seq / full outgoing buffer -> fresh keyframe + live from it.
 > Files: `src/Common/events/replay-{listen,wire,conflate,history,index}.ts` + `src/Common/ObserveAll2/store-replay.ts`;
 > everything is additive (Listen3 gained only `registerListenOn`/`ListenOnBrand`; Listen2/exposeStore/mirror untouched).
-> Oracles: `npx ts-node replay/<f>.ts` — replay-listen / store-replay / socket-replay / conflate / conflate-socket / coalesce / history / canvas-socket (raw bytes) / video-socket.demo;
+> Oracles: `npx ts-node replay/<f>.ts` — replay-listen / store-replay / socket-replay / conflate / conflate-socket / coalesce / history / staleness / canvas-socket (raw bytes) / video-socket.demo;
 > wire coverage also lives in the RPC harness cookbook (`npm run test:rpc`).
 
 ## 🔁 ObserveAll2 — coarse reactive object (`ObserveAll2`, fact-based)

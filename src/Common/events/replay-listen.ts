@@ -28,6 +28,9 @@ type cbClose = () => void
 /** Единица журнала: seq — монотонная координата, ts — атрибут для людей. */
 export type ReplayEvent<Z extends any[] = any[]> = { seq: number, ts: number, event: Z }
 
+/** Отчёт вотчдога тухлости: stale — новое состояние (edge), lastTs — ts последнего события, age — его возраст. */
+export type StaleInfo = {stale: boolean, lastTs: number, age: number}
+
 export type ReplayListenOptions<Z extends any[]> = {
     /** Поставщик keyframe (полное состояние как событие того же типа). Нужен для fallback и {current}. */
     current?: ListenCurrentProvider<Z>
@@ -43,6 +46,17 @@ export type ReplayListenOptions<Z extends any[]> = {
     onJournal?: (ev: ReplayEvent<Z>) => void
     /** Часы для ts (по умолчанию Date.now) — подменяемы в тестах/на внешнем клоке. */
     now?: () => number
+    /**
+     * Порог тухлости: нет журнального события дольше staleMs → линия stale.
+     * Сам по себе таймера НЕ создаёт — isStale() считается лениво.
+     */
+    staleMs?: number
+    /**
+     * Вотчдог тухлости: edge-triggered в ОБЕ стороны (fresh→stale и stale→fresh),
+     * не повторяющийся будильник. Таймер существует только при заданном onStale
+     * и взводится после первого события — холодная линия свободна. Требует staleMs.
+     */
+    onStale?: (info: StaleInfo) => void
 }
 
 type ReplayOnOptions<Z extends any[]> = {
@@ -61,7 +75,7 @@ export type ListenOnReplay<Z extends any[] = any[]> =
 
 export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOptions<NormalizeTuple<T>> = {}) {
     type Z = NormalizeTuple<T>
-    const {current, history = 0, getSince, onJournal, now = Date.now} = options
+    const {current, history = 0, getSince, onJournal, now = Date.now, staleMs, onStale} = options
 
     // === журнал ===
     let head = 0
@@ -91,6 +105,40 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
         return c ? current?.() : undefined
     }
 
+    // === staleness watchdog ===
+    // isStale()/lastTs() — ленивые, таймера не создают. Таймер существует ТОЛЬКО
+    // при onStale (иначе edge некому отдать) и взводится после первого события —
+    // холодная линия не держит ни таймера, ни процесса (unref).
+    let lastTs = 0
+    let staleFlag = false
+    let staleTimer: any = null
+    function stopStaleTimer() {
+        if (staleTimer) { clearTimeout(staleTimer); staleTimer = null }
+    }
+    function reportStale(stale: boolean) {
+        staleFlag = stale
+        try { onStale!({stale, lastTs, age: now() - lastTs}) }
+        catch (e) { setTimeout(function rethrowOnStale() { throw e }, 0) }
+    }
+    // одноразовый таймер, перевзводится на остаток: событие лишь пишет lastTs,
+    // таймер не трогает — высокочастотная линия не платит за перевзвод
+    function checkStale() {
+        staleTimer = null
+        const age = now() - lastTs
+        if (age >= staleMs!) reportStale(true)   // stale-грань; fresh-грань даст следующий emit
+        else armStaleTimer(staleMs! - age)
+    }
+    function armStaleTimer(delay: number) {
+        if (staleTimer || !onStale || staleMs == null) return
+        staleTimer = setTimeout(checkStale, delay)
+        staleTimer.unref?.()
+    }
+    function touchStale(ts: number) {
+        lastTs = ts
+        if (staleFlag) reportStale(false)        // stale→fresh: линия ожила
+        armStaleTimer(staleMs!)                  // no-op без onStale/staleMs или при живом таймере
+    }
+
     const api = {
         ...base,
         /** Нумерующий emit: seq++, запись в журнал, fan-out. Единственная дверь в журнал. */
@@ -98,6 +146,7 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
             const ev: ReplayEvent<Z> = {seq: ++head, ts: now(), event: e}
             if (history > 0) ring[(ev.seq - 1) % history] = ev
             onJournal?.(ev)
+            touchStale(ev.ts)  // fresh-грань ПЕРЕД fan-out: подписчик видит «линия ожила», потом событие
             // линия ПЕРЕД локальным fan-out: бросок локального cb не оставит провод без события
             line.func(ev)
             const prev = emitting
@@ -106,6 +155,12 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
         } as Listener<Z>,
         /** Текущая голова линии (seq последнего события; 0 = ещё не было). */
         head: () => head,
+        /** Ленивая тухлость: staleMs задан, было хотя бы одно событие и оно старше staleMs. Таймера не требует. */
+        isStale: () => staleMs != null && head > 0 && now() - lastTs >= staleMs,
+        /** ts последнего журнального события (0 = ещё не было). */
+        lastTs: () => lastTs,
+        /** close базы + снятие таймера вотчдога (если был). */
+        close: function closeReplay() { stopStaleTimer(); base.close() },
         /** Хвост журнала после seq (или undefined = вытеснено). Для store-слоя / интроспекции. */
         getSince: journalSince,
         /** Линия конвертов {seq, ts, event} — для провода (exposeReplay) и внешних журналов. */
@@ -191,10 +246,10 @@ export type ReplayListenUseOptions<T> = ListenOptions<T> & ReplayListenOptions<N
 
 /** [emit, listen]: emit нумерует и журналирует (идёт через декоратор, не мимо). */
 export function UseReplayListen<T>(options: ReplayListenUseOptions<T> = {}) {
-    const {current, history, getSince, onJournal, now, ...listenOptions} = options
+    const {current, history, getSince, onJournal, now, staleMs, onStale, ...listenOptions} = options
     let t: ((...a: NormalizeTuple<T>) => void)
     const base = funcListenCallbackBase<T>((e) => { t = e }, {fast: true, ...listenOptions})
-    const listen = withReplayListen<T>(base, {current, history, getSince, onJournal, now})
+    const listen = withReplayListen<T>(base, {current, history, getSince, onJournal, now, staleMs, onStale})
     base.run()
     t = listen.func  // ВАЖНО: сквозь декоратор — иначе события мимо журнала
     return [t!, listen] as const

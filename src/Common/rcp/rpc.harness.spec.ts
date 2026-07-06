@@ -31,6 +31,7 @@ import { createRpcServerAuto } from "./rpc-server-auto"
 import { createRpcServerAuto2 } from "./createRpcServerAutoWithProtocolDetection"
 import { createRpcClientHub } from "./rpc-clientHub"
 import { UseListen, isListenOn, getListenByOn } from "../events/Listen"
+import { UseReplayListen, exposeReplay, replaySubscribe } from "../events/replay-index"
 import { UseListenTransform } from "../events/UseListenTransform"
 import { joinListens } from "../events/joinListens"
 import { noStrict } from "./rpc-dynamic"
@@ -1120,6 +1121,51 @@ export async function runHarness() {
             tailOnly: counters.keyframe === kfBefore,
             tail: tailPatches,
         }), {live: true, converged: true, tailOnly: true, tail: 2})
+    }
+
+    { // Replay-тухлость по проводу: доставка КОНСИСТЕНТНА, но молчит о свежести — arrival gap
+      //   (локальные часы клиента) ловит умершего продьюсера через настоящий сокет: конвертов
+      //   нет → stale-грань один раз. Реконнект через {since} доезжает хвостом — и линия fresh.
+      //   Механизм — опция replaySubscribe, а не ручной вотчдог потребителя.
+        const [cs, ss] = createLoopback()
+        const [tick, replayLine] = UseReplayListen<[number]>({history: 64})
+        const exposedReplay = exposeReplay(replayLine)
+        createRpcServerAuto({ socket: ss, object: {replay: exposedReplay}, socketKey: "stale" })
+        const c = createRpcClient<{replay: typeof exposedReplay}>({ socket: cs, socketKey: "stale" })
+        await delay(0)
+
+        const listen = webListen(c)
+        const remote = {
+            line: (listen as any).replay.line,
+            since: (s: number) => c.func.replay.since(s),
+            keyframe: () => c.func.replay.keyframe(),
+        }
+        const edges: boolean[] = []
+        const seen: number[] = []
+        let lastSeq = -1
+        const sub = replaySubscribe<[number]>(remote as any, v => seen.push(v),
+            {staleMs: 60, onStale: i => edges.push(i.stale), onSeq: s => lastSeq = s})
+        await sub.ready
+        tick(1); tick(2)
+        await delay(20)
+        const freshAfterLive = !sub.isStale()
+        await delay(150)                          // продьюсер молчит → arrival gap срабатывает
+        const staleAfterSilence = sub.isStale()
+        sub()                                     // «обрыв»: клиент оффлайн, мир живёт дальше
+        tick(3); tick(4)
+        const edges2: boolean[] = []
+        const seen2: number[] = []
+        const sub2 = replaySubscribe<[number]>(remote as any, v => seen2.push(v),
+            {since: lastSeq, staleMs: 60, onStale: i => edges2.push(i.stale)})
+        await sub2.ready
+        tick(5)
+        await delay(20)
+        const fresh2 = !sub2.isStale()
+        sub2()
+        await check("cookbook: replay-тухлость — arrival gap + реконнект {since}", async () => ({
+            data: seen.join(","), edges: edges.join(","), freshAfterLive, staleAfterSilence,
+            tail: seen2.join(","), edges2: edges2.join(","), fresh2,
+        }), {data: "1,2", edges: "true", freshAfterLive: true, staleAfterSilence: true, tail: "3,4,5", edges2: "", fresh2: true})
     }
 
     { // 1) ОБЫЧНЫЙ ЗАПРОС-ОТВЕТ (замена REST/fetch-ручек, но типизированно и без URL).

@@ -165,6 +165,7 @@ ObserveAll2.exposeStoreReplay(store, {history? = 1024}) -> { api /* spread into 
 ObserveAll2.syncStoreReplay(mirror, remote /*{line, since, keyframe} of api.replay*/, {since?, onSeq?}) -> off
   // off.ready (catch-up done) · off.seq() (save for reconnect: syncStoreReplay(..., {since: prev.seq()}))
   // lagging/late client NEVER gets a backlog: evicted seq -> ONE fresh keyframe + live
+  // freshness is an option, not consumer boilerplate: {staleMs, onStale} flags a silent line / stale keyframe (edge-triggered both ways; 🎞️ in rare docs)
 // Slow-client conflation: recipe section 🎞️ below. Full generic surface (any event line, history/time-travel) -> Replay namespace, 🎞️ in rare docs.
 // Object add/delete/deep set are paths. Array mutation dirties the whole array branch, not splice internals.
 ```
@@ -211,6 +212,8 @@ io.on('connection', socket => {
         keyOf: ObserveAll2.storePatchKey,   // optional: coalesce per path -> tail of last values instead of a full keyframe
     })
     socket.on('disconnect', () => gated.close())         // REQUIRED: stops the gate's poll timer + frees the key map
+    // one-call form: const {close, stats, ...api} = Replay.exposeReplay(exposed.replay, {conflate: {...}})
+    //   -> use `api` as the facade below; keep close/stats OUT of the rpc object
     createRpcServerAuto({
         socket: { emit: (k, d) => socket.emit(k, d), on: (k, cb) => socket.on(k, cb) },
         socketKey: 'world',
