@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "1.0.62",
+  "version": "1.0.64",
   "description": "Common library",
   "strict": true,
   "main": "lib/index.js",
@@ -22,6 +22,10 @@
   },
   "files": [
     "lib/**/*",
+    "doc/**/*",
+    "CLAUDE.md",
+    "rpc.md",
+    "!doc/target/**/*",
     "!**/*.tsbuildinfo"
   ],
   "author": "wenay",
@@ -31,7 +35,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/wenayr/wenay-common2.git"
+    "url": "git+https://github.com/wenayr/wenay-common2.git"
   },
   "devDependencies": {
     "@types/create-hmac": "^1.1.3",

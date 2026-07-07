@@ -14,7 +14,7 @@
 // создавайте линию с getSince, читающим это же хранилище («память снаружи»), —
 // иначе зазор архив→live закрывается свежим keyframe (killer property, скачок).
 
-import {Listener, NormalizeTuple} from './Listen3'
+import {Listener, NormalizeTuple} from './Listen'
 import {ListenOnReplay, ListenReplayApi, ReplayEvent} from './replay-listen'
 
 // =====================================================================

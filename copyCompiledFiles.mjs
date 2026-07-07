@@ -32,9 +32,17 @@ if (1) {
 fs.copyFileSync("./package.json", path.join(tempDir,"package.json"));
 
 // дополнительные файлы, которые копируются при наличии
-for (const file of ["README.md", "LICENSE", "CHANGELOG.md"]) {
+for (const file of ["README.md", "LICENSE", "CHANGELOG.md", "CLAUDE.md", "rpc.md"]) {
     if (fs.existsSync(file))
         fs.copyFileSync(file, path.join(tempDir, file));
+}
+
+if (fs.existsSync("./doc")) {
+    fs.cpSync("./doc", path.join(tempDir, "doc"), {
+        recursive: true,
+        force: true,
+        filter: (src) => path.basename(src) != "target" && !src.split(path.sep).includes("target"),
+    });
 }
 
 //fs.symlinkSync("../"+srcDir,  path.join(tempDir, srcDir), "junction");

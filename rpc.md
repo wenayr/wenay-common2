@@ -20,11 +20,11 @@ Bidirectional, strongly-typed RPC protocol over sockets (Socket.IO or similar).
 
 ### 2.1 Socket Connection
 ```typescript
-import { createRpcServerAuto, UseListen } from "wenay-common2";
+import { createRpcServerAuto, listen } from "wenay-common2";
 
 io.sockets.on('connection', (socket) => {
   // 1. Create unsubscribe trigger for memory cleanup
-  const [stop, listenStop] = UseListen<[]>();
+  const [stop, listenStop] = listen<[]>();
   socket.on('disconnect', stop);
 
   // 2. Initialize RPC channel on this socket
@@ -41,10 +41,10 @@ io.sockets.on('connection', (socket) => {
 ### 2.2 Building API Object (Facade)
 The object is traversed by the server to build a "Schema" that is sent to the client.
 ```typescript
-import { noStrict, UseListen } from "wenay-common2";
+import { noStrict, listen } from "wenay-common2";
 
 // Create pub/sub event system
-const [sendEvent, listenEvent] = UseListen<[string]>();
+const [sendEvent, listenEvent] = listen<[string]>();
 
 export function buildFacade(client) {
   const role = (...roles) => hasRole(client, roles) ? true : null;
@@ -174,7 +174,7 @@ api.space.admin.logAction("clicked");
 ```
 
 ### 3.4 Client Subscriptions (Listen)
-`createRpcServerAuto` exposes server `UseListen` values as RPC Listen nodes. New code uses `on`/`once` and keeps the returned `off` handle. For TypeScript, project `client.func` to `DeepSocketListen<ServerFacade>`; this mirrors the runtime shape and keeps event argument types.
+`createRpcServerAuto` exposes server `listen` / `createListen` values as RPC Listen nodes. New code uses `on`/`once` and keeps the returned `off` handle. For TypeScript, project `client.func` to `DeepSocketListen<ServerFacade>`; this mirrors the runtime shape and keeps event argument types.
 ```typescript
 import type { DeepSocketListen } from "wenay-common2";
 

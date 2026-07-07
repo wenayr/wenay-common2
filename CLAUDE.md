@@ -27,9 +27,9 @@ Write new code in this style by default — no need to ask.
   business rules of *using* those APIs. Wherever it lives, mark it clearly (section dividers).
   Utility-leaning functions are better *extracted* (own function / file) so they don't blur
   into business logic.
-- **Multi-level facades are fine** — `UseListen` (or other callbacks) may be installed at
+- **Multi-level facades are fine** — `listen` (or other callbacks) may be installed at
   any nesting depth. Closures are fine. Inner factories and captured state are encouraged.
-- **Expose callbacks outward.** `UseListen` streams that callers will subscribe to belong in
+- **Expose callbacks outward.** `listen` streams that callers will subscribe to belong in
   the `api` surface — prefer over-exposing event streams to hiding them.
 - Registries/tables — `as const` + inferred literal types (type-safe).
 
@@ -51,3 +51,13 @@ Write new code in this style by default — no need to ask.
 ## Comments
 - Section dividers like `// ===...===` with a block heading.
 - Explain "why", not "what". Keep them short.
+## Documentation and release notes
+
+- `README.md` is navigation only. Do not put API guides, examples, or long explanations there.
+- The brief public surface lives in `doc/wenay-common2.md`.
+- The extended/rare public surface lives in `doc/wenay-common2-rare.md`.
+- Naming migrations live in `doc/NAMING_RENAMES.md`.
+- Recent changes live in `doc/changes/` as one markdown file per published version, named `<version>.md`.
+- Every release/change intended for publication must add or update the current version file in `doc/changes/` with a short commit-style summary of what changed.
+- Keep only the latest 10 version files in `doc/changes/`; delete older version files when adding a new one.
+- Do not publish until brief docs, rare docs, and the current version change file match the code being published.

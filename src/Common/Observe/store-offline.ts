@@ -6,7 +6,7 @@
 // near Observe/Replay where the invariants already exist.
 
 import {clone} from '../core/common'
-import {listenStore} from '../events/Listen3'
+import {listenStore} from '../events/Listen'
 import {ReplayRemote, ReplaySubscribeOpts} from '../events/replay-wire'
 import {createStore, Store, StorePatch} from './store'
 import {syncStoreReplay} from './store-replay'

@@ -33,7 +33,7 @@
 //     disconnect → gated.close()
 // Однострочная альтернатива — exposeReplay(replay, {conflate: opts}) в replay-wire.
 
-import {createListen, NormalizeTuple} from './Listen3'
+import {createListen, NormalizeTuple} from './Listen'
 import {ListenReplayApi, ReplayEvent} from './replay-listen'
 
 export type ConflateOpts<Z extends any[] = any[]> = {

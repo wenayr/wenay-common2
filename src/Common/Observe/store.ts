@@ -1,5 +1,5 @@
 import {createListen} from "../events/Listen";
-import {listenUpdate, listenUpdatePaths, onUpdate, reactive, isReactive, toRaw, ReactiveChange} from "./reactive2";
+import {listenUpdate, listenUpdatePaths, onUpdate, reactive, isReactive, toRaw, ReactiveChange} from "./reactive";
 
 export type StorePath = readonly PropertyKey[]
 export type StoreDrain = "micro" | "immediate" | number | ((flush: () => void) => void)

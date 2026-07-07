@@ -15,7 +15,7 @@
 // часы, расхождение клоков не важно), возраст ts конверта — предикат в момент
 // доставки (часы продьюсера; допуск skewMs на расхождение).
 
-import {Listener, NormalizeTuple} from './Listen3'
+import {Listener, NormalizeTuple} from './Listen'
 import {ListenReplayApi, ReplayEvent, StaleInfo} from './replay-listen'
 import {conflateReplay, ConflateOpts} from './replay-conflate'
 
@@ -99,7 +99,7 @@ export type ReplaySubscribeOpts = {
     hint?: unknown
 }
 
-// хендл отписки бывает функцией (Listen3) или объектом (SubscriptionHandle провода)
+// хендл отписки бывает функцией (Listen) или объектом (SubscriptionHandle провода)
 function unsubscribeHandle(handle: any) {
     if (typeof handle == 'function') { handle(); return }
     if (typeof handle?.off == 'function') handle.off()

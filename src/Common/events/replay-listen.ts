@@ -1,7 +1,7 @@
 // =====================================================================
 // withReplayListen — keyframe (snapshot) + нумерованная линия дельт
 // =====================================================================
-// Декоратор над ListenApi (Listen3) по форме withStoreListen. Один паттерн для
+// Декоратор над ListenApi по форме withStoreListen. Один паттерн для
 // всего: keyframe + события S+1…K = точное состояние на K (I/P-кадры, WAL,
 // market data). Дизайн: REPLAY-PLAN.md; оракулы: replay/ (песочница).
 //
@@ -20,7 +20,7 @@
 import {
     createListen, registerListenOn,
     Listener, ListenApi, ListenCurrent, ListenCurrentProvider, ListenOnBrand, ListenOptions, NormalizeTuple,
-} from './Listen3'
+} from './Listen'
 
 type key = string | symbol
 type cbClose = () => void

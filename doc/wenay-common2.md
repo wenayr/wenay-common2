@@ -200,6 +200,13 @@ Observe.persistStore(store, {key, storage, seq?, debounceMs?}) -> {flush, forceF
 Observe.createMemoryOfflineStorage(initial?) -> OfflineStorage
   // persists {version, seq, snapshot, savedAt}; seq is the correctness coordinate, timestamps are UX/freshness only
   // mode:'topLevel' is reserved; first implemented mode is snapshot
+
+// Declarative resource manager above mirror/replay/offline: app chooses what to start, not the store core
+Observe.managedStore.mirror({remote, initial, mask, tags?, priority?, explicitOnly?, large?, sync?})
+Observe.managedStore.replay({remote, initial, tags?, priority?, explicitOnly?, large?, syncOpts?})
+Observe.managedStore.offline({remote?, initial, storage, storageKey?, tags?, priority?, explicitOnly?, large?, syncOpts?})
+Observe.createStoreManager(resources) -> {plan(opts?), start(key, opts?), startPlanned(opts?), stop(key), stopAll(), get(key), touch(key, weight?), usage(), statusListen, handles}
+  // plan excludes explicitOnly/large by default; {includeExplicit, includeLarge} opts opt them in
 // Slow-client conflation: recipe section 🎞️ below. Full generic surface (any event line, history/time-travel) -> Replay namespace, 🎞️ in rare docs.
 // Object add/delete/deep set are paths. Array mutation dirties the whole array branch, not splice internals.
 ```
@@ -245,8 +252,18 @@ offline.each().on((key, row) => {})
 await offline.ready
 await offline.flush()
 offline.close()
+
+// configurable app-level resource plan
+const manager = Observe.createStoreManager({
+    market: Observe.managedStore.mirror({remote: api.market, initial: {data: {}, meta: {}}, mask: {data: {BTC: true}}, tags: ['bootstrap'], priority: 10}),
+    rows: Observe.managedStore.offline({remote: exposed.api.replay, initial: {}, storage: Observe.createMemoryOfflineStorage(), tags: ['grid']}),
+    video: Observe.managedStore.replay({remote: videoReplay, initial: {}, explicitOnly: true, large: true}),
+})
+await manager.startPlanned({tags: ['bootstrap']})
+manager.touch('rows', 3)               // usage can raise future plan score
+await manager.start('video', {explicit: true})
 ```
-Runnable example: `npx tsx observable2/store-mirror.example.ts`.
+Runnable example: `npx tsx observe/store-mirror.example.ts`.
 Offline oracles: `npx tsx replay/offline-store.test.ts`; real Socket.IO/RPC wire: `npx tsx replay/offline-store-socket.test.ts`.
 
 ## 🎞️ Fast ticks vs slow client — replay lines + server-owned lag gate (recipe)

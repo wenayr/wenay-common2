@@ -198,7 +198,7 @@ await client.func.strategies["mystrategy.2020"].start()
 ```
 
 Contract:
-- `noStrict` stops schema walking and routeMap indexing below that object; the server resolves properties at call time.
+- `noStrict` stops schema walking and routeMap indexing below that object.
 - It is not an access-control boundary and does not bypass safe-key/path limits. Validate user-owned names in your facade if they are security-sensitive.
 - RPC paths are arrays of string segments. `"mystrategy.2020"` is one segment, so the call above is `["strategies", "mystrategy.2020", "start"]`, not `["strategies", "mystrategy", "2020", "start"]`.
 - The failure mode to avoid is treating `path.join(".")` as identity: `["a.b", "c"]` and `["a", "b", "c"]` both display as `a.b.c` but are different RPC paths.
@@ -301,7 +301,7 @@ const stopSync = await mirror.sync(
 mirror.node.data.BTC.on(v => render(v), {current: true})
 stopSync()
 ```
-Runnable example: `npx tsx observable2/store-mirror.example.ts`.
+Runnable example: `npx tsx observe/store-mirror.example.ts`.
 Optional push-data channels (explicit high-frequency mode; usually choose one):
 ```
 type StorePatch = {path: PropertyKey[]; value: any; exists: boolean}
@@ -332,6 +332,42 @@ const stopDataSync = await mirror.syncChangedData(
 )
 ```
 
+Declarative manager over store resources:
+```ts
+const manager = Observe.createStoreManager({
+  market: Observe.managedStore.mirror({
+    remote: api.market,
+    initial: {data: {}, meta: {}},
+    mask: {data: {BTC: true}, meta: {status: true}},
+    tags: ['bootstrap', 'route:main'],
+    priority: 10,
+    sync: {mode: 'pull', opts: {current: true, drain: 'micro'}},
+  }),
+  rows: Observe.managedStore.offline({
+    remote: api.rows.replay,
+    initial: {},
+    storage: indexedDbStorage,
+    storageKey: 'rows',
+    tags: ['grid'],
+    priority: ({usage}) => usage?.weight ?? 0,
+    syncOpts: {staleMs: 30_000},
+  }),
+  video: Observe.managedStore.replay({
+    remote: api.video.replay,
+    initial: {},
+    explicitOnly: true,
+    large: true,
+  }),
+})
+
+manager.plan()                         // excludes explicitOnly/large by default
+manager.plan({includeExplicit: true, includeLarge: true})
+await manager.startPlanned({tags: ['bootstrap']})
+manager.touch('rows', 3)                // records local usage for future scoring
+await manager.start('video', {explicit: true})
+manager.stopAll()
+```
+
 Contract:
 - `node` subscriptions are address-based, so `store.state.data = {BTC: 10}` keeps `store.node.data.BTC` subscriptions alive.
 - Primitive, missing, and later-created paths are subscribable.
@@ -353,9 +389,10 @@ Contract:
 
 Run coverage:
 ```bash
-npx tsx observable2/listen-store.test.ts
-npx tsx observable2/store.test.ts
-npx tsx observable2/store-mirror.example.ts
+npx tsx observe/listen-store.test.ts
+npx tsx observe/store.test.ts
+npx tsx observe/store-manager.test.ts
+npx tsx observe/store-mirror.example.ts
 ```
 ## 🎞️ Replay — snapshot + sequenced delta line
 > Keyframe + seq-numbered deltas + recovery via a fresh keyframe — one pattern for store sync,
@@ -429,7 +466,7 @@ storeReplayAt(storage, {seq?|ts?}?) -> snapshot | undefined                     
 ```
 > Killer property: a lagging/late/stalled consumer never gets a queue backlog — evicted seq / full outgoing buffer -> fresh keyframe + live from it.
 > Files: `src/Common/events/replay-{listen,wire,conflate,history,index}.ts` + `src/Common/Observe/store-{replay,offline}.ts`;
-> everything is additive (Listen3 gained only `registerListenOn`/`ListenOnBrand`; slimListen/exposeStore/mirror untouched).
+> everything is additive (the canonical Listen surface gained only `registerListenOn`/`ListenOnBrand`; exposeStore/mirror untouched).
 > Oracles: `npx ts-node replay/<f>.ts` — replay-listen / store-replay / offline-store / socket-replay / offline-store-socket / conflate / conflate-socket / coalesce / history / staleness / canvas-socket (raw bytes) / video-socket.demo;
 > wire coverage also lives in the RPC harness cookbook (`npm run test:rpc`).
 

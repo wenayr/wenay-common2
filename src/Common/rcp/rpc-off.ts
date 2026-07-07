@@ -14,7 +14,7 @@ export const endCallback = rpcEndCallback
 // Утилита: «вызываемый thenable» (callable thenable) — идиома off
 // ============================================================
 // ЕДИНЫЙ источник истины для идиомы `off = sub; off()` во ВСЕХ слоях подписки
-// (CALL-дедуп и PIPE в rpc-client; addListen-слой в listen-socket). Подписка отдаёт
+// (CALL-дедуп и PIPE в rpc-client; listen-socket-слой). Подписка отдаёт
 // ОДИН handle, который одновременно:
 //   - вызывается как функция  -> off() снимает подписку (тело передаёт слой);
 //   - является thenable       -> await off резолвится ровно как исходный промис
