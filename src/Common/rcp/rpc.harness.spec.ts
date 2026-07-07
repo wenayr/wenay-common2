@@ -36,13 +36,9 @@ import { UseListenTransform } from "../events/UseListenTransform"
 import { joinListens } from "../events/joinListens"
 import { noStrict } from "./rpc-dynamic"
 import { Pkt, IS_RPC_LISTEN, type SocketTmpl } from "./rpc-protocol"
+import { rpcPathKey } from "./rpc-path"
 import type { DeepSocketListen } from "./listen-deep"
 import { MyError } from "../../toError/myThrow"
-// Observable (in-house reactive lib) — каждый узел отдаёт настоящий Listen через .listen(),
-// поэтому проверяем его РОВНО тем же боевым сокетом, что и обычный UseListen.
-import { createCell, createRObject, createRMap, combine, computed } from "../../../observable/reactive"
-import { computedAuto } from "../../../observable/autotrack"
-import { createReactive, listen as rxListen, listenValue as rxListenValue } from "../../../observable/native"
 import { createStore, createStoreMirror, exposeStore, exposeStoreReplay, flushReactive, syncStoreReplay } from "../ObserveAll2"
 
 // --- loopback: emit одного конца доставляется в on другого (асинхронно, как реальный сокет) ---
@@ -299,7 +295,7 @@ export async function runHarness() {
         ss.emit = (e, d) => { if (Array.isArray(d) && d[0] === Pkt.MAP) listenPaths = d[3]; origEmit(e, d) }
         createRpcServer({ socket: ss, object: obj, socketKey: "rpc" })
         await delay(0)
-        await check("proxy/marker: listen path объявлен", async () => listenPaths, ["stream"])
+        await check("proxy/marker: listen path объявлен", async () => listenPaths, [rpcPathKey(["stream"])])
         await check("proxy/marker: symbol-get не было", async () => stats.symbolGets, 0)
     }
     { // rpc-server-auto: вторая подписка на тот же Listen не затирает первую
@@ -415,6 +411,96 @@ export async function runHarness() {
         await check("ref: string-path bump", () => pStr, 1)
         await check("ref: numeric-ref bump", () => pNum, 2)
         await check("ref: общее состояние (read)", () => F.read(), 2)
+    }
+    { // client wire: dotted dynamic segment уходит как один элемент path array
+        const emitted: any[] = []
+        const socket: SocketTmpl = {
+            on: () => {},
+            emit: (e, d) => { if (e === "rpc") emitted.push(JSON.parse(JSON.stringify(d))) },
+        }
+        const c = createRpcClient<any>({ socket, socketKey: "rpc" })
+        const pending = c.func.map["mystrategy.2020"].start()
+        pending.catch(() => {})
+        await check("wire: dotted segment path array", async () => {
+            const call = emitted.find(m => Array.isArray(m) && m[0] === Pkt.CALL)
+            return call?.[2]
+        }, ["map", "mystrategy.2020", "start"])
+        c.close("wire test done", { socketAlive: false })
+    }
+    { // dotted path keys: обычный object не смешивает сегмент "a.b" с путём a.b
+        const [cs, ss] = createLoopback()
+        const seenKeys: string[][] = []
+        const api = {
+            "a.b": { c: () => "dotted" },
+            a: { b: { c: () => "nested" } },
+        }
+        const c = createRpcClient<typeof api>({ socket: cs, socketKey: "rpc" })
+        createRpcServer({
+            socket: ss,
+            object: api,
+            socketKey: "rpc",
+            hooks: { onRequest: ({ key }) => { seenKeys.push([...key]); return true } },
+        })
+        await delay(0)
+        await check("path-key: dotted segment call", () => c.func["a.b"].c(), "dotted")
+        await check("path-key: nested segment call", () => c.func.a.b.c(), "nested")
+        await check("path-key: hook key exact", async () => seenKeys, [["a.b", "c"], ["a", "b", "c"]])
+    }
+    { // dotted path keys: pipe поддерживает dotted сегмент как стартовый серверный метод
+        const [cs, ss] = createLoopback()
+        const api = {
+            "a.b": () => ({ c: () => "dotted" }),
+            a: () => ({ b: { c: () => "nested" } }),
+        }
+        const c = createRpcClient<typeof api>({ socket: cs, socketKey: "rpc" })
+        createRpcServer({ socket: ss, object: api, socketKey: "rpc" })
+        await delay(0)
+        await check("path-key: pipe dotted segment", () => (c.pipe["a.b"]() as any).c(), "dotted")
+        await check("path-key: pipe nested branch", () => (c.pipe.a() as any).b.c(), "nested")
+    }
+    { // dotted path keys: listen dedupe не смешивает "a.b".events и a.b.events
+        const [cs, ss] = createLoopback()
+        const [emitDotted, listenDotted] = UseListen<string>()
+        const [emitNested, listenNested] = UseListen<string>()
+        const obj = {
+            "a.b": { events: listenDotted },
+            a: { b: { events: listenNested } },
+        }
+        createRpcServerAuto({ socket: ss, object: obj, socketKey: "rpc" })
+        const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "rpc" })
+        await delay(0)
+        const L = webListen(c) as any
+        const dotted: string[] = [], nested: string[] = []
+        const offDotted = L["a.b"].events.on((v: string) => dotted.push(v))
+        const offNested = L.a.b.events.on((v: string) => nested.push(v))
+        await delay(10)
+        const keys = c.api.subscriptions().map(s => s.key)
+        emitDotted("dotted")
+        emitNested("nested")
+        await delay(10)
+        await check("path-key: listen subscriptions distinct", async () => ({ count: keys.length, unique: new Set(keys).size }), { count: 2, unique: 2 })
+        await check("path-key: listen events isolated", async () => [dotted, nested], [["dotted"], ["nested"]])
+        offDotted(); offNested()
+    }
+    { // dotted path keys: dynamic proxy получает "mystrategy.2020" одним prop, start следующим
+        const [cs, ss] = createLoopback()
+        const seen: string[] = []
+        const strategy = new Proxy({}, {
+            has: (_t, p) => p === "start",
+            get: (_t, p) => {
+                if (p === "start") { seen.push(String(p)); return () => seen.slice() }
+                return undefined
+            },
+        })
+        const map = noStrict(new Proxy({}, {
+            has: (_t, p) => typeof p == "string",
+            get: (_t, p) => { seen.push(String(p)); return strategy },
+        }))
+        const api = { map }
+        const c = createRpcClient<any>({ socket: cs, socketKey: "rpc" })
+        createRpcServer({ socket: ss, object: api, socketKey: "rpc" })
+        await delay(0)
+        await check("path-key: dynamic dotted prop", () => c.func.map["mystrategy.2020"].start(), ["mystrategy.2020", "start"])
     }
     { // mixed-version (P4): клиент игнорирует ЛИШНИЕ (будущие) элементы Pkt.MAP — forward-compat.
       // Старый сервер шлёт MAP из 4 элементов (так во всех остальных кейсах); здесь дописываем
@@ -883,118 +969,52 @@ export async function runHarness() {
     }
 
     // ===========================================================================
-    // wenay-common2 СЕТЕВОЙ СЛОЙ: events (UseListen / listen) + Observable.
+    // wenay-common2 СЕТЕВОЙ СЛОЙ: events + ObserveAll2.
     //
-    // Контракт из wenay-common2.md: «каждый узел Observable — это настоящий Listen
-    // через .listen() → падает в RPC / listen-deep без изменений». Здесь это ДОКАЗАНО
-    // боевым сокетом: узел живёт на сервере, клиент подписывается через тот же веб
-    // (.callback), мутация на сервере → дельты приходят клиенту корректно. .listen()
-    // несёт ТОЛЬКО будущие дельты (без реплея текущего значения), а граф холодный,
-    // пока нет листа-подписчика (cheap-until-subscribed) — оба инварианта проверены.
-    //
-    // Типизация: сервер-объект строим как const, клиент берёт его `typeof`, а
-    // webListen(c) проецирует Listen-узлы в подписочную поверхность — значения колбэков
-    // (включая Date/[key,value]/числа) выводятся ИЗ типа узла, без аннотаций и as any.
+    // Контракт для RPC тот же: серверный узел отдаёт настоящий Listen, клиент
+    // получает типизированную подписочную поверхность через listen-deep/webListen,
+    // off() снимает серверную подписку. Проверяем текущие публичные поверхности пакета.
     // ===========================================================================
-    console.log("--- wenay-common2 сеть: events + Observable через боевой сокет ---")
+    console.log("--- wenay-common2 сеть: events + ObserveAll2 через боевой сокет ---")
 
-    { // Observable.createCell — поток значения по сети + teardown (0↔1 подписки)
+    { // events.UseListen — поток значения по сети + teardown (0↔1 подписки)
         const [cs, ss] = createLoopback()
-        const cell = createCell(0)
-        const obj = { cell: cell.listen() }
+        const [emit, stream] = UseListen<number>()
+        const obj = {stream}
         const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "rpc" })
         createRpcServerAuto({ socket: ss, object: obj, socketKey: "rpc" })
         await delay(0)
         const got: number[] = []
-        const sub = webListen(c).cell.callback((v) => got.push(v))
+        const sub = webListen(c).stream.callback((v) => got.push(v))
         await delay(10)
-        cell.set(1); cell.set(2); cell.set(2); cell.set(3) // дубль set(2) глушится equals (Object.is)
+        emit(1); emit(2); emit(3)
         await delay(10)
-        await check("Cell: значения по сети", async () => got, [1, 2, 3])
-        await check("Cell: equals глушит дубль", async () => got.length, 3)
-        await check("Cell: одна сетевая подписка", async () => cell.listen().count(), 1)
+        await check("UseListen: значения по сети", async () => got, [1, 2, 3])
+        await check("UseListen: одна сетевая подписка", async () => stream.count(), 1)
         sub.unsubscribe()
         await delay(10)
         const n = got.length
-        cell.set(99)
+        emit(99)
         await delay(10)
-        await check("Cell: после отписки источник холодный (0)", async () => cell.listen().count(), 0)
-        await check("Cell: после отписки тиков нет", async () => got.length, n)
+        await check("UseListen: после отписки источник холодный (0)", async () => stream.count(), 0)
+        await check("UseListen: после отписки тиков нет", async () => got.length, n)
     }
-    { // Observable.createRObject — поток [key,value] всего объекта по сети
+    { // ObserveAll2.store.each — поток [key,value] изменённых верхних ключей по сети
         const [cs, ss] = createLoopback()
-        const robj = createRObject<{ a: number, b: number, c?: number }>({ a: 1, b: 2 })
-        const obj = { obj: robj.listen() }
+        const rows = createStore<Record<string, number>>({a: 1, b: 2}, {drain: "micro"})
+        const obj = {rows: rows.each()}
         const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "rpc" })
         createRpcServerAuto({ socket: ss, object: obj, socketKey: "rpc" })
         await delay(0)
         const got: [string, any][] = []
-        webListen(c).obj.callback((k, v) => got.push([k, v]))
+        webListen(c).rows.callback((k, v) => got.push([k, v]))
         await delay(10)
-        robj.set("a", 10); robj.set("c", 3)
-        await delay(10)
-        await check("RObject: [key,value] дельты по сети", async () => got, [["a", 10], ["c", 3]])
-    }
-    { // Observable.createRMap — [key,value]; delete эмитит undefined ⇒ null по сети
-        const [cs, ss] = createLoopback()
-        const rmap = createRMap<string, number>([["x", 1]])
-        const obj = { map: rmap.listen() }
-        const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "rpc" })
-        createRpcServerAuto({ socket: ss, object: obj, socketKey: "rpc" })
-        await delay(0)
-        const got: [string, any][] = []
-        webListen(c).map.callback((k, v) => got.push([k, v]))
-        await delay(10)
-        rmap.set("x", 5); rmap.set("y", 7); rmap.delete("x")
-        await delay(10)
-        await check("RMap: set/add дельты по сети", async () => got.slice(0, 2), [["x", 5], ["y", 7]])
-        await check("RMap: delete → null по сети", async () => got[2], ["x", null])
-    }
-    { // Observable.combine — производный граф ХОЛОДНЫЙ до листа, затем пушит по сети
-        const [cs, ss] = createLoopback()
-        const a = createCell(1), b = createCell(2)
-        const sum = combine([a, b], ([x, y]) => x + y)
-        const obj = { sum: sum.listen() }
-        const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "rpc" })
-        createRpcServerAuto({ socket: ss, object: obj, socketKey: "rpc" })
-        await delay(0)
-        await check("combine: граф холодный до подписки (0 upstream)", async () => [a.count(), b.count()], [0, 0])
-        const got: number[] = []
-        webListen(c).sum.callback((v) => got.push(v))
-        await delay(10)
-        await check("combine: подписка по сети завела upstream", async () => [a.count(), b.count()], [1, 1])
-        a.set(10); await delay(5); b.set(20)
-        await delay(10)
-        await check("combine: производные значения по сети", async () => got, [12, 30])
-    }
-    { // Observable.computed — производное над ОДНИМ источником по сети
-        const [cs, ss] = createLoopback()
-        const a = createCell(2)
-        const obj = { dbl: computed(a, x => x * 100).listen() }
-        const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "rpc" })
-        createRpcServerAuto({ socket: ss, object: obj, socketKey: "rpc" })
-        await delay(0)
-        const got: number[] = []
-        webListen(c).dbl.callback((v) => got.push(v))
-        await delay(10)
-        a.set(3); await delay(5); a.set(7)
-        await delay(10)
-        await check("computed: значения по сети", async () => got, [300, 700])
-    }
-    { // Observable.computedAuto — авто-трекинг зависимостей, значения по сети
-        const [cs, ss] = createLoopback()
-        const a = createCell(2), b = createCell(3)
-        const auto = computedAuto(use => use(a) + use(b))
-        const obj = { auto: auto.listen() }
-        const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "rpc" })
-        createRpcServerAuto({ socket: ss, object: obj, socketKey: "rpc" })
-        await delay(0)
-        const got: number[] = []
-        webListen(c).auto.callback((v) => got.push(v))
-        await delay(10)
-        a.set(10); await delay(5); b.set(20)
-        await delay(10)
-        await check("computedAuto: авто-deps значения по сети", async () => got, [13, 30])
+        rows.state.a = 10
+        rows.state.c = 3
+        delete rows.state.b
+        await flushReactive(rows.state); await delay(10)
+        await check("store.each: [key,value] дельты по сети", async () => got, [["a", 10], ["c", 3], ["b", null]])
+        await check("store.each: одна сетевая подписка", async () => obj.rows.count(), 1)
     }
     { // events.UseListenTransform — map+filter (null пропускает событие) по сети
         const [cs, ss] = createLoopback()
@@ -1185,59 +1205,60 @@ export async function runHarness() {
         await check("cookbook: stateful-сервис по сети", () => c.func.getLimit("BTC"), 100)
     }
     { // 2) СЛЕДИТЬ ЗА МЕНЯЮЩИМСЯ ЗНАЧЕНИЕМ в реальном времени (push, не поллинг).
-      //    Делаем: сервер держит состояние как ОБЫЧНЫЙ объект (createReactive) — пишем `md.price = 101`,
-      //    а клиент .on(cb) сам получает КАЖДОЕ новое значение. listenValue(md,'price') — поток поля для RPC.
-      //    off() — перестать следить (серверная подписка снимется).
+      //    Делаем: сервер держит обычный UseListen-поток, а клиент .on(cb) получает
+      //    каждое новое значение. off() — перестать следить (серверная подписка снимется).
       //    Нужно когда: тикер цены, статус задачи, прогресс, онлайн-счётчик.
         const [cs, ss] = createLoopback()
-        const md = createReactive({ price: 100 })          // обычный объект
-        const obj = { price: rxListenValue(md, "price") }  // поле как поток для RPC
+        const [emitPrice, price] = UseListen<number>()
+        const obj = { price }
         createRpcServerAuto({ socket: ss, object: obj, socketKey: "md" })
         const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "md" })
         await delay(0)
         const ticks: number[] = []
         const off = webListen(c).price.on((v) => ticks.push(v))
         await delay(5)
-        md.price = 101; md.price = 102                      // ← просто присваиваем
+        emitPrice(101); emitPrice(102)
         await delay(10)
         off() // отписка — серверная подписка снимается, фид останавливается
         const after = ticks.length
-        md.price = 103; await delay(10)
+        emitPrice(103); await delay(10)
         await check("cookbook: live-фид + off()", async () => [ticks, ticks.length == after], [[101, 102], true])
     }
     { // 3) ДЕРЖАТЬ У КЛИЕНТА АКТУАЛЬНУЮ КОПИЮ серверной коллекции (свободно добавляем/меняем/удаляем).
-      //    Делаем: на сервере вложенный объект в createReactive; меняем его как ОБЫЧНЫЙ объект
-      //    (`book.positions.BTC = 2`, `delete book.positions.BTC`) — а клиенту прилетают только ДЕЛЬТЫ
-      //    (что добавилось/изменилось/удалилось), и он сам поддерживает зеркало. delete приезжает как null.
-      //    listen(book,'positions') — поток дельт коллекции. Нужно когда: таблица/список живёт на сервере.
+      //    Делаем: на сервере ObserveAll2 store; меняем его как обычный объект
+      //    (`book.state.BTC = 2`, `delete book.state.BTC`) — а клиенту прилетают только
+      //    дельты изменённых ключей. delete приезжает как null после JSON-провода.
+      //    store.each() — поток per-key дельт коллекции. Нужно когда: таблица/список живёт на сервере.
         const [cs, ss] = createLoopback()
-        const book = createReactive<{ positions: Record<string, number> }>({ positions: {} })
-        const obj = { positions: rxListen(book, "positions") }   // дельты коллекции для RPC
+        const book = createStore<Record<string, number>>({}, {drain: "micro"})
+        const obj = { positions: book.each() }
         createRpcServerAuto({ socket: ss, object: obj, socketKey: "pos" })
         const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "pos" })
         await delay(0)
         const mirror = new Map<string, number>()
         webListen(c).positions.callback((k, v) => { if (v == null) mirror.delete(k); else mirror.set(k, v) })
         await delay(5)
-        book.positions["BTC"] = 2; book.positions["ETH"] = 5; delete book.positions["BTC"]  // ← как обычный объект (динамические ключи → скобки)
-        await delay(10)
+        book.state.BTC = 2; book.state.ETH = 5; delete book.state.BTC
+        await flushReactive(book.state); await delay(10)
         await check("cookbook: зеркало коллекции по сети", async () => [...mirror], [["ETH", 5]])
     }
     { // 4) СЧИТАТЬ ПРОИЗВОДНОЕ НА СЕРВЕРЕ, слать клиенту уже готовый результат.
-      //    Делаем: notional = price*qty собирается из двух источников (combine); при изменении ЛЮБОГО
-      //    входа пересчёт идёт на сервере, а клиент получает только итог. Нужно когда: не хочешь тянуть
-      //    сырьё и считать на клиенте (агрегаты, суммы, PnL) — логика и пересчёт живут в одном месте.
+      //    Делаем: notional = price*qty считается на сервере при изменении входов,
+      //    а клиент получает только итог. Нужно когда: не хочешь тянуть сырьё и считать
+      //    на клиенте (агрегаты, суммы, PnL) — логика и пересчёт живут в одном месте.
         const [cs, ss] = createLoopback()
-        const price = createCell(10), qty = createCell(3)
-        const notional = combine([price, qty], ([p, q]) => p * q)
-        const obj = { notional: notional.listen() }
+        const [emitNotional, notional] = UseListen<number>()
+        let price = 10
+        let qty = 3
+        const send = () => emitNotional(price * qty)
+        const obj = { notional }
         createRpcServerAuto({ socket: ss, object: obj, socketKey: "calc" })
         const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "calc" })
         await delay(0)
         const got: number[] = []
         webListen(c).notional.callback((v) => got.push(v))
         await delay(5)
-        price.set(20); await delay(5); qty.set(4)
+        price = 20; send(); await delay(5); qty = 4; send()
         await delay(10)
         await check("cookbook: derived-метрика по сети", async () => got, [60, 80])
     }

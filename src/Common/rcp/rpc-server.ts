@@ -3,6 +3,7 @@ import { isSafeKey, resolveLimits, PayloadLimitError, type RpcLimits } from "./r
 import {unpack, errToObj, packResult} from "./rpc-walk";
 import { isPlainObject, createCbShapeServer } from "./rpc-shape";
 import { Pkt, IS_RPC_LISTEN, type SocketTmpl } from "./rpc-protocol";
+import { rpcPathKey } from "./rpc-path";
 import { Caps, hasCap, optToCaps, type tCaps, type RpcOpt } from "./rpc-caps";
 import { MyError } from "../../toError/myThrow";
 
@@ -86,27 +87,28 @@ function createServer<T extends object>(
     // Таблицы диспетчеризации перестраиваются при смене principal (re-auth) → держим в let.
     let methods: Function[] = [];
     let contexts: any[] = [];
+    let methodPaths: string[][] = [];
     let routeMap: Record<string, number> = {};
     let listenPaths: string[] = []; // адреса Listen-узлов — декларируются клиенту в Pkt.MAP (4-й элемент)
     let strictSchema: any = {};
     let currentTarget: any = target; // активный объект (фасад текущего principal)
 
     function buildDispatch(t: any) {
-        const m: Function[] = [], cx: any[] = [], rm: Record<string, number> = {}, lp: string[] = [];
+        const m: Function[] = [], cx: any[] = [], paths: string[][] = [], rm: Record<string, number> = {}, lp: string[] = [];
         const resolved = transformTree(t);
-        (function index(obj: any, prefix: string) {
+        (function index(obj: any, prefix: string[]) {
             for (const k of Object.keys(obj)) {
                 if (!isSafeKey(k)) continue;
                 const v = obj[k];
-                const path = prefix ? prefix + "." + k : k;
-                if (typeof v == "function") { rm[path] = m.length; m.push(v); cx.push(obj); }
+                const path = [...prefix, k];
+                if (typeof v == "function") { rm[rpcPathKey(path)] = m.length; m.push(v); cx.push(obj); paths.push(path); }
                 else if (v && typeof v == "object" && !isNoStrict(v)) {
-                    if (hasRpcListen(v)) lp.push(path);
+                    if (hasRpcListen(v)) lp.push(rpcPathKey(path));
                     index(v, path);
                 }
             }
-        })(resolved, "");
-        methods = m; contexts = cx; routeMap = rm; listenPaths = lp; strictSchema = serialize(resolved); currentTarget = t;
+        })(resolved, []);
+        methods = m; contexts = cx; methodPaths = paths; routeMap = rm; listenPaths = lp; strictSchema = serialize(resolved); currentTarget = t;
     }
     buildDispatch(target);
 
@@ -217,7 +219,7 @@ function createServer<T extends object>(
                     if (wait) send([Pkt.RESP, reqId, null, errToObj(new PayloadLimitError("path too long"))]);
                     return;
                 }
-                const idx = routeMap[ref.join(".")];
+                const idx = routeMap[rpcPathKey(ref)];
                 if (idx !== undefined) {
                     fn = methods[idx]; ctx = contexts[idx];
                 } else {
@@ -243,7 +245,7 @@ function createServer<T extends object>(
 
             if (hooks?.onRequest) {
                 const keyArr = typeof ref == "number"
-                    ? Object.keys(routeMap).find(k => routeMap[k] == ref)?.split(".") ?? []
+                    ? methodPaths[ref] ?? []
                     : ref;
                 const allowed = await hooks.onRequest({ key: keyArr, request: rawArgsOrSteps, fnName: keyArr[keyArr.length - 1] ?? "", fn: fn as Func });
                 if (allowed == false) {

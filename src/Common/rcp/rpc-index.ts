@@ -5,6 +5,7 @@ export * from "./rpc-off";
 export * from "./listen-deep";
 export * from "./rpc-dynamic";
 export * from "./rpc-protocol";
+export * from "./rpc-path";
 export * from "./rpc-caps";
 export * from "./rpc-limits";
 export * from "./rpc-walk";

@@ -65,7 +65,7 @@ function test2() {
         console.log(ro[k], k, v) // 1 "a" 1
     }
 
-    // ── Read-Write с observable ──
+    // ── Read-Write с onChange ──
     const rw = createIterableObject({
         resolve: () => storage,
         onChange(type, key, value) {

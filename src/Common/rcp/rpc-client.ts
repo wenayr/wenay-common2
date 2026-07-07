@@ -1,4 +1,5 @@
 import { Pkt, type SocketTmpl } from "./rpc-protocol";
+import { rpcPathKey } from "./rpc-path";
 import {createIdPool, type idPool} from "../id-pool";
 import {pack, resolveCA, unpackResult} from "./rpc-walk";
 import {resolveLimits, type RpcLimits} from "./rpc-limits";
@@ -274,7 +275,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             }
             return step;
         });
-        const ref: number | string[] = routeCache[path.join(".")] ?? path;
+        const ref: number | string[] = routeCache[rpcPathKey(path)] ?? path;
 
         if (!wait) {
             socket.emit(key, [Pkt.PIPE, 0, ref, cleanSteps, false]);
@@ -339,7 +340,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         if (disposed) return wait ? Promise.reject(new Error("RPC client disposed")) : Promise.resolve();
         const cbIds: number[] = [];
         const clean = pack(args, pool, callbacks, cbIds);
-        const ref: number | string[] = routeCache[path.join(".")] ?? path;
+        const ref: number | string[] = routeCache[rpcPathKey(path)] ?? path;
 
         if (!wait) {
             socket.emit(key, [Pkt.CALL, 0, ref, clean, false]);
@@ -370,7 +371,8 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         if (disposed) return Promise.reject(new Error("RPC client disposed"));
         // dedup по АДРЕСУ УЗЛА (path без имени метода) — .on и .callback на один Listen-узел
         // с теми же аргументами делят ОДНУ сетевую подписку. Сам вызов уходит проводом как есть.
-        const skey = path.slice(0, -1).join(".") + "::" + JSON.stringify(args.map(listenKeyArg));
+        const listenPathKey = rpcPathKey(path.slice(0, -1));
+        const skey = listenPathKey + "::" + JSON.stringify(args.map(listenKeyArg));
         let sub = wireSubs.get(skey);
         if (!sub) {
             const created: tSub = { consumers: new Set(), stop: () => {} };
@@ -426,7 +428,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         if (dedupe && wait && path.length > 1 && (last == "callback" || last == "on") && args.some(a => typeof a == "function")) {
             // точно: сервер задекларировал адрес как Listen (Pkt.MAP[3]);
             // fallback для старого сервера — эвристика по форме маршрута `*.callback(fn)`/`*.on(fn)`
-            const isListen = declaredListens ? declaredListens.has(path.slice(0, -1).join(".")) : true;
+            const isListen = declaredListens ? declaredListens.has(rpcPathKey(path.slice(0, -1))) : true;
             if (isListen) return subscribeShared(path, args);
         }
         return sendCallWire(path, args, wait);

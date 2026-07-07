@@ -196,6 +196,12 @@ ObserveAll2.syncStoreReplayEach<T>(remote, (key, value, ctx) => {}, opts?) -> of
   // off() tears down BOTH the store sub and the wire sub; direct reads via off.store.state.KEY
   // reconnect: syncStoreReplayEach(remote, cb, {since: prev.seq(), initial: prev.store.snapshot()})
   //   — the tail lands ON TOP of the previous state (a fresh empty mirror would not converge)
+// Offline persisted mirror (snapshot mode): local cache first, then replay catch-up by seq
+ObserveAll2.createOfflineStore({key, remote?, initial, storage, version?, debounceMs?, syncOpts?}) -> Promise<store & {ready, flush(), close(), status(), statusListen, reconnect(remote)}>
+ObserveAll2.persistStore(store, {key, storage, seq?, debounceMs?}) -> {flush, forceFlush, close, setSeq, seq, status, statusListen}
+ObserveAll2.createMemoryOfflineStorage(initial?) -> OfflineStorage
+  // persists {version, seq, snapshot, savedAt}; seq is the correctness coordinate, timestamps are UX/freshness only
+  // mode:'topLevel' is reserved; first implemented mode is snapshot
 // Slow-client conflation: recipe section 🎞️ below. Full generic surface (any event line, history/time-travel) -> Replay namespace, 🎞️ in rare docs.
 // Object add/delete/deep set are paths. Array mutation dirties the whole array branch, not splice internals.
 ```
@@ -229,8 +235,21 @@ await feed.ready                                   // catch-up done: keyframe ar
 feed.store.state                                   // the mirror — direct reads / extra subscriptions
 feed()                                             // tears down the store sub AND the wire sub
 // reconnect later: syncStoreReplayEach(remote, cb, {since: feed.seq(), initial: feed.store.snapshot()})
+// offline persisted mirror — cached snapshot first, then replay catch-up over the same remote
+const offline = await ObserveAll2.createOfflineStore<Rows>({
+    key: "rows",
+    remote: exposed.api.replay,
+    initial: {},
+    storage: ObserveAll2.createMemoryOfflineStorage(), // use IndexedDB/SQLite adapter in an app
+    debounceMs: 250,
+})
+offline.each().on((key, row) => {})
+await offline.ready
+await offline.flush()
+offline.close()
 ```
 Runnable example: `npx tsx observable2/store-mirror.example.ts`.
+Offline oracles: `npx tsx replay/offline-store.test.ts`; real Socket.IO/RPC wire: `npx tsx replay/offline-store-socket.test.ts`.
 
 ## 🎞️ Fast ticks vs slow client — replay lines + server-owned lag gate (recipe)
 > The problem: the producer emits faster than a bad link drains. Naive streaming grows an unbounded

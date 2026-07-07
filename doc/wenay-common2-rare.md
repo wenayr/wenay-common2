@@ -188,6 +188,25 @@ RpcLimits (opt, per server/client): maxDepth 32 · maxKeys 1000 · maxArgs 64 ·
 //   CreatAPIFacadeServerOld->createAPIFacadeServer ; CreatAPIFacadeClientOld & funcPromiseServer2 kept as-is
 ```
 
+### RPC dynamic maps: prefer `noStrict` for personal/runtime keys
+Use `noStrict(obj)` for user-scoped or runtime-keyed objects whose children are not a stable API schema: strategy maps, account maps, ORM/DB proxies, per-session private objects. The name is exactly `noStrict`.
+
+```ts
+return {
+  strategies: noStrict(strategyByName),
+}
+
+await client.func.strategies["mystrategy.2020"].start()
+```
+
+Contract:
+- `noStrict` stops schema walking and routeMap indexing below that object; the server resolves properties at call time.
+- It is not an access-control boundary and does not bypass safe-key/path limits. Validate user-owned names in your facade if they are security-sensitive.
+- RPC paths are arrays of string segments. `"mystrategy.2020"` is one segment, so the call above is `["strategies", "mystrategy.2020", "start"]`, not `["strategies", "mystrategy", "2020", "start"]`.
+- The failure mode to avoid is treating `path.join(".")` as identity: `["a.b", "c"]` and `["a", "b", "c"]` both display as `a.b.c` but are different RPC paths.
+- Static dotted keys are also supported: `api["a.b"].c` is distinct from `api.a.b.c`. Internal route/listen/cache identity must stay lossless; dotted strings are only a debug display form.
+- If a branch is a fixed public API, keep it strict. If a branch is a personal/dynamic keyspace, wrap that branch in `noStrict` instead of trying to publish all current keys as schema.
+
 ## 📈 exchange — params (`CParams`)
 ```
 class CParams / CParamsReadonly implements IParams
@@ -340,11 +359,6 @@ npx tsx observable2/listen-store.test.ts
 npx tsx observable2/store.test.ts
 npx tsx observable2/store-mirror.example.ts
 ```
-## 🧪 Legacy reactive sandbox (`observable/`, not public API)
-> The old `observable/` tree remains in the repo for regression/sandbox work only.
-> Do not document it as package API and do not teach it in new examples. Use root-exported `ObserveAll2` instead.
-> Existing tests may still import `observable/*` directly while the replacement surface settles.
-
 ## 🎞️ Replay — snapshot + sequenced delta line
 > Keyframe + seq-numbered deltas + recovery via a fresh keyframe — one pattern for store sync,
 > ticks and video-like frame streams. `import { Replay } from "wenay-common2"` or
@@ -392,6 +406,14 @@ exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?, staleMs?
   //   A since-tail's historical ts never flaps mid-catch-up (one assessment after handover); off() disarms the timer.
 exposeStoreReplay(store, opts?)  <->  syncStoreReplay(mirror, remote, opts?)            // layer B: patch line; keyframe = root patch ({path: [], value: snapshot})
 syncStoreReplayEach<T>(remote, cb, opts?) -> off & {store, ready, seq(), isStale(), lastTs()}   // one-call per-key fold over the patch line (mirror + syncStoreReplay + store.each()); most-used surface — full contract + example in wenay-common2.md
+createOfflineStore({key, remote?, initial, storage, version?, debounceMs?, syncOpts?}) -> Promise<OfflineStore<T>>
+  // snapshot-mode persisted mirror: read local {version,seq,snapshot,savedAt}, create a normal Store immediately,
+  // then syncStoreReplay(..., {since: savedSeq}) when remote exists. reconnect(remote) attaches later after offline start.
+persistStore(store, {key, storage, seq?, debounceMs?}) -> control
+  // durable writes are snapshot+seq in one record; flush()/forceFlush(); statusListen emits ready/syncing/offline/stale/saving.
+createMemoryOfflineStorage(initial?) -> OfflineStorage & {dump()}
+  // test/reference adapter. Browser IndexedDB/SQLite/file storage should implement the same OfflineStorage lambdas.
+  // Real wire oracle: `npx tsx replay/offline-store-socket.test.ts` (Socket.IO + RPC + persisted cache).
 conflateReplay(replay, {pending, highWater, lowWater?, pollMs?, keyOf?, maxKeys?}) -> {api, close, stats}  // layer D.1: per-connection gate — pending() over highWater -> deltas DROP (never queue);
   // drained -> fresh keyframe on the SAME line, seq dedup cuts the overlap; pending() = e.g. socket.conn.writeBuffer.length
   // build per connection where the rpc server is built; api spreads in place of exposeReplay(...); close() on disconnect
@@ -408,14 +430,14 @@ openHistory(storage, live?) -> {at({seq?|ts?}?), subscribe(cb, {since?|ts?, onSe
 storeReplayAt(storage, {seq?|ts?}?) -> snapshot | undefined                              // store time machine: bit-exact state at any archived moment (same applyStorePatch mechanism)
 ```
 > Killer property: a lagging/late/stalled consumer never gets a queue backlog — evicted seq / full outgoing buffer -> fresh keyframe + live from it.
-> Files: `src/Common/events/replay-{listen,wire,conflate,history,index}.ts` + `src/Common/ObserveAll2/store-replay.ts`;
+> Files: `src/Common/events/replay-{listen,wire,conflate,history,index}.ts` + `src/Common/ObserveAll2/store-{replay,offline}.ts`;
 > everything is additive (Listen3 gained only `registerListenOn`/`ListenOnBrand`; Listen2/exposeStore/mirror untouched).
-> Oracles: `npx ts-node replay/<f>.ts` — replay-listen / store-replay / socket-replay / conflate / conflate-socket / coalesce / history / staleness / canvas-socket (raw bytes) / video-socket.demo;
+> Oracles: `npx ts-node replay/<f>.ts` — replay-listen / store-replay / offline-store / socket-replay / offline-store-socket / conflate / conflate-socket / coalesce / history / staleness / canvas-socket (raw bytes) / video-socket.demo;
 > wire coverage also lives in the RPC harness cookbook (`npm run test:rpc`).
 
 ## 🔁 ObserveAll2 — coarse reactive object (`ObserveAll2`, fact-based)
 > `import { ObserveAll2 } from "wenay-common2"` → `ObserveAll2.reactive(...)`.
-> Different from the old `observable/` sandbox: no public deltas, no string-path event API, no computed graph in core.
+> Coarse fact-based core: no public deltas, no string-path event API, no computed graph in core.
 > Subscribe to the fact that a subtree changed, then re-read the current state.
 ```
 const state = ObserveAll2.reactive({
