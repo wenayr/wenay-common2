@@ -3,7 +3,7 @@ import {tServerRegru} from "./common/regru";
 import {getPm2Info} from "./common/pm2";
 import {getServerAdmin} from "./facade/facade4";
 import {
-    funcListenCallback, toError, PromiseResult, UseListen, listenSocket, listenSocketFirst, DeepDataOnly,
+    createListen, toError, PromiseResult, listen, listenSocket, listenSocketFirst, DeepDataOnly,
     ArrayElementType
 } from "wenay-common2";
 import {getLogsBy} from "./utils/getLogsBy";
@@ -53,7 +53,7 @@ type ty<T extends (...a: any) => any> = Omit<Parameters<T>[0], "userId">
 /** Основной фасад */
 export function getFacadeServerAdmin(
     api: ReturnType<typeof getServerAdmin> & { save: (a: { k: any; v: any }[]) => Promise<void> | void },
-    listenStop: ReturnType<typeof UseListen<void>>[1],
+    listenStop: ReturnType<typeof listen<void>>[1],
     isAdmin_: boolean,
     username_: string
 ) {
@@ -62,7 +62,7 @@ export function getFacadeServerAdmin(
     const userRole = isAdmin ? Number.MAX_VALUE : userRoles[api.data.users[userId]?.role ?? "guest"];
     const checkExist = (id: string | number) => checkServerExist(api.data, isAdmin, userId, id);
 
-    const [log, logSession] = UseListen<[typeLogs]>()
+    const [log, logSession] = listen<[typeLogs]>()
     const logSystem = getLogsBy({base: () => ({txt: "", time: new Date(), id: 'system', type1: userId, var: 5}), log})
     const logError = getLogsBy({base: () => ({txt: "", time: new Date(), id: 'error', type1: userId, var: 13}), log})
     console.log(api.data);
@@ -94,8 +94,8 @@ export function getFacadeServerAdmin(
     /** Проверка роли */
     const role = (...r: typeUser[]) => (checkUserRole(userRole, r) ? true : null);
     /** Обёртка для сокетов, чтобы фильтровать данные по доступности серверов */
-    function connect<T extends any[]>(original: ReturnType<typeof funcListenCallback<T>>) {
-        const res = listenSocket<T>(original, { addListenClose: listenStop });
+    function connect<T extends any[]>(original: ReturnType<typeof createListen<T>>) {
+        const res = listenSocket<T>(original, { closeOn: listenStop });
         if (isAdmin) return res;
 
         const on = (fn: Parameters<typeof res.on>[0]) => {
@@ -115,17 +115,17 @@ export function getFacadeServerAdmin(
     }
     const commentsMy = saveCommentById(userId);
     // Подписка на параметры
-    const [params, paramsListen] = UseListen<[Parameters<Parameters<typeof api.server.params.listen.addListen>[0]>[0]]>();
-    // addListen на ГЛОБАЛЬНЫЙ стрим — без отписки держал бы весь фасад сессии (+ deepClone) в памяти
+    const [params, paramsListen] = listen<[Parameters<Parameters<typeof api.server.params.listen.on>[0]>[0]]>();
+    // on на ГЛОБАЛЬНЫЙ стрим — без отписки держал бы весь фасад сессии (+ deepClone) в памяти
     // навсегда. Снимаем по дисконнекту сессии (listenStop).
-    const offParams = api.server.params.listen.addListen((e) => {
+    const offParams = api.server.params.listen.on((e) => {
         if (checkExist(e.id)) params(e);
     });
-    listenStop.addListen(offParams);
+    listenStop.on(offParams);
 
     // Подписка на сервера
-    const [callbackServers, getCallbackServers] = UseListen<[tServerRegru[]]>();
-    const sc = listenSocketFirst(api.onCallbackServers, { addListenClose: listenStop });
+    const [callbackServers, getCallbackServers] = listen<[tServerRegru[]]>();
+    const sc = listenSocketFirst(api.onCallbackServers, { closeOn: listenStop });
     sc.on((servers) => {
         callbackServers(isAdmin ? servers : servers.filter((s) => checkExist(s.id)));
     });

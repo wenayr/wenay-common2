@@ -1,1 +1,1 @@
-export * from '../src/Common/ObserveAll2/reactive2';
+export * from '../src/Common/Observe/reactive2';

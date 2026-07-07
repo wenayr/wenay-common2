@@ -39,6 +39,7 @@
   "exclude": [
     "**/*.spec.ts",
     "./src/Common/rcp/exampleWebFacade.ts",
+    "./src/Common/rcp/test.ts",
     "./noBuild/**/*",
     "node_modules",
     "../node_modules",

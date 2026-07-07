@@ -1,11 +1,11 @@
-import { isListenCallback, funcListenCallbackBase, isListenOn, getListenByOn } from "../events/Listen";
+import { isListenCallback, createListen, isListenOn, getListenByOn } from "../events/Listen";
 import { IS_REPLAY_LISTEN } from "../events/replay-listen";
 import { listenSocket, } from "./listen-socket";
 import { createRpcServer, type PromiseServerHooks, type RpcLimits, type RpcServerAuth, type RpcOpt } from "./rpc-server";
 import {DeepSocketListen} from "./listen-deep";
 import {SocketTmpl, IS_RPC_LISTEN, RPC_STOP} from "./rpc-protocol";
 
-type ListenCallbackBase<T extends any[] = any[]> = ReturnType<typeof funcListenCallbackBase<T>>;
+type ListenCallbackBase<T extends any[] = any[]> = ReturnType<typeof createListen<T>>;
 
 /** Серверные пороги ворот лага для 'frame'-подписчиков (Feature B). Единицы pending()
  *  и порогов — одни и те же (байты/пакеты/кадры — что даёт транспорт). */
@@ -52,7 +52,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
     // подписке (его callback заменяет last/active). Мультиплексор: каждый подписчик
     // получает собственный listenSocket; записи чистятся по завершении подписки.
     // Кэш по ИДЕНТИЧНОСТИ Listen-узла. Важно для re-auth: фасады разных principal должны
-    // переиспользовать ОДИН и тот же Listen-объект (один UseListen-хендл), иначе при смене principal
+    // переиспользовать ОДИН и тот же Listen-объект (один listen-хендл), иначе при смене principal
     // старая серверная подписка не снимается и продолжает слать события. Чтобы СМЕНИТЬ видимость
     // стрима у клиента — переподключение (dispose+reconnect), а не reauth по живому сокету.
     const cache = new WeakMap<object, ReturnType<typeof listenSocket>>();
@@ -86,7 +86,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                 // ленивая (ре-)регистрация узла при РЕАЛЬНОЙ подписке — переживает drain→re-sub
                 if (!registry.has(parent)) registry.set(parent, { subs });
                 subs.get(z)?.off();
-                const w = listenSocket(parent, { addListenClose: disconnectListen, throttle: nodeThrottle });
+                const w = listenSocket(parent, { closeOn: disconnectListen, throttle: nodeThrottle });
                 subs.set(z, w);
                 const done = w.on(z);
                 done.then(() => {
@@ -101,7 +101,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                 if (maxPerListen != null && subs.size >= maxPerListen) return Promise.resolve();
                 if (!registry.has(parent)) registry.set(parent, { subs });
                 subs.get(z)?.off();
-                const w = listenSocket(parent, { addListenClose: disconnectListen, throttle: nodeThrottle });
+                const w = listenSocket(parent, { closeOn: disconnectListen, throttle: nodeThrottle });
                 let fired = false;
                 const oneShot = (...a: any[]) => {
                     if (fired) return;
@@ -167,16 +167,14 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
     function hookGateTeardown() {
         if (gatesHooked || !disconnectListen) return;
         gatesHooked = true;
-        const dl: any = disconnectListen;
-        if (typeof dl.on == "function") dl.on(closeAllGates);
-        else dl.addListen(closeAllGates);
+        disconnectListen.on(closeAllGates);
     }
 
     function gatedLineNode(parent: any) {
         const { pending: pendingOpt, highWater = Infinity, lowWater = 0, pollMs = 25 } = replayOpts ?? {};
         const pending = pendingOpt ?? (() => (socket as any)?.conn?.writeBuffer?.length ?? 0);
         // персональная линия конвертов этого соединения за воротами
-        const out = funcListenCallbackBase<any[]>(() => {});
+        const out = createListen<any[]>(() => {});
         out.run();
         let lastSent: number = typeof parent.head == "function" ? parent.head() : 0;
         let gated = false;
@@ -201,7 +199,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
             if (debug) console.error("[rpc replay gate] frame recovery failed:", e);
             const emitStop = !closed;
             close();
-            if (emitStop) out.func(RPC_STOP);
+            if (emitStop) out.emit(RPC_STOP);
             (out as any).close?.();
         }
         function recoverIfDrained() {
@@ -214,7 +212,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
             catch (e) { fail(e); return; }
             for (const ev of envs) {
                 if (ev.seq > lastSent) lastSent = ev.seq;
-                out.func(ev);
+                out.emit(ev);
             }
         }
         const offLine = parent.line.on(function gateForward(ev: any) {
@@ -224,7 +222,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
             // всё ещё заперто → конверт дропается, frame(lastSent) его перекроет
             if (gated) { recoverIfDrained(); return; }
             lastSent = ev.seq;
-            out.func(ev);
+            out.emit(ev);
         });
         gateClosers.add(close);
         hookGateTeardown();

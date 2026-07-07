@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "1.0.61",
+  "version": "1.0.62",
   "description": "Common library",
   "strict": true,
   "main": "lib/index.js",
@@ -53,8 +53,7 @@
   },
   "exports": {
     ".": "./lib/index.js",
-    "./observe-all2": "./lib/Common/ObserveAll2/index.js",
-    "./listen2": "./lib/Common/events/Listen2.js",
+    "./observe": "./lib/Common/Observe/index.js",
     "./replay": "./lib/Common/events/replay-index.js",
     "./lib/client": "./lib/client.js",
     "./lib/server": "./lib/server.js",

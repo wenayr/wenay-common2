@@ -3,7 +3,7 @@
 //  (2) 50+ concurrent subscribers + 100+ high-freq ticks — no loss, clean teardown to 0.
 //  (3) mixed concurrent calls + streams.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
-import {UseListen} from '../../src/Common/events/Listen'
+import {listen as createListenPair} from '../../src/Common/events/Listen'
 
 const PORT = 4111
 
@@ -15,8 +15,8 @@ let emitTick: ((n: number) => void) | null = null   // stream A: high-frequency 
 let emitMix: ((n: number) => void) | null = null     // stream B: used in the mixed test
 
 function makeObject() {
-    const [tick, tickListen] = UseListen<number>()
-    const [mix, mixListen] = UseListen<number>()
+    const [tick, tickListen] = createListenPair<number>()
+    const [mix, mixListen] = createListenPair<number>()
     emitTick = tick
     emitMix = mix
     return {

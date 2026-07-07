@@ -1,14 +1,14 @@
 // REAL-SOCKET dedupe: subscription dedupe + refcount + server stats + cap. Port 4106.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
-import {UseListen} from '../../src/Common/events/Listen'
+import {listen as createListenPair} from '../../src/Common/events/Listen'
 
 const PORT = 4106
 
 // One stream node per facade; emit pushes a value to whoever subscribed.
 // `feed` is a server-side method the client can call to drive an emission.
 function makeObject() {
-    const [emitA, listenA] = UseListen<number>()
-    const [emitB, listenB] = UseListen<number>()
+    const [emitA, listenA] = createListenPair<number>()
+    const [emitB, listenB] = createListenPair<number>()
     return {
         // The Listen handle itself IS the node; resolveTransform turns it into
         // {callback, removeCallback}, so the wire path is `streamA.callback`.

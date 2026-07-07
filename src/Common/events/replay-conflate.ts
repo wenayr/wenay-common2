@@ -33,7 +33,7 @@
 //     disconnect → gated.close()
 // Однострочная альтернатива — exposeReplay(replay, {conflate: opts}) в replay-wire.
 
-import {funcListenCallbackBase, NormalizeTuple} from './Listen3'
+import {createListen, NormalizeTuple} from './Listen3'
 import {ListenReplayApi, ReplayEvent} from './replay-listen'
 
 export type ConflateOpts<Z extends any[] = any[]> = {
@@ -47,7 +47,7 @@ export type ConflateOpts<Z extends any[] = any[]> = {
     pollMs?: number
     /**
      * @deprecated Уплотнение переехало на линию: объявите `frame` в опциях
-     * UseReplayListen/withReplayListen (там же, где current) — его подхватят и эти ворота
+     * replayListen/withReplayListen (там же, где current) — его подхватят и эти ворота
      * (recovery через replay.frame), и авто-путь rpc-server-auto, и клиентский catch-up.
      * keyOf-механика (held-карта) остаётся рабочей для старых вызовов.
      *
@@ -68,7 +68,7 @@ export function conflateReplay<T>(replay: ListenReplayApi<T>, opts: ConflateOpts
     if (!replay.hasKeyframe) throw new TypeError('conflateReplay: нужен current-провайдер (keyframe recovery)')
 
     // персональная линия конвертов этого клиента
-    const gate = funcListenCallbackBase<[ReplayEvent<Z>]>(() => {})
+    const gate = createListen<[ReplayEvent<Z>]>(() => {})
     gate.run()
 
     let conflating = false
@@ -101,12 +101,12 @@ export function conflateReplay<T>(replay: ListenReplayApi<T>, opts: ConflateOpts
             const tail = [...held.values()]
             held = null
             flushes++
-            for (const ev of tail) gate.func(ev)
+            for (const ev of tail) gate.emit(ev)
             return
         }
         const kf = replay.keyframe()
         // kf.seq == head → дедуп клиента по seq сам вырежет перекрытие с дальнейшими дельтами
-        if (kf) { keyframes++; gate.func(kf as ReplayEvent<Z>) }
+        if (kf) { keyframes++; gate.emit(kf as ReplayEvent<Z>) }
     }
     // поглотить конверт в карту эпизода; не схлопывается → деградация до keyframe-режима
     function absorb(ev: ReplayEvent<Z>) {
@@ -138,7 +138,7 @@ export function conflateReplay<T>(replay: ListenReplayApi<T>, opts: ConflateOpts
             if (conflating) dropped++
             return
         }
-        gate.func(ev)
+        gate.emit(ev)
     })
 
     function close() {

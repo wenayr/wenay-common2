@@ -1,29 +1,29 @@
-// REAL-SOCKET slimv2: NEW slim Listen v2 (UseListen2) — unit-surface + end-to-end wire. Port 4110.
+// REAL-SOCKET slimv2: NEW slim Listen v2 (slimListen) — unit-surface + end-to-end wire. Port 4110.
 //
 // FINDING (verified against source, see notes in ##RESULT##):
 //   isListenCallback() in src/Common/events/Listen.ts identifies a "listen" by
-//   STRUCTURAL key-set equality against funcListenCallbackBase's full api
-//   (func/isRun/run/close/eventClose/removeEventClose/addListen/removeListen/count/getAllKeys).
-//   A slim Listen2 exposes only {on, close, count}, so isListenCallback(listen2) === false
-//   and rpc-server-auto's resolveTransform will NOT treat a bare Listen2 as a stream node.
-//   Therefore the WIRE part uses the FULL listen handle (the one UseListen2 wraps), while the
+//   STRUCTURAL key-set equality against createListen's full api
+//   (func/isRun/run/close/onClose/on/off/count/keys()).
+//   A slim SlimListen exposes only {on, close, count}, so isListenCallback(slimListen) === false
+//   and rpc-server-auto's resolveTransform will NOT treat a bare SlimListen as a stream node.
+//   Therefore the WIRE part uses the FULL listen handle (the one slimListen wraps), while the
 //   SLIM surface (on/off/count/close) is unit-asserted directly. We also prove the slim view
 //   and the full handle share ONE underlying impl (count() agrees across both faces), so a
-//   UseListen2 stream interoperates with the RPC listen-socket layer exactly like UseListen —
+//   slimListen stream interoperates with the RPC listen-socket layer exactly like listen —
 //   via its full handle.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
-import {UseListen2, toListen2, funcListenCallbackBase, isListenCallback, UseListen} from '../../src/Common/events/Listen'
+import {slimListen, toSlimListen, createListen, isListenCallback, listen as createListenPair} from '../../src/Common/events/Listen'
 
 const PORT = 4110
 
 // emit fns + full handles created at module scope so makeObject (per-connection) can place
 // the FULL listen as the wire stream node while the spec drives emit / inspects slim surface.
-const [emitWire, fullWire] = UseListen<number>()          // full handle → goes on the wire
-const slimWire = toListen2<number>(fullWire)              // slim VIEW over the SAME impl as fullWire
+const [emitWire, fullWire] = createListenPair<number>()          // full handle → goes on the wire
+const slimWire = toSlimListen<number>(fullWire)              // slim VIEW over the SAME impl as fullWire
 
 function makeObject() {
     // Wire a real stream node. isListenCallback only accepts the FULL listen, so place that.
-    // The slim Listen2 (slimWire) is a view over this very handle — same subscriber set.
+    // The slim SlimListen (slimWire) is a view over this very handle — same subscriber set.
     return {
         ticks: fullWire,
     }
@@ -33,14 +33,14 @@ async function main() {
     const {check, done} = makeChecker('slimv2')
     const watchdog = setTimeout(() => { console.error('WATCHDOG timeout'); process.exit(3) }, 40000)
 
-    // ===== 0. Static finding: Listen2 is NOT detected as a listen by isListenCallback =====
-    const [, slimStandalone] = UseListen2<number>()
-    await check('isListenCallback(full UseListen) === true', () => isListenCallback(fullWire), true)
-    await check('isListenCallback(slim Listen2) === false', () => isListenCallback(slimStandalone as any), false)
+    // ===== 0. Static finding: SlimListen is NOT detected as a listen by isListenCallback =====
+    const [, slimStandalone] = slimListen<number>()
+    await check('isListenCallback(full listen) === true', () => isListenCallback(fullWire), true)
+    await check('isListenCallback(slim SlimListen) === false', () => isListenCallback(slimStandalone as any), false)
 
-    // ===== 1. Slim surface unit tests (on/off/count/close) on a standalone UseListen2 =====
+    // ===== 1. Slim surface unit tests (on/off/count/close) on a standalone slimListen =====
     {
-        const [emit, listen] = UseListen2<number>()
+        const [emit, listen] = slimListen<number>()
         const got: number[] = []
         await check('count() starts at 0', () => listen.count(), 0)
 
@@ -70,16 +70,16 @@ async function main() {
     }
 
     // ===== 2. Slim view interoperates with full handle (shared impl) =====
-    // slimWire is toListen2(fullWire); a subscription via the full handle must be visible
-    // through slim.count(), proving they are ONE Listen (the same impl UseListen2 wraps).
+    // slimWire is toSlimListen(fullWire); a subscription via the full handle must be visible
+    // through slim.count(), proving they are ONE Listen (the same impl slimListen wraps).
     {
-        const offFull = fullWire.addListen(() => {})
-        await check('slim.count() reflects full.addListen', () => slimWire.count(), 1)
+        const offFull = fullWire.on(() => {})
+        await check('slim.count() reflects full.on', () => slimWire.count(), 1)
         offFull()
         await check('slim.count() reflects full off()', () => slimWire.count(), 0)
     }
 
-    // ===== 3. END-TO-END wire: full handle (the one UseListen2 wraps) over a REAL socket =====
+    // ===== 3. END-TO-END wire: full handle (the one slimListen wraps) over a REAL socket =====
     const srv = await startRealServer({port: PORT, makeObject})
     const cli = await startRealClient({port: PORT})
     const api = cli.api

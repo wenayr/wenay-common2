@@ -11,7 +11,7 @@
 //                 reaches threshold → no data loss; we also assert CBV stayed 0.
 // ============================================================
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
-import {UseListen} from '../../src/Common/events/Listen'
+import {listen as createListenPair} from '../../src/Common/events/Listen'
 
 const PORT = 4107
 
@@ -20,8 +20,8 @@ let emitMono: ((v: any) => void) | null = null
 let emitPoly: ((v: any) => void) | null = null
 
 function makeObject() {
-    const [mono, monoListen] = UseListen<any>()
-    const [poly, polyListen] = UseListen<any>()
+    const [mono, monoListen] = createListenPair<any>()
+    const [poly, polyListen] = createListenPair<any>()
     emitMono = mono
     emitPoly = poly
     return {monoStream: monoListen, polyStream: polyListen}

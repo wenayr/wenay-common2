@@ -2,13 +2,13 @@
  * Извлекатель ключа потока из данных.
  * Вернул string — группируем по нему. Вернул undefined — общий бакет "_".
  */
-import {UseListen} from "./Listen";
+import {listen as createListenPair} from "./Listen";
 
-export type listen<T extends any[] = any[]> = ReturnType<typeof UseListen<T>>
+export type ListenPair<T extends any[] = any[]> = ReturnType<typeof createListenPair<T>>
 type KeyExtractor<D> = (data: D) => string | undefined
 
 export type ListenMap<T extends Record<string, any>> = {
-    [K in keyof T]: listen<T[K]>[1]
+    [K in keyof T]: ListenPair<T[K]>[1]
 }
 
 type CollectedResult<T extends Record<string, any>> = {
@@ -16,16 +16,14 @@ type CollectedResult<T extends Record<string, any>> = {
 }
 
 type JoinResult<R> = {
-    listen: listen<[R, string]>[1],
+    listen: ListenPair<[R, string]>[1],
     pending: Map<string, Map<string, any>>,
     clear: (tid?: string) => void,
     // снести весь join: снять все подписки на порты + очистить бакеты.
     // (раньше отсутствовал в типе — метод был в реализации, но невидим потребителю/типам)
     destroy: () => void,
     // Подключить порт-источник (идиома `add`). Объект — нужен ключ, массив — ключ генерируется сам.
-    add: (port: listen<any>[1], key?: string) => void,
-    /** @deprecated Используйте `add(port, key?)`. */
-    addListen: (listener: listen<any>[1], key?: string) => void
+    add: (port: ListenPair<any>[1], key?: string) => void
 }
 
 // --- Перегрузка: объект (именованные порты) ---
@@ -36,7 +34,7 @@ export function joinListens<T extends Record<string, any[]>>(
 
 // --- Перегрузка: массив listen'ов ---
 export function joinListens<D extends any[] = any[]>(
-    listens: listen<D>[1][],
+    listens: ListenPair<D>[1][],
     keyExtractor?: KeyExtractor<any>
 ): JoinResult<D[][]>
 
@@ -52,7 +50,7 @@ export function joinListens(
         ? Object.fromEntries(listens.map((l, i) => [String(i), l]))
         : listens
 
-    const [set, out] = UseListen<[any, string]>()
+    const [set, out] = createListenPair<[any, string]>()
     const keys = Object.keys(map)
     const buckets = new Map<string, Map<string, any>>()
 
@@ -79,8 +77,8 @@ export function joinListens(
             buckets.get(tid)!.set(portId, data.length <= 1 ? data[0] : data)
             tryFire(tid)
         }
-        // off() из addListen — единственный путь отписки (идиома v2)
-        unsubs.push(listener.addListen(cb))
+        // off() из on() — единственный путь точечной отписки.
+        unsubs.push(listener.on(cb))
     }
 
     for (const portId of keys) {
@@ -109,9 +107,7 @@ export function joinListens(
             unsubs.length = 0
             buckets.clear()
         },
-        add,
-        /** @deprecated Используйте `add(port, key?)`. */
-        addListen: (listener: any, key?: string) => add(listener, key)
+        add
     }
 }
 

@@ -5,7 +5,7 @@ import { io } from 'socket.io-client';
 import { createRpcServer } from './rpc-server';
 import { createRpcClientHub, rpc } from './rpc-clientHub';
 import {createRpcServerAuto} from "./rpc-server-auto";
-import {UseListen} from "../events/Listen";
+import {listen} from "../events/Listen";
 import {sleepAsync} from "../core/common";
 
 // --- Фасад (API сервера) ---
@@ -42,7 +42,7 @@ async function startServer(port: number) {
 
     ioServer.on('connection', (socket) => {
         console.log('[server] клиент подключился');
-        const [disconnect, disconnectListen] = UseListen()
+        const [disconnect, disconnectListen] = listen()
         socket.on('disconnect', disconnect);
         createRpcServerAuto({
             socket: {

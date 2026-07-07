@@ -58,7 +58,7 @@ await flushReactive(state.balances)
 
 ### `listenUpdate(node)`
 
-Adapts an ObserveAll2 node to the project's existing `Listen` shape. This is the
+Adapts an Observe node to the project's existing `Listen` shape. This is the
 bridge for RPC: `createRpcServerAuto` already knows how to expose `Listen`
 objects as remote subscriptions.
 
@@ -203,16 +203,16 @@ Those live in the layers built ON TOP of this core, not inside it.
 ## Where This Went
 
 The sandbox has been assembled: the canonical core is
-`src/Common/ObserveAll2/reactive2.ts`, exported from the package as `ObserveAll2`.
+`src/Common/Observe/reactive2.ts`, exported from the package as `Observe`.
 Layers on top of it (documented in `wenay-common2.md` / `wenay-common2-rare.md`):
 
 - **Store** — `createStore` wraps the core with typed path nodes (`state` / `node` /
-  `update(mask)`), `src/Common/ObserveAll2/store.ts`.
+  `update(mask)`), `src/Common/Observe/store.ts`.
 - **Mirror sync** — `exposeStore` ⇄ `createStoreMirror`: snapshots + changed
   notifications over RPC, optional push channels (`patches` / `changedData`).
 - **Sequenced replay line** — the store's patch stream numbered by seq: keyframe
   catch-up, reconnect by seq, per-client conflation, archived history with
-  time-travel. Exported as `Replay` (generic line) and via `ObserveAll2`
+  time-travel. Exported as `Replay` (generic line) and via `Observe`
   (`exposeStoreReplay` / `syncStoreReplay` / `storeReplayAt`); oracles in `replay/`,
   status in `replay/PLAN.md`.
 

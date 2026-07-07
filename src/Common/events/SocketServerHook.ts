@@ -1,14 +1,14 @@
-import {UseListen} from "./Listen";
+import {listen} from "./Listen";
 import {listenSocketSmart as soc} from "../rcp/listen-socket";
 
 type transformer = (func: (data: any) => any, tag: string, data: any) => any
 export function SocketServerHook(opt?:{transformer?: transformer}) {
-    const obj: {[k: string]: ReturnType<typeof UseListen>} = {}
+    const obj: {[k: string]: ReturnType<typeof listen>} = {}
     const transformer = opt?.transformer
     const r = {
         obj,
         get(tag: string) {
-            return obj[tag] ??= UseListen()
+            return obj[tag] ??= listen()
         },
         provider: (tag: string, data: any) => {
             const t = r.get(tag)[0]

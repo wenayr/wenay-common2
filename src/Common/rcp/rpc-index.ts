@@ -14,5 +14,5 @@ export * from "./rpc-server";
 export * from "./rpc-client-auto";
 export * from "./rpc-server-auto";
 export * from "./rpc-clientHub";
-export {createRpcServerAuto2} from "./createRpcServerAutoWithProtocolDetection";
+export {createRpcServerAutoDetect} from "./createRpcServerAutoWithProtocolDetection";
 export * from "./rpc-inproc";

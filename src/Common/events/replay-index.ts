@@ -4,7 +4,7 @@
 // Один паттерн для любых потоков состояния: keyframe + нумерованные дельты +
 // восстановление свежим keyframe (I/P-кадры, WAL, market data).
 // Store-интеграция (exposeStoreReplay/syncStoreReplay/storeReplayAt) — в
-// ObserveAll2 (рядом со store). Дизайн: REPLAY-PLAN.md; оракулы: replay/.
+// Observe (рядом со store). Дизайн: REPLAY-PLAN.md; оракулы: replay/.
 
 export * from './replay-listen'
 export * from './replay-wire'

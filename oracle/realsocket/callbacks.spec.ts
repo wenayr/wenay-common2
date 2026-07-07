@@ -1,17 +1,17 @@
 // ============================================================
 //  oracle/realsocket/callbacks.spec.ts — DISPOSABLE real-socket oracle
-//  CATEGORY "callbacks": callbacks-as-args (Pkt.CB) + UseListen streaming
+//  CATEGORY "callbacks": callbacks-as-args (Pkt.CB) + listen streaming
 //  subscriptions over a genuine WebSocket. Port 4102 (own port, no clash).
 // ============================================================
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
-import {UseListen} from '../../src/Common/events/Listen'
+import {listen as createListenPair} from '../../src/Common/events/Listen'
 
 const PORT = 4102
 
 // Stream nodes live in module scope so the facade factory closes over the SAME
-// UseListen handles every connection — we drive them from the test below.
-const [tick, tickListen] = UseListen<[{n: number; at: Date; tags: Set<string>}]>()
-const [multiTick, multiListen] = UseListen<[number, string]>()
+// listen handles every connection — we drive them from the test below.
+const [tick, tickListen] = createListenPair<[{n: number; at: Date; tags: Set<string>}]>()
+const [multiTick, multiListen] = createListenPair<[number, string]>()
 
 function makeObject() {
     return {
@@ -26,7 +26,7 @@ function makeObject() {
                 return a.n
             },
         },
-        // ── UseListen stream node: client subscribes via api.stream.callback(fn) ──
+        // ── listen stream node: client subscribes via api.stream.callback(fn) ──
         stream: tickListen,        // single rich object arg
         multi: multiListen,        // two args (number, string)
         // ── control surface to end the single-arg stream (→ CB_END / await off) ──
@@ -55,7 +55,7 @@ async function main() {
             [0, 1, 2, 3].map(i => new Date(Date.UTC(2026, 0, 1) + i * 1000)))
     }
 
-    // ===== 2. UseListen stream: ticks arrive with rich values =====
+    // ===== 2. listen stream: ticks arrive with rich values =====
     {
         const a: Array<{n: number; at: Date; tags: Set<string>}> = []
         const off = (api as any).stream.callback((v: any) => a.push(v))

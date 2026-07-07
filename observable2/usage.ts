@@ -1,7 +1,7 @@
 // ============================================================
 //  observable2/usage.ts
 //
-//  Локальные self-check примеры для ObserveAll2 / reactive2.
+//  Локальные self-check примеры для Observe / reactive2.
 //  Запуск:
 //      npx tsx observable2/usage.ts
 // ============================================================

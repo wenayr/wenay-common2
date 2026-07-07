@@ -15,10 +15,10 @@
 //   поэтому current-провайдер store-слоя переиспользуется как есть.
 //
 // ВАЖНО: в журнал попадают только события, эмитированные через ДЕКОРИРОВАННЫЙ
-// func (он нумерует). UseReplayListen отдаёт правильный emit сам.
+// emit (он нумерует). replayListen отдаёт правильный emit сам.
 
 import {
-    funcListenCallbackBase, registerListenOn,
+    createListen, registerListenOn,
     Listener, ListenApi, ListenCurrent, ListenCurrentProvider, ListenOnBrand, ListenOptions, NormalizeTuple,
 } from './Listen3'
 
@@ -110,7 +110,7 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
     // envelope-протокола. save/restore → переживает re-entrant emit.
     let emitting: ReplayEvent<Z> | null = null
     // линия конвертов {seq, ts, event} — обычный Listen: провод проксирует его как есть
-    const line = funcListenCallbackBase<[ReplayEvent<Z>]>(() => {})
+    const line = createListen<[ReplayEvent<Z>]>(() => {})
     line.run()
 
     function journalSince(seq: number) {
@@ -167,17 +167,17 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
     const api = {
         ...base,
         /** Нумерующий emit: seq++, запись в журнал, fan-out. Единственная дверь в журнал. */
-        func: function emitJournaled(...e: Z) {
+        emit: function emitJournaled(...e: Z) {
             const ev: ReplayEvent<Z> = {seq: ++head, ts: now(), event: e}
             if (history > 0) ring[(ev.seq - 1) % history] = ev
             if (currentOpt == 'last') lastEv = ev
             onJournal?.(ev)
             touchStale(ev.ts)  // fresh-грань ПЕРЕД fan-out: подписчик видит «линия ожила», потом событие
             // линия ПЕРЕД локальным fan-out: бросок локального cb не оставит провод без события
-            line.func(ev)
+            line.emit(ev)
             const prev = emitting
             emitting = ev
-            try { base.func(...e) } finally { emitting = prev }
+            try { base.emit(...e) } finally { emitting = prev }
         } as Listener<Z>,
         /** Текущая голова линии (seq последнего события; 0 = ещё не было). */
         head: () => head,
@@ -261,10 +261,6 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
             replaying = false
             return off
         }) as ListenOnReplay<Z>,
-        /** @deprecated Используйте on(cb, opts) и сохранённый off(). */
-        addListen: (cb: Listener<Z>, opts: ReplayOnOptions<Z> = {}) => api.on(cb, opts),
-        /** @deprecated Используйте off(keyOrCallback) либо off(), который вернул on()/addListen(). */
-        removeListen: (k: Listener<Z> | null | key) => api.off(k),
         once: (cb: Listener<Z>, opts: {key?: key, current?: ListenCurrent<Z>} = {}) => {
             // паритет со store-слоем: current при once — replay текущего значения и есть событие
             if (opts.current) {
@@ -275,8 +271,6 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
             off = base.on(((...e: Z) => { off(); cb(...e) }), {key: opts.key})
             return off
         },
-        // Спред «сфотографировал» бы геттер base.getAllKeys — восстанавливаем живой.
-        get getAllKeys(): key[] { return base.getAllKeys },
     }
     // бренд для провода: автодетекция в rpc-server-auto — по нему, не по форме
     Object.defineProperty(api, IS_REPLAY_LISTEN, {value: true})
@@ -288,12 +282,12 @@ export type ListenReplayApi<T> = ReturnType<typeof withReplayListen<T>>
 export type ReplayListenUseOptions<T> = ListenOptions<T> & ReplayListenOptions<NormalizeTuple<T>>
 
 /** [emit, listen]: emit нумерует и журналирует (идёт через декоратор, не мимо). */
-export function UseReplayListen<T>(options: ReplayListenUseOptions<T> = {}) {
+export function replayListen<T>(options: ReplayListenUseOptions<T> = {}) {
     const {current, frame, history, getSince, onJournal, now, staleMs, onStale, ...listenOptions} = options
     let t: ((...a: NormalizeTuple<T>) => void)
-    const base = funcListenCallbackBase<T>((e) => { t = e }, {fast: true, ...listenOptions})
+    const base = createListen<T>((e) => { t = e }, {fast: true, ...listenOptions})
     const listen = withReplayListen<T>(base, {current, frame, history, getSince, onJournal, now, staleMs, onStale})
     base.run()
-    t = listen.func  // ВАЖНО: сквозь декоратор — иначе события мимо журнала
+    t = listen.emit  // ВАЖНО: сквозь декоратор — иначе события мимо журнала
     return [t!, listen] as const
 }

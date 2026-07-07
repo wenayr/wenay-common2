@@ -1,100 +1,69 @@
-// =====================================================================
-// Listen3 — слоистая переработка Listen (кандидат на замену Listen.ts / Listen2.ts)
-// =====================================================================
-// Три слоя, каждый владеет ТОЛЬКО своим состоянием (в отличие от Listen2.ts,
-// где обёртка дублировала бухгалтерию ядра — keyCb/cbKeys велись дважды):
-//
-//   1. funcListenCore         — utility: чистый реестр подписчиков (key→cb) с
-//                               fast-диспетчером. Никакого жизненного цикла.
-//   2. funcListenCallbackBase — resource: run/close-жизненный цикл + cbClose-хуки.
-//                               Бухгалтерию подписок НЕ ведёт — делегирует ядру и
-//                               узнаёт о выбытии ключей через хук onRemove.
-//   3. withStoreListen        — декоратор `current`: replay последнего значения
-//                               новым подписчикам (семантика BehaviorSubject).
-//
-// Публичная поверхность повторяет Listen.ts/Listen2.ts (drop-in): func, on/off,
-// once, eventClose/onClose/removeEventClose, close, count,
-// getAllKeys, isRun, run + slim-фасад Listen2 и реестр идентичности по `on`.
-// Legacy addListen/removeListen остаются тонкими алиасами поверх on/off.
-
-export type Listener<T extends any[]> = (...r: T) => void
-
-/** Нормализация: если T уже кортеж — оставляем, иначе оборачиваем в [T] */
+export type Listener<T extends any[]> = (...args: T) => void
 export type NormalizeTuple<T> = T extends any[] ? T : [T]
 
-type key = string | symbol
-type cbClose = () => void
+export type ListenKey = string | symbol
+export type ListenOff = () => void
+type CloseCallback = () => void
 
-// Фантомный бренд (ТОЛЬКО на уровне типов) функции on: несёт типы аргументов Z, чтобы
-// wire-проекция (DeepSocketListen) узнала «голый on» среди обычных функций и развернула
-// подписочную поверхность {on, once, close, ...}. Бренд ОБЯЗАТЕЛЕН → обычная функция его
-// не имеет, поэтому под ветку ListenOn она не попадает (дискриминация). Рантайма у бренда нет.
 declare const LISTEN_ON_BRAND: unique symbol
+
 export type ListenOn<Z extends any[] = any[]> =
-    ((cb: Listener<Z>, opts?: { cbClose?: cbClose; key?: key }) => (() => void))
+    ((cb: Listener<Z>, opts?: { cbClose?: CloseCallback; key?: ListenKey }) => ListenOff)
     & { readonly [LISTEN_ON_BRAND]: Z }
 
 export type ListenOnCurrent<Z extends any[] = any[]> =
-    ((cb: Listener<Z>, opts?: { cbClose?: cbClose; key?: key; current?: ListenCurrent<Z> }) => (() => void))
+    ((cb: Listener<Z>, opts?: { cbClose?: CloseCallback; key?: ListenKey; current?: ListenCurrent<Z> }) => ListenOff)
     & { readonly [LISTEN_ON_BRAND]: Z }
 
-/** Поставщик «текущего значения» для replay-подписки (store-слой). */
 export type ListenCurrentProvider<Z extends any[]> = () => Z | undefined
-/** true → взять значение у провайдера store; функция → взять у неё (переопределение per-sub). */
 export type ListenCurrent<Z extends any[]> = boolean | ListenCurrentProvider<Z>
+
+export type ListenCoreApi<T = any> = {
+    emit: Listener<NormalizeTuple<T>>
+    has(key: ListenKey): boolean
+    on: ListenOn<NormalizeTuple<T>>
+    off(keyOrCallback: Listener<NormalizeTuple<T>> | null | ListenKey): void
+    once(cb: Listener<NormalizeTuple<T>>, opts?: {key?: ListenKey}): ListenOff
+    close(): void
+    count(): number
+    keys(): ListenKey[]
+}
+
+export type ListenApi<T = any> = ListenCoreApi<T> & {
+    isRunning(): boolean
+    run(): void
+    onClose(cb: CloseCallback): ListenOff
+}
 
 export type ListenCoreOptions<T = any> = {
     fast?: boolean
-    /**
-     * Хук выбытия ключа из реестра: off()/removeListen/перезапись по key.
-     * НЕ вызывается на close() — владелец сносит своё сопутствующее состояние оптом.
-     * Именно через него слой жизненного цикла чистит cbClose-привязки, не ведя
-     * собственной копии реестра.
-     */
-    onRemove?: (k: key) => void
-    // Listen2-compatible event hook. Core itself stays independent; api is passed
-    // only for callers that historically observed it from funcListenCore().
+    onRemove?: (key: ListenKey) => void
     event?: (type: 'add' | 'remove', count: number, api: ListenCoreApi<T>) => void
 }
 
-export type ListenOptions<T> = {
+export type ListenOptions<T = any> = {
     event?: (type: 'add' | 'remove', count: number, api: ListenApi<T>) => void
     fast?: boolean
-    /** Close-signal Listen: его событие закрывает этот Listen; parent.close() сам по себе не эмитит. */
-    addListenClose?: ListenApi<any>
+    closeOn?: ListenApi<any>
 }
 
 export type ListenStoreOptions<T> = ListenOptions<T> & {
     current: ListenCurrentProvider<NormalizeTuple<T>>
 }
 
-// ============================================================
-// Реестр идентичности: api.on → весь api (по ССЫЛКЕ, не по форме).
-// ============================================================
-// У каждого Listen УНИКАЛЬНАЯ функция on. Регистрируем её при создании → Listen можно
-// надёжно узнать по identity (а не хрупким duck-type) и достать его api. Назначение:
-// прокинуть через веб ТОЛЬКО ссылку `on`, а wire-слой по реестру восстановит slim {on, once, close}.
-const listenByOn = new WeakMap<Function, any>()
-/** api Listen по его функции `on` (или undefined, если fn — не зарегистрированный on). */
-export function getListenByOn(fn: any) { return typeof fn == 'function' ? listenByOn.get(fn) : undefined }
-/** Является ли fn функцией `on` какого-то Listen (проверка по ссылке в реестре). */
-export function isListenOn(fn: any): boolean { return typeof fn == 'function' && listenByOn.has(fn) }
-/** (additive, replay) Регистрация on→api для декораторов, живущих вне этого файла. */
-export function registerListenOn(on: Function, api: any) { listenByOn.set(on, api) }
-/** (additive, replay) Фантомный бренд отдельно — чтобы внешний декоратор мог собрать свой ListenOn-тип. */
 export type ListenOnBrand<Z extends any[] = any[]> = { readonly [LISTEN_ON_BRAND]: Z }
 
-// =====================================================================
-// СЛОЙ 1: ядро — реестр подписчиков (utility, без жизненного цикла)
-// =====================================================================
-// Единственный владелец карты key→cb. Горячие операции on/off по ключу — O(1).
-// fast-диспетчер: под размер 0/1/2/N собирается специализированная функция `a`,
-// чтобы горячий путь emit не платил за общий цикл.
-export function funcListenCore<T>(options: ListenCoreOptions<T> = {}) {
+const listenByOn = new WeakMap<Function, any>()
+
+export function getListenByOn(fn: any) { return typeof fn == 'function' ? listenByOn.get(fn) : undefined }
+export function isListenOn(fn: any): boolean { return typeof fn == 'function' && listenByOn.has(fn) }
+export function registerListenOn(on: Function, api: any) { listenByOn.set(on, api) }
+
+export function createListenCore<T>(options: ListenCoreOptions<T> = {}): ListenCoreApi<T> {
     const {fast = true, onRemove, event} = options
     type Z = NormalizeTuple<T>
-    const subs = new Map<key, Listener<Z>>()
-    let a: Listener<Z> | null = (...e) => { subs.forEach(z => z(...e)) }
+    const subs = new Map<ListenKey, Listener<Z>>()
+    let dispatcher: Listener<Z> | null = (...args) => { subs.forEach(cb => cb(...args)) }
     let cached: Listener<Z>[] | null = null
 
     const getArr = () => cached ?? (cached = Array.from(subs.values()))
@@ -102,148 +71,114 @@ export function funcListenCore<T>(options: ListenCoreOptions<T> = {}) {
     function rebuild() {
         cached = null
         const size = subs.size
-        if (size == 0) { a = null; return }
-        if (size == 1) { a = subs.values().next().value!; return }
+        if (size == 0) { dispatcher = null; return }
+        if (size == 1) { dispatcher = subs.values().next().value!; return }
         if (size == 2) {
-            const [a0, a1] = getArr()
-            a = ((...e) => { a0(...e); a1(...e) }) as Listener<Z>
+            const [a, b] = getArr()
+            dispatcher = ((...args) => { a(...args); b(...args) }) as Listener<Z>
             return
         }
-        a = ((...e) => {
-            const ar = getArr()
-            for (let i = 0, len = ar.length; i < len; i++) ar[i](...e)
+        dispatcher = ((...args) => {
+            const arr = getArr()
+            for (let i = 0; i < arr.length; i++) arr[i](...args)
         }) as Listener<Z>
     }
 
-    function removeOne(k: key) {
-        if (!subs.has(k)) return
-        subs.delete(k)
-        onRemove?.(k)
+    function removeOne(key: ListenKey) {
+        if (!subs.has(key)) return
+        subs.delete(key)
+        onRemove?.(key)
         if (fast) rebuild()
         event?.('remove', subs.size, api)
     }
 
-    const api = {
-        func: ((...e: Z) => { a?.(...e) }) as Listener<Z>,
-        has: (k: key) => subs.has(k),
-        on: ((cb: Listener<Z>, {key}: {key?: key} = {}) => {
+    const api: ListenCoreApi<T> = {
+        emit: ((...args: Z) => { dispatcher?.(...args) }) as Listener<Z>,
+        has: (key) => subs.has(key),
+        on: ((cb: Listener<Z>, {key}: {key?: ListenKey} = {}) => {
             const k = key ?? Symbol()
-            // Перезапись по ключу: снимаем старые owner-привязки, но не шлём отдельный
-            // remove-event — снаружи это одна операция замены подписчика.
-            if (subs.has(k)) { subs.delete(k); onRemove?.(k) }
+            if (subs.has(k)) {
+                subs.delete(k)
+                onRemove?.(k)
+            }
             subs.set(k, cb)
             if (fast) rebuild()
             event?.('add', subs.size, api)
             return function off() { removeOne(k) }
         }) as ListenOn<Z>,
-        /** Снять подписку по ключу или все подписки с тем же callback. */
-        off: (k: Listener<Z> | null | key) => {
-            if (typeof k == 'function') {
-                for (const [kk, cb] of [...subs]) if (cb === k) removeOne(kk)
+        off: (keyOrCallback) => {
+            if (typeof keyOrCallback == 'function') {
+                for (const [key, cb] of [...subs]) if (cb === keyOrCallback) removeOne(key)
                 return
             }
-            if (k != null) removeOne(k)
+            if (keyOrCallback != null) removeOne(keyOrCallback)
         },
-        /** @deprecated Используйте on(cb, opts) и сохранённый off(). */
-        addListen: (cb: Listener<Z>, opts: {key?: key} = {}) => api.on(cb, opts),
-        /** @deprecated Используйте off(keyOrCallback) либо off(), который вернул on()/addListen(). */
-        removeListen: (k: Listener<Z> | null | key) => api.off(k),
-        once: (cb: Listener<Z>, opts: {key?: key} = {}) => {
-            let off: () => void = () => {}
-            off = api.on(((...e: Z) => { off(); cb(...e) }), opts)
+        once: (cb, opts = {}) => {
+            let off: ListenOff = () => {}
+            off = api.on(((...args: Z) => { off(); cb(...args) }) as Listener<Z>, opts)
             return off
         },
-        // Оптовый снос: onRemove per-key НЕ дёргается и 'remove' не шлётся —
-        // владелец, вызвавший close, чистит своё состояние сам (см. слой 2).
         close: () => {
             subs.clear()
             if (fast) rebuild()
         },
         count: () => subs.size,
-        get getAllKeys(): key[] { return [...subs.keys()] },
+        keys: () => [...subs.keys()],
     }
-    // Listen2 compatibility: core historically exposed a branded on() and was discoverable
-    // by the identity registry. Keep that so the ./listen2 surface can be repointed safely.
     listenByOn.set(api.on, api)
     return api
 }
-export type ListenCoreApi<T = any> = ReturnType<typeof funcListenCore<T>>
 
-// =====================================================================
-// СЛОЙ 2: жизненный цикл — run/close + cbClose-хуки (resource)
-// =====================================================================
-// Владеет ТОЛЬКО своим: teardown из run(), каскад addListenClose и две ленивые
-// структуры close-хуков. Реестр подписок целиком в ядре; о выбытии ключа слой
-// узнаёт через onRemove и снимает соответствующую cbClose-привязку.
-export function funcListenCallbackBase<T>(
-    b: (e: Listener<NormalizeTuple<T>>) => (void | (() => void)),
+export function createListen<T>(
+    producer: (emit: Listener<NormalizeTuple<T>>) => (void | ListenOff),
     options: ListenOptions<T> = {},
-) {
-    const {fast = true, event, addListenClose} = options
+): ListenApi<T> {
+    const {fast = true, event, closeOn} = options
     type Z = NormalizeTuple<T>
-    // Ленивая ordered-map close-хуков: standalone eventClose(cb) и per-sub cbClose
-    // живут в одном порядке вставки, как в Listen.ts. При обычном off() per-sub hook
-    // молча снимается через onRemove; стреляет только close() всего Listen.
-    let closeHooks: Map<key | cbClose, cbClose> | null = null
-    let close: (() => void) | null = null
-    let closeUnsubscribe: (() => void) | null = null
+    let teardown: ListenOff | null = null
+    let closeSignalOff: ListenOff | null = null
+    let closeHooks: Map<ListenKey | CloseCallback, CloseCallback> | null = null
 
-    // Выбытие ключа из ядра (off/removeListen/перезапись) → снять cbClose-привязку.
-    function forgetKey(k: key) {
-        closeHooks?.delete(k)
+    function forgetKey(key: ListenKey) {
+        closeHooks?.delete(key)
     }
 
-    const core = funcListenCore<T>({
+    const core = createListenCore<T>({
         fast,
         onRemove: forgetKey,
-        // 'remove' пробрасываем из ядра как есть; 'add' фильтруем и шлём сами из
-        // addListen ПОСЛЕ регистрации cbClose — чтобы обработчик события видел
-        // подписку полностью оформленной (порядок как в Listen.ts).
-        event: event && function forwardRemove(type, count) {
+        event: event && ((type, count) => {
             if (type == 'remove') event(type, count, api)
-        },
+        }),
     })
 
-    const api = {
-        func: core.func,
-        isRun: () => close !== null,
+    const api: ListenApi<T> = {
+        emit: core.emit,
+        has: core.has,
+        isRunning: () => teardown !== null,
         run: () => {
-            close = (b(core.func) ?? (() => {})) as (() => void)
-            if (addListenClose && !closeUnsubscribe) {
-                closeUnsubscribe = addListenClose.on(function onOwnerClose() { api.close() })
-            }
+            if (teardown) return
+            teardown = (producer(core.emit) ?? (() => {})) as ListenOff
+            if (closeOn && !closeSignalOff) closeSignalOff = closeOn.on(() => api.close())
         },
         close: () => {
-            close?.()
-            close = null
+            const stop = teardown
+            teardown = null
+            stop?.()
             core.close()
-            if (closeHooks) { const hooks = closeHooks; closeHooks = null; hooks.forEach(function fireClose(cb) { cb() }) }
-            if (closeUnsubscribe) {
-                closeUnsubscribe()
-                closeUnsubscribe = null
+            if (closeHooks) {
+                const hooks = closeHooks
+                closeHooks = null
+                hooks.forEach(cb => cb())
             }
+            closeSignalOff?.()
+            closeSignalOff = null
         },
-        /**
-         * @deprecated Используйте `onClose(cb)` — та же семантика и тот же `off()`.
-         */
-        eventClose: (cb: cbClose) => {
+        onClose: (cb) => {
             closeHooks = closeHooks ?? new Map()
             closeHooks.set(cb, cb)
             return function offClose() { closeHooks?.delete(cb) }
         },
-        /** Подписка на закрытие потока (идиома `on('close')`). Возвращает `off()`. */
-        onClose: (cb: cbClose) => api.eventClose(cb),
-        /**
-         * @deprecated Снимайте close-обработчик через `off()`, который возвращает
-         * `eventClose(cb)`. Сохранено для обратной совместимости.
-         */
-        removeEventClose: (cb: cbClose) => { closeHooks?.delete(cb) },
-        /**
-         * Подписаться. Возвращает `off()` — единственный способ отписки (идиома
-         * `const off = listen.on(cb); off()`). `opts.key` — перезапись по ключу,
-         * `opts.cbClose` — per-sub close-хук.
-         */
-        on: ((cb: Listener<Z>, {cbClose, key}: {cbClose?: cbClose, key?: key} = {}) => {
+        on: ((cb: Listener<Z>, {cbClose, key}: {cbClose?: CloseCallback; key?: ListenKey} = {}) => {
             const k = key ?? Symbol()
             const off = core.on(cb, {key: k})
             if (cbClose) {
@@ -253,50 +188,31 @@ export function funcListenCallbackBase<T>(
             event?.('add', core.count(), api)
             return off
         }) as ListenOn<Z>,
-        /** Снять подписку по ключу или все подписки с тем же callback. */
         off: core.off,
-        /** @deprecated Используйте on(cb, opts) и сохранённый off(). */
-        addListen: (cb: Listener<Z>, opts: {cbClose?: cbClose, key?: key} = {}) => api.on(cb, opts),
-        /** @deprecated Используйте off(keyOrCallback) либо off(), который вернул on()/addListen(). */
-        removeListen: (k: Listener<Z> | null | key) => api.off(k),
-        /**
-         * Подписаться ОДНОКРАТНО: после первого события автоматически отписывается.
-         * Возвращает `off()` (досрочная отписка). Идиома EventEmitter.once.
-         */
-        once: (cb: Listener<Z>, opts: {key?: key} = {}) => {
-            let off: () => void = () => {}
-            off = api.on(((...e: Z) => { off(); cb(...e) }), opts)
+        once: (cb, opts = {}) => {
+            let off: ListenOff = () => {}
+            off = api.on(((...args: Z) => { off(); cb(...args) }) as Listener<Z>, opts)
             return off
         },
-        count: () => core.count(),
-        /** @deprecated Интроспекция ключей — не часть slim-API; для обратной совместимости. */
-        get getAllKeys(): key[] { return core.getAllKeys },
+        count: core.count,
+        keys: core.keys,
     }
-    // Идентичность: по api.on находим весь api (для slim-проксирования {on, once, close} через веб).
     listenByOn.set(api.on, api)
     return api
 }
-export type ListenApi<T = any> = ReturnType<typeof funcListenCallbackBase<T>>
 
-export function funcListenCallbackFast<T>(a: (e: (Listener<NormalizeTuple<T>> | null)) => (void | (() => void))) {
-    return funcListenCallbackBase<T>(a, {fast: true})
-}
-export const funcListenCallback = funcListenCallbackBase
-
-export function UseListen<T>(data: ListenOptions<T> = {fast: true}) {
-    let t: ((...a: NormalizeTuple<T>) => void)
-    const a = funcListenCallbackBase<T>((e) => { t = e }, {fast: true, ...data})
-    a.run()
-    t = a.func
-    return [t, a] as const
+export function createFastListen<T>(producer: (emit: Listener<NormalizeTuple<T>>) => (void | ListenOff)) {
+    return createListen<T>(producer, {fast: true})
 }
 
-// =====================================================================
-// СЛОЙ 3: store-декоратор — replay «текущего значения» (current)
-// =====================================================================
-// Оборачивает готовый ListenApi, добавляя opts.current к on/once/addListen:
-// новый подписчик сразу получает текущее значение (семантика BehaviorSubject).
-// Никакого своего состояния — только провайдер значения.
+export function listen<T>(options: ListenOptions<T> = {fast: true}) {
+    let emit: Listener<NormalizeTuple<T>>
+    const api = createListen<T>((next) => { emit = next }, {fast: true, ...options})
+    api.run()
+    emit = api.emit
+    return [emit!, api] as const
+}
+
 export function withStoreListen<T>(base: ListenApi<T>, currentProvider: ListenCurrentProvider<NormalizeTuple<T>>) {
     type Z = NormalizeTuple<T>
     function currentValue(current?: ListenCurrent<Z>) {
@@ -305,96 +221,70 @@ export function withStoreListen<T>(base: ListenApi<T>, currentProvider: ListenCu
     }
     const api = {
         ...base,
-        on: ((cb: Listener<Z>, {cbClose, key, current}: {cbClose?: cbClose, key?: key, current?: ListenCurrent<Z>} = {}) => {
+        on: ((cb: Listener<Z>, {cbClose, key, current}: {cbClose?: CloseCallback; key?: ListenKey; current?: ListenCurrent<Z>} = {}) => {
             const off = base.on(cb, {cbClose, key})
             if (current) {
-                const m = currentValue(current)
-                if (m) cb(...m)
+                const value = currentValue(current)
+                if (value) cb(...value)
             }
             return off
         }) as ListenOnCurrent<Z>,
-        /** @deprecated Используйте on(cb, opts) и сохранённый off(). */
-        addListen: (cb: Listener<Z>, opts: {cbClose?: cbClose, key?: key, current?: ListenCurrent<Z>} = {}) => api.on(cb, opts),
-        /** @deprecated Используйте off(keyOrCallback) либо off(), который вернул on()/addListen(). */
-        removeListen: (k: Listener<Z> | null | key) => api.off(k),
-        once: (cb: Listener<Z>, opts: {key?: key, current?: ListenCurrent<Z>} = {}) => {
-            // current при once: replay текущего значения И ЕСТЬ то самое одно событие —
-            // подписка не создаётся вовсе.
+        once: (cb: Listener<Z>, opts: {key?: ListenKey; current?: ListenCurrent<Z>} = {}) => {
             if (opts.current) {
-                const m = currentValue(opts.current)
-                if (m) { cb(...m); return () => {} }
+                const value = currentValue(opts.current)
+                if (value) { cb(...value); return () => {} }
             }
-            let off: () => void = () => {}
-            off = base.on(((...e: Z) => { off(); cb(...e) }), {key: opts.key})
+            let off: ListenOff = () => {}
+            off = base.on(((...args: Z) => { off(); cb(...args) }) as Listener<Z>, {key: opts.key})
             return off
         },
-        // Спред выше «сфотографировал» бы геттер base.getAllKeys в мёртвый массив —
-        // восстанавливаем живой геттер поверх копии.
-        get getAllKeys(): key[] { return base.getAllKeys },
     }
     listenByOn.set(api.on, api)
     return api
 }
+
 export type ListenStoreApi<T> = ReturnType<typeof withStoreListen<T>>
 
-export function funcListenCallbackStore<T>(
-    b: (e: Listener<NormalizeTuple<T>>) => (void | (() => void)),
+export function createStoreListen<T>(
+    producer: (emit: Listener<NormalizeTuple<T>>) => (void | ListenOff),
     options: ListenStoreOptions<T>,
 ) {
     const {current, ...listenOptions} = options
-    return withStoreListen(funcListenCallbackBase<T>(b, listenOptions), current)
+    return withStoreListen(createListen<T>(producer, listenOptions), current)
 }
 
-export function UseListenStore<T>(data: ListenStoreOptions<T>) {
-    const {current, ...listenOptions} = data
-    let t: ((...a: NormalizeTuple<T>) => void)
-    const base = funcListenCallbackBase<T>((e) => { t = e }, {fast: true, ...listenOptions})
-    const listen = withStoreListen<T>(base, current)
+export function listenStore<T>(options: ListenStoreOptions<T>) {
+    const {current, ...listenOptions} = options
+    let emit: Listener<NormalizeTuple<T>>
+    const base = createListen<T>((next) => { emit = next }, {fast: true, ...listenOptions})
+    const api = withStoreListen<T>(base, current)
     base.run()
-    t = base.func
-    return [t, listen] as const
+    emit = base.emit
+    return [emit!, api] as const
 }
 
-// =====================================================================
-// SLIM API v2 — минимальная поверхность подписчика (on/off)
-// =====================================================================
-// Outward-фасад (audience-split: control = emit, api = подписка): только
-// on(cb)→off(), off(keyOrCallback), close() и count(). Строго подмножество полного api.
-export function toListen2<T>(full: ListenApi<T>) {
+export function toSlimListen<T>(full: ListenApi<T>) {
     return {
-        /** Подписаться. Возвращает `off()` для точечной отписки. */
-        on: (cb: Listener<NormalizeTuple<T>>, opts?: {key?: key}) => full.on(cb, opts),
-        /** Снять подписку по ключу или все подписки с тем же callback. */
-        off: (k: Listener<NormalizeTuple<T>> | null | key) => full.off(k),
-        /** Снести весь Listen: close-обработчики + сброс всех подписчиков. */
+        on: (cb: Listener<NormalizeTuple<T>>, opts?: {key?: ListenKey}) => full.on(cb, opts),
+        off: (keyOrCallback: Listener<NormalizeTuple<T>> | null | ListenKey) => full.off(keyOrCallback),
         close: () => full.close(),
-        /** Текущее число подписчиков (для cold/hot-переходов). */
         count: () => full.count(),
     }
 }
-export type Listen2<T> = ReturnType<typeof toListen2<T>>
 
-/** Slim-аналог UseListen: `[emit, listen]`, где listen — on/off/close/count. */
-export function UseListen2<T>(data: ListenOptions<T> = {fast: true}) {
-    const [emit, full] = UseListen<T>(data)
-    return [emit, toListen2<T>(full)] as const
+export type SlimListen<T> = ReturnType<typeof toSlimListen<T>>
+
+export function slimListen<T>(options: ListenOptions<T> = {fast: true}) {
+    const [emit, full] = listen<T>(options)
+    return [emit, toSlimListen(full)] as const
 }
 
-// ===================================================================
-// isListenCallback — устойчив к АДДИТИВНОМУ росту full-api.
-// ===================================================================
-// Проверяем СТАБИЛЬНОЕ ЯДРО — ровно ту подписочную поверхность, которую реально
-// потребляет listenSocket. Подмножество-контракт: лишние члены игнорируются;
-// slim-Listen2 (on/off/close/count — без addListen/func) корректно НЕ проходит;
-// добавление новых членов детекцию не ломает.
-const LISTEN_CORE = ['func', 'addListen', 'removeListen', 'eventClose', 'removeEventClose'] as const
+const LISTEN_CORE = ['emit', 'on', 'off', 'onClose', 'run', 'isRunning', 'close', 'count'] as const
 
 export function isListenCallback(obj: any): obj is ListenApi {
     if (obj == null || typeof obj != 'object') return false
-    // Сначала НАЛИЧИЕ core-ключей как собственных перечислимых (Object.keys не дёргает
-    // get-трапы по значениям) — чужой объект/Proxy без них отсекается, свойства не трогаем.
-    const ks = new Set(Object.keys(obj))
-    for (const k of LISTEN_CORE) if (!ks.has(k)) return false
-    for (const k of LISTEN_CORE) if (typeof (obj as any)[k] != 'function') return false
+    const keys = new Set(Object.keys(obj))
+    for (const key of LISTEN_CORE) if (!keys.has(key)) return false
+    for (const key of LISTEN_CORE) if (typeof obj[key] != 'function') return false
     return true
 }

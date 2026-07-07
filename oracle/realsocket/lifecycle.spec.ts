@@ -2,11 +2,11 @@
 // onDisconnect (client + hub), and hard setToken rotation tears down old subs then
 // reconnects (connectCount++). Default = teardown, NO auto-resubscribe. Port 4108.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
-import {UseListen} from '../../src/Common/events/Listen'
+import {listen as createListenPair} from '../../src/Common/events/Listen'
 
 const PORT = 4108
 
-// ===== facade: a method + two UseListen stream nodes =====
+// ===== facade: a method + two listen stream nodes =====
 // The server fabricates a fresh facade per connection (see _rs.startRealServer),
 // so each connection gets its own emit handle. We stash the latest emit on a
 // module-level ref so the test body can push ticks into the live stream.
@@ -14,8 +14,8 @@ let emitTicks: ((n: number) => void) | null = null
 let emitClock: ((s: string) => void) | null = null
 
 function makeObject() {
-    const [tick, tickListen] = UseListen<number>()
-    const [clock, clockListen] = UseListen<string>()
+    const [tick, tickListen] = createListenPair<number>()
+    const [clock, clockListen] = createListenPair<string>()
     emitTicks = tick
     emitClock = clock
     return {

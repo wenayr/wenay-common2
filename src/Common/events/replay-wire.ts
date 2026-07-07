@@ -99,7 +99,7 @@ export type ReplaySubscribeOpts = {
     hint?: unknown
 }
 
-// хендл отписки бывает функцией (Listen3) или объектом (tSubHandle провода)
+// хендл отписки бывает функцией (Listen3) или объектом (SubscriptionHandle провода)
 function unsubscribeHandle(handle: any) {
     if (typeof handle == 'function') { handle(); return }
     if (typeof handle?.off == 'function') handle.off()

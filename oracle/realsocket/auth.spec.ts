@@ -7,14 +7,14 @@
 //        WITHOUT dropping a live subscription.
 // ============================================================
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
-import {UseListen} from '../../src/Common/events/Listen'
+import {listen as createListenPair} from '../../src/Common/events/Listen'
 
 const PORT = 4105
 
 // One stream node, shared by BOTH principals → the subscription survives a principal
 // swap (same socket, same Listen handle). Distinct principals: user (read-only) vs
 // admin (read + write) so the swap is observable in method visibility.
-const [emit, listen] = UseListen<number>()
+const [emit, listen] = createListenPair<number>()
 const facades: Record<string, any> = {
     'tok-user': {
         stream: listen,

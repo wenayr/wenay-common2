@@ -12,7 +12,7 @@
 //  purely a wire choice negotiated at handshake — outcome-equivalent either way.
 // ============================================================
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
-import {UseListen} from '../../src/Common/events/Listen'
+import {listen as createListenPair} from '../../src/Common/events/Listen'
 
 const PORT = 4120
 
@@ -21,7 +21,7 @@ const PORT = 4120
 async function scenario(port: number, serverOpt?: {compact?: boolean}, clientOpt?: {compact?: boolean}) {
     let emit: ((v: any) => void) | null = null
     function makeObject() {
-        const [e, listen] = UseListen<any>()
+        const [e, listen] = createListenPair<any>()
         emit = e
         return {stream: listen}
     }
@@ -84,7 +84,7 @@ async function main() {
     // ---- 4) subscribe via .on(cb) over the REAL web (idiomatic alias of .callback) ----
     {
         let emit: ((v: any) => void) | null = null
-        const srv = await startRealServer({port: PORT + 3, makeObject: () => { const [e, l] = UseListen<any>(); emit = e; return {stream: l} }})
+        const srv = await startRealServer({port: PORT + 3, makeObject: () => { const [e, l] = createListenPair<any>(); emit = e; return {stream: l} }})
         const cli = await startRealClient({port: PORT + 3})
         const got: any[] = []
         const off = (cli.api.stream as any).on((v: any) => got.push(v))   // .on вместо .callback — «факт установки колбэка»
@@ -101,7 +101,7 @@ async function main() {
     // ---- 5) bare-on exposure ({ stream: listen.on }) + once over the REAL web ----
     {
         let emit: ((v: any) => void) | null = null
-        const srv = await startRealServer({port: PORT + 4, makeObject: () => { const [e, l] = UseListen<any>(); emit = e; return {stream: (l as any).on} }})
+        const srv = await startRealServer({port: PORT + 4, makeObject: () => { const [e, l] = createListenPair<any>(); emit = e; return {stream: (l as any).on} }})
         const cli = await startRealClient({port: PORT + 4})
         const got: any[] = []
         ;(cli.api.stream as any).on((v: any) => got.push(v))   // exposed ТОЛЬКО listen.on → клиент получил подписку

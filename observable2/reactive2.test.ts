@@ -169,7 +169,7 @@ async function main() {
         s.a.b = 2
         ok(pending == null, 'listenUpdate is cold until it has downstream listeners')
         let hits = 0
-        const off = updates.addListen(() => hits++)
+        const off = updates.on(() => hits++)
         s.a.b = 3
         flush()
         ok(hits == 1, 'listenUpdate fired through addListen')
@@ -256,7 +256,7 @@ async function main() {
         s.a.b = 2
         ok(pending == null, 'listenUpdatePaths is cold until it has downstream listeners')
         let got = ''
-        const off = updates.addListen(change => { got = change.paths.map(p => p.join('.')).join(',') })
+        const off = updates.on(change => { got = change.paths.map(p => p.join('.')).join(',') })
         s.a.b = 3
         flush()
         ok(got == 'b', 'listenUpdatePaths fired with relative dirty path: ' + got)

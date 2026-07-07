@@ -15,7 +15,7 @@ import {Server as SocketIOServer} from 'socket.io'
 import {io} from 'socket.io-client'
 import {createRpcServerAuto} from '../../src/Common/rcp/rpc-server-auto'
 import {createRpcClientHub} from '../../src/Common/rcp/rpc-clientHub'
-import {UseListen} from '../../src/Common/events/Listen'
+import {listen as createListenPair} from '../../src/Common/events/Listen'
 
 export const delay = (ms: number) => new Promise(r => setTimeout(r, ms))
 
@@ -38,7 +38,7 @@ export async function startRealServer(opts: ServerOpts) {
     const ioServer = new SocketIOServer(httpServer, {maxHttpBufferSize: 1e8})
 
     ioServer.on('connection', socket => {
-        const [disconnect, disconnectListen] = UseListen()
+        const [disconnect, disconnectListen] = createListenPair()
         socket.on('disconnect', () => disconnect())
         const adapter = {
             emit: (key: string, data: any) => socket.emit(key, data),

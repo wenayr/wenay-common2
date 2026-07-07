@@ -2,7 +2,7 @@
 
 > The full surface. For everyday helpers use **`wenay-common2.md`** (brief). Root import:
 > `import { ... } from "wenay-common2"`. Notation: `name(args) -> ret  // note`. Short names are
-> canonical; `// alias:` marks the older `@deprecated` long names (still exported, byte-for-byte).
+> canonical. Removed old names are listed in `NAMING_RENAMES.md`.
 
 ## 🔔 events (rare)
 ```
@@ -12,34 +12,32 @@ new CObjectEventsArr<T>() / new CObjectEventsList<T>(log?=true)        // handle
   // alias: Add/AddEnd->add · AddStart->add(_, {at:'start'}) · OnEvent->emit · Clean->clear · count/length->size
   // CObjectEventsList warns at >20 subscriptions (leak detector)
 
-ListenNext namespace / `wenay-common2/listen2` subpath:
-funcListenCore<T>(opts?) -> core               // minimal hot path: func/addListen/removeListen/on/once/close/count/getAllKeys
-funcListenCallbackBase<T>(producer, opts?) -> full
-  // full = core + producer lifecycle + close hooks + cbClose + addListenClose; output type is `ReturnType<typeof funcListenCallbackBase<T>>`
-funcListenCallback = funcListenCallbackBase · funcListenCallbackFast<T>(producer)
-UseListen<T>(opts?) -> [emit, full]            // pure event list: no value storage/current replay
-UseListen2<T>(opts?) -> [emit, slim]           // slim view: on/close/count only
+Listen API from root import:
+createListenCore<T>(opts?) -> core               // minimal hot path: emit/on/off/once/close/count/keys
+createListen<T>(producer, opts?) -> full         // producer receives emit and may return teardown
+createFastListen<T>(producer) -> full            // createListen(..., {fast:true})
+listen<T>(opts?) -> [emit, full]                 // pure event list: no value storage/current replay
+slimListen<T>(opts?) -> [emit, slim]             // slim view: on/off/close/count only
 withStoreListen(full, currentGetter) -> storeListen
-UseListenStore<T>({current,...opts}) -> [emit, storeListen]
+createStoreListen<T>(producer, {current,...opts}) -> storeListen
+listenStore<T>({current,...opts}) -> [emit, storeListen]
   // storeListen stores only the current getter reference, not store values
 
-full Listen: .on(cb,{key?,cbClose?})->off · .once(cb,{key?})->off · .onClose(cb)->off · .close() · .count()
+full Listen: .emit(...args) · .on(cb,{key?,cbClose?})->off · .off(key|cb) · .once(cb,{key?})->off · .onClose(cb)->off · .run() · .isRunning() · .close() · .count() · .keys()
 store Listen: .on(cb,{current?:true|()=>args,key?,cbClose?})->off · .once(cb,{current?:true|()=>args,key?})->off
-slim Listen2: .on(cb,{key?})->off · .close() · .count()
-// deprecated compat on full: .addListen/.removeListen/.eventClose/.removeEventClose; new code keeps the off() returned by on/once/onClose.
+slim Listen: .on(cb,{key?})->off · .off(key|cb) · .close() · .count()
 ```
 External current getter example:
 ```
-const [emit, listen] = ListenNext.UseListenStore<[Market]>({
+const [emit, listen] = listenStore<[Market]>({
   current: () => store.node.has() ? [store.node.snapshot()] : undefined,
 })
 listen.on(cb, {current: true})       // current store value first, then future emit(...) events
 listen.once(cb, {current: true})     // current store value once, or waits for one future event if current() returns undefined
 ```
-Old `Listen.ts` remains exported from root for compatibility and comparison; new split implementation is in `Listen2.ts`.
 ```
-isListenCallback(obj) -> boolean                  // duck-type a funcListenCallback* result
-socketBuffer3(...) · funcListenCallbackSnapshot(...)   // snapshot/buffer adapters over a realSocket2
+isListenCallback(obj) -> boolean                  // duck-type a full Listen result
+socketBuffer(...) · listenSnapshot(...)           // snapshot/buffer adapters over a SocketSource
 ```
 ## 🔢 number formatting & math (full)
 ```
@@ -147,14 +145,14 @@ toError = { ... }                                          // build/normalize My
 ```
 // servers
 createRpcServerAuto(opts)                           // canonical: nested object -> typed client proxy (auto Listen handling)
-  // replay-transparent exposure: facade members that are replay listens (UseReplayListen — brand-detected,
+  // replay-transparent exposure: facade members that are replay listens (replayListen — brand-detected,
   //   opts.replay: false|'auto'|'force') are exposed with BOTH surfaces under the SAME key: the legacy plain-Listen
   //   path stays byte-for-byte (Pkt.MAP only grows additively), plus line/frameLine/since/keyframe/frame — so
-  //   upgrading UseListen -> UseReplayListen is a declaration-site-only change; replaySubscribe(client.func.key) works as is.
+  //   upgrading listen -> replayListen is a declaration-site-only change; replaySubscribe(client.func.key) works as is.
   //   opts.replayOpts {pending?, highWater?, lowWater?, pollMs?} arms the per-connection lag gate on frameLine
   //   (consumer picks policy 'queue'|'frame' at subscribe time); the replay `line` is never throttled (no seq holes).
 createRpcServer(opts)                               // lower-level core
-createRpcServerAuto2(opts)                          // + legacy/v2 protocol auto-detection (createRpcServerAutoWithProtocolDetection)
+createRpcServerAutoDetect(opts)                          // + legacy/v2 protocol auto-detection (createRpcServerAutoWithProtocolDetection)
 createRpcServerInProc(...)                          // in-process fast path (no socket)
 // clients
 createRpcClientHub(opts) + rpc                      // multiplexing client hub: connect(token)/reauth(token)/onConnect
@@ -174,7 +172,7 @@ RPC Listen surface on client: stream.on(cb)->off · stream.once(cb)->off · stre
   //   The same projection is built into BOTH typed-client paths (ClientAPIAll/ClientAPIStrict): on a plain rpc<T>() client
   //   replay members are already ReplaySocketListen on client.func/client.strict — no webListen and no casts for them
   //   (plain Listen members still need the DeepSocketListen projection).
-  // off is callable + thenable: off() unsubscribes; await off waits for stream end. Legacy .callback/.removeCallback/.unsubscribe exist for old code only.
+  // off is callable + thenable: off() unsubscribes; await off waits for stream end.
   // *First/*All/*Smart differ only in callback arity: first arg / all args / single-vs-tuple smart.
 matchKeys(a,b) · matchKeysList(a, keys) · deepMapByKeys · deepMapByKeysList
 // wire serialization (rpc-walk): Date/Map/Set/RegExp/BigInt are marked+restored; functions -> callback refs.
@@ -256,12 +254,12 @@ ReadonlyFull<T> · MutableFull<T> · Mutable<T> · Immutable<T> · const_Date
 KeysByType<T,P> · PickTypes<T,P> · OmitTypes<T,E> · ReplaceKeyType<S,K,New>
 ```
 
-## 🔁 ObserveAll2 Store — path node facade + simple mirror sync
-> Public v2 store API: `import { ObserveAll2 } from "wenay-common2"` or `import * as ObserveAll2 from "wenay-common2/observe-all2"`.
-> `ObserveAll2.createStore(initial)` wraps the fact-based `reactive` core with typed path nodes. `state` is the plain-feeling data object; `node` is the subscribable path tree. Transport stays simple: selected snapshots, not public diffs.
+## 🔁 Observe Store — path node facade + simple mirror sync
+> Public v2 store API: `import { Observe } from "wenay-common2"` or `import * as Observe from "wenay-common2/observe"`.
+> `Observe.createStore(initial)` wraps the fact-based `reactive` core with typed path nodes. `state` is the plain-feeling data object; `node` is the subscribable path tree. Transport stays simple: selected snapshots, not public diffs.
 ```
 type Market = {data: {BTC?: number; ETH?: number}; meta: {status?: string}}
-const store = ObserveAll2.createStore<Market>({data: {BTC: 1, ETH: 2}, meta: {status: 'ok'}})
+const store = Observe.createStore<Market>({data: {BTC: 1, ETH: 2}, meta: {status: 'ok'}})
 
 store.state.data.BTC = 3                           // local backend/frontend code writes normally
 store.node.data.BTC.get() -> number | undefined
@@ -292,10 +290,10 @@ canonical example live in wenay-common2.md):
 
 Backend expose + frontend mirror:
 ```
-const facade = { market: ObserveAll2.exposeStore(store) }
+const facade = { market: Observe.exposeStore(store) }
 // createRpcServerAuto({object: facade, ...}) exposes: get(mask?), changed/changedPaths Listen, set/replace(path,value)
 
-const mirror = ObserveAll2.createStoreMirror<Market>(api.market, {data: {}, meta: {}})
+const mirror = Observe.createStoreMirror<Market>(api.market, {data: {}, meta: {}})
 const stopSync = await mirror.sync(
   {data: {BTC: true, ETH: true}, meta: {status: true}},
   {current: true, drain: 250}, // default partial:true uses changedPaths when available
@@ -309,17 +307,17 @@ Optional push-data channels (explicit high-frequency mode; usually choose one):
 type StorePatch = {path: PropertyKey[]; value: any; exists: boolean}
 type StoreChangedData = {mask: any; data: any}
 
-const pushed = ObserveAll2.exposeStore(store, {push: true})
+const pushed = Observe.exposeStore(store, {push: true})
 
 // Raw manual wiring: patch event carries one dirty path's current value.
 pushed.patches!.on((patch) => {
-  ObserveAll2.applyStorePatch(mirror, patch)       // exists:false means delete path
+  Observe.applyStorePatch(mirror, patch)       // exists:false means delete path
 })
-ObserveAll2.applyStorePatches(mirror, patches)     // batch variant: apply an array of patches in order
+Observe.applyStorePatches(mirror, patches)     // batch variant: apply an array of patches in order
 
 // Batch-shaped dirty data: one event has dirty mask + snapshot for that mask.
 pushed.changedData!.on(({mask, data}) => {
-  ObserveAll2.applyStoreMask(mirror, mask, data)
+  Observe.applyStoreMask(mirror, mask, data)
 })
 
 // Mirror helpers keep the client's selected mask and apply only its intersection
@@ -362,10 +360,10 @@ npx tsx observable2/store-mirror.example.ts
 ## 🎞️ Replay — snapshot + sequenced delta line
 > Keyframe + seq-numbered deltas + recovery via a fresh keyframe — one pattern for store sync,
 > ticks and video-like frame streams. `import { Replay } from "wenay-common2"` or
-> `import { ... } from "wenay-common2/replay"`; the store pair lives in `ObserveAll2`.
+> `import { ... } from "wenay-common2/replay"`; the store pair lives in `Observe`.
 > Design: `REPLAY-PLAN.md`; oracles: `replay/` (import the canonical `src/` modules).
 ```
-withReplayListen(base, {current?, frame?, history?, getSince?, onJournal?, now?, staleMs?, onStale?}) · UseReplayListen   // layer A: journal {seq, ts, event}; on(cb, {since, onSeq}); head()/getSince()/keyframe()/hasKeyframe · isStale()/lastTs()
+withReplayListen(base, {current?, frame?, history?, getSince?, onJournal?, now?, staleMs?, onStale?}) · replayListen   // layer A: journal {seq, ts, event}; on(cb, {since, onSeq}); head()/getSince()/keyframe()/hasKeyframe · isStale()/lastTs()
   // FRAME MODEL — one method, two sources, three triggers. frame(sinceSeq, hint?) -> envelopes bringing a consumer
   //   from sinceSeq to head, as compact as the line allows; default = exact journal tail ?? keyframe.
   //   Source 1 (keyframe): `current` — full state SAMPLED from the owner of truth (never computed from deltas);
@@ -421,7 +419,7 @@ conflateReplay(replay, {pending, highWater, lowWater?, pollMs?, keyOf?, maxKeys?
   //   destructure aside (const {close, stats, ...api} = ...) — close/stats must NOT reach the rpc object (they'd become remotely callable)
   // keyOf (@deprecated — declare `frame` on the LINE instead; held-map path kept working for old calls):
   //   while lagged keep the LAST envelope per key, drain -> tail of those (ascending seq) instead of a full keyframe;
-  //   events must be ABSOLUTE per key (store patches are — use storePatchKey from ObserveAll2); keyOf -> null or over maxKeys (1024) -> degrade to keyframe recovery
+  //   events must be ABSOLUTE per key (store patches are — use storePatchKey from Observe); keyOf -> null or over maxKeys (1024) -> degrade to keyframe recovery
   //   exposeStoreReplay declares its condensing frame automatically (last patch per exact path) — zero config for stores
 ReplayStorage = {putEvent, putKeyframe, getKeyframe({seq?|ts?}?), getEvents(from, to)}   // layer C: archive behind 4 lambdas (file/DB/anything); createMemoryReplayStorage(caps?) = reference impl
 archiveReplay(replay, {storage, everyEvents? = 64, everyMs?}) -> {close, stats}          // event log + keyframe cadence (every N events OR T ms of line-ts, whichever first; frames only ON events)
@@ -430,30 +428,30 @@ openHistory(storage, live?) -> {at({seq?|ts?}?), subscribe(cb, {since?|ts?, onSe
 storeReplayAt(storage, {seq?|ts?}?) -> snapshot | undefined                              // store time machine: bit-exact state at any archived moment (same applyStorePatch mechanism)
 ```
 > Killer property: a lagging/late/stalled consumer never gets a queue backlog — evicted seq / full outgoing buffer -> fresh keyframe + live from it.
-> Files: `src/Common/events/replay-{listen,wire,conflate,history,index}.ts` + `src/Common/ObserveAll2/store-{replay,offline}.ts`;
-> everything is additive (Listen3 gained only `registerListenOn`/`ListenOnBrand`; Listen2/exposeStore/mirror untouched).
+> Files: `src/Common/events/replay-{listen,wire,conflate,history,index}.ts` + `src/Common/Observe/store-{replay,offline}.ts`;
+> everything is additive (Listen3 gained only `registerListenOn`/`ListenOnBrand`; slimListen/exposeStore/mirror untouched).
 > Oracles: `npx ts-node replay/<f>.ts` — replay-listen / store-replay / offline-store / socket-replay / offline-store-socket / conflate / conflate-socket / coalesce / history / staleness / canvas-socket (raw bytes) / video-socket.demo;
 > wire coverage also lives in the RPC harness cookbook (`npm run test:rpc`).
 
-## 🔁 ObserveAll2 — coarse reactive object (`ObserveAll2`, fact-based)
-> `import { ObserveAll2 } from "wenay-common2"` → `ObserveAll2.reactive(...)`.
+## 🔁 Observe — coarse reactive object (`Observe`, fact-based)
+> `import { Observe } from "wenay-common2"` → `Observe.reactive(...)`.
 > Coarse fact-based core: no public deltas, no string-path event API, no computed graph in core.
 > Subscribe to the fact that a subtree changed, then re-read the current state.
 ```
-const state = ObserveAll2.reactive({
+const state = Observe.reactive({
   account: {
     balances: {BTC: 100, ETH: 400},
     positions: {BTC: {qty: 0.5, entry: 60000}},
   }
 })
 
-ObserveAll2.onUpdate(state.account, () => console.log("account changed"))
-ObserveAll2.onUpdatePaths(state.account, ({paths}) => console.log(paths)) // optional dirty paths, relative to account
-ObserveAll2.onUpdate(state.account.positions, () => console.log("positions changed"))
-ObserveAll2.onUpdate(state.account.positions.BTC, () => console.log("BTC changed"))
+Observe.onUpdate(state.account, () => console.log("account changed"))
+Observe.onUpdatePaths(state.account, ({paths}) => console.log(paths)) // optional dirty paths, relative to account
+Observe.onUpdate(state.account.positions, () => console.log("positions changed"))
+Observe.onUpdate(state.account.positions.BTC, () => console.log("BTC changed"))
 
 state.account.positions = {BTC: {qty: 3, entry: 59000}, SOL: {qty: 10, entry: 130}}
-await ObserveAll2.flushReactive(state)
+await Observe.flushReactive(state)
 ```
 ```
 reactive<T extends object>(obj, opts?) -> T
@@ -474,9 +472,9 @@ RPC stacking:
 ```
 const facade = {
   getAccount: () => state.account,
-  accountChanged: ObserveAll2.listenUpdate(state.account),
-  accountChangedPaths: ObserveAll2.listenUpdatePaths(state.account),
-  btcChanged: ObserveAll2.listenUpdate(state.account.positions.BTC),
+  accountChanged: Observe.listenUpdate(state.account),
+  accountChangedPaths: Observe.listenUpdatePaths(state.account),
+  btcChanged: Observe.listenUpdate(state.account.positions.BTC),
 }
 // createRpcServerAuto({ object: facade, ... }) exposes accountChanged/accountChangedPaths/btcChanged
 // as normal RPC Listen subscriptions. This is a notification stream, not a full

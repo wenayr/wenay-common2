@@ -1,4 +1,4 @@
-import { isListenCallback, funcListenCallbackBase, isListenOn, getListenByOn } from "../events/Listen";
+import { isListenCallback, createListen, isListenOn, getListenByOn } from "../events/Listen";
 import { listenSocket } from "./listen-socket";
 import { createRpcServer, type PromiseServerHooks, type RpcLimits } from "./rpc-server";
 import { DeepSocketListen } from "./listen-deep";
@@ -7,7 +7,7 @@ import { promiseServer } from "./oldСommonsServerMini";
 import { isNoStrict } from "./rpc-dynamic";
 import { isSafeKey } from "./rpc-limits";
 
-type ListenCallbackBase<T extends any[] = any[]> = ReturnType<typeof funcListenCallbackBase<T>>;
+type ListenCallbackBase<T extends any[] = any[]> = ReturnType<typeof createListen<T>>;
 
 // ── Новая версия с совместимостью ───────────────────────────────────
 //
@@ -24,7 +24,7 @@ type ListenCallbackBase<T extends any[] = any[]> = ReturnType<typeof funcListenC
 
 type ClientProtocol = 'v2' | 'legacy' | null;
 
-export function createRpcServerAuto2<T extends object>({
+export function createRpcServerAutoDetect<T extends object>({
                                                            socket,
                                                            object: target,
                                                            socketKey: key,
@@ -58,7 +58,7 @@ export function createRpcServerAuto2<T extends object>({
             function subscribe(z: any) {
                 if (typeof z !== "function") return Promise.reject(new TypeError("Listen callback expects a function"));
                 subs.get(z)?.off();
-                const w = listenSocket(parent, { addListenClose: disconnectListen });
+                const w = listenSocket(parent, { closeOn: disconnectListen });
                 subs.set(z, w);
                 const done = w.on(z);
                 done.then(() => { if (subs.get(z) == w) subs.delete(z); });
@@ -67,7 +67,7 @@ export function createRpcServerAuto2<T extends object>({
             function subscribeOnce(z: any) {
                 if (typeof z !== "function") return Promise.reject(new TypeError("Listen once expects a function"));
                 subs.get(z)?.off();
-                const w = listenSocket(parent, { addListenClose: disconnectListen });
+                const w = listenSocket(parent, { closeOn: disconnectListen });
                 subs.set(z, w);
                 const done = w.once(z);
                 done.then(() => { if (subs.get(z) == w) subs.delete(z); });
@@ -220,7 +220,7 @@ export function createRpcServerAuto2<T extends object>({
     // dispose() обнуляет activeHandler → роутер становится инертным (идиома rpc-server.ts:26-29).
     function handleMessage(msg: any) {
         if (debug) {
-            console.log('[RPC-AUTO2 IN]', typeof msg === 'object' ? JSON.stringify(msg) : msg);
+            console.log('[RPC-AUTO-DETECT IN]', typeof msg === 'object' ? JSON.stringify(msg) : msg);
         }
 
         // ── Быстрый путь: протокол уже определён ───────────────
@@ -241,7 +241,7 @@ export function createRpcServerAuto2<T extends object>({
 
         if (isLegacyStrictRequest(msg)) {
             protocol = 'legacy';
-            if (debug) console.log('[RPC-AUTO2] Protocol detected: legacy (___STRICTLY)');
+            if (debug) console.log('[RPC-AUTO-DETECT] Protocol detected: legacy (___STRICTLY)');
             onProtocolDetect?.('legacy');
             initLegacy();
             socket.emit(key, { STRICTLY: legacySchema });
@@ -250,7 +250,7 @@ export function createRpcServerAuto2<T extends object>({
 
         if (isLegacyMessage(msg)) {
             protocol = 'legacy';
-            if (debug) console.log('[RPC-AUTO2] Protocol detected: legacy (mapId message)');
+            if (debug) console.log('[RPC-AUTO-DETECT] Protocol detected: legacy (mapId message)');
             onProtocolDetect?.('legacy');
             initLegacy();
             legacyHandler!(msg);
@@ -259,7 +259,7 @@ export function createRpcServerAuto2<T extends object>({
 
         if (isV2Message(msg)) {
             protocol = 'v2';
-            if (debug) console.log('[RPC-AUTO2] Protocol detected: v2');
+            if (debug) console.log('[RPC-AUTO-DETECT] Protocol detected: v2');
             onProtocolDetect?.('v2');
             initV2();
             v2Handler!(msg);
@@ -267,7 +267,7 @@ export function createRpcServerAuto2<T extends object>({
         }
 
         // Неизвестный формат
-        if (debug) console.warn('[RPC-AUTO2] Unknown message format, ignoring:', msg);
+        if (debug) console.warn('[RPC-AUTO-DETECT] Unknown message format, ignoring:', msg);
     }
     activeHandler = handleMessage;
     socket.on(key, (msg: any) => activeHandler?.(msg));
@@ -282,7 +282,7 @@ export function createRpcServerAuto2<T extends object>({
         disposed = true;
         activeHandler = null;
         reset();
-        if (debug) console.log('[RPC-AUTO2] disposed', reason ?? '');
+        if (debug) console.log('[RPC-AUTO-DETECT] disposed', reason ?? '');
     }
 
     return {
