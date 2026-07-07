@@ -42,6 +42,8 @@
     "axios": "^1.13.6",
     "jest": "^30.2.0",
     "npm": "^11.11.0",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
     "ts-jest": "^29.4.6",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
@@ -60,5 +62,8 @@
     "./client": "./lib/client.js",
     "./server": "./lib/server.js",
     "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
   }
 }
