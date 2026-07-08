@@ -76,6 +76,10 @@ For seek into the past — not needed for live sync:
 
 1. `withReplayListen` decorator + seq handover (layer A) — the core, small.
 2. Patch journal in `exposeStore` + `since`-sync in mirror (layer B).
+2.5. **Route hand-off helper** — `replayRouteSubscribe` / `syncStoreReplayRoute`: keep the
+   old route live, catch up the replacement from the last delivered `seq`, then close the old
+   route. This is the replay-level foundation for relay ↔ direct promotion; signaling and
+   direct-transport setup remain outside this layer.
 3. Conflation + snapshot recovery on the wire (first item of D) — this is what turns
    "semi-pro" into pro for fan-out.
 4. C and the rest of D — on demand.

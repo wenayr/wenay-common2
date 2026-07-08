@@ -421,6 +421,8 @@ exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?, staleMs?
   //   hint reaches the frame lambda on catch-up and on every explicit frame(seq, hint) call (pull); the push-gate's
   //   drain recovery uses the line's DEFAULT condensation — client-specific rules/pace = the pull path.
   // off.ready (catch-up done) · off.seq() (reconnect point) · off.isStale()/off.lastTs(); reconnect = call again with {since: prev.seq()}
+replayRouteSubscribe(remote, cb, {label?, since?, onSeq?, onError?, onRoute?}) -> off & {ready, switch(nextRemote, {label?, since?, reset?, policy?, hint?}), seq(), label(), active()}
+  // transport hand-off helper: old route remains live, replacement subscribes+catches up from seq, then old closes; overlap is seq-deduped. Use for relay -> direct and direct -> relay over any ordered ReplayRemote.
   // DELIVERY CONTRACT (guaranteed, not best-effort): the subscriber's cb sees ONE uniform stream —
   //   first delivery = the snapshot (keyframe as an event of the SAME type; store: root patch),
   //   then only strictly-newer events, seq-ascending, no gaps, no dups. Live events racing ahead of the
@@ -440,6 +442,7 @@ exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?, staleMs?
   //   IMMEDIATELY; clock-skew caveat: producer/client clocks may disagree, skewMs tolerance absorbs it, default 0).
   //   A since-tail's historical ts never flaps mid-catch-up (one assessment after handover); off() disarms the timer.
 exposeStoreReplay(store, opts?)  <->  syncStoreReplay(mirror, remote, opts?)            // layer B: patch line; keyframe = root patch ({path: [], value: snapshot})
+syncStoreReplayRoute(mirror, remote, opts?) -> off & {ready, switch(nextRemote, opts), seq(), label(), active()}   // same patch fold, but route-replaceable for relay/direct promotion
 syncStoreReplayEach<T>(remote, cb, opts?) -> off & {store, ready, seq(), isStale(), lastTs()}   // one-call per-key fold over the patch line (mirror + syncStoreReplay + store.each()); most-used surface — full contract + example in wenay-common2.md
 createOfflineStore({key, remote?, initial, storage, version?, debounceMs?, syncOpts?}) -> Promise<OfflineStore<T>>
   // snapshot-mode persisted mirror: read local {version,seq,snapshot,savedAt}, create a normal Store immediately,

@@ -137,6 +137,8 @@ const [tick, ticks] = replayListen<[number]>({history: 1024, current: 'last'})  
 // legacy subscribers unchanged (byte-for-byte). Replay consumers now also get:
 const sub = replaySubscribe(l.ticks, v => {}, {since: saved, onSeq: s => saved = s})  // catch-up + live, no gaps/dups
 const sub2 = replaySubscribe(c.math.func.ticks, v => {})  // replay members project on func/strict directly — no cast needed
+const routed = replayRouteSubscribe(l.ticks, v => {}, {label: 'relay'})
+await routed.switch(nextRemoteTicks, {label: 'direct'})  // relay/direct hand-off: old route closes after catch-up
 await l.ticks.frame(mySeq)                                // pull at YOUR pace (50ms timer etc.) — server condenses via the line's frame lambda
 // full guide + examples → rpc.md; frame model / lag policies → 🎞️ recipe below and rare docs
 ```
@@ -187,6 +189,8 @@ Observe.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?} of api.
   // off.ready (catch-up done) · off.seq() (save for reconnect: syncStoreReplay(..., {since: prev.seq()}))
   // lagging/late client NEVER gets a backlog: evicted seq -> ONE fresh keyframe + live
   // freshness is an option, not consumer boilerplate: {staleMs, onStale} flags a silent line / stale keyframe (edge-triggered both ways; 🎞️ in rare docs)
+Observe.syncStoreReplayRoute(mirror, remote, {label?}) -> off & {switch(nextRemote, opts), ready, seq(), label(), active()}
+  // relay/direct promotion and re-interposition: replacement route catches up by seq before the old route closes
 Observe.syncStoreReplayEach<T>(remote, (key, value, ctx) => {}, opts?) -> off & {store, ready, seq(), isStale(), lastTs()}
   // one-call remote fold: mirror store + syncStoreReplay + store.each() — the callback fires per CHANGED
   //   top-level key; first delivery = keyframe EXPANDED per key; (key, undefined) = key deleted

@@ -9,6 +9,7 @@
 import {Store, StorePatch, StoreDrain, StoreEachCtx, applyStorePatch, createStore, exposeStore} from './store'
 import {replayListen, ReplayListenOptions, ReplayEvent} from '../events/replay-listen'
 import {exposeReplay, replaySubscribe, ReplayRemote, ReplaySubscribeOpts} from '../events/replay-wire'
+import {replayRouteSubscribe, ReplayRouteSubscribeOpts} from '../events/replay-route'
 import {openHistory, ReplayStorage} from '../events/replay-history'
 
 /** Патч по пути через ПУБЛИЧНОЕ node-api стора (его внутренний makePatch не нужен). */
@@ -82,6 +83,15 @@ export function exposeStoreReplay<T extends object>(store: Store<T>, opts: Store
  */
 export function syncStoreReplay<T extends object>(store: Store<T>, remote: ReplayRemote<[StorePatch]>, opts: ReplaySubscribeOpts = {}) {
     return replaySubscribe<[StorePatch]>(remote, function applyLine(patch) { applyStorePatch(store, patch) }, opts)
+}
+
+/**
+ * Route-switching store mirror: keep the old route alive, catch up the replacement
+ * route from the last delivered seq, then close the old one. Use for relay <-> direct
+ * promotion/re-interposition when the authority/replay line stays semantically the same.
+ */
+export function syncStoreReplayRoute<T extends object>(store: Store<T>, remote: ReplayRemote<[StorePatch]>, opts: ReplayRouteSubscribeOpts = {}) {
+    return replayRouteSubscribe<[StorePatch]>(remote, function applyRoutePatch(patch) { applyStorePatch(store, patch) }, opts)
 }
 
 /**
