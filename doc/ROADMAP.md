@@ -37,7 +37,12 @@ This implies a useful split:
 - **Replay layer** resumes streams and mirrors from the last known `seq`.
 - **Authority layer** decides whether an incoming write is accepted, predicted, reconciled, or merged.
 
-### 0.1 Optional account-to-account route plane ("wrapper over wrappers") 🔴
+Critical ordering rule: do **not** start with WebRTC/NAT plumbing or CRDTs. The next useful layer is a
+small route/account/policy coordinator with a fake/in-process transport adapter. Direct transport and
+multi-writer merge are expensive adapters; they only become safe after the coordinator state machine is
+boring and well-tested.
+
+### 0.1 Account route coordinator ("wrapper over wrappers") 🔴
 
 Some deployments need separate client/account identities to communicate directly when policy and
 network conditions allow it, while still allowing the server/relay to step back into the path later.
@@ -61,12 +66,66 @@ mirror, and replay primitives.
 - **Privacy rule:** direct account links are opt-in and policy-gated. Peers only receive the endpoint
   and session material needed for that specific relationship; no implicit broad account discovery.
 
-Open questions: account ACL/policy shape; signaling format; whether the relay sees payloads or only
-coordinates encrypted direct streams; how route state is exposed to the app; backpressure across
-multi-hop and direct paths; revocation in the middle of a live stream.
+Concrete next API shape, not final names:
+
+```ts
+createRouteCoordinator({
+  policy,
+  routes,
+  resources,
+}) -> {
+  pair(a, b),
+  state(pair),
+  promoteDirect(pair, opts?),
+  reinterposeRelay(pair, reason?),
+  block(pair, reason?),
+  fallback(pair, reason?),
+  onRoute(cb),
+}
+```
+
+Policy must run **before** transport promotion:
+
+- `canDirect(pair, ctx)` - may these accounts attempt direct at all?
+- `mustRelay(pair, ctx)` - force relay path because of NDA/audit/moderation/reauth.
+- `mustShadowRelay(pair, ctx)` - allow direct payload path, but keep audit/observe copy.
+- `canExposeEndpoint(pair, ctx)` - whether signaling may reveal endpoint/session material.
+- `canReinterpose(pair, ctx)` - whether/when relay is allowed or required to step back in.
+
+Minimum state machine:
+
+- `relay` -> `direct:connecting` -> `direct` -> `relay:reinterposing` -> `relay`
+- `relay` -> `direct:connecting` -> `fallback` -> `relay`
+- `direct` -> `direct+shadowRelay`
+- any state -> `blocked`
+
+Required failure modes:
+
+- direct setup never completes: keep relay active and mark fallback;
+- replacement route catches up too slowly: keep old route active and fail the switch;
+- policy changes mid-stream: re-interpose relay through replay hand-off;
+- account reauth changes facade/ACL: rebuild route policy before accepting new writes;
+- endpoint/session material is revoked: close direct and resume relay from `seq`;
+- audit/shadow route lags: decide whether to throttle, fallback, or block by policy.
+
+Acceptance tests for 0.1:
+
+- policy denial: direct is never attempted;
+- direct promotion: old relay stays live until replacement catches up;
+- failed direct: old relay continues with no data gap;
+- re-interposition: direct -> relay resumes from `seq`;
+- `direct+shadowRelay`: direct path is active while relay/audit mirror observes;
+- revocation: direct closes and relay resumes without changing facade API;
+- account map uses `noStrict`, but all access checks live in policy/facade code;
+- `createStoreManager` starts/stops selected per-account mirrors without store-core changes.
+
+Open questions: exact policy object shape; signaling envelope; whether the relay sees payloads or only
+coordinates encrypted direct streams; app-facing route-state events; backpressure across multi-hop and
+direct paths; group topology beyond a pair of accounts.
 
 Status: 🔴 not started. This belongs to project-0 architecture: no store-core change, but it defines
-the account/routing shell that later direct-connection work plugs into.
+the account/routing shell that later direct-connection work plugs into. This is the next important
+roadmap item; WebRTC and CRDT work should wait until this state machine is proven with fake transports.
 
 ## 1. Connection hand-off — relay ↔ direct promotion ("port forwarding") 🟡
 

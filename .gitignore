@@ -10,3 +10,7 @@ yarn-error.log*
 
 .vscode/*
 /srcClient/node_modules/
+
+# Local task progress files
+/doc/progress/*.md
+!/doc/progress/README.md

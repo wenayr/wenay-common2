@@ -26,6 +26,7 @@
     "CLAUDE.md",
     "rpc.md",
     "!doc/target/**/*",
+    "!doc/progress/**/*",
     "!**/*.tsbuildinfo"
   ],
   "author": "wenay",

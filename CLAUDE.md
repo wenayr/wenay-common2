@@ -51,6 +51,26 @@ Write new code in this style by default — no need to ask.
 ## Comments
 - Section dividers like `// ===...===` with a block heading.
 - Explain "why", not "what". Keep them short.
+
+## Work progress files
+
+- For any task that is more than a tiny/local edit, create a temporary progress file before
+  starting broad changes.
+- Put progress files under `doc/progress/`. This is the working-doc area, separate from public
+  API docs, roadmap docs, and release notes.
+- Name them by task, for example `doc/progress/replay-route-handoff.md`.
+- Keep the file short: goal, current checkpoint list, notable decisions, blockers, and verification
+  already run or still needed.
+- Update the progress file as checkpoints are completed, especially before switching context or
+  making broad edits.
+- When the task is finished, delete the progress file. Preserve only the durable outcome:
+  final response, commit message, and, for publishable changes, the matching `doc/changes/<version>.md`
+  entry.
+- If work is paused or blocked locally, leave the progress file in place and make the next required
+  action explicit. If the paused state must be committed or handed off, promote the useful part into
+  a durable doc (`ROADMAP`, `RECOMMENDATIONS`, `doc/target`, or `doc/changes`) instead of relying on
+  an ignored progress file.
+
 ## Documentation and release notes
 
 - `README.md` is navigation only. Do not put API guides, examples, or long explanations there.
