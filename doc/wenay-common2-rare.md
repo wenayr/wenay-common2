@@ -223,9 +223,10 @@ Audio source:
 - `getStats().rms` gives a VU-meter signal; permission denied/no device returns typed state, not a thrown public failure.
 
 Video source:
-- default snapshots, not a 30fps video stream: `video->canvas`, JPEG, `fps` default 3, `quality` default 0.82.
+- default snapshots, not a 30fps video stream: JPEG, `fps` default 3, `quality` default 0.82.
 - each frame carries absolute image bytes, so `replay:true` can safely keep the latest frame for lag recovery.
-- `worker` is API-reserved; current implementation stays main-thread. Any future worker path must transfer `ArrayBuffer` payloads, never structured-clone frame objects.
+- capture is hidden-tab-proof by default (Chrome throttles hidden tabs three ways, each stage has its own escape): the tick comes from a Blob-worker timer (in-page `setInterval` drops to ~1/s), the frame comes from `ImageCapture.grabFrame()` when available (a hidden `<video>` stops painting; `<video>->canvas` stays as the fallback), and JPEG encode runs in a worker over a transferred `ImageBitmap`, returning a transferred `ArrayBuffer` — never a structured-cloned frame (main-thread `convertToBlob` is gated to ~1s per call when hidden). `worker: false` opts out of all three into the plain in-page path.
+- one explicit dimension (`width` or `height`) scales the other proportionally from the track resolution, downscale-only; pass both to force an exact size. `grabFrame`'s ~50ms serial latency caps the pipeline around ~15-20fps regardless of `fps`.
 
 Replay/RPC wiring:
 ```ts

@@ -11,6 +11,13 @@
     button { padding: 6px 14px; border-radius: 6px; border: 1px solid #888; background: #fff; cursor: pointer; }
     button:hover { background: #f0f0f0; }
     #log { font-family: monospace; font-size: 12px; margin-top: 8px; max-height: 180px; overflow-y: auto; color: #555; }
+    #mediaView { display: flex; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
+    #mediaView figure { margin: 0; }
+    #mediaView figcaption { font-size: 12px; color: #777; margin-bottom: 4px; }
+    #peerCam, #peerScreen { border: 1px solid #bbb; border-radius: 6px; background: #111; max-width: 480px; height: auto; cursor: zoom-in; }
+    #peerCam:fullscreen, #peerScreen:fullscreen { width: 100vw; height: 100vh; object-fit: contain; background: #000; border: none; }
+    select { padding: 6px 8px; border-radius: 6px; border: 1px solid #888; background: #fff; }
+    #mediaStats { font-family: monospace; font-size: 12px; color: #777; }
 </style>
 </head>
 <body>
@@ -22,6 +29,29 @@
     <span id="route"></span>
 </div>
 <canvas id="canvas" width="640" height="360"></canvas>
+<div id="bar">
+    <button id="cam">📷 camera</button>
+    <select id="camRes" title="camera capture width">
+        <option value="320">320p</option>
+        <option value="640" selected>640p</option>
+        <option value="1280">1280p</option>
+        <option value="1920">1920p</option>
+    </select>
+    <button id="mic">🎙 mic</button>
+    <button id="screen">🖥 screen</button>
+    <button id="audio">🔊 peer audio</button>
+    <span id="mediaStats"></span>
+</div>
+<div id="mediaView">
+    <figure>
+        <figcaption id="peerCamCap">peer camera · click = fullscreen</figcaption>
+        <canvas id="peerCam" width="320" height="240"></canvas>
+    </figure>
+    <figure>
+        <figcaption id="peerScreenCap">peer screen · click = fullscreen</figcaption>
+        <canvas id="peerScreen" width="480" height="270"></canvas>
+    </figure>
+</div>
 <div id="log"></div>
 <script src="client.js"></script>
 </body>

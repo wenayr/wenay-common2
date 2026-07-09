@@ -505,6 +505,53 @@ async function resolveMediaStream(injected: any, fallback: () => Promise<any>) {
     return typeof injected == 'function' ? await injected() : injected
 }
 
+// Hidden-tab survival kit. Chrome throttles three different stages of a hidden tab's
+// video pipeline, each with its own escape hatch (measured on a real hidden tab):
+//   - setInterval -> ~1 tick/s          => tick from a Blob worker (not throttled)
+//   - <video> stops painting            => ImageCapture.grabFrame() reads the track directly
+//   - main-thread convertToBlob ~1000ms => encode inside a worker (5-10ms there)
+// All three engage by default; opts.worker == false falls back to the plain in-page path.
+function videoEncodeWorkerCode() {
+    return `
+const canvas = new OffscreenCanvas(1, 1)
+const ctx = canvas.getContext('2d')
+onmessage = async function onEncodeRequest(ev) {
+    const req = ev.data
+    try {
+        canvas.width = req.w
+        canvas.height = req.h
+        ctx.drawImage(req.bitmap, 0, 0, req.w, req.h)
+        req.bitmap.close()
+        const blob = await canvas.convertToBlob({type: req.mime, quality: req.quality})
+        const buf = await blob.arrayBuffer()
+        postMessage({buf}, [buf])
+    } catch (e) {
+        postMessage({error: String((e && e.message) || e)})
+    }
+}
+`
+}
+
+function startCaptureTicker(ms: number, tick: () => void, useWorker: boolean) {
+    const g = globalThis as any
+    if (useWorker && g.Worker && g.Blob && g.URL) {
+        try {
+            const blob = new g.Blob([`setInterval(function () { postMessage(0) }, ${ms})`], {type: 'text/javascript'})
+            const url = g.URL.createObjectURL(blob)
+            const worker = new g.Worker(url)
+            worker.onmessage = function onCaptureTick() { tick() }
+            return function stopWorkerTicker() {
+                worker.terminate()
+                g.URL.revokeObjectURL(url)
+            }
+        } catch {
+            // CSP may forbid blob workers — fall through to setInterval
+        }
+    }
+    const timer = setInterval(tick, ms)
+    return function stopIntervalTicker() { clearInterval(timer) }
+}
+
 function mimeForVideo(codec: VideoSourceOpts['codec']) {
     if (codec == 'png') return 'image/png'
     if (codec == 'webp') return 'image/webp'
@@ -531,9 +578,39 @@ export function createVideoSource(opts: VideoSourceOpts = {}): MediaSource {
     let video = opts.video
     let canvas = opts.canvas
     let ctx: any = null
-    let timer: any = null
+    let stopTicker: (() => void) | null = null
+    let imageCapture: any = null
+    let encodeWorker: any = null
     let busy = false
     let seq = 0
+
+    async function grabBitmap() {
+        // Hidden tabs stop painting <video>, so prefer ImageCapture.grabFrame(): it reads
+        // straight from the camera track and stays fresh regardless of visibility.
+        if (imageCapture) {
+            try { return await imageCapture.grabFrame() } catch { /* transient: fall back to <video> */ }
+        }
+        return null
+    }
+
+    function emitVideoFrame(payload: Uint8Array, codec: MediaFrameCodec, w: number, h: number) {
+        shell.emitFrame(encodeMediaFrame({
+            kind: 'video-frame',
+            codec,
+            seq: ++seq,
+            tMono: nowMono(),
+            width: w,
+            height: h,
+        }, payload), seq)
+    }
+
+    function encodeInWorker(bitmap: any, w: number, h: number, mime: string, quality: number) {
+        return new Promise<any>(function encodeRoundtrip(resolve, reject) {
+            encodeWorker.onmessage = (ev: any) => ev.data?.error ? reject(new Error(ev.data.error)) : resolve(ev.data.buf)
+            encodeWorker.onerror = (e: any) => reject(new Error(String(e?.message ?? 'video encode worker error')))
+            encodeWorker.postMessage({bitmap, w, h, mime, quality}, [bitmap])
+        })
+    }
 
     async function captureOne() {
         if (busy || shell.state != 'live') {
@@ -542,23 +619,39 @@ export function createVideoSource(opts: VideoSourceOpts = {}): MediaSource {
         }
         busy = true
         try {
-            const w = opts.width ?? video.videoWidth ?? video.width ?? 0
-            const h = opts.height ?? video.videoHeight ?? video.height ?? 0
-            if (!w || !h) return
+            const bitmap = await grabBitmap()
+            const srcW = (bitmap ? bitmap.width : video.videoWidth ?? video.width) ?? 0
+            const srcH = (bitmap ? bitmap.height : video.videoHeight ?? video.height) ?? 0
+            let w = opts.width ?? srcW
+            let h = opts.height ?? srcH
+            // one explicit dimension = scale the other proportionally, downscale-only
+            // (upscaling past the track resolution only inflates bytes); both = honor as is
+            if (srcW && srcH) {
+                if (opts.width && opts.height == undefined) {
+                    w = Math.min(opts.width, srcW)
+                    h = Math.round(w * srcH / srcW)
+                } else if (opts.height && opts.width == undefined) {
+                    h = Math.min(opts.height, srcH)
+                    w = Math.round(h * srcW / srcH)
+                }
+            }
+            if (!w || !h) {
+                bitmap?.close?.()
+                return
+            }
+            const codec = opts.codec ?? 'jpeg'
+            const quality = opts.quality ?? 0.82
+            if (encodeWorker && bitmap) {
+                const buf = await encodeInWorker(bitmap, w, h, mimeForVideo(codec), quality)
+                emitVideoFrame(new Uint8Array(buf), codec, w, h)
+                return
+            }
             if (canvas.width != w) canvas.width = w
             if (canvas.height != h) canvas.height = h
-            ctx.drawImage(video, 0, 0, w, h)
-            const codec = opts.codec ?? 'jpeg'
-            const blob = await canvasToBlob(canvas, mimeForVideo(codec), opts.quality ?? 0.82)
-            const payload = new Uint8Array(await blob.arrayBuffer())
-            shell.emitFrame(encodeMediaFrame({
-                kind: 'video-frame',
-                codec,
-                seq: ++seq,
-                tMono: nowMono(),
-                width: w,
-                height: h,
-            }, payload), seq)
+            ctx.drawImage(bitmap ?? video, 0, 0, w, h)
+            bitmap?.close?.()
+            const blob = await canvasToBlob(canvas, mimeForVideo(codec), quality)
+            emitVideoFrame(new Uint8Array(await blob.arrayBuffer()), codec, w, h)
         } catch (e) {
             shell.setState('error', e)
         } finally {
@@ -567,10 +660,11 @@ export function createVideoSource(opts: VideoSourceOpts = {}): MediaSource {
     }
 
     function stop() {
-        if (timer) {
-            clearInterval(timer)
-            timer = null
-        }
+        stopTicker?.()
+        stopTicker = null
+        imageCapture = null
+        encodeWorker?.terminate?.()
+        encodeWorker = null
         stopTracks(stream)
         stream = null
         if (!opts.video && video) {
@@ -606,13 +700,33 @@ export function createVideoSource(opts: VideoSourceOpts = {}): MediaSource {
             video.playsInline = true
             video.srcObject = stream
             await video.play?.()
-            canvas = canvas ?? doc.createElement('canvas')
+            const track = stream?.getVideoTracks?.()?.[0]
+            const ImageCaptureCtor = (globalThis as any).ImageCapture
+            try {
+                imageCapture = track && typeof ImageCaptureCtor == 'function' ? new ImageCaptureCtor(track) : null
+            } catch {
+                imageCapture = null
+            }
+            // main-thread async encode is throttled to ~1/s in hidden tabs — do it in a worker
+            const g = globalThis as any
+            if (opts.worker != false && imageCapture && g.Worker && g.Blob && g.URL && g.OffscreenCanvas) {
+                try {
+                    const blob = new g.Blob([videoEncodeWorkerCode()], {type: 'text/javascript'})
+                    const url = g.URL.createObjectURL(blob)
+                    encodeWorker = new g.Worker(url)
+                    g.URL.revokeObjectURL(url)
+                } catch {
+                    encodeWorker = null
+                }
+            }
+            const OffscreenCanvasCtor = g.OffscreenCanvas
+            canvas = canvas ?? (OffscreenCanvasCtor ? new OffscreenCanvasCtor(1, 1) : doc.createElement('canvas'))
             ctx = canvas.getContext('2d')
             if (!ctx) throw new Error('2d canvas context is not available')
             shell.setState('live')
             const ms = Math.max(1, Math.round(1000 / (opts.fps ?? 3)))
             await captureOne()
-            timer = setInterval(captureOne, ms)
+            stopTicker = startCaptureTicker(ms, captureOne, opts.worker != false)
             return shell.state
         } catch (e) {
             stopTracks(stream)

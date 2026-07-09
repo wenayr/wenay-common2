@@ -141,7 +141,10 @@ and `serveReplayChannel`/`channelReplayRemote` (replay wire over any ordered cha
 path bypasses the RPC core by design). Oracle `replay/route-webrtc.test.ts` drives promotion, endpoint
 denial, session rejection, and server revoke over both an in-proc hub and a real Socket.IO/RPC wire.
 Still open: browser/Node WebRTC glue (step 10 — now a one-line `rtc` factory plus media re-emit) and
-the account-map lifecycle integration (step 7).
+the account-map lifecycle integration (step 7). Media-side candidates (2026-07-10, after the demo
+stand stress test): a real `transport:'webrtc'` media track — SDP over the existing signal hub,
+media bypassing the socket relay for call-grade smoothness; and `MediaStreamTrackProcessor` capture
+for true 30fps (`grabFrame`'s ~50ms serial latency caps snapshot capture at ~15-20fps).
 
 ## 1. Connection hand-off — relay ↔ direct promotion ("port forwarding") 🟡
 

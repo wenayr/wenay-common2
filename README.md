@@ -13,7 +13,8 @@
 ## Living examples (shipped in the npm package)
 
 - [`demo/`](demo/) — runnable stand (`npm run demo`): shared cursors in two browser tabs over the
-  Peer SDK, relay ⇄ WebRTC direct hand-off next to a legacy rpc key.
+  Peer SDK, relay ⇄ WebRTC direct hand-off next to a legacy rpc key; plus live media — camera,
+  microphone and screen share captured with the `Media` sources and streamed to the watching tab.
 - [`replay/`](replay/) · [`observe/`](observe/) · [`oracle/`](oracle/) — the oracle suites CI runs on
   every push; each file doubles as a worked usage example of one subsystem.
 - Note: examples import from the repo's `src/`; in the installed package the same API comes from
