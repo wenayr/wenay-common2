@@ -9,3 +9,12 @@
 - Naming migrations: [`doc/NAMING_RENAMES.md`](doc/NAMING_RENAMES.md)
 - Recent changes: [`doc/changes/`](doc/changes/)
 - Project rules for AI/code maintenance: [`CLAUDE.md`](CLAUDE.md)
+
+## Living examples (shipped in the npm package)
+
+- [`demo/`](demo/) — runnable stand (`npm run demo`): shared cursors in two browser tabs over the
+  Peer SDK, relay ⇄ WebRTC direct hand-off next to a legacy rpc key.
+- [`replay/`](replay/) · [`observe/`](observe/) · [`oracle/`](oracle/) — the oracle suites CI runs on
+  every push; each file doubles as a worked usage example of one subsystem.
+- Note: examples import from the repo's `src/`; in the installed package the same API comes from
+  `wenay-common2` / `wenay-common2/peer` / `wenay-common2/replay` / `wenay-common2/observe`.

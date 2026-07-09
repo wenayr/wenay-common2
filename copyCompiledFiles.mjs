@@ -45,6 +45,20 @@ if (fs.existsSync("./doc")) {
     });
 }
 
+// living examples ship in the package (AI-readable usage): oracle suites + demo stand
+// (demo/public is a generated bundle, node_modules never belongs in a package)
+for (const dir of ["replay", "observe", "oracle", "demo"]) {
+    if (fs.existsSync(dir))
+        fs.cpSync(dir, path.join(tempDir, dir), {
+            recursive: true,
+            force: true,
+            filter: (src) => {
+                const parts = src.split(path.sep)
+                return !parts.includes("public") && !parts.includes("node_modules")
+            },
+        })
+}
+
 //fs.symlinkSync("../"+srcDir,  path.join(tempDir, srcDir), "junction");
 fs.cpSync(srcDir, path.join(tempDir, srcDir), { recursive: true, force: true })
 }
