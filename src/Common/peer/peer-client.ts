@@ -14,7 +14,7 @@ import {exposeStoreReplay} from '../Observe/store-replay'
 import {exposeReplay, ReplayRemote} from '../events/replay-wire'
 import {createRouteCoordinator, RouteConnector, RoutePolicy, tConnectorState} from '../events/route-coordinator'
 import {acceptWebRtcDirect, createWebRtcConnector, RtcPeerConnection, SignalEnvelope, SignalPort} from '../events/route-signal-webrtc'
-import {PatchEnvelope} from './peer-relay'
+import {PatchEnvelope, RelayPushResult, tRelayGap} from './peer-relay'
 
 /** Runtime shape of the host fragment as seen through the client deep proxy. */
 export type PeerRemote = {
@@ -22,11 +22,22 @@ export type PeerRemote = {
         send: (env: SignalEnvelope) => Promise<boolean | void>
         signals: {on: (cb: (env: SignalEnvelope) => void) => any}
     }
-    publish: (env: PatchEnvelope) => Promise<boolean | void> | boolean | void
-    peers: Record<string, ReplayRemote<[StorePatch]>>
+    publish: (env: PatchEnvelope) => Promise<RelayPushResult | void> | RelayPushResult | void
+    peers: Record<string, ReplayRemote<[StorePatch]> & {seq?: () => number | Promise<number>}>
 }
 
-export type PeerClientDeps<T extends object> = {
+/**
+ * Repair economy for publisher gaps. 'tail' = re-send the missed envelopes
+ * verbatim (lossless; falls back to a root keyframe if the local journal
+ * evicted them — 'resume' journals only). 'keyframe' = one fresh root snapshot
+ * (cheap; the relay ring resets — right for ephemeral state like cursors).
+ * A declared 'sacred' journal admits ONLY 'tail': cheap repair is forbidden by
+ * this type, not by a runtime check — lie about the journal kind and the relay
+ * will simply keep rejecting you (see peer-relay).
+ */
+export type tPublishRepair<J extends tRelayGap = 'resume'> = J extends 'sacred' ? 'tail' : 'tail' | 'keyframe'
+
+export type PeerClientDeps<T extends object, J extends tRelayGap = 'resume'> = {
     /** Deep proxy of the host's peer fragment, e.g. `clients.api.func.peer`. */
     remote: PeerRemote
     account: string
@@ -41,24 +52,87 @@ export type PeerClientDeps<T extends object> = {
     policy?: RoutePolicy
     /** Initial state for peer mirrors before the keyframe lands. */
     peerInitial?: () => T
+    /** What the server declared for this account's journal — constrains `repair` at the type level. */
+    journal?: J
+    repair?: tPublishRepair<J>
+    /** Publish-path failures (repair impossible, transport rejected) — loud, never silent. */
+    onPublishError?: (e: unknown) => void
     history?: number
     drain?: StoreDrain
 }
 
-export function createPeerClient<T extends object>(deps: PeerClientDeps<T>) {
+export function createPeerClient<T extends object, J extends tRelayGap = 'resume'>(deps: PeerClientDeps<T, J>) {
     const {
         remote, account, initial, rtc, session, accept, policy,
         peerInitial = () => ({} as T), history, drain,
+        journal = 'resume' as J, onPublishError,
     } = deps
+    const repair: 'tail' | 'keyframe' = deps.repair ?? 'tail'
 
     // ============== own state: a plain store, published as a patch line ==============
     const store = createStore<T>(initial, drain !== undefined ? {drain} : {})
     const exposed = exposeStoreReplay(store, history !== undefined ? {history} : {})
+
+    // -------- rejection-driven repair: the relay's {seq: N} verdict IS the repair
+    // request. One repair at a time; envelopes racing past it get re-rejected with
+    // a fresh coordinate, so the loop converges by induction.
+    let repairing: Promise<void> | null = null
+
+    function repairEnvelopes(from: number): PatchEnvelope[] {
+        const line = exposed.replay
+        if (repair == 'tail' && from >= 0) {
+            const tail = line.getSince(from)
+            if (tail) return tail
+            // local journal evicted the coordinate: a sacred relay cannot be
+            // repaired by an invented snapshot — that is the publisher's fault
+            if (journal == 'sacred') {
+                throw new Error('peer publish: local journal evicted seq ' + from + ', sacred relay is unrepairable — raise {history}')
+            }
+        }
+        const kf = exposed.replay.keyframe()
+        return kf ? [kf] : []
+    }
+
+    async function runRepair(from: number) {
+        for (const env of repairEnvelopes(from)) {
+            const res = await remote.publish(env)
+            if (res != null && typeof res == 'object') {
+                throw new Error('peer publish: repair rejected at relay seq ' + res.seq)
+            }
+        }
+    }
+
+    function queueRepair(from: number) {
+        if (repairing) return
+        repairing = runRepair(from)
+            .catch(function reportRepairError(e) {
+                if (onPublishError) onPublishError(e)
+                else setTimeout(function rethrowRepairError() { throw e }, 0)
+            })
+            .finally(() => { repairing = null })
+    }
+
+    function handleVerdict(res: RelayPushResult | void) {
+        if (res != null && typeof res == 'object' && typeof res.seq == 'number') queueRepair(res.seq)
+    }
+
     const offPublish = exposed.replay.line.on(function publishEnvelope(env: PatchEnvelope) {
-        void remote.publish(env)
+        Promise.resolve(remote.publish(env)).then(handleVerdict, function onPublishReject(e) {
+            // transport hiccup: the NEXT publish gets a {seq} verdict and repairs the gap
+            onPublishError?.(e)
+        })
     })
     const warmup = exposed.replay.keyframe()
-    if (warmup) void remote.publish(warmup)
+    if (warmup) Promise.resolve(remote.publish(warmup)).then(handleVerdict, e => onPublishError?.(e))
+
+    /** Reconnect hook: compare the relay's coordinate with the local line and repair the gap. */
+    async function resync() {
+        const node = remote.peers[account]
+        const relaySeq = Number(await node?.seq?.() ?? -1)
+        const localSeq = exposed.replay.keyframe()?.seq ?? -1
+        if (relaySeq >= localSeq) return
+        await runRepair(relaySeq)
+    }
 
     // ============== transport wiring: signaling port + connectors ==============
     const port: SignalPort = {
@@ -157,6 +231,8 @@ export function createPeerClient<T extends object>(deps: PeerClientDeps<T>) {
         peer,
         /** Route transitions across all pairs (metrics/UI). */
         onRoute: coord.onRoute,
+        /** Call after a transport reconnect: repairs the relay journal without waiting for the next write. */
+        resync,
         close() {
             for (const view of Array.from(views.values())) view.close()
             coord.close()

@@ -1,0 +1,31 @@
+# wenay-common2 — project intent
+
+## What this is
+
+A personal, open-source common/transport library, matured over many years. The published `1.x`
+line is really a **second generation** ("version 1" the number, version 2 the design) — the earlier
+generation and its plan/history docs were deliberately removed; the canonical surface today is
+`doc/wenay-common2.md` (brief) + `doc/wenay-common2-rare.md` (full reference).
+
+The current stack is a small distributed-state runtime: a typed RPC core, an `Observe` reactive
+store, a universal replay layer (`seq` + keyframe + deltas), a policy-gated route coordinator
+(relay ⇄ WebRTC direct), a WebRTC signaling adapter, a media-over-socket layer, and a one-call
+`Peer` SDK on top. It is oracle-covered (CI on every push) and shipped with living examples and a
+runnable demo stand in the npm package.
+
+## Intent (2026-07)
+
+- **Open source, not promoted.** The library is public for use and as a portfolio/reference, but the
+  author is **not** going to actively market or grow a community around it. Other side-projects are
+  the current focus.
+- **No pressure to "finish" transport.** The transport/routing/replay lower half is built and good
+  enough; ROADMAP transport items are 🧊 deferred (super-low priority, not forbidden). They reopen
+  only when a real consumer hits a wall — never speculatively.
+- **Value is in being legible and demoable.** The measure of progress is "what can be shown
+  working," not layers added. The demo stand and the oracle examples exist to make the design
+  readable and hireable, not to chase feature completeness.
+- **Direction if picked up again:** the consumption layer (framework adapters — React hooks first),
+  and the showcase (a hero relay→direct demo). Everything else waits for a concrete need.
+
+This file is the durable record of that intent. It is not a worklist; the forward backlog (kept for
+reference, not commitment) lives in `doc/ROADMAP.md` and `doc/target/`.

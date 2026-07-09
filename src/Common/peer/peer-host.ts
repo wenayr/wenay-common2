@@ -14,17 +14,19 @@ import {noStrict} from '../rcp/rpc-dynamic'
 import {StorePatch} from '../Observe/store'
 import {ReplayRemote} from '../events/replay-wire'
 import {createSignalHub, SignalEnvelope} from '../events/route-signal-webrtc'
-import {createPatchRelayJournal, PatchEnvelope, PatchRelayJournal} from './peer-relay'
+import {createPatchRelayJournal, PatchEnvelope, PatchRelayJournal, tRelayGap} from './peer-relay'
 
 export type PeerHostDeps = {
     /** Server-side canExposeEndpoint: the only place endpoint/session material may pass. */
     authorize?: (env: SignalEnvelope) => boolean | Promise<boolean>
     /** Relay journal depth per account. */
     history?: number
+    /** Journal semantics for every account (data-type decision — see peer-relay). */
+    gap?: tRelayGap
 }
 
 export function createPeerHost(deps: PeerHostDeps = {}) {
-    const {authorize, history} = deps
+    const {authorize, history, gap} = deps
     const hub = createSignalHub({authorize})
     const relays = new Map<string, PatchRelayJournal>()
     // dynamic keyspace: accounts appear at runtime, clients resolve them by string path
@@ -33,7 +35,7 @@ export function createPeerHost(deps: PeerHostDeps = {}) {
     function ensureRelay(account: string) {
         let relay = relays.get(account)
         if (!relay) {
-            relay = createPatchRelayJournal({history})
+            relay = createPatchRelayJournal({history, gap})
             relays.set(account, relay)
             peersView[account] = relay.remote
         }

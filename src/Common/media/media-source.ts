@@ -18,6 +18,8 @@ export type MediaReplayOpts = true | ReplayListenUseOptions<[Uint8Array]>
 export type AudioSourceOpts = {
     sourceId?: string
     deviceId?: string
+    /** Bring your own MediaStream (or a factory): skips getUserMedia — tab audio, mixed streams, tests. */
+    stream?: any
     mode?: 'pcm' | 'record'
     format?: 'int16' | 'float32'
     channels?: number
@@ -33,6 +35,8 @@ export type AudioSourceOpts = {
 export type VideoSourceOpts = {
     sourceId?: string
     deviceId?: string
+    /** Bring your own MediaStream (or a factory): skips getUserMedia — screen share (getDisplayMedia), canvas capture, tests. */
+    stream?: any
     fps?: number
     width?: number
     height?: number
@@ -457,7 +461,7 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
     async function start() {
         try {
             ensureSocketTransport(transport)
-            if (!hasGetUserMedia()) {
+            if (!opts.stream && !hasGetUserMedia()) {
                 shell.setState('no-device')
                 return shell.state
             }
@@ -465,7 +469,7 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
             shell.setState('requesting')
             shell.stats.startedAt = nowMono()
             const constraints: any = {audio: {deviceId: deviceId ? {exact: deviceId} : undefined, channelCount: opts.channels, sampleRate: opts.sampleRate}}
-            stream = await (globalThis as any).navigator.mediaDevices.getUserMedia(constraints)
+            stream = await resolveMediaStream(opts.stream, () => (globalThis as any).navigator.mediaDevices.getUserMedia(constraints))
             if (opts.mode == 'record') startRecord(stream)
             else await startPcm(stream)
             shell.setState('live')
@@ -493,6 +497,12 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
         transport,
     }
     return attachControl([shell.emit, shell.listenApi] as const, control)
+}
+
+// Injected MediaStream (or a factory returning one) vs the default getUserMedia path.
+async function resolveMediaStream(injected: any, fallback: () => Promise<any>) {
+    if (!injected) return fallback()
+    return typeof injected == 'function' ? await injected() : injected
 }
 
 function mimeForVideo(codec: VideoSourceOpts['codec']) {
@@ -572,7 +582,7 @@ export function createVideoSource(opts: VideoSourceOpts = {}): MediaSource {
     async function start() {
         try {
             ensureSocketTransport(transport)
-            if (!hasGetUserMedia()) {
+            if (!opts.stream && !hasGetUserMedia()) {
                 shell.setState('no-device')
                 return shell.state
             }
@@ -584,13 +594,13 @@ export function createVideoSource(opts: VideoSourceOpts = {}): MediaSource {
             stop()
             shell.setState('requesting')
             shell.stats.startedAt = nowMono()
-            stream = await (globalThis as any).navigator.mediaDevices.getUserMedia({
+            stream = await resolveMediaStream(opts.stream, () => (globalThis as any).navigator.mediaDevices.getUserMedia({
                 video: {
                     deviceId: deviceId ? {exact: deviceId} : undefined,
                     width: opts.width,
                     height: opts.height,
                 },
-            })
+            }))
             video = video ?? doc.createElement('video')
             video.muted = true
             video.playsInline = true

@@ -185,7 +185,13 @@ me.onRoute(ev => {})                // route transitions for metrics/UI
 ```
 Key property: the relay journal stores the owner's envelopes VERBATIM (owner seq space), so a
 relay <-> direct hand-off is a plain seq resume — no keyframe reset, no gaps, no dups. Late joiners
-get a keyframe folded server-side even while the owner is offline. Policy/session material:
+get a keyframe folded server-side even while the owner is offline.
+Reconnect correctness is self-healing: a publisher gap makes the relay reject the push WITH its last
+seq, and the client repairs from that coordinate automatically (`repair: 'tail'` lossless (default)
+| `'keyframe'` cheap reset for ephemeral state). Server declares journal semantics
+(`createPeerHost({gap: 'resume' | 'sacred'})`); a declared `journal: 'sacred'` TYPE-forbids the cheap
+repair. `me.resync()` after a transport reconnect repairs without waiting for the next write;
+failures surface via `onPublishError`, never silently. Policy/session material:
 `createPeerClient({session, accept, policy})` + host `authorize` — see rare docs for the envelope
 contract and the underlying primitives (`createRouteCoordinator`, `createSignalHub`,
 `createWebRtcConnector`). Oracle: `replay/peer-sdk.test.ts`.

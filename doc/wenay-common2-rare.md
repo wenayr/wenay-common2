@@ -529,13 +529,27 @@ acceptWebRtcDirect({port, rtc, self, serve, accept?}) -> close()
   // responder side: on offer, negotiates answer/ICE and serves serve(env) (exposeReplay(...) as is) into
   //   the incoming datachannel; accept(env) validates session material and rejects with a loud revoke
   //   (the initiator fails fast, not by timeout). Repeated offer for a pair recreates the session.
-Peer.createPatchRelayJournal({history?}) -> {push(env), remote, seq(), snapshot(), close()}
-  // server-side mirror of an OWNER-sequenced patch line: push() takes the owner's envelopes VERBATIM
-  //   (dedup by seq; a root patch with a LOWER seq = owner restart, legitimate reset point), keyframe is
-  //   folded server-side (late joiners don't need the owner online), frame condenses last-patch-per-path.
+Peer.createPatchRelayJournal({history?, gap?: 'resume'|'sacred'}) -> {push(env) -> true|false|{seq}, remote, gap, seq(), snapshot(), close()}
+  // server-side mirror of an OWNER-sequenced patch line: push() takes the owner's envelopes VERBATIM.
   //   Owner seq space is the point: relay and direct routes share coordinates -> hand-off is a seq resume.
-  //   remote is ReplayRemote-shaped and rpc-exposable as is (line is a REAL Listen — the rpc layer detects
-  //   listen nodes by registry, a hand-rolled {on: cb => ...} wrapper would not stream).
+  // CORRECTNESS CONTRACT (gap = the SERVER's data-type decision):
+  //   'resume' (default, folding): keyframe folded server-side (late joiners never need the owner online);
+  //     a ROOT patch always resets the journal (owner restart AND keyframe repair share one rule); a
+  //     non-root envelope with a seq gap — and a non-root FIRST envelope (partial-state lie) — is
+  //     REJECTED as {seq: N}: that coordinate IS the repair request, no separate handshake exists.
+  //   'sacred': the journal never invents — no folded keyframe, no root-reset, strict contiguity only;
+  //     frame() on an evicted tail THROWS. For data where an invented snapshot is unacceptable.
+  //   Duplicates (reconnect/repair overlap) are idempotent no-ops. Rejection never corrupts the fold.
+  //   remote is ReplayRemote-shaped (+ additive `seq()` for publisher resync) and rpc-exposable as is
+  //   (line is a REAL Listen — the rpc layer detects listen nodes by registry, a hand-rolled
+  //   {on: cb => ...} wrapper would not stream).
+  // Publisher side (createPeerClient): {journal?: 'resume'|'sacred', repair?: 'tail'|'keyframe',
+  //   onPublishError?, resync()}. 'tail' = missed envelopes verbatim (falls back to a root keyframe if
+  //   the local journal evicted them — resume only); 'keyframe' = one cheap root reset (ephemeral state).
+  //   TYPE RULE, not a runtime check: journal:'sacred' narrows repair to 'tail' (tPublishRepair<J>) —
+  //   lie about the journal kind and the relay simply keeps rejecting you (loud via onPublishError).
+  //   resync() = call after transport reconnect: compares relay seq() with the local line, repairs the
+  //   gap without waiting for the next write. Oracle: replay/peer-repair.test.ts (full gap matrix).
   // The full SDK on top (createPeerHost/createPeerClient) is most-used surface -> wenay-common2.md.
 serveReplayChannel(source, channel) <-> channelReplayRemote(channel) -> ReplayRemote
   // replay wire over ANY ordered string channel (datachannel/MessagePort/worker/pipe): tiny JSON
