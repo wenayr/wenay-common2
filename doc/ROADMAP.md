@@ -42,7 +42,7 @@ small route/account/policy coordinator with a fake/in-process transport adapter.
 multi-writer merge are expensive adapters; they only become safe after the coordinator state machine is
 boring and well-tested.
 
-### 0.1 Account route coordinator ("wrapper over wrappers") 🔴
+### 0.1 Account route coordinator ("wrapper over wrappers") 🟡
 
 Some deployments need separate client/account identities to communicate directly when policy and
 network conditions allow it, while still allowing the server/relay to step back into the path later.
@@ -119,13 +119,20 @@ Acceptance tests for 0.1:
 - account map uses `noStrict`, but all access checks live in policy/facade code;
 - `createStoreManager` starts/stops selected per-account mirrors without store-core changes.
 
-Open questions: exact policy object shape; signaling envelope; whether the relay sees payloads or only
-coordinates encrypted direct streams; app-facing route-state events; backpressure across multi-hop and
-direct paths; group topology beyond a pair of accounts.
+Open questions: signaling envelope; whether the relay sees payloads or only coordinates encrypted
+direct streams; backpressure across multi-hop and direct paths; group topology beyond a pair of
+accounts; `noStrict(accountMap)` / `createStoreManager` lifecycle integration for dynamic peer maps.
 
-Status: 🔴 not started. This belongs to project-0 architecture: no store-core change, but it defines
-the account/routing shell that later direct-connection work plugs into. This is the next important
-roadmap item; WebRTC and CRDT work should wait until this state machine is proven with fake transports.
+Status: 🟡 partial (2026-07-09, v1.0.67). Core implemented as `Replay.createRouteCoordinator`
+(`src/Common/events/route-coordinator.ts`): `RouteConnector` contract (pure transport: open/close/state/
+metrics/onFail/capabilities), all five policy hooks, the full state machine above (including
+`direct+shadowRelay` audit copy, catch-up timeout, revocation auto-fallback, terminal `blocked`), data
+continuity through `replayRouteSubscribe`. Acceptance oracle: `replay/route-coordinator.test.ts` over
+fake in-process connectors — policy denial never touches transport, promotion keeps the old relay live,
+failed/slow direct falls back gap-free, re-interposition resumes from `seq`, shadow relay observes the
+switch window, revocation closes direct without facade changes, block is terminal. Still open: real
+signaling adapter + WebRTC connector (steps 9-10 of `doc/target/webrtc-route-coordinator-tasks.md`) and
+the account-map lifecycle integration.
 
 ## 1. Connection hand-off — relay ↔ direct promotion ("port forwarding") 🟡
 

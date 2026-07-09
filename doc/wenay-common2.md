@@ -143,6 +143,17 @@ await l.ticks.frame(mySeq)                                // pull at YOUR pace (
 // full guide + examples → rpc.md; frame model / lag policies → 🎞️ recipe below and rare docs
 ```
 
+## 🎙️ Media over socket — binary Listen frames
+```
+import { Media } from "wenay-common2"        // or: import * as Media from "wenay-common2/media"
+
+Media.createAudioSource({format?: 'int16'|'float32', mode?: 'pcm'|'record', replay?}) -> [emit, listen] & control
+Media.createVideoSource({fps? = 3, codec? = 'jpeg', quality?, replay?}) -> [emit, listen] & control
+control: start() -> Promise<'idle'|'requesting'|'live'|'denied'|'no-device'|'error'> · stop() · getStats() · setDevice(id) · listDevices() · state
+Media.encodeMediaFrame(meta, payload) / Media.decodeMediaFrame(frame)     // one Uint8Array = 40-byte fixed header + raw payload
+```
+Audio default is PCM frames from `AudioWorklet` where available (`mode:'record'` uses MediaRecorder chunks). Video default is camera snapshots (`video->canvas`, JPEG, low fps for vision). Put `listen` into `createRpcServerAuto` like any other Listen; with `replay:true`, the returned listen is a replay line, so RPC auto exposes legacy + replay surfaces under the same key. Backpressure policy: audio is lossless queue; video `replay:true` defaults to keep-latest frame recovery. `transport:'webrtc'` is reserved for a future SFU/signaling adapter; socket binary is the default today.
+
 ## 🔁 Observe — reactive state + store/mirror API
 > `import { Observe } from "wenay-common2"` or `import * as Observe from "wenay-common2/observe"`.
 > This is the documented v2 reactive/store surface.

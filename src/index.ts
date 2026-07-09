@@ -21,6 +21,7 @@ export * from "./Common/events/SocketBuffer";
 export * from "./Common/events/SocketServerHook";
 export * from "./Common/events/joinListens";
 export * from "./Common/events/mapListen";
+export * from "./Common/media/media-index";
 
 export * from "./Common/rcp/rpc-index";
 
@@ -43,4 +44,5 @@ export * as Time from "./Common/Time";
 export * as Color from "./Common/Color";
 export * as Observe from "./Common/Observe";
 export * as Replay from "./Common/events/replay-index";
+export * as Media from "./Common/media/media-index";
 

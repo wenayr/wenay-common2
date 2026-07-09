@@ -205,6 +205,50 @@ Contract:
 - Static dotted keys are also supported: `api["a.b"].c` is distinct from `api.a.b.c`. Internal route/listen/cache identity must stay lossless; dotted strings are only a debug display form.
 - If a branch is a fixed public API, keep it strict. If a branch is a personal/dynamic keyspace, wrap that branch in `noStrict` instead of trying to publish all current keys as schema.
 
+## 🎙️ Media over socket — browser capture as binary Listen
+> `import { Media } from "wenay-common2"` or `import * as Media from "wenay-common2/media"`.
+> The hot path event is ONE `Uint8Array`: fixed 40-byte common2 media header + raw payload. No JSON envelope.
+```
+Media.createAudioSource(opts?) -> [emit, listen] & control
+Media.createVideoSource(opts?) -> [emit, listen] & control
+Media.encodeMediaFrame(meta, payload) -> Uint8Array
+Media.decodeMediaFrame(frame) -> {kind, codec, seq, tMono, payload, sampleRate?, channels?, nSamples?, width?, height?}
+
+control: start() -> Promise<MediaSourceState> · stop() · getStats() · setDevice(id) · listDevices()
+state: 'idle'|'requesting'|'live'|'denied'|'no-device'|'error'
+```
+Audio source:
+- default `mode:'pcm'`, `format:'int16'`, raw PCM payload; uses `AudioWorklet` when available and falls back to `ScriptProcessor` only when the browser cannot run a worklet.
+- `mode:'record'` uses `MediaRecorder` chunks (`webm-opus`) for record/upload flows, not live STT.
+- `getStats().rms` gives a VU-meter signal; permission denied/no device returns typed state, not a thrown public failure.
+
+Video source:
+- default snapshots, not a 30fps video stream: `video->canvas`, JPEG, `fps` default 3, `quality` default 0.82.
+- each frame carries absolute image bytes, so `replay:true` can safely keep the latest frame for lag recovery.
+- `worker` is API-reserved; current implementation stays main-thread. Any future worker path must transfer `ArrayBuffer` payloads, never structured-clone frame objects.
+
+Replay/RPC wiring:
+```ts
+const audio = Media.createAudioSource({sourceId: 'mic'})                 // plain lossless queue Listen
+const video = Media.createVideoSource({sourceId: 'cam', fps: 2, replay: true})
+
+createRpcServerAuto({
+    socket, socketKey: 'media',
+    object: {audio: audio[1], video: video[1]},
+    replayOpts: {highWater: 64, lowWater: 8},
+})
+```
+`replay:true` makes the returned listen a `Replay.replayListen` surface before capture emits into it, so `createRpcServerAuto` brand-detects it and exposes legacy + replay under the same key. Defaults differ by media kind: audio replay is a sacred queue (`history:1024`, no keyframe/frame, do not drop samples); video replay is keep-latest (`history:256`, `current:'last'`, `frame` returns the newest covered frame). Pass `replay:{...}` for custom history/current/frame.
+
+Backpressure rule: audio consumers should use the default queue policy unless the app explicitly accepts loss. Video consumers can use `Replay.replaySubscribe(remote.video, cb, {policy:'frame'})`; a slow socket drains to the latest frame instead of accumulating stale images. The binary frame itself is RPC-safe because `rpc-walk` passes `TypedArray`/`ArrayBuffer` leaves through natively and applies `maxBinaryLen`.
+
+WebRTC future contract:
+- `transport:'socket'` is the implemented default today.
+- `transport:'webrtc'` is reserved and currently reports `state:'error'` on `start()`; it is not a hidden second transport.
+- Future WebRTC support must be explicit opt-in for sub-200ms human duplex. Signaling belongs on the existing socket/RPC control channel (offer/answer/ICE), and backend/AI access requires an SFU that re-emits media bytes into the same `Media` Listen/replay surface. Downstream RPC/replay/store consumers must not change.
+
+Oracle: `npx ts-node replay/media-socket.test.ts` checks header decode, plain Listen shape, `replay:true`, typed no-device state in Node, and real Socket.IO binary delivery.
+
 ## 📈 exchange — params (`CParams`)
 ```
 class CParams / CParamsReadonly implements IParams
@@ -441,6 +485,32 @@ replayRouteSubscribe(remote, cb, {label?, since?, onSeq?, onError?, onRoute?}) -
   //   of clock skew) + ENVELOPE-TS AGE checked at delivery (producer clock — a stale keyframe reports stale
   //   IMMEDIATELY; clock-skew caveat: producer/client clocks may disagree, skewMs tolerance absorbs it, default 0).
   //   A since-tail's historical ts never flaps mid-catch-up (one assessment after handover); off() disarms the timer.
+createRouteCoordinator({connect, policy?, shadow?, catchUpTimeoutMs?}) -> coordinator    // policy-gated relay <-> direct routing shell over pure connectors (ROADMAP 0.1)
+  // LAYERING: a CONNECTOR is a pure transport (no route decisions) — {info: {label, kind: 'relay'|'direct',
+  //   binary?, ordered?, reliable?}, open() -> ReplayRemote, close(), state(), metrics?() -> {rtt?, pending?},
+  //   onFail?}; the COORDINATOR alone owns promotion/fallback (state machine + policy); data continuity is
+  //   replayRouteSubscribe underneath, so ANY route change is gap-free and dup-free by the seq contract.
+  //   WebRTC/NAT is deliberately absent here: a future datachannel is just another RouteConnector.
+  // connect(ref, kind) -> RouteConnector — transport factory per pair and kind (called per activation).
+  // policy hooks run BEFORE any transport action; absent hook = allowed, present hook must return true:
+  //   canDirect (may the pair attempt direct) · mustRelay (force relay: NDA/audit/moderation — beats canDirect)
+  //   · mustShadowRelay (direct payload + relay audit copy) · canExposeEndpoint (may signaling reveal
+  //   endpoint/session material) · canReinterpose (may relay step back into the path).
+  // coordinator.pair(a, b) -> link (symmetric key: pair(a,b) == pair(b,a)) · state/promoteDirect/
+  //   reinterposeRelay/fallback/block(pairOrKey, ...) · onRoute(cb) -> off (all transitions, all pairs)
+  //   · pairs() · close()
+  // link: .subscribe(cb, opts?) -> off & {ready, seq(), label(), active()}   // the pair's data: a replay stream
+  //     that survives every route change; facade/authority semantics never learn the transport switched
+  //   .promoteDirect({timeoutMs?, reason?}) -> Promise<{ok, state, reason?}>  // policy denial and transport
+  //     failure are EXPECTED OUTCOMES (result object), not exceptions; ops are serialized per link
+  //   .reinterposeRelay(reason?) / .fallback(reason?) / .block(reason?) · .state() · .label() · .metrics() · .close()
+  // STATE MACHINE: relay -> direct:connecting -> direct | direct+shadowRelay; direct -> relay:reinterposing -> relay;
+  //   failed/slow direct (timeoutMs) -> fallback (relay kept live the whole time, switch failed loudly);
+  //   direct onFail (endpoint revoked, link died) -> auto fallback: close direct, resume relay from seq;
+  //   any state -> blocked (terminal: subs closed, new subscribe throws, promote denied).
+  // direct+shadowRelay: payload rides direct while deps.shadow(ref, ...ev) receives the relay audit copy,
+  //   starting from the consumers' seq coordinate — the switch window never escapes the audit.
+  // Acceptance oracle: replay/route-coordinator.test.ts (fake in-process relay/direct connectors).
 exposeStoreReplay(store, opts?)  <->  syncStoreReplay(mirror, remote, opts?)            // layer B: patch line; keyframe = root patch ({path: [], value: snapshot})
 syncStoreReplayRoute(mirror, remote, opts?) -> off & {ready, switch(nextRemote, opts), seq(), label(), active()}   // same patch fold, but route-replaceable for relay/direct promotion
 syncStoreReplayEach<T>(remote, cb, opts?) -> off & {store, ready, seq(), isStale(), lastTs()}   // one-call per-key fold over the patch line (mirror + syncStoreReplay + store.each()); most-used surface — full contract + example in wenay-common2.md

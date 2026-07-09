@@ -16,6 +16,7 @@ export * from "./Common/events/event";
 export * from "./Common/events/SocketBuffer";
 export * from "./Common/events/SocketServerHook";
 export * from "./Common/events/joinListens";
+export * from "./Common/media/media-index";
 
 
 export * from "./Common/rcp/rpc-index";
@@ -36,3 +37,4 @@ export * as BaseTypes from "./Common/core/BaseTypes";
 export * as Params from "./Exchange/CParams";
 export * as Time from "./Common/Time";
 export * as Color from "./Common/Color";
+export * as Media from "./Common/media/media-index";
