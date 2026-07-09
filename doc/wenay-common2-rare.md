@@ -511,6 +511,31 @@ createRouteCoordinator({connect, policy?, shadow?, catchUpTimeoutMs?}) -> coordi
   // direct+shadowRelay: payload rides direct while deps.shadow(ref, ...ev) receives the relay audit copy,
   //   starting from the consumers' seq coordinate — the switch window never escapes the audit.
   // Acceptance oracle: replay/route-coordinator.test.ts (fake in-process relay/direct connectors).
+createSignalHub({authorize?}) -> {register(account) -> {send, signals, close}, revoke(pair, accounts, reason?), accounts(), close()}
+  // WebRTC signaling over the EXISTING control channel: the port shape {send, signals} is a function +
+  //   Listen — exactly what createRpcServerAuto exposes, so the relay socket IS the signaling wire
+  //   (per connection: const port = hub.register(account); object = {send: port.send, signals: port.signals}).
+  // authorize(env) is the SERVER-side canExposeEndpoint point — endpoint/session material is revealed only
+  //   past it; client-side coordinator policy stays advisory. from-spoofing is cut at the port.
+  // SignalEnvelope = {type: 'offer'|'answer'|'ice'|'revoke'|'close', pair, from, to, sdp?, candidate?,
+  //   session?, reason?} — session is opaque auth material (the wire never looks inside).
+createWebRtcConnector({port, rtc, self, peer, pair, session?, label?, openTimeoutMs?}) -> RouteConnector
+  // the direct connector for createRouteCoordinator: open() drives offer/answer/ICE through the signal
+  //   port, waits for the datachannel, returns a replay wire over it. RTCPeerConnection is NOT bundled:
+  //   rtc is a runtime factory — browser `() => new RTCPeerConnection(cfg)`, Node werift/node-datachannel,
+  //   tests an in-proc fake (RtcPeerConnection/RtcDataChannel are structural types, no lib.dom).
+  //   revoke/close signals and channel death (incl. DURING open) fail loudly -> coordinator auto-fallback.
+acceptWebRtcDirect({port, rtc, self, serve, accept?}) -> close()
+  // responder side: on offer, negotiates answer/ICE and serves serve(env) (exposeReplay(...) as is) into
+  //   the incoming datachannel; accept(env) validates session material and rejects with a loud revoke
+  //   (the initiator fails fast, not by timeout). Repeated offer for a pair recreates the session.
+serveReplayChannel(source, channel) <-> channelReplayRemote(channel) -> ReplayRemote
+  // replay wire over ANY ordered string channel (datachannel/MessagePort/worker/pipe): tiny JSON
+  //   sub/req/res protocol, no RPC core — a direct channel lives OUTSIDE the main rpc connection.
+  //   Channel close = non-envelope (null) on the line: replay subscribers report onError, never silence.
+  //   ReplayMessageChannel = {send, onMessage, onClose?, close?}; channelFromDataChannel(dc) adapts a
+  //   datachannel (and owns its handlers). Oracle: replay/route-webrtc.test.ts (fake RTC runtime +
+  //   in-proc hub + the same signaling over a real Socket.IO/RPC wire).
 exposeStoreReplay(store, opts?)  <->  syncStoreReplay(mirror, remote, opts?)            // layer B: patch line; keyframe = root patch ({path: [], value: snapshot})
 syncStoreReplayRoute(mirror, remote, opts?) -> off & {ready, switch(nextRemote, opts), seq(), label(), active()}   // same patch fold, but route-replaceable for relay/direct promotion
 syncStoreReplayEach<T>(remote, cb, opts?) -> off & {store, ready, seq(), isStale(), lastTs()}   // one-call per-key fold over the patch line (mirror + syncStoreReplay + store.each()); most-used surface — full contract + example in wenay-common2.md

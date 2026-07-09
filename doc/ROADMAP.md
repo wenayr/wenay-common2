@@ -119,9 +119,9 @@ Acceptance tests for 0.1:
 - account map uses `noStrict`, but all access checks live in policy/facade code;
 - `createStoreManager` starts/stops selected per-account mirrors without store-core changes.
 
-Open questions: signaling envelope; whether the relay sees payloads or only coordinates encrypted
-direct streams; backpressure across multi-hop and direct paths; group topology beyond a pair of
-accounts; `noStrict(accountMap)` / `createStoreManager` lifecycle integration for dynamic peer maps.
+Open questions: whether the relay sees payloads or only coordinates encrypted direct streams;
+backpressure across multi-hop and direct paths; group topology beyond a pair of accounts;
+`noStrict(accountMap)` / `createStoreManager` lifecycle integration for dynamic peer maps.
 
 Status: 🟡 partial (2026-07-09, v1.0.67). Core implemented as `Replay.createRouteCoordinator`
 (`src/Common/events/route-coordinator.ts`): `RouteConnector` contract (pure transport: open/close/state/
@@ -130,9 +130,15 @@ metrics/onFail/capabilities), all five policy hooks, the full state machine abov
 continuity through `replayRouteSubscribe`. Acceptance oracle: `replay/route-coordinator.test.ts` over
 fake in-process connectors — policy denial never touches transport, promotion keeps the old relay live,
 failed/slow direct falls back gap-free, re-interposition resumes from `seq`, shadow relay observes the
-switch window, revocation closes direct without facade changes, block is terminal. Still open: real
-signaling adapter + WebRTC connector (steps 9-10 of `doc/target/webrtc-route-coordinator-tasks.md`) and
-the account-map lifecycle integration.
+switch window, revocation closes direct without facade changes, block is terminal.
+v1.0.68 added step 9: `createSignalHub` (offer/answer/ICE/session/revoke over the EXISTING socket/RPC
+control channel; `authorize` = server-side `canExposeEndpoint`), `createWebRtcConnector` /
+`acceptWebRtcDirect` (RTCPeerConnection injected as a runtime factory, structural types, no lib.dom),
+and `serveReplayChannel`/`channelReplayRemote` (replay wire over any ordered channel — the datachannel
+path bypasses the RPC core by design). Oracle `replay/route-webrtc.test.ts` drives promotion, endpoint
+denial, session rejection, and server revoke over both an in-proc hub and a real Socket.IO/RPC wire.
+Still open: browser/Node WebRTC glue (step 10 — now a one-line `rtc` factory plus media re-emit) and
+the account-map lifecycle integration (step 7).
 
 ## 1. Connection hand-off — relay ↔ direct promotion ("port forwarding") 🟡
 
@@ -154,10 +160,13 @@ starts flowing on the new path.
   catch it up from the last delivered `seq`, then close the old route. This covers relay → direct
   promotion and direct → relay re-interposition for any ordered `ReplayRemote`; overlap is deduped by
   `seq`, and a failed replacement leaves the old route active.
-- Open questions: signaling channel that negotiates the direct endpoint; fallback if the direct path
-  never establishes (stay on relay); auth continuity across the swap; per-socketKey vs whole-connection
-  hand-off; policy trigger and catch-up boundary for direct → relay re-interposition.
-- Status: 🟡 partial. Route hand-off/resume helper is implemented and covered by `replay/route-handoff.test.ts`; signaling, direct endpoint negotiation, NAT/WebRTC adapter, auth-continuity policy, and trigger rules remain open.
+- Open questions: auth continuity across the swap; per-socketKey vs whole-connection hand-off;
+  policy trigger rules for direct → relay re-interposition beyond explicit calls and `onFail`.
+- Status: 🟡 mostly done. Route hand-off/resume: `replay/route-handoff.test.ts`. Route decisions +
+  state machine: `createRouteCoordinator` (v1.0.67). Signaling + direct endpoint negotiation over the
+  existing control channel and fallback-if-never-establishes: `createSignalHub` /
+  `createWebRtcConnector` / `acceptWebRtcDirect` (v1.0.68, `replay/route-webrtc.test.ts`). Remaining:
+  real NAT/WebRTC runtime glue (injected `rtc` factory) and auth-continuity policy.
 
 ## 2. Coordinated fan-out send to a large group 🧊
 
