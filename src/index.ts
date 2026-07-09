@@ -45,4 +45,5 @@ export * as Color from "./Common/Color";
 export * as Observe from "./Common/Observe";
 export * as Replay from "./Common/events/replay-index";
 export * as Media from "./Common/media/media-index";
+export * as Peer from "./Common/peer/peer-index";
 

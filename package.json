@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "1.0.68",
+  "version": "1.0.69",
   "description": "Common library",
   "strict": true,
   "main": "lib/index.js",
@@ -16,6 +16,8 @@
     "publish": "npm run _afterBuild  &&  npm run _publish",
     "build & publish": "npm run build  &&  npm run _publish",
     "_clearDir": "IF exist lib (rd /s /q lib)  &&  mkdir lib  &&  copy tsconfig_lib.json lib\\tsconfig.json  &&  echo:",
+    "demo:build": "esbuild demo/client.ts --bundle --platform=browser --outfile=demo/public/client.js  &&  copy /Y demo\\index.html demo\\public\\index.html",
+    "demo": "npm run demo:build  &&  node node_modules/ts-node/dist/bin.js --transpile-only demo/server.ts",
     "test:rpc-guards": "node scripts/assert-rpc-symbol-guard.cjs",
     "test:rpc": "node node_modules/ts-node/dist/bin.js --transpile-only src/Common/rcp/rpc.harness.spec.ts",
     "test:all": "npm run test:rpc-guards && npm run test:rpc && node scripts/run-oracles.mjs"
@@ -45,6 +47,7 @@
     "@types/node": "^25.3.5",
     "@types/source-map-support": "^0.5.10",
     "axios": "^1.13.6",
+    "esbuild": "^0.28.1",
     "jest": "^30.2.0",
     "npm": "^11.11.0",
     "socket.io": "^4.8.3",
@@ -67,7 +70,8 @@
     "./client": "./lib/client.js",
     "./server": "./lib/server.js",
     "./package.json": "./package.json",
-    "./media": "./lib/Common/media/media-index.js"
+    "./media": "./lib/Common/media/media-index.js",
+    "./peer": "./lib/Common/peer/peer-index.js"
   },
   "dependencies": {
     "express": "^5.2.1"

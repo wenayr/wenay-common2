@@ -5,7 +5,10 @@
 > `createStoreMirror`, and the replay `seq` / `keyframe` / `frame` contract. None of it requires
 > changing the store core; the store stays single-authority (one `seq` sequencer, last-writer-wins
 > per path), and these features are layers or adapters above that.
-> Status: 🔴 not started · 🟡 partial / ongoing · 🧊 deliberately shelved.
+> Status: 🔴 not started · 🟡 partial / ongoing · 🧊 deferred (super-low priority, not forbidden).
+>
+> Current focus is NOT more transport: see `doc/target/library-uplift-tasks.md` (showcase, SDK facade,
+> vertical demo app). Transport items below stay available but rank below everything in that plan.
 
 ## 0. Distributed Runtime Model
 
@@ -195,7 +198,9 @@ source of truth. Decompose by write topology:
   silently drop a concurrent write. This is the one case that genuinely needs CRDT/OT. Design lead:
   wrap a Yjs/Automerge doc as a `RemoteStore`-shaped source and mirror from it — the store↔transport
   decoupling makes this a small adapter, not a rewrite.
-- Status: 🔴 prediction layer + CRDT adapter not started; partitioned-authority already expressible.
+- Status: 🧊 deferred, super-low priority. Prediction layer waits for the demo app to demand and shape
+  it (`doc/target/library-uplift-tasks.md` task 4); CRDT adapter reopens only on a real co-write need.
+  Partitioned-authority already expressible today.
 
 ## 4. Data-transfer optimization backlog (ongoing) 🟡
 
@@ -203,4 +208,5 @@ Open-ended transfer/perf work, especially for backend-heavy models. Never "done"
 
 - Candidates: tighter `frame` condensation per line; delta/patch minimization; binary framing for hot
   paths; batching heuristics beyond the current `pipe` / `space` modes.
-- Status: 🟡 ongoing; pick items as real bottlenecks surface, not speculatively.
+- Status: 🧊 deferred, super-low priority; pick items only as real bottlenecks surface in the SDK/demo
+  consumers, not speculatively.

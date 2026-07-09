@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>wenay-common2 peer stand</title>
+<style>
+    body { font-family: sans-serif; margin: 16px; color: #222; }
+    #canvas { border: 1px solid #bbb; border-radius: 6px; background: #fafafa; display: block; }
+    #bar { display: flex; gap: 12px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+    #route { font-family: monospace; }
+    button { padding: 6px 14px; border-radius: 6px; border: 1px solid #888; background: #fff; cursor: pointer; }
+    button:hover { background: #f0f0f0; }
+    #log { font-family: monospace; font-size: 12px; margin-top: 8px; max-height: 180px; overflow-y: auto; color: #555; }
+</style>
+</head>
+<body>
+<h3>wenay-common2 — shared cursors (relay ⇄ WebRTC direct)</h3>
+<div id="bar">
+    <span id="who">connecting…</span>
+    <button id="direct">Go direct</button>
+    <button id="relay">Back to relay</button>
+    <span id="route"></span>
+</div>
+<canvas id="canvas" width="640" height="360"></canvas>
+<div id="log"></div>
+<script src="client.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# CI: build + publish gate + full oracle suite.
+# windows-latest is deliberate: npm scripts use cmd syntax (IF exist / rd / copy).
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npm run build
+      - run: npm run test
+      - run: node scripts/run-oracles.mjs

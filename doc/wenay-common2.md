@@ -154,6 +154,42 @@ Media.encodeMediaFrame(meta, payload) / Media.decodeMediaFrame(frame)     // one
 ```
 Audio default is PCM frames from `AudioWorklet` where available (`mode:'record'` uses MediaRecorder chunks). Video default is camera snapshots (`video->canvas`, JPEG, low fps for vision). Put `listen` into `createRpcServerAuto` like any other Listen; with `replay:true`, the returned listen is a replay line, so RPC auto exposes legacy + replay surfaces under the same key. Backpressure policy: audio is lossless queue; video `replay:true` defaults to keep-latest frame recovery. `transport:'webrtc'` is reserved for a future SFU/signaling adapter; socket binary is the default today.
 
+## 🤝 Peer — accounts see each other's stores (one-call SDK)
+> `import { Peer } from "wenay-common2"` or `import * as Peer from "wenay-common2/peer"`.
+> The happy-path facade over rpc + store + replay + route coordinator. Legacy-friendly by design:
+> the server side is a FRAGMENT spread into your EXISTING `createRpcServerAuto` object, the client
+> side rides your existing connection — old keys keep working untouched.
+```
+// SERVER — next to your legacy object:
+const host = Peer.createPeerHost({authorize?, history?})   // authorize(env) = server-side canExposeEndpoint
+io.on('connection', socket => {
+    const peer = host.connection(accountOf(socket))        // per-account signal port + relay journal
+    createRpcServerAuto({socket, socketKey, object: {...legacyObject, peer: peer.fragment}, disconnectListen})
+    disconnectListen.on(peer.close)
+})
+host: connection(account) · relay(account) · accounts() · revoke(pair, accounts, reason?) · close()
+
+// CLIENT — the whole happy path:
+const me = Peer.createPeerClient<World>({
+    remote: c.app.func.peer,        // deep proxy of the fragment — rest of the connection is yours
+    account: 'a',
+    initial: {...},                 // own store: write me.store.state — others see it
+    rtc?: () => new RTCPeerConnection(cfg),   // omit = relay-only (promoteDirect unavailable)
+})
+const bob = me.peer('b')            // mirror + route control for another account
+await bob.ready                     // keyframe/tail landed
+bob.store.state                     // live mirror — reads survive ANY route change
+await bob.promoteDirect()           // relay -> WebRTC direct; {ok, state, reason?} result, not a throw
+bob.route()                         // 'relay' | 'direct' · bob.reinterposeRelay() · bob.fallback() · bob.block()
+me.onRoute(ev => {})                // route transitions for metrics/UI
+```
+Key property: the relay journal stores the owner's envelopes VERBATIM (owner seq space), so a
+relay <-> direct hand-off is a plain seq resume — no keyframe reset, no gaps, no dups. Late joiners
+get a keyframe folded server-side even while the owner is offline. Policy/session material:
+`createPeerClient({session, accept, policy})` + host `authorize` — see rare docs for the envelope
+contract and the underlying primitives (`createRouteCoordinator`, `createSignalHub`,
+`createWebRtcConnector`). Oracle: `replay/peer-sdk.test.ts`.
+
 ## 🔁 Observe — reactive state + store/mirror API
 > `import { Observe } from "wenay-common2"` or `import * as Observe from "wenay-common2/observe"`.
 > This is the documented v2 reactive/store surface.

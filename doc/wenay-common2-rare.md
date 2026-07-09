@@ -529,6 +529,14 @@ acceptWebRtcDirect({port, rtc, self, serve, accept?}) -> close()
   // responder side: on offer, negotiates answer/ICE and serves serve(env) (exposeReplay(...) as is) into
   //   the incoming datachannel; accept(env) validates session material and rejects with a loud revoke
   //   (the initiator fails fast, not by timeout). Repeated offer for a pair recreates the session.
+Peer.createPatchRelayJournal({history?}) -> {push(env), remote, seq(), snapshot(), close()}
+  // server-side mirror of an OWNER-sequenced patch line: push() takes the owner's envelopes VERBATIM
+  //   (dedup by seq; a root patch with a LOWER seq = owner restart, legitimate reset point), keyframe is
+  //   folded server-side (late joiners don't need the owner online), frame condenses last-patch-per-path.
+  //   Owner seq space is the point: relay and direct routes share coordinates -> hand-off is a seq resume.
+  //   remote is ReplayRemote-shaped and rpc-exposable as is (line is a REAL Listen — the rpc layer detects
+  //   listen nodes by registry, a hand-rolled {on: cb => ...} wrapper would not stream).
+  // The full SDK on top (createPeerHost/createPeerClient) is most-used surface -> wenay-common2.md.
 serveReplayChannel(source, channel) <-> channelReplayRemote(channel) -> ReplayRemote
   // replay wire over ANY ordered string channel (datachannel/MessagePort/worker/pipe): tiny JSON
   //   sub/req/res protocol, no RPC core — a direct channel lives OUTSIDE the main rpc connection.

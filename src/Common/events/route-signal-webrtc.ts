@@ -234,7 +234,10 @@ export function createWebRtcConnector<Z extends any[] = any[]>(deps: WebRtcConne
 
         me.onicecandidate = function onIce(ev) {
             if (ev?.candidate != null) {
-                void port.send({type: 'ice', pair, from: self, to: peer, candidate: ev.candidate})
+                // RTCIceCandidate — класс-инстанс: по проводу едет его JSON-инит,
+                // иначе сериализация транспорта может отдать пустой объект
+                const c: any = ev.candidate
+                void port.send({type: 'ice', pair, from: self, to: peer, candidate: c?.toJSON ? c.toJSON() : c})
             }
         }
 
@@ -327,7 +330,8 @@ export function acceptWebRtcDirect<Z extends any[] = any[]>(deps: WebRtcAcceptDe
         }
         pc.onicecandidate = function onIce(ev) {
             if (ev?.candidate != null) {
-                void port.send({type: 'ice', pair: env.pair, from: self, to: env.from, candidate: ev.candidate})
+                const c: any = ev.candidate
+                void port.send({type: 'ice', pair: env.pair, from: self, to: env.from, candidate: c?.toJSON ? c.toJSON() : c})
             }
         }
         try {

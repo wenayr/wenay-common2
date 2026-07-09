@@ -31,3 +31,5 @@ Remaining: step 7 — app-level account/resource shell (`noStrict(accountMap)` +
 starting/stopping per-pair links); step 10 — real browser/Node WebRTC glue, which is now just passing
 `rtc: () => new RTCPeerConnection(cfg)` (or a werift adapter) into `createWebRtcConnector` /
 `acceptWebRtcDirect` plus the media re-emit into the `Media` `Listen`/replay surface.
+Both are scheduled through the vertical demo app — `doc/target/library-uplift-tasks.md` task 3
+(app-first: promote into the library only what generalizes).
