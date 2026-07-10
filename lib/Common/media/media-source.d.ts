@@ -1,0 +1,97 @@
+import { Listener, ListenApi } from '../events/Listen';
+import { ListenReplayApi, ReplayListenUseOptions } from '../events/replay-listen';
+export type MediaSourceKind = 'audio' | 'video';
+export type MediaSourceState = 'idle' | 'requesting' | 'live' | 'denied' | 'no-device' | 'error';
+export type MediaFrameKind = 'audio-pcm' | 'audio-record' | 'video-frame';
+export type MediaFrameCodec = 'pcm16' | 'float32' | 'jpeg' | 'png' | 'webp' | 'webm-opus';
+export type MediaTransportMode = 'socket' | 'webrtc';
+export type MediaSourceDevice = {
+    deviceId: string;
+    label: string;
+    kind: string;
+};
+export type MediaReplayOpts = true | ReplayListenUseOptions<[Uint8Array]>;
+export type AudioSourceOpts = {
+    sourceId?: string;
+    deviceId?: string;
+    stream?: any;
+    mode?: 'pcm' | 'record';
+    format?: 'int16' | 'float32';
+    channels?: number;
+    sampleRate?: number;
+    worklet?: boolean;
+    bufferSize?: number;
+    recordMimeType?: string;
+    recordTimesliceMs?: number;
+    transport?: MediaTransportMode;
+    replay?: MediaReplayOpts;
+};
+export type VideoSourceOpts = {
+    sourceId?: string;
+    deviceId?: string;
+    stream?: any;
+    fps?: number;
+    width?: number;
+    height?: number;
+    codec?: 'jpeg' | 'png' | 'webp';
+    quality?: number;
+    video?: any;
+    canvas?: any;
+    worker?: false | {
+        transferable?: true;
+    };
+    transport?: MediaTransportMode;
+    replay?: MediaReplayOpts;
+};
+export type MediaStats = {
+    sourceId: string;
+    kind: MediaSourceKind;
+    state: MediaSourceState;
+    seq: number;
+    frames: number;
+    bytes: number;
+    dropped: number;
+    startedAt: number;
+    lastAt: number;
+    fps: number;
+    rms?: number;
+    error?: string;
+};
+export type MediaSourceControl = {
+    start(): Promise<MediaSourceState>;
+    stop(): void;
+    getStats(): MediaStats;
+    setDevice(id: string): Promise<MediaSourceState>;
+    listDevices(): Promise<MediaSourceDevice[]>;
+    readonly state: MediaSourceState;
+    readonly sourceId: string;
+    readonly kind: MediaSourceKind;
+    readonly transport: MediaTransportMode;
+};
+export type MediaListen = ListenApi<[Uint8Array]>;
+export type MediaReplayListen = ListenReplayApi<[Uint8Array]>;
+export type MediaAnyListen = MediaListen | MediaReplayListen;
+export type MediaEmit = Listener<[Uint8Array]>;
+export type MediaSource = readonly [MediaEmit, MediaAnyListen] & MediaSourceControl;
+export type MediaFrameMeta = {
+    kind: MediaFrameKind;
+    codec: MediaFrameCodec;
+    seq: number;
+    tMono: number;
+    sampleRate?: number;
+    channels?: number;
+    nSamples?: number;
+    width?: number;
+    height?: number;
+};
+export type DecodedMediaFrame = MediaFrameMeta & {
+    payload: Uint8Array;
+};
+export declare const MEDIA_FRAME_MAGIC = 1464028466;
+export declare const MEDIA_FRAME_VERSION = 1;
+export declare const MEDIA_FRAME_HEADER_BYTES = 40;
+export declare function toBytes(data: ArrayBuffer | ArrayBufferView): Uint8Array<ArrayBufferLike>;
+export declare function encodeMediaFrame(meta: MediaFrameMeta, payload: ArrayBuffer | ArrayBufferView): Uint8Array<ArrayBuffer>;
+export declare function decodeMediaFrame(frameLike: ArrayBuffer | ArrayBufferView): DecodedMediaFrame;
+export declare function createAudioSource(opts?: AudioSourceOpts): MediaSource;
+export declare function createVideoSource(opts?: VideoSourceOpts): MediaSource;

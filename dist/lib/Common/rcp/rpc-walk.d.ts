@@ -1,0 +1,10 @@
+import { idPool } from "../id-pool";
+import { type RpcLimits } from "./rpc-limits";
+export declare function walk(val: any, onLeaf: (v: any) => any, lim?: Required<RpcLimits>, depth?: number): any;
+export declare function pack(args: any[], pool: idPool, cbStore: Map<number, Function>, cbIds: number[]): any[];
+export declare function packResult(value: any): any;
+export declare function rpcEndCallback(fn: Function): void;
+export declare function unpack(args: any[], sender: (id: number, a: any[]) => void, onEnd: (id: number) => void, lim?: Required<RpcLimits>): any[];
+export declare function unpackResult(value: any, lim?: Required<RpcLimits>): any;
+export declare const errToObj: (e: any) => any;
+export declare const resolveCA: (path: string[], args: any[]) => [string[], any[]];

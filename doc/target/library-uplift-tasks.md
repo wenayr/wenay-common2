@@ -1,7 +1,7 @@
 # Library Uplift Tasks (surface, SDK, demo)
 
 Goal: stop measuring progress by transport layers added; measure by what can be shown working.
-The transport/routing/replay lower half is built and oracle-covered (48/48) — the missing value is
+The transport/routing/replay lower half is built and oracle-covered (52/52) — the missing value is
 the consumption layer: showcase hygiene, one happy-path SDK facade, and one vertical demo app that
 becomes the library's portfolio and its source of real API pain.
 
@@ -38,6 +38,12 @@ Priority order: 1 -> 2 -> 3 -> 4. Transport items are NOT forbidden — see the 
         never jumps, seq continues across both hand-offs (no keyframe reset); found and fixed a real
         library bug on the way (RTCIceCandidate must ride as toJSON init — class instances get
         mangled by transport serialization)
+  - [x] messenger-style calls in the demo (v1.0.74): presence indicator, ring/accept/decline/hangup,
+        peer media attaches ONLY while the call is active (watch ACL maintained by a tiny server-owned
+        call lifecycle inside the host `authorize` hook). VERIFIED headless (two Chromium tabs, fake cam):
+        ring -> accept -> frames -> hangup -> decline, zero page errors. Found and fixed two real
+        library bugs on the way (pain-point loop works): subscribe-before-owner race in the `peers`
+        map (now auto-creates an empty journal); `viewer.off()` threw on rpc-projected lines
   - [ ] closes webrtc-route-coordinator step 10 as a byproduct: `rtc: () => new RTCPeerConnection(cfg)`
         glue + media re-emit into the `Media` `Listen`/replay surface
   - [ ] closes step 7 app-first: account map (`noStrict(accountMap)`) + `createStoreManager`
@@ -68,4 +74,5 @@ production systems.
 
 ## Next Action
 
-Start with task 1 (showcase hygiene), then scaffold `createPeerClient` (task 2).
+Finish task 3: capture the relay -> direct README GIF, then feed the remaining real demo pain points
+into the React consumption layer. Keep authority/CRDT work deferred until a consumer demands it.

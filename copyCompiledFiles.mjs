@@ -41,7 +41,10 @@ if (fs.existsSync("./doc")) {
     fs.cpSync("./doc", path.join(tempDir, "doc"), {
         recursive: true,
         force: true,
-        filter: (src) => path.basename(src) != "target" && !src.split(path.sep).includes("target"),
+        filter: (src) => {
+            const parts = src.split(path.sep)
+            return !parts.includes("target") && !parts.includes("progress")
+        },
     });
 }
 
@@ -60,6 +63,9 @@ for (const dir of ["replay", "observe", "oracle", "demo"]) {
 }
 
 //fs.symlinkSync("../"+srcDir,  path.join(tempDir, srcDir), "junction");
-fs.cpSync(srcDir, path.join(tempDir, srcDir), { recursive: true, force: true })
+fs.cpSync(srcDir, path.join(tempDir, srcDir), {
+    recursive: true, force: true,
+    filter: src => !src.endsWith('.tsbuildinfo'),
+})
 }
 //fs.copyFileSync("./lib", path.join(tempDir,"lib"));

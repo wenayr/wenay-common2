@@ -7,7 +7,25 @@
 // ============================================================
 import {decodeMediaFrame, toBytes} from './media-source'
 
-type tMediaLine = {on(cb: (frame: any, sentAt?: number) => void): () => void}
+type tMediaLine = {on(cb: (frame: any, sentAt?: number) => void): any}
+
+// A LOCAL line returns the off function synchronously (and MUST be detached
+// synchronously — no frame may slip through after off()); an RPC deep proxy
+// returns a Promise of a callable subscription handle. Normalize so viewer.off()
+// detaches either kind — otherwise tearing down a remote viewer would throw.
+// Order matters: a callable handle may ALSO be thenable (await = stream end),
+// so the function check must run before the promise check.
+function makeOff(raw: any) {
+    function unsubscribe(h: any) {
+        if (typeof h == 'function') h()
+        else h?.off?.()
+    }
+    return function off() {
+        if (typeof raw == 'function') { raw(); return }
+        if (raw != null && typeof raw.then == 'function') { void raw.then(unsubscribe); return }
+        unsubscribe(raw)
+    }
+}
 
 function mimeForCodec(codec: string) {
     if (codec == 'png') return 'image/png'
@@ -75,7 +93,7 @@ export function attachVideoCanvas(line: tMediaLine, canvas: any, opts: AttachVid
     let height = 0
     let busy = false
 
-    const off = line.on(async function onVideoFrame(raw: any, sentAt?: number) {
+    const off = makeOff(line.on(async function onVideoFrame(raw: any, sentAt?: number) {
         frames++
         age.note(sentAt)
         rate.note()
@@ -97,7 +115,7 @@ export function attachVideoCanvas(line: tMediaLine, canvas: any, opts: AttachVid
         } finally {
             busy = false
         }
-    })
+    }))
 
     return {
         stats: () => ({frames, drawn, perSec: rate.perSec, ageMs: age.ageMs, width, height}),
@@ -175,13 +193,13 @@ export function attachAudioPlayer(line: tMediaLine, opts: AttachAudioPlayerOpts 
         played++
     }
 
-    const off = line.on(function onAudioFrame(raw: any, sentAt?: number) {
+    const off = makeOff(line.on(function onAudioFrame(raw: any, sentAt?: number) {
         frames++
         age.note(sentAt)
         rate.note()
         if (!audioCtx) return
         try { push(raw) } catch (e) { opts.onError?.(e) }
-    })
+    }))
 
     return {
         enable() {

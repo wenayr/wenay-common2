@@ -1,0 +1,46 @@
+{
+  "name": "wenay-common2",
+  "version": "1.0.74",
+  "description": "Common library",
+  "strict": true,
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib/**/*",
+    "doc/**/*",
+    "replay/**/*",
+    "observe/**/*",
+    "oracle/**/*",
+    "demo/**/*",
+    "CLAUDE.md",
+    "rpc.md",
+    "!doc/target/**/*",
+    "!doc/progress/**/*",
+    "!demo/public/**/*",
+    "!**/*.tsbuildinfo"
+  ],
+  "author": "wenay",
+  "license": "ISC",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wenayr/wenay-common2.git"
+  },
+  "optionalDependencies": {
+    "utf-8-validate": "^6.0.6"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./observe": "./lib/Common/Observe/index.js",
+    "./replay": "./lib/Common/events/replay-index.js",
+    "./lib/client": "./lib/client.js",
+    "./lib/server": "./lib/server.js",
+    "./client": "./lib/client.js",
+    "./server": "./lib/server.js",
+    "./package.json": "./package.json",
+    "./media": "./lib/Common/media/media-index.js",
+    "./peer": "./lib/Common/peer/peer-index.js"
+  }
+}

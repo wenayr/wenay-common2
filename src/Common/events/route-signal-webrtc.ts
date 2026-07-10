@@ -20,7 +20,11 @@ import {channelReplayRemote, ReplayMessageChannel, serveReplayChannel} from './r
 // Signaling protocol
 // =====================================================================
 
+// call-типы едут по ТОМУ ЖЕ хабу (peer-call): маршрутизация по `to` их не различает,
+// webrtc-коннекторы фильтруют по pair+типу — интерференции нет; серверный authorize
+// видит и их (единая точка серверной политики: endpoint-материал И звонки)
 export type tSignalType = 'offer' | 'answer' | 'ice' | 'revoke' | 'close'
+    | 'ring' | 'accept' | 'decline' | 'hangup'
 
 export type SignalEnvelope = {
     type: tSignalType
@@ -51,23 +55,33 @@ export type SignalPort = {
  */
 export function createSignalHub(deps: {authorize?: (env: SignalEnvelope) => boolean | Promise<boolean>} = {}) {
     const {authorize} = deps
-    const ports = new Map<string, (env: SignalEnvelope) => void>()
+    // Several browser tabs may share one account. Keep registration order and route
+    // to the newest live port; when it closes, the previous port becomes active again.
+    const ports = new Map<string, Array<(env: SignalEnvelope) => void>>()
 
     function register(account: string) {
         const [emit, signals] = listen<[SignalEnvelope]>()
-        ports.set(account, emit)
+        const accountPorts = ports.get(account) ?? []
+        accountPorts.push(emit)
+        ports.set(account, accountPorts)
 
         async function send(env: SignalEnvelope) {
             if (env == null || env.from != account) return false // spoofing отрезан на входе
             if (authorize && !(await authorize(env))) return false
-            const target = ports.get(env.to)
+            const targets = ports.get(env.to)
+            const target = targets?.[targets.length - 1]
             if (!target) return false
             target(env)
             return true
         }
 
         function close() {
-            if (ports.get(account) == emit) ports.delete(account)
+            const accountPorts = ports.get(account)
+            if (accountPorts) {
+                const i = accountPorts.indexOf(emit)
+                if (i >= 0) accountPorts.splice(i, 1)
+                if (!accountPorts.length) ports.delete(account)
+            }
             signals.close()
         }
 
@@ -77,7 +91,8 @@ export function createSignalHub(deps: {authorize?: (env: SignalEnvelope) => bool
     /** Серверный отзыв маршрута (policy сменилась): revoke обеим сторонам пары. */
     function revoke(pair: string, accounts: string[], reason?: string) {
         for (const account of accounts) {
-            ports.get(account)?.({type: 'revoke', pair, from: '', to: account, reason})
+            const accountPorts = ports.get(account)
+            accountPorts?.[accountPorts.length - 1]?.({type: 'revoke', pair, from: '', to: account, reason})
         }
     }
 

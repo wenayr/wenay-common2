@@ -24,6 +24,11 @@ export type PeerRemote = {
     }
     publish: (env: PatchEnvelope) => Promise<RelayPushResult | void> | RelayPushResult | void
     peers: Record<string, ReplayRemote<[StorePatch]> & {seq?: () => number | Promise<number>}>
+    /** Present on hosts >= 1.0.74: who is online (subscribe to changes FIRST, then list()). */
+    presence?: {
+        list: () => Promise<string[]> | string[]
+        changes: {on: (cb: (change: {account: string, online: boolean}) => void) => any}
+    }
 }
 
 /**
