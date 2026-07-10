@@ -228,6 +228,12 @@ Video source:
 - capture is hidden-tab-proof by default (Chrome throttles hidden tabs three ways, each stage has its own escape): the tick comes from a Blob-worker timer (in-page `setInterval` drops to ~1/s), the frame comes from `ImageCapture.grabFrame()` when available (a hidden `<video>` stops painting; `<video>->canvas` stays as the fallback), and JPEG encode runs in a worker over a transferred `ImageBitmap`, returning a transferred `ArrayBuffer` — never a structured-cloned frame (main-thread `convertToBlob` is gated to ~1s per call when hidden). `worker: false` opts out of all three into the plain in-page path.
 - one explicit dimension (`width` or `height`) scales the other proportionally from the track resolution, downscale-only; pass both to force an exact size. `grabFrame`'s ~50ms serial latency caps the pipeline around ~15-20fps regardless of `fps`.
 
+Viewer helpers (`media-view`): the consumer side of any media line (local pair or RPC surface).
+- `attachVideoCanvas(line, canvas, {createBitmap?, onError?})` — per-frame codec/size come from the 40-byte header, canvas resizes to follow; decode overload is busy-skipped (keep-latest, `stats().frames` vs `stats().drawn` shows the gap); `createBitmap` injects a custom decoder (tests, OffscreenCanvas pipelines).
+- `attachAudioPlayer(line, {maxBacklogSec? = 0.35, audioContext?, onError?})` — pcm16/float32 through a sequential playhead; a backlog past `maxBacklogSec` is dropped and the playhead rebases near "now" (live beats lossless; `stats().dropped` counts rebases). `enable()` must come from a user gesture (browser autoplay rules); `audioContext` injects a factory for tests/custom routing.
+- `pipeMediaPublish(line, publish, {stamp? = true, onError?})` — fire-and-forget pipe into an RPC call; the default `Date.now()` stamp is what viewer `stats().ageMs` measures against. Both attach helpers also expose `stats().perSec` (rolling 1s rate).
+- Oracle: `replay/media-view.test.ts`.
+
 Replay/RPC wiring:
 ```ts
 const audio = Media.createAudioSource({sourceId: 'mic'})                 // plain lossless queue Listen

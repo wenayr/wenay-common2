@@ -151,6 +151,11 @@ Media.createAudioSource({format?: 'int16'|'float32', mode?: 'pcm'|'record', repl
 Media.createVideoSource({fps? = 3, codec? = 'jpeg', quality?, replay?}) -> [emit, listen] & control
 control: start() -> Promise<'idle'|'requesting'|'live'|'denied'|'no-device'|'error'> · stop() · getStats() · setDevice(id) · listDevices() · state
 Media.encodeMediaFrame(meta, payload) / Media.decodeMediaFrame(frame)     // one Uint8Array = 40-byte fixed header + raw payload
+
+// viewer/publisher one-liners (the demo stand is built on these):
+Media.attachVideoCanvas(line, canvas, {onError?}) -> {stats(), off}       // decode+render any video line; codec/size come from frame headers
+Media.attachAudioPlayer(line, {maxBacklogSec? = 0.35}) -> {enable(), disable(), enabled, stats(), off}   // live PCM playback, backlog drops
+Media.pipeMediaPublish(line, publish, {stamp? = true, onError?}) -> off   // source -> RPC publish fn; stamp lets viewers measure latency
 ```
 Audio default is PCM frames from `AudioWorklet` where available (`mode:'record'` uses MediaRecorder chunks). Video default is camera snapshots (JPEG, low fps for vision) captured hidden-tab-proof: a worker timer ticks (setInterval is throttled to ~1/s in hidden tabs), `ImageCapture.grabFrame()` reads the track (a hidden `<video>` stops painting), and JPEG encode runs in a worker (main-thread `convertToBlob` stalls ~1s hidden) — `worker:false` opts back into the plain in-page path. Screen share is the same video source with an injected stream: `createVideoSource({stream: () => navigator.mediaDevices.getDisplayMedia({video: true})})`. Put `listen` into `createRpcServerAuto` like any other Listen; with `replay:true`, the returned listen is a replay line, so RPC auto exposes legacy + replay surfaces under the same key. Backpressure policy: audio is lossless queue; video `replay:true` defaults to keep-latest frame recovery. `transport:'webrtc'` is reserved for a future SFU/signaling adapter; socket binary is the default today. Living example: the demo stand (`npm run demo`) streams camera / mic / screen share between two tabs through a tiny server-side relay of replay lines (`demo/server.ts` + `demo/client.ts`).
 

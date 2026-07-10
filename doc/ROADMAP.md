@@ -146,6 +146,21 @@ stand stress test): a real `transport:'webrtc'` media track — SDP over the exi
 media bypassing the socket relay for call-grade smoothness; and `MediaStreamTrackProcessor` capture
 for true 30fps (`grabFrame`'s ~50ms serial latency caps snapshot capture at ~15-20fps).
 
+Consumption-layer candidates (2026-07-10, author's ask):
+- **Call system** — one account calls another, messenger-style: presence (the host already knows
+  who is connected), ring / accept / decline envelopes over the existing signal hub, then media
+  over the socket relay (mainstream messengers route calls through their servers too — relay-first
+  is the privacy default, `promoteDirect` stays the opt-in). Builds entirely on shipped parts:
+  peer host + signal hub + media lines + `Media.attach*` viewers.
+- **Store-descriptor media bridge** ("streaming center") — the store carries a small descriptor
+  (`{kind: 'video', sourceId, state}`), a bridge watches the mirror and auto-attaches/detaches
+  `Media.attachVideoCanvas`/`attachAudioPlayer` to the matching binary line. Bytes flow only while
+  subscribed (native Listen-over-RPC semantics). Pairs with the React-hooks direction.
+- 🧊 **Zero-parse patch format** (super-far future) — Cap'n Proto / FlatBuffers-style layout for
+  store patches: fields read directly from the received buffer, no parse stage. Only if a real
+  consumer hits a serialization wall; JSON envelopes are nowhere near the bottleneck today
+  (measured 2-3ms e2e on the stand).
+
 ## 1. Connection hand-off — relay ↔ direct promotion ("port forwarding") 🟡
 
 A relay/intermediary bootstraps a connection between two parties, then — on a signal — **steps out

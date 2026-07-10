@@ -137,7 +137,7 @@ function nowMono() {
     return typeof perf?.now == 'function' ? perf.now() : Date.now()
 }
 
-function toBytes(data: ArrayBuffer | ArrayBufferView) {
+export function toBytes(data: ArrayBuffer | ArrayBufferView) {
     if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
     return new Uint8Array(data)
 }
