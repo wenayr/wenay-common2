@@ -554,6 +554,8 @@ createWebRtcConnector({port, rtc, self, peer, pair, session?, label?, openTimeou
   //   port, waits for the datachannel, returns a replay wire over it. RTCPeerConnection is NOT bundled:
   //   rtc is a runtime factory — browser `() => new RTCPeerConnection(cfg)`, Node werift/node-datachannel,
   //   tests an in-proc fake (RtcPeerConnection/RtcDataChannel are structural types, no lib.dom).
+  //   The replay channel encodes Uint8Array explicitly, preserving Media frames byte-for-byte instead
+  //   of JSON's numeric-key object conversion; native tracks/SFU are optional performance adapters.
   //   revoke/close signals and channel death (incl. DURING open) fail loudly -> coordinator auto-fallback.
 acceptWebRtcDirect({port, rtc, self, serve, accept?}) -> close()
   // responder side: on offer, negotiates answer/ICE and serves serve(env) (exposeReplay(...) as is) into

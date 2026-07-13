@@ -16,6 +16,7 @@ import {
 } from '../src/Common/events/replay-index'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
+import {decodeMediaFrame, encodeMediaFrame} from '../src/Common/media/media-source'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -199,12 +200,24 @@ async function main() {
         await waitFor('datachannel live events', () => got.length >= 4)
         ok(json(got) == json([0, 1, 2, 3]), 'replay wire over the datachannel is gap-free and dup-free')
 
+        // A direct media route uses the same replay wire. Binary frames must stay
+        // Uint8Array end-to-end — JSON's default numeric-key object is unusable by Media.
+        const mediaFrame = encodeMediaFrame({
+            kind: 'video-frame', codec: 'jpeg', seq: 4, tMono: 40, width: 2, height: 2,
+        }, new Uint8Array([77, 101, 100, 105, 97]))
+        emit(mediaFrame as any)
+        await waitFor('binary frame over datachannel', () => got.length >= 5)
+        const deliveredFrame = got[4] as any
+        const decodedFrame = deliveredFrame instanceof Uint8Array ? decodeMediaFrame(deliveredFrame) : null
+        ok(decodedFrame?.kind == 'video-frame' && json([...decodedFrame.payload]) == json([77, 101, 100, 105, 97]),
+            'direct replay preserves an encoded Media Uint8Array frame byte-for-byte')
+
         // server-side revoke: policy изменилась — direct закрывается, relay продолжает с seq
         hub.revoke(link.ref.key, ['a', 'b'], 'policy change')
         await waitFor('revoke fallback', () => link.state() == 'fallback')
         state = 4; emit(state)
         await waitFor('relay after revoke', () => got.includes(4))
-        ok(json(got) == json([0, 1, 2, 3, 4]), 'server revoke: relay resumes from seq, no gap')
+        ok(json(got.filter(v => typeof v == 'number')) == json([0, 1, 2, 3, 4]), 'server revoke: relay resumes from seq, no gap')
 
         // сервер не раскрывает endpoint: offer отклонён ДО транспорта
         allowDirect = false
@@ -223,7 +236,7 @@ async function main() {
         const retry = await link.promoteDirect()
         state = 5; emit(state)
         await waitFor('direct again', () => got.includes(5))
-        ok(retry.ok && link.state() == 'direct' && json(got) == json([0, 1, 2, 3, 4, 5]), 'pair recovers into direct after denials, still gap-free')
+        ok(retry.ok && link.state() == 'direct' && json(got.filter(v => typeof v == 'number')) == json([0, 1, 2, 3, 4, 5]), 'pair recovers into direct after denials, still gap-free')
 
         coord.close()
         stopAccept()

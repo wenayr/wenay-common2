@@ -7,6 +7,7 @@ import {
     flushReactive,
     managedStore,
 } from '../src/Common/Observe'
+import {isNoStrict, noStrict} from '../src/Common/rcp/rpc-dynamic'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -109,6 +110,47 @@ async function main() {
         manager.stopAll()
         exposed.close()
         ok(manager.handles.rows.status().state == 'stopped', 'stopAll closes offline resource')
+    }
+
+    console.log('\n[store-manager] dynamic account-map lifecycle')
+    {
+        const sources = new Map<string, ReturnType<typeof createStore<Market>>>()
+        const remotes = noStrict(new Proxy({} as Record<string, any>, {
+            get(_target, key) {
+                if (typeof key != 'string') return undefined
+                let source = sources.get(key)
+                if (!source) {
+                    source = createStore<Market>({data: {BTC: key.length}, meta: {status: 'relay'}}, {drain: 'micro'})
+                    sources.set(key, source)
+                }
+                return exposeStoreReplay(source, {history: 20}).api.replay
+            },
+        }))
+        function accountResource(account: string) {
+            return managedStore.replay<Market>({
+                remote: remotes[account],
+                initial: {data: {}, meta: {}},
+                storeOpts: {drain: 'micro'},
+            })
+        }
+        const manager = createStoreManager({
+            alice: accountResource('alice'),
+            bob: accountResource('bob'),
+        })
+
+        ok(isNoStrict(remotes), 'runtime account map is explicitly noStrict, not a fixed schema')
+        const alice = await manager.start('alice')
+        ok(alice.state.data.BTC == 5 && manager.get('bob') == null, 'start selects one account mirror without materializing its peers')
+
+        const source = sources.get('alice')!
+        source.state.meta.status = 'direct'
+        await settle(source.state)
+        ok(alice.state.meta.status == 'direct', 'selected account mirror follows its replay route')
+
+        manager.stop('alice')
+        ok(manager.handles.alice.status().state == 'stopped' && manager.get('alice') != null,
+            'stopping a selected account detaches its route while retaining its local mirror for reuse')
+        manager.stopAll()
     }
 
     console.log(`\n${fails == 0 ? 'ALL GREEN' : fails + ' FAILURE(S)'}`)

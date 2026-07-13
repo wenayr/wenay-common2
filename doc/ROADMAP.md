@@ -139,12 +139,13 @@ control channel; `authorize` = server-side `canExposeEndpoint`), `createWebRtcCo
 `acceptWebRtcDirect` (RTCPeerConnection injected as a runtime factory, structural types, no lib.dom),
 and `serveReplayChannel`/`channelReplayRemote` (replay wire over any ordered channel — the datachannel
 path bypasses the RPC core by design). Oracle `replay/route-webrtc.test.ts` drives promotion, endpoint
-denial, session rejection, and server revoke over both an in-proc hub and a real Socket.IO/RPC wire.
-Still open: browser/Node WebRTC glue (step 10 — now a one-line `rtc` factory plus media re-emit) and
-the account-map lifecycle integration (step 7). Media-side candidates (2026-07-10, after the demo
-stand stress test): a real `transport:'webrtc'` media track — SDP over the existing signal hub,
-media bypassing the socket relay for call-grade smoothness; and `MediaStreamTrackProcessor` capture
-for true 30fps (`grabFrame`'s ~50ms serial latency caps snapshot capture at ~15-20fps).
+denial, session rejection, server revoke, and an encoded `Media` `Uint8Array` frame over both the
+direct datachannel and relay fallback. v1.0.76 completes step 10 with a portable binary replay codec
+and the browser/Node `rtc` factory seam; it also completes step 7 with the app-level
+`noStrict(accountMap)` + `createStoreManager` selected-mirror lifecycle oracle. Media-side candidates
+remain a real `transport:'webrtc'` native media track/SFU for call-grade smoothness and
+`MediaStreamTrackProcessor` capture for true 30fps (`grabFrame`'s ~50ms serial latency caps snapshot
+capture at ~15-20fps); they are performance adapters, not route-coordinator prerequisites.
 
 Consumption-layer candidates (2026-07-10, author's ask):
 - ✅ **Call system** — SHIPPED in v1.0.74: `Peer.createCallManager` (ring/accept/decline/hangup as

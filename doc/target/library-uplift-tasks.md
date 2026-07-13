@@ -44,12 +44,13 @@ Priority order: 1 -> 2 -> 3 -> 4. Transport items are NOT forbidden — see the 
         ring -> accept -> frames -> hangup -> decline, zero page errors. Found and fixed two real
         library bugs on the way (pain-point loop works): subscribe-before-owner race in the `peers`
         map (now auto-creates an empty journal); `viewer.off()` threw on rpc-projected lines
-  - [ ] closes webrtc-route-coordinator step 10 as a byproduct: `rtc: () => new RTCPeerConnection(cfg)`
-        glue + media re-emit into the `Media` `Listen`/replay surface
-  - [ ] closes step 7 app-first: account map (`noStrict(accountMap)`) + `createStoreManager`
-        lifecycle written as app code; promote into the library only if it generalizes
+  - [x] closes webrtc-route-coordinator step 10 as a byproduct: `rtc: () => new RTCPeerConnection(cfg)`
+        glue + byte-preserving media re-emit into the `Media` `Listen`/replay surface (v1.0.76)
+  - [x] closes step 7 app-first: account map (`noStrict(accountMap)`) + `createStoreManager`
+        lifecycle written as app code; promote into the library only if it generalizes (v1.0.76)
   - [ ] README GIF: stream migrating relay -> direct with zero dropped frames
-  - [ ] collect real API pain points -> next roadmap items come from here, not speculation
+  - [x] collect real API pain points -> next roadmap items come from here, not speculation
+        (v1.0.76: direct replay JSON corrupted `Media` `Uint8Array`; fixed with a portable binary codec)
 - [ ] 4. Authority layer (`predictedStore`, ROADMAP section 3) — only AFTER the demo demands it;
       the demo defines its shape and keeps it small.
 

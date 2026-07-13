@@ -196,6 +196,9 @@ me.onRoute(ev => {})                // route transitions for metrics/UI
 Key property: the relay journal stores the owner's envelopes VERBATIM (owner seq space), so a
 relay <-> direct hand-off is a plain seq resume — no uncovered loss or duplicate delivery. Late joiners
 get a keyframe folded server-side even while the owner is offline.
+The same replay datachannel preserves `Media` `Uint8Array` frames byte-for-byte, so a direct route
+can feed existing `Media` Listen/replay consumers; native WebRTC tracks/SFU are optional future
+performance adapters, not a second media semantic.
 Reconnect correctness is self-healing: a publisher gap makes the relay reject the push WITH its last
 seq, and the client repairs from that coordinate automatically (`repair: 'tail'` lossless (default)
 | `'keyframe'` cheap reset for ephemeral state). Server declares journal semantics
