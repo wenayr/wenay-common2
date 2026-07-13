@@ -150,16 +150,27 @@ createRpcServerAuto(opts)                           // canonical: nested object 
   //   path stays byte-for-byte (Pkt.MAP only grows additively), plus line/frameLine/since/keyframe/frame — so
   //   upgrading listen -> replayListen is a declaration-site-only change; replaySubscribe(client.func.key) works as is.
   //   opts.replayOpts {pending?, highWater?, lowWater?, pollMs?} arms the per-connection lag gate on frameLine
-  //   (consumer picks policy 'queue'|'frame' at subscribe time); the replay `line` is never throttled (no seq holes).
+  //   (consumer picks policy 'queue'|'frame' at subscribe time); the replay `line` stays ungated for connected queue-policy live delivery.
 createRpcServer(opts)                               // lower-level core
 createRpcServerAutoDetect(opts)                          // + legacy/v2 protocol auto-detection (createRpcServerAutoWithProtocolDetection)
 createRpcServerInProc(...)                          // in-process fast path (no socket)
 // clients
-createRpcClientHub(opts) + rpc                      // multiplexing client hub: connect(token)/reauth(token)/onConnect
-  // alias: hub.setToken->connect
+createRpcClientHub(opts) + rpc                      // multiplexing client hub: connect(token)/reauth(token)/onConnect/onDisconnect + connectListen/disconnectListen
+  // alias: hub.setToken->connect. onConnect/onDisconnect are legacy single-slot setters; the additive
+  //   *Listen registries return per-listener off functions and cannot overwrite each other or internal recovery.
+  //   A transient disconnect/reconnect of the SAME Socket.IO object keeps this client generation: after
+  //   the new route/auth handshake, each active deduped logical Listen gets exactly one new physical attempt.
+  //   Local consumers and their off handles survive; a consumer removed offline is not resurrected.
+  //   connect()/setToken() hard-rotates the socket/client generation; close()/dispose() is terminal.
 client members: func (proxy) · strict (schema-safe) · schema() · auth() · reauth() · onDisconnect()
                 close(reason?, {socketAlive?}) · ready() · init(obj?) · api.subscriptions()
   // alias: dispose->close · readyStrict->ready · initStrict->init
+  // func/space/strict child proxies are cached per createRpcClient instance + surface + lossless RPC path:
+  //   c.func.a.b === c.func.a.b and c.all === c.func; dotted keys remain distinct from segmented paths.
+  //   Identity survives strict-schema refresh, reauth and transient reconnect. Hard token rotation creates
+  //   a fresh client/cache; incompatible wait/surface semantics never share a proxy.
+  //   Only Listen subscriptions are transport-resumed. Pending/attempted ordinary RPC and pipe calls reject
+  //   on disconnect and are NEVER replayed: retrying an arbitrary command could repeat side effects.
 noStrict(obj) / isNoStrict(obj)                     // dynamic (no-schema) subtree
 endCallback(fn)                                     // alias: rpcEndCallback
 // subscription primitives (rare/manual; createRpcServerAuto/createRpcClientHub are the normal path)
@@ -458,28 +469,36 @@ withReplayListen(base, {current?, frame?, history?, getSince?, onJournal?, now?,
   //     sugar `current: 'last'` — single-entity lines: keyframe = last journaled envelope, no hand-kept state.
   //   Source 2 (mini-frame): `frame` lambda — gets the raw tail, returns a state-equivalent compact
   //     (last-per-entity, gap aggregate...); cost ~ touched entities, wins over keyframe while the journal covers.
-  //   Line classes FOLLOW from declared lambdas (no mode flags): current+frame = condensable; current only =
-  //     snapshot-recoverable; neither = sacred queue — full tail only, evicted -> frame() THROWS (loud, never silent loss).
+  //   Line classes FOLLOW from declared lambdas (no mode flags): current+frame = condensable with keyframe fallback;
+  //     current only = exact retained tail + keyframe fallback; frame without current condenses only while the tail
+  //     is retained and still fails on eviction; neither = sacred exact queue — eviction THROWS terminally.
   //   Triggers: reconnect (`since`), client pull (own timer — replaces any server-side interval mode), server gate drain.
   //   The transport sees ONLY seq; entity keys/skip rules live in producer lambdas (hint = opaque per-subscriber pass-through).
 exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?, staleMs?, onStale?, skewMs?, now?, policy?, hint?}) -> off   // wire pair over the EXISTING rpc: line = plain Listen, since/keyframe/frame = plain methods
   // NORMAL PATH: createRpcServerAuto exposes replay listens automatically (see rpc section) — exposeReplay stays
   //   as the manual/custom-transport path. replaySubscribe prefers `frame` when the server has it (one round trip,
   //   server picks tail/mini-frame/keyframe; sacred throw -> onError), falls back to since/keyframe on old servers.
-  //   policy: 'queue' (default — socket buffers everything, nothing skipped) | 'frame' (subscribes frameLine when
-  //   present: on lag the server drops and recovers via frame(lastSent) — mini-frame, no backlog). A non-envelope
+  //   policy: 'queue' (default — ungated connected live line) | 'frame' (subscribes frameLine when present: on lag
+  //   the server may drop and recover via a state-equivalent frame(lastSent)). Catch-up is shared by both policies
+  //   and may use a producer mini-frame/keyframe, so a covered raw seq jump is not a logical data gap. A non-envelope
   //   on the line (RPC_STOP — e.g. the gate's loud sacred failure) surfaces via onError + off, never silence.
   //   hint reaches the frame lambda on catch-up and on every explicit frame(seq, hint) call (pull); the push-gate's
   //   drain recovery uses the line's DEFAULT condensation — client-specific rules/pace = the pull path.
-  // off.ready (catch-up done) · off.seq() (reconnect point) · off.isStale()/off.lastTs(); reconnect = call again with {since: prev.seq()}
+  // off.ready (first handover done, or terminal error/teardown) · off.seq() (last honestly delivered coordinate) · off.isStale()/off.lastTs().
+  //   Hub-managed RPC remotes resume automatically after transient reconnect from off.seq(): live is restored first,
+  //   racing envelopes queue, then frame/since catch-up is sorted+deduped. Transport-agnostic remotes without RPC
+  //   lifecycle metadata still reconnect by creating a new subscriber with {since: prev.seq()}.
 replayRouteSubscribe(remote, cb, {label?, since?, onSeq?, onError?, onRoute?}) -> off & {ready, switch(nextRemote, {label?, since?, reset?, policy?, hint?}), seq(), label(), active()}
   // transport hand-off helper: old route remains live, replacement subscribes+catches up from seq, then old closes; overlap is seq-deduped. Use for relay -> direct and direct -> relay over any ordered ReplayRemote.
   // DELIVERY CONTRACT (guaranteed, not best-effort): the subscriber's cb sees ONE uniform stream —
   //   first delivery = the snapshot (keyframe as an event of the SAME type; store: root patch),
-  //   then only strictly-newer events, seq-ascending, no gaps, no dups. Live events racing ahead of the
+  //   then only strictly-newer events, seq-ascending and deduped. A raw seq jump is valid only when a
+  //   producer-declared mini-frame/keyframe is state-equivalent to the omitted range; sacred retained tails
+  //   are exact. Live events racing ahead of the
   //   keyframe over the wire are queued during catch-up and seq-deduped — they can NEVER arrive first.
   //   With {since: K}: same fold, journal tail after K instead of a keyframe (evicted -> keyframe fallback,
-  //   visible to the client as a seq jump > +1). Requires an ORDERED transport (socket.io / TCP / in-proc).
+  //   visible as a covered seq jump > +1). A sacred eviction instead calls onError, closes the subscriber and
+  //   never drains post-gap live events as a false continuation. Requires an ORDERED transport (socket.io / TCP / in-proc).
   //   Net effect: one client fold `state = apply(state, event)` handles cold start, reconnect,
   //   conflation recovery and archive playback identically — snapshot is not a special case.
   // FRESHNESS (staleMs/onStale — an option, not consumer boilerplate): delivery is consistent but silent
@@ -496,7 +515,8 @@ createRouteCoordinator({connect, policy?, shadow?, catchUpTimeoutMs?}) -> coordi
   // LAYERING: a CONNECTOR is a pure transport (no route decisions) — {info: {label, kind: 'relay'|'direct',
   //   binary?, ordered?, reliable?}, open() -> ReplayRemote, close(), state(), metrics?() -> {rtt?, pending?},
   //   onFail?}; the COORDINATOR alone owns promotion/fallback (state machine + policy); data continuity is
-  //   replayRouteSubscribe underneath, so ANY route change is gap-free and dup-free by the seq contract.
+  //   replayRouteSubscribe underneath, so ANY route change is deduped and has no uncovered logical gap;
+  //   a producer-authorized frame/keyframe may still jump raw seq.
   //   WebRTC/NAT is deliberately absent here: a future datachannel is just another RouteConnector.
   // connect(ref, kind) -> RouteConnector — transport factory per pair and kind (called per activation).
   // policy hooks run BEFORE any transport action; absent hook = allowed, present hook must return true:
@@ -630,7 +650,7 @@ openHistory(storage, live?) -> {at({seq?|ts?}?), subscribe(cb, {since?|ts?, onSe
   // seamless rewind->live: create the line with getSince reading the same storage («memory outside»); else the gap closes with a keyframe jump (still consistent)
 storeReplayAt(storage, {seq?|ts?}?) -> snapshot | undefined                              // store time machine: bit-exact state at any archived moment (same applyStorePatch mechanism)
 ```
-> Killer property: a lagging/late/stalled consumer never gets a queue backlog — evicted seq / full outgoing buffer -> fresh keyframe + live from it.
+> Killer property for state/frame lines: a lagging/late/stalled consumer can replace backlog with a state-equivalent frame/keyframe. A sacred queue deliberately does not: its retained tail is exact, and eviction is a terminal error rather than silent loss.
 > Files: `src/Common/events/replay-{listen,wire,conflate,history,index}.ts` + `src/Common/Observe/store-{replay,offline}.ts`;
 > everything is additive (the canonical Listen surface gained only `registerListenOn`/`ListenOnBrand`; exposeStore/mirror untouched).
 > Oracles: `npx ts-node replay/<f>.ts` — replay-listen / store-replay / offline-store / socket-replay / offline-store-socket / conflate / conflate-socket / coalesce / history / staleness / canvas-socket (raw bytes) / video-socket.demo;

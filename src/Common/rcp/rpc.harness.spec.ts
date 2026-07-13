@@ -37,6 +37,7 @@ import { joinListens } from "../events/joinListens"
 import { noStrict } from "./rpc-dynamic"
 import { Pkt, IS_RPC_LISTEN, type SocketTmpl } from "./rpc-protocol"
 import { rpcPathKey } from "./rpc-path"
+import { getRpcMemberState, getRpcTransportLifecycle, RPC_TRANSPORT_CONTROL } from "../events/transport-lifecycle"
 import type { DeepSocketListen } from "./listen-deep"
 import { MyError } from "../../toError/myThrow"
 import { createStore, createStoreMirror, exposeStore, exposeStoreReplay, flushReactive, syncStoreReplay } from "../Observe"
@@ -412,6 +413,28 @@ export async function runHarness() {
         await check("ref: numeric-ref bump", () => pNum, 2)
         await check("ref: общее состояние (read)", () => F.read(), 2)
     }
+    { // transient disconnect: ignored calls do not become process-level unhandled rejections
+        const socket: SocketTmpl = {on: function onWire() {}, emit: function emitWire() {}}
+        const c = createRpcClient<any>({socket, socketKey: 'rpc'})
+        const control = (c as any)[RPC_TRANSPORT_CONTROL]
+        const unhandled: unknown[] = []
+        function rememberUnhandled(reason: unknown) { unhandled.push(reason) }
+        process.on('unhandledRejection', rememberUnhandled)
+        const ignored = c.func.neverSettles()
+        const awaited = c.func.neverSettles()
+        const awaitedResult = awaited.then(
+            function unexpectedResolve() { return 'resolved' },
+            function observeDisconnectReject(error) { return String(error?.message ?? error) },
+        )
+        control.disconnect('intentional test disconnect')
+        const rejection = await awaitedResult
+        await delay(0)
+        process.off('unhandledRejection', rememberUnhandled)
+        ignored.catch(function consumeIgnoredTestPromise() {})
+        await check('disconnect: awaited ordinary call rejects', async () =>
+            rejection.includes('RPC transport disconnected: intentional test disconnect'), true)
+        await check('disconnect: ignored ordinary call is not unhandled', async () => unhandled.length, 0)
+    }
     { // client wire: dotted dynamic segment уходит как один элемент path array
         const emitted: any[] = []
         const socket: SocketTmpl = {
@@ -501,6 +524,61 @@ export async function runHarness() {
         createRpcServer({ socket: ss, object: api, socketKey: "rpc" })
         await delay(0)
         await check("path-key: dynamic dotted prop", () => c.func.map["mystrategy.2020"].start(), ["mystrategy.2020", "start"])
+    }
+    { // strict proxy: schema refresh меняет тип path, но не identity
+        const [cs, ss] = createLoopback()
+        const api: { node: any } = { node: { child: () => "before" } }
+        const c = createRpcClient<any>({ socket: cs, socketKey: "rpc" })
+        createRpcServer({ socket: ss, object: api, socketKey: "rpc" })
+        await delay(0)
+        await c.initStrict({ node: { child: "func" } })
+        const node = c.strict.node as any
+        await check("strict/cache: object path rejects call", async () => {
+            try { await node(); return false }
+            catch { return true }
+        }, true)
+        api.node = () => "after"
+        await c.initStrict({ node: "func" })
+        await check("strict/cache: identity after type flip", async () => node == c.strict.node, true)
+        await check("strict/cache: call follows fresh schema", () => node(), "after")
+    }
+    { // old permissive RPC Proxy must not impersonate internal symbol metadata
+        const fakeMember = new Proxy(function fakeRpcMember() {}, {})
+        const legacyProxy = new Proxy(function legacyRpcProxy() {}, {get: () => fakeMember})
+        await check("rpc/metadata: unbranded proxy ignored", async () => [
+            getRpcMemberState(legacyProxy, "frame") == undefined,
+            getRpcTransportLifecycle(legacyProxy) == undefined,
+        ], [true, true])
+    }
+    { // lazy RPC proxy: optional replay members use the actual MAP, not Proxy truthiness
+        const [cs, ss] = createLoopback()
+        const [emit, line] = createListenPair<any>()
+        const journal = [
+            {seq: 1, ts: 1, event: [11]},
+            {seq: 2, ts: 2, event: [22]},
+        ]
+        const oldReplay = {
+            line,
+            since: (seq: number) => journal.filter(event => event.seq > seq),
+            keyframe: async function oldKeyframe() { return null },
+        }
+        const c = createRpcClient<any>({ socket: cs, socketKey: "rpc" })
+        createRpcServerAuto({ socket: ss, object: {oldReplay}, socketKey: "rpc" })
+        await delay(0)
+        const values: number[] = []
+        const errors: string[] = []
+        const sub = replaySubscribe<[number]>(c.func.oldReplay as any, value => values.push(value), {
+            since: 0,
+            policy: "frame",
+            onError: error => errors.push(String(error)),
+        })
+        await sub.ready
+        emit({seq: 3, ts: 3, event: [33]})
+        await delay(10)
+        await check("replay/old-rpc: frame fallbacks", async () => ({values, errors}), {
+            values: [11, 22, 33], errors: [],
+        })
+        sub()
     }
     { // mixed-version (P4): клиент игнорирует ЛИШНИЕ (будущие) элементы Pkt.MAP — forward-compat.
       // Старый сервер шлёт MAP из 4 элементов (так во всех остальных кейсах); здесь дописываем

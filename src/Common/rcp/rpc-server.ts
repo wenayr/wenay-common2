@@ -135,11 +135,16 @@ function createServer<T extends object>(
     // gate=true → до успешного HELLO вызовы отклоняются; без auth — открыто, как раньше.
     let authed = !auth?.gate;
     let authAck: any = undefined;
+    // Socket.IO preserves packet order, but EventEmitter does not await an async
+    // HELLO handler. STRICT/CALL therefore wait on the matching principal build.
+    let helloInFlight: Promise<void> | null = null;
     // 5-й элемент MAP появляется ТОЛЬКО когда есть authAck — иначе провод байт-в-байт как раньше.
     const sendMap = () => send(authAck !== undefined
         ? [Pkt.MAP, routeMap, strictSchema, listenPaths, authAck]
         : [Pkt.MAP, routeMap, strictSchema, listenPaths]);
-    sendMap();
+    // Do not race HELLO with a pre-auth MAP: hub could treat it as a completed handshake.
+    // No-auth servers keep the eager push; auth clients obtain their MAP from HELLO/STRICT.
+    if (!auth?.resolveAuth) sendMap()
     // Объявляем СВОИ договорные фичи один раз (половина «ask» рукопожатия): новый клиент
     // запомнит (peerServerCaps), старый — незнакомый Pkt.CAPS просто игнорирует.
     if (serverCaps) send([Pkt.CAPS, serverCaps]);
@@ -156,7 +161,16 @@ function createServer<T extends object>(
 
     socket.on(key, async (msg: any) => {
         if (detached) return;
-        if (msg == Pkt.STRICT) { sendMap(); return; }
+        if (msg == Pkt.STRICT) {
+            const hello = helloInFlight;
+            if (hello) {
+                await hello;
+                // HELLO already sent the principal-specific five-element MAP.
+                return;
+            }
+            sendMap();
+            return;
+        }
         // CAPS: клиент объявил свой битсет фич. Легаси-клиент шлёт [CAPS,1]=COMPACT. Старый
         // сервер игнорировал значение; теперь читаем его и пересекаем с serverCaps (compactOn()).
         if (Array.isArray(msg) && msg[0] === Pkt.CAPS) { peerCaps = typeof msg[1] === "number" ? msg[1] : Caps.COMPACT; return; }
@@ -165,20 +179,31 @@ function createServer<T extends object>(
             // Сервер без auth: ответ на HELLO всё равно 5-элементный (authAck=null) — чтобы клиент
             // отличил «ответ на HELLO» от 4-элементного STRICT и не висел/не путал их.
             if (!auth?.resolveAuth) { send([Pkt.MAP, routeMap, strictSchema, listenPaths, null]); return; }
-            try {
-                const r: any = await auth.resolveAuth(msg[1]);
-                if (r && r.object !== undefined) buildDispatch(r.object); // фасад нового principal
-                authAck = r && r.ack !== undefined ? r.ack : { ok: true };
-                authed = authAck?.ok !== false;
-                sendMap(); // principal-specific routeMap + authAck
-            } catch (e: any) {
-                // Отказ reauth НЕ роняет уже живую сессию: principal/authed/routeMap не трогаем,
-                // лишь сообщаем клиенту ok:false локальным ack (его reauth() так и резолвится).
-                send([Pkt.MAP, routeMap, strictSchema, listenPaths, { ok: false, reason: e?.message ?? String(e) }]);
+            async function resolveHello() {
+                try {
+                    const r: any = await auth!.resolveAuth!(msg[1]);
+                    if (r && r.object !== undefined) buildDispatch(r.object); // фасад нового principal
+                    authAck = r && r.ack !== undefined ? r.ack : { ok: true };
+                    authed = authAck?.ok !== false;
+                    sendMap(); // principal-specific routeMap + authAck
+                } catch (e: any) {
+                    // Отказ reauth НЕ роняет уже живую сессию: principal/authed/routeMap не трогаем,
+                    // лишь сообщаем клиенту ok:false локальным ack (его reauth() так и резолвится).
+                    send([Pkt.MAP, routeMap, strictSchema, listenPaths, { ok: false, reason: e?.message ?? String(e) }]);
+                }
             }
+            const hello = resolveHello();
+            helloInFlight = hello;
+            try { await hello; }
+            finally { if (helloInFlight == hello) helloInFlight = null; }
             return;
         }
         if (!Array.isArray(msg) || (msg[0] !== Pkt.CALL && msg[0] !== Pkt.PIPE)) return;
+        const hello = helloInFlight;
+        if (hello) {
+            await hello;
+            if (detached) return;
+        }
 
         const isPipe = msg[0] === Pkt.PIPE;
         const [, reqId, ref, rawArgsOrSteps, w] = msg;

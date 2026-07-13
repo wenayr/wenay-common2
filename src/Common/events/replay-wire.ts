@@ -18,6 +18,7 @@
 import {Listener, NormalizeTuple} from './Listen'
 import {ListenReplayApi, ReplayEvent, StaleInfo} from './replay-listen'
 import {conflateReplay, ConflateOpts} from './replay-conflate'
+import {getRpcMemberState, getRpcTransportLifecycle} from './transport-lifecycle'
 
 /** Форма провода replay-линии — то, что спредится в объект RPC-сервера. */
 export type ReplayExpose<T> = {
@@ -90,9 +91,9 @@ export type ReplaySubscribeOpts = {
     /** Локальные часы (по умолчанию Date.now) — подменяемы в тестах. */
     now?: () => number
     /**
-     * Политика лага — выбор ПОТРЕБИТЕЛЯ: 'queue' (default, сегодняшнее поведение —
-     * сокет буферизует всё, ничего не пропускается) | 'frame' (сервер вправе пропустить
-     * и восстановить кадром — подписка идёт на frameLine, если сервер её даёт).
+     * Политика лага — выбор ПОТРЕБИТЕЛЯ: 'queue' (default: подключённый live-провод
+     * не гейтится; catch-up всё равно может вернуть producer frame/keyframe) | 'frame'
+     * (сервер вправе пропустить и восстановить кадром через frameLine, если она доступна).
      */
     policy?: 'queue' | 'frame'
     /** Opaque-подсказка frame-лямбде продьюсера (произвольные правила скипа). Провод не заглядывает. */
@@ -114,16 +115,23 @@ function unsubscribeHandle(handle: any) {
  */
 export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Listener<Z>, opts: ReplaySubscribeOpts = {}) {
     const {since = -1, onSeq, onError, staleMs, onStale, skewMs = 0, now = Date.now, policy = 'queue', hint} = opts
+    const lifecycle = getRpcTransportLifecycle(remote)
     let lastDelivered = since
     let replaying = true
     let closed = false
+    let recoveryGeneration = 0
     const queue: ReplayEvent<Z>[] = []
 
+    let readySettled = false
+    let resolveReady: () => void = function resolveReadyLater() {}
+    const ready = new Promise<void>(function waitUntilReady(resolve) { resolveReady = resolve })
+    function settleReady() {
+        if (readySettled) return
+        readySettled = true
+        resolveReady()
+    }
+
     // === staleness watchdog ===
-    // Arrival gap — единственный таймер; взведён с момента подписки (мёртвый при
-    // коннекте продьюсер обязан дать stale). Возраст ts — предикат при доставке:
-    // тухлый keyframe репортится сразу, а исторический хвост since-catch-up НЕ
-    // оценивается по событию (легитимно стар, флапал бы) — одна оценка после handover.
     let lastTs = 0
     let lastArrival = now()
     let staleFlag = false
@@ -137,12 +145,11 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
         try { onStale({stale, lastTs, age: now() - (lastTs || lastArrival)}) }
         catch (e) { setTimeout(function rethrowOnStale() { throw e }, 0) }
     }
-    // одноразовый таймер, перевзводится на остаток: доставка лишь пишет lastArrival
     function checkArrivalGap() {
         staleTimer = null
         if (closed) return
         const gap = now() - lastArrival
-        if (gap >= staleMs!) { if (!staleFlag) reportStale(true) }  // молчание; fresh-грань даст доставка
+        if (gap >= staleMs!) { if (!staleFlag) reportStale(true) }
         else armStaleTimer(staleMs! - gap)
     }
     function armStaleTimer(delay: number) {
@@ -154,10 +161,10 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
         if (staleMs == null || closed) return
         const tsStale = lastTs > 0 && now() - lastTs > staleMs + skewMs
         if (tsStale != staleFlag) reportStale(tsStale)
-        if (tsStale) stopStaleTimer()          // до следующей доставки будить некого
-        else armStaleTimer(staleMs)            // no-op при живом таймере
+        if (tsStale) stopStaleTimer()
+        else armStaleTimer(staleMs)
     }
-    armStaleTimer(staleMs!)                    // no-op без onStale/staleMs
+    armStaleTimer(staleMs!)
 
     function deliver(ev: ReplayEvent<Z>) {
         if (closed || ev.seq <= lastDelivered) return
@@ -168,79 +175,160 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
         onSeq?.(ev.seq)
         if (!replaying) assessStale()
     }
-    // политика 'frame' — подписка на гейтуемую линию (сервер вправе пропускать,
-    // восстанавливая кадром); старый сервер без frameLine → обычная line (queue-семантика)
-    const liveLine = policy == 'frame' && remote.frameLine ? remote.frameLine : remote.line
-    const handle = liveLine.on(function liveTap(ev: ReplayEvent<Z>) {
+
+    function deliverSorted(events: ReplayEvent<Z>[], allowReset: boolean) {
+        const sorted = [...events].sort((a, b) => a.seq - b.seq)
+        // Initial attach historically accepts a keyframe from a restarted seq-space.
+        // Reconnect never resets: its contract is anchored at lastDelivered.
+        if (allowReset && sorted.length && sorted[0].seq <= lastDelivered) {
+            lastDelivered = sorted[0].seq - 1
+        }
+        for (const event of sorted) deliver(event)
+    }
+
+    function drainLiveQueue() {
+        // Delivery can synchronously trigger another live envelope; keep replaying
+        // until every such batch has also been ordered and deduplicated.
+        while (queue.length) {
+            const batch = queue.splice(0).sort((a, b) => a.seq - b.seq)
+            for (const event of batch) deliver(event)
+        }
+    }
+
+    const frameLineState = getRpcMemberState(remote, 'frameLine')
+    const liveLine = policy == 'frame' && frameLineState != false && remote.frameLine ? remote.frameLine : remote.line
+    let handle: any = null
+    let offConnect = function noConnectListener() {}
+    let offDisconnect = function noDisconnectListener() {}
+    let offClose = function noCloseListener() {}
+
+    function closeSubscription() {
+        if (closed) return false
+        closed = true
+        recoveryGeneration++
+        queue.length = 0
+        stopStaleTimer()
+        offConnect()
+        offDisconnect()
+        offClose()
+        unsubscribeHandle(handle)
+        settleReady()
+        return true
+    }
+
+    function errorText(error: any) {
+        if (typeof error?.message == 'string') return error.message
+        if (typeof error?.error?.message == 'string') return error.error.message
+        return String(error)
+    }
+
+    function failRecovery(error: any, point: number, phase: string) {
+        const wrapped = new Error('replaySubscribe: ' + phase + ' from seq ' + point + ' failed: ' + errorText(error))
+        ;(wrapped as any).cause = error
+        if (!closeSubscription()) return
+        if (onError) {
+            try { onError(wrapped) }
+            catch (caught) { setTimeout(function rethrowOnError() { throw caught }, 0) }
+        } else {
+            setTimeout(function rethrowRecoveryError() { throw wrapped }, 0)
+        }
+    }
+
+    handle = liveLine.on(function liveTap(ev: ReplayEvent<Z>) {
         if (ev == null || typeof (ev as any).seq != 'number') {
-            // не-конверт = конец стрима с сервера (RPC_STOP; напр. громкий отказ священной
-            // линии в воротах). Молчать нельзя: наружу и закрываемся; seq() сохранён для реконнекта.
-            if (closed) return
-            const err = new Error('replaySubscribe: line ended by server (' + String(ev) + ')')
-            off()
-            if (onError) onError(err)
-            else setTimeout(function rethrowLineEnd() { throw err }, 0)
+            failRecovery(new Error('line ended by server (' + String(ev) + ')'), lastDelivered, 'live line')
             return
         }
-        lastArrival = now()                    // конверт ПОЛУЧЕН — провод жив, даже если ждёт очереди
+        lastArrival = now()
         if (replaying) queue.push(ev)
         else deliver(ev)
     })
-    async function catchUp() {
+
+    if (typeof handle?.then == 'function') {
+        handle.then(
+            function logicalLineEnded() {
+                if (!closed) failRecovery(new Error('logical RPC line ended'), lastDelivered, 'live line')
+            },
+            function logicalLineFailed(error: any) {
+                if (!closed) failRecovery(error, lastDelivered, 'live line')
+            },
+        )
+    }
+
+    function isCurrent(generation: number) {
+        return !closed && generation == recoveryGeneration
+    }
+
+    async function catchUp(generation: number, point: number, initial: boolean) {
         try {
             let done = false
-            if (since >= 0 && remote.frame) {
-                // один вызов: сервер сам выбрал хвост/мини-кадр/keyframe (frame из replay-listen);
-                // священная линия с вытесненным журналом — rejected promise → onError (громко)
-                const envs = await remote.frame(since, hint)
-                if (closed) return
-                if (envs) {
-                    if (envs.length) {
-                        // новая точка отсчёта: сброс возможен и ВНИЗ («другая жизнь» сервера)
-                        lastDelivered = envs[0].seq - 1
-                        for (const ev of envs) deliver(ev)
-                    }
+            const frameState = getRpcMemberState(remote, 'frame')
+            if (point >= 0 && frameState != false && remote.frame) {
+                const envelopes = await remote.frame(point, hint)
+                if (!isCurrent(generation)) return
+                if (envelopes) {
+                    deliverSorted(envelopes, initial)
                     done = true
                 }
             }
             if (!done) {
-                const tail = since >= 0 ? await remote.since(since) : null
-                if (closed) return
+                const tail = point >= 0 ? await remote.since(point) : null
+                if (!isCurrent(generation)) return
                 if (tail) {
-                    for (const ev of tail) deliver(ev)
+                    deliverSorted(tail, false)
                 } else {
-                    const kf = await remote.keyframe()
-                    if (closed) return
-                    if (kf) {
-                        // новая точка отсчёта (сброс возможен и ВНИЗ — «другая жизнь» сервера)
-                        lastDelivered = kf.seq
-                        lastTs = kf.ts
-                        lastArrival = now()
-                        cb(...kf.event)
-                        onSeq?.(kf.seq)
+                    const keyframe = await remote.keyframe()
+                    if (!isCurrent(generation)) return
+                    if (keyframe) {
+                        if (initial && keyframe.seq <= lastDelivered) lastDelivered = keyframe.seq - 1
+                        deliver(keyframe)
+                    } else if (point >= 0) {
+                        throw new Error('journal evicted or unavailable; no keyframe can cover the gap')
                     }
                 }
             }
-        } catch (e) {
-            if (onError) onError(e)
-            else setTimeout(function rethrowCatchUp() { throw e }, 0)
-        } finally {
-            while (queue.length) deliver(queue.shift()!)
+            if (!isCurrent(generation)) return
+            drainLiveQueue()
             replaying = false
-            assessStale()                      // единственная ts-оценка catch-up: тухлый keyframe — сразу stale
+            assessStale()
+            settleReady()
+        } catch (error) {
+            if (!isCurrent(generation)) return
+            failRecovery(error, point, initial ? 'initial catch-up' : 'reconnect catch-up')
         }
     }
-    const ready = catchUp()
-    function off() {
+
+    function startCatchUp(initial: boolean) {
         if (closed) return
-        closed = true
-        stopStaleTimer()
-        unsubscribeHandle(handle)
+        replaying = true
+        const generation = ++recoveryGeneration
+        void catchUp(generation, lastDelivered, initial)
+    }
+
+    if (lifecycle) {
+        offDisconnect = lifecycle.onDisconnect(function replayTransportDisconnected() {
+            if (closed) return
+            replaying = true
+            recoveryGeneration++
+            queue.length = 0
+        })
+        offConnect = lifecycle.onConnect(function replayTransportConnected() {
+            startCatchUp(!readySettled)
+        })
+        offClose = lifecycle.onClose(function replayTransportClosed() {
+            closeSubscription()
+        })
+    }
+
+    if (!lifecycle || lifecycle.connected()) startCatchUp(true)
+
+    function off() {
+        closeSubscription()
     }
     return Object.assign(off, {
-        /** Дождаться конца catch-up (переключение на live состоялось). */
+        /** Дождаться конца первого успешного handover либо terminal error/teardown. */
         ready,
-        /** Последний доставленный seq — точка для переподключения через since. */
+        /** Последний честно доставленный seq — reconnect никогда не продвигает его после gap-error. */
         seq: () => lastDelivered,
         /** Тухлость сейчас: ts-предикат последней доставки ИЛИ ленивый arrival gap. */
         isStale: () => staleFlag || (staleMs != null && now() - lastArrival >= staleMs),

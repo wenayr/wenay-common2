@@ -1,6 +1,7 @@
 import {Listener} from './Listen'
 import {ReplayEvent} from './replay-listen'
 import {ReplayRemote, ReplaySubscribeOpts} from './replay-wire'
+import {getRpcMemberState} from './transport-lifecycle'
 
 export type ReplayRoutePhase = 'switching' | 'ready' | 'error' | 'closed'
 
@@ -90,7 +91,8 @@ export function replayRouteSubscribe<Z extends any[]>(
         let replaying = true
         let lineError: unknown
         const queue: ReplayEvent<Z>[] = []
-        const liveLine = policy == 'frame' && nextRemote.frameLine ? nextRemote.frameLine : nextRemote.line
+        const frameLineState = getRpcMemberState(nextRemote, 'frameLine')
+        const liveLine = policy == 'frame' && frameLineState != false && nextRemote.frameLine ? nextRemote.frameLine : nextRemote.line
         const handle = liveLine.on(function liveTap(ev: ReplayEvent<Z>) {
             if (slotClosed) return
             if (ev == null || typeof (ev as any).seq != 'number') {
@@ -113,7 +115,8 @@ export function replayRouteSubscribe<Z extends any[]>(
         async function catchUp() {
             try {
                 let done = false
-                if (since >= 0 && nextRemote.frame) {
+                const frameState = getRpcMemberState(nextRemote, 'frame')
+                if (since >= 0 && frameState != false && nextRemote.frame) {
                     const envs = await nextRemote.frame(since, hint)
                     if (slotClosed) return
                     if (envs) {

@@ -20,5 +20,7 @@ export declare function createRpcClientHub<T extends Record<string, RpcDescripto
     readonly socket: T2;
     onConnect: (func?: ((count: number) => void) | null) => void;
     onDisconnect: (func?: ((reason: string) => void) | null) => void;
+    connectListen: (cb: (count: number) => void) => () => void;
+    disconnectListen: (cb: (reason: string) => void) => () => void;
     connectCount: () => number;
 };

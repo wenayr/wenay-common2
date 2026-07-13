@@ -115,10 +115,15 @@ createRpcClientHub(
   schemaBuilder: (rpc) => ({ key: rpc<Api>('socketKey') }),   // declare each socketKey's typed API
   hubOpts?: { opt? },
 ) -> hub
-hub:     connect(token) -> Promise<clients>  ·  reauth(token)  ·  facade  ·  promise  ·  socket  ·  onConnect/onDisconnect   // connect: was setToken
-         // connect()'s promise resolves on the socket's 'connect' event; for in-proc/loopback (no 'connect') use hub.facade + await hub.promise
+hub:     connect(token) -> Promise<clients>  ·  reauth(token)  ·  facade  ·  promise  ·  socket  ·  onConnect/onDisconnect  ·  connectListen/disconnectListen   // connect: was setToken
+         // connect() resolves after the socket 'connect' event and RPC route/auth handshake; for in-proc/loopback (no 'connect') use hub.facade + await hub.promise
 client (on clients[key], NOT on the hub):  func (proxy) · strict (schema-safe) · close() · ready() · init() · subscriptions()
          // pipe = batch a server chain in one packet · space = fire-and-forget
+         // func/space/strict paths have stable identity per client+surface: c.func.a.b === c.func.a.b;
+         //   all === func. Identity survives reauth/transient reconnect; connect/setToken creates a new client generation.
+         // onConnect/onDisconnect keep their legacy single-slot contract; connectListen(cb)/disconnectListen(cb) are additive and return individual off functions.
+         // transient reconnect of the SAME Socket.IO object restores active logical Listen subscriptions once the new handshake is ready.
+         // close()/dispose() and connect()/setToken() are terminal for the old generation. Ordinary RPC calls are NEVER retried.
 
 // minimal wiring (the part no signature can show):
 const [tick, ticks] = listen<[number]>()
@@ -135,7 +140,7 @@ l.ticks.once(v => console.log(v))                         // one event, then aut
 // const [tick, ticks] = listen<[number]>()                                       // before
 const [tick, ticks] = replayListen<[number]>({history: 1024, current: 'last'})    // after — same facade, same key
 // legacy subscribers unchanged (byte-for-byte). Replay consumers now also get:
-const sub = replaySubscribe(l.ticks, v => {}, {since: saved, onSeq: s => saved = s})  // catch-up + live, no gaps/dups
+const sub = replaySubscribe(l.ticks, v => {}, {since: saved, onSeq: s => saved = s})  // catch-up + live; no uncovered loss/dups (a producer frame/keyframe may jump raw seq)
 const sub2 = replaySubscribe(c.math.func.ticks, v => {})  // replay members project on func/strict directly — no cast needed
 const routed = replayRouteSubscribe(l.ticks, v => {}, {label: 'relay'})
 await routed.switch(nextRemoteTicks, {label: 'direct'})  // relay/direct hand-off: old route closes after catch-up
@@ -189,7 +194,7 @@ bob.route()                         // 'relay' | 'direct' · bob.reinterposeRela
 me.onRoute(ev => {})                // route transitions for metrics/UI
 ```
 Key property: the relay journal stores the owner's envelopes VERBATIM (owner seq space), so a
-relay <-> direct hand-off is a plain seq resume — no keyframe reset, no gaps, no dups. Late joiners
+relay <-> direct hand-off is a plain seq resume — no uncovered loss or duplicate delivery. Late joiners
 get a keyframe folded server-side even while the owner is offline.
 Reconnect correctness is self-healing: a publisher gap makes the relay reject the push WITH its last
 seq, and the client repairs from that coordinate automatically (`repair: 'tail'` lossless (default)
@@ -380,7 +385,7 @@ import { Observe, Replay } from 'wenay-common2'
 const [emitQuote, quotes] = Replay.replayListen<[string, number]>({
     history: 4096,
     frame: (tail, hint) => lastPerSymbol(tail, hint),  // mini-frame; hint = client's pick of the condensation rule
-})   // current+frame = condensable · current only = keyframe recovery · neither = sacred queue (never skipped, loud on eviction)
+})   // current+frame = compact + keyframe fallback · current only = exact tail + keyframe · frame only = compact while retained, loud on eviction · neither = sacred exact queue
 // store lines: exposeStoreReplay already declares current + frame (last patch per path) — zero config
 const store = Observe.createStore<World>(initial, { drain: 'micro' })
 const exposed = Observe.exposeStoreReplay(store, { history: 1024 })
@@ -399,26 +404,29 @@ io.on('connection', socket => {
 })
 
 // ---- client: picks its LAG POLICY per subscription; no conflation logic anywhere ----
-const sub = Replay.replaySubscribe(deep.quotes, cb, {since: saved, policy: 'frame'}) // server may skip; drain -> mini-frame
-const sub2 = Replay.replaySubscribe(deep.quotes, cb2, {since: saved})                // 'queue' (default): nothing ever skipped
+const sub = Replay.replaySubscribe(deep.quotes, cb, {since: saved, policy: 'frame'}) // server may skip live envelopes; drain -> state-equivalent mini-frame
+const sub2 = Replay.replaySubscribe(deep.quotes, cb2, {since: saved})                // 'queue' (default): ungated live; catch-up may still use producer frame/keyframe
 // own pace (e.g. 50ms skips + condensation): pull on YOUR timer — hint picks the rule, server condenses:
 //   every(50, async () => { for (const ev of await deep.quotes.frame(mySeq, hint)) apply(ev); })
 // store mirror: Observe.syncStoreReplay(mirror, deep.replay, {since: prev.seq()}) — same contract
 // delivery contract: FIRST delivery = snapshot/tail start (same event type), then strictly-newer,
-// seq-ascending, deduped; reconnect via {since} = mini-frame/tail, not a full snapshot
+// seq-ascending and deduped. Raw seq jumps are legal only when a producer frame/keyframe covers them;
+// a sacred retained tail is exact, while sacred eviction closes with onError instead of continuing past a hole.
 ```
 Rules that make it correct (violating any of these silently breaks convergence):
 - **The line declares its recovery sources.** `current` (keyframe: SAMPLED from truth, never computed
-  from deltas; `'last'` = last envelope for single-entity lines) and/or `frame` (condenser). A line
-  with neither is a sacred queue: full tails only, evicted journal -> `frame()` THROWS (loud) — a
-  lagging `'frame'`-policy subscriber gets a stream end, never silent loss.
+  from deltas; `'last'` = last envelope for single-entity lines) and/or `frame` (condenser). Without
+  `current`, eviction is terminal even when a condenser exists: a true sacred queue (neither source)
+  replays the retained tail exactly, and `frame()` THROWS once that tail is gone. A lagging
+  `'frame'`-policy sacred subscriber gets a stream end, never silent loss.
 - **A `frame` result must be state-equivalent to the tail it replaces** (per the line's own semantics).
   "Can't condense THIS tail" is legal and simple: return the tail as-is. Refuse-loudly is `throw`.
   Multiple condensation standards live INSIDE the lambda, dispatched by the client-supplied `hint`
   (opaque to the transport): `frame(tail, hint)`.
 - **Events must be ABSOLUTE per their entity** for last-per-entity condensing (store patches are).
-- Gate drops never hole the journal — it is written BEFORE any gate. Reconnect via `{since}` still
-  gets everything; only an evicted `history` window degrades to keyframe (visible as a seq jump).
+- Gate drops never hole the journal — it is written BEFORE any gate. Queue-policy live delivery is
+  ungated; reconnect catch-up may use the producer's state-equivalent mini-frame. An evicted state
+  line falls back to a keyframe (visible raw seq jump); an evicted sacred line fails terminally.
 - `pending()` and the watermarks share units (bytes, packets, frames — anything, but the same).
 
 Manual path (pre-rev2, still works, `keyOf` @deprecated): build the gate yourself with

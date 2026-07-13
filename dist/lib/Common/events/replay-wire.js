@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.exposeReplay = exposeReplay;
 exports.replaySubscribe = replaySubscribe;
 const replay_conflate_1 = require("./replay-conflate");
+const transport_lifecycle_1 = require("./transport-lifecycle");
 function exposeReplayPlain(replay) {
     return {
         line: replay.line,
@@ -29,10 +30,21 @@ function unsubscribeHandle(handle) {
 }
 function replaySubscribe(remote, cb, opts = {}) {
     const { since = -1, onSeq, onError, staleMs, onStale, skewMs = 0, now = Date.now, policy = 'queue', hint } = opts;
+    const lifecycle = (0, transport_lifecycle_1.getRpcTransportLifecycle)(remote);
     let lastDelivered = since;
     let replaying = true;
     let closed = false;
+    let recoveryGeneration = 0;
     const queue = [];
+    let readySettled = false;
+    let resolveReady = function resolveReadyLater() { };
+    const ready = new Promise(function waitUntilReady(resolve) { resolveReady = resolve; });
+    function settleReady() {
+        if (readySettled)
+            return;
+        readySettled = true;
+        resolveReady();
+    }
     let lastTs = 0;
     let lastArrival = now();
     let staleFlag = false;
@@ -95,17 +107,68 @@ function replaySubscribe(remote, cb, opts = {}) {
         if (!replaying)
             assessStale();
     }
-    const liveLine = policy == 'frame' && remote.frameLine ? remote.frameLine : remote.line;
-    const handle = liveLine.on(function liveTap(ev) {
+    function deliverSorted(events, allowReset) {
+        const sorted = [...events].sort((a, b) => a.seq - b.seq);
+        if (allowReset && sorted.length && sorted[0].seq <= lastDelivered) {
+            lastDelivered = sorted[0].seq - 1;
+        }
+        for (const event of sorted)
+            deliver(event);
+    }
+    function drainLiveQueue() {
+        while (queue.length) {
+            const batch = queue.splice(0).sort((a, b) => a.seq - b.seq);
+            for (const event of batch)
+                deliver(event);
+        }
+    }
+    const frameLineState = (0, transport_lifecycle_1.getRpcMemberState)(remote, 'frameLine');
+    const liveLine = policy == 'frame' && frameLineState != false && remote.frameLine ? remote.frameLine : remote.line;
+    let handle = null;
+    let offConnect = function noConnectListener() { };
+    let offDisconnect = function noDisconnectListener() { };
+    let offClose = function noCloseListener() { };
+    function closeSubscription() {
+        if (closed)
+            return false;
+        closed = true;
+        recoveryGeneration++;
+        queue.length = 0;
+        stopStaleTimer();
+        offConnect();
+        offDisconnect();
+        offClose();
+        unsubscribeHandle(handle);
+        settleReady();
+        return true;
+    }
+    function errorText(error) {
+        if (typeof error?.message == 'string')
+            return error.message;
+        if (typeof error?.error?.message == 'string')
+            return error.error.message;
+        return String(error);
+    }
+    function failRecovery(error, point, phase) {
+        const wrapped = new Error('replaySubscribe: ' + phase + ' from seq ' + point + ' failed: ' + errorText(error));
+        wrapped.cause = error;
+        if (!closeSubscription())
+            return;
+        if (onError) {
+            try {
+                onError(wrapped);
+            }
+            catch (caught) {
+                setTimeout(function rethrowOnError() { throw caught; }, 0);
+            }
+        }
+        else {
+            setTimeout(function rethrowRecoveryError() { throw wrapped; }, 0);
+        }
+    }
+    handle = liveLine.on(function liveTap(ev) {
         if (ev == null || typeof ev.seq != 'number') {
-            if (closed)
-                return;
-            const err = new Error('replaySubscribe: line ended by server (' + String(ev) + ')');
-            off();
-            if (onError)
-                onError(err);
-            else
-                setTimeout(function rethrowLineEnd() { throw err; }, 0);
+            failRecovery(new Error('line ended by server (' + String(ev) + ')'), lastDelivered, 'live line');
             return;
         }
         lastArrival = now();
@@ -114,64 +177,91 @@ function replaySubscribe(remote, cb, opts = {}) {
         else
             deliver(ev);
     });
-    async function catchUp() {
+    if (typeof handle?.then == 'function') {
+        handle.then(function logicalLineEnded() {
+            if (!closed)
+                failRecovery(new Error('logical RPC line ended'), lastDelivered, 'live line');
+        }, function logicalLineFailed(error) {
+            if (!closed)
+                failRecovery(error, lastDelivered, 'live line');
+        });
+    }
+    function isCurrent(generation) {
+        return !closed && generation == recoveryGeneration;
+    }
+    async function catchUp(generation, point, initial) {
         try {
             let done = false;
-            if (since >= 0 && remote.frame) {
-                const envs = await remote.frame(since, hint);
-                if (closed)
+            const frameState = (0, transport_lifecycle_1.getRpcMemberState)(remote, 'frame');
+            if (point >= 0 && frameState != false && remote.frame) {
+                const envelopes = await remote.frame(point, hint);
+                if (!isCurrent(generation))
                     return;
-                if (envs) {
-                    if (envs.length) {
-                        lastDelivered = envs[0].seq - 1;
-                        for (const ev of envs)
-                            deliver(ev);
-                    }
+                if (envelopes) {
+                    deliverSorted(envelopes, initial);
                     done = true;
                 }
             }
             if (!done) {
-                const tail = since >= 0 ? await remote.since(since) : null;
-                if (closed)
+                const tail = point >= 0 ? await remote.since(point) : null;
+                if (!isCurrent(generation))
                     return;
                 if (tail) {
-                    for (const ev of tail)
-                        deliver(ev);
+                    deliverSorted(tail, false);
                 }
                 else {
-                    const kf = await remote.keyframe();
-                    if (closed)
+                    const keyframe = await remote.keyframe();
+                    if (!isCurrent(generation))
                         return;
-                    if (kf) {
-                        lastDelivered = kf.seq;
-                        lastTs = kf.ts;
-                        lastArrival = now();
-                        cb(...kf.event);
-                        onSeq?.(kf.seq);
+                    if (keyframe) {
+                        if (initial && keyframe.seq <= lastDelivered)
+                            lastDelivered = keyframe.seq - 1;
+                        deliver(keyframe);
+                    }
+                    else if (point >= 0) {
+                        throw new Error('journal evicted or unavailable; no keyframe can cover the gap');
                     }
                 }
             }
-        }
-        catch (e) {
-            if (onError)
-                onError(e);
-            else
-                setTimeout(function rethrowCatchUp() { throw e; }, 0);
-        }
-        finally {
-            while (queue.length)
-                deliver(queue.shift());
+            if (!isCurrent(generation))
+                return;
+            drainLiveQueue();
             replaying = false;
             assessStale();
+            settleReady();
+        }
+        catch (error) {
+            if (!isCurrent(generation))
+                return;
+            failRecovery(error, point, initial ? 'initial catch-up' : 'reconnect catch-up');
         }
     }
-    const ready = catchUp();
-    function off() {
+    function startCatchUp(initial) {
         if (closed)
             return;
-        closed = true;
-        stopStaleTimer();
-        unsubscribeHandle(handle);
+        replaying = true;
+        const generation = ++recoveryGeneration;
+        void catchUp(generation, lastDelivered, initial);
+    }
+    if (lifecycle) {
+        offDisconnect = lifecycle.onDisconnect(function replayTransportDisconnected() {
+            if (closed)
+                return;
+            replaying = true;
+            recoveryGeneration++;
+            queue.length = 0;
+        });
+        offConnect = lifecycle.onConnect(function replayTransportConnected() {
+            startCatchUp(!readySettled);
+        });
+        offClose = lifecycle.onClose(function replayTransportClosed() {
+            closeSubscription();
+        });
+    }
+    if (!lifecycle || lifecycle.connected())
+        startCatchUp(true);
+    function off() {
+        closeSubscription();
     }
     return Object.assign(off, {
         ready,

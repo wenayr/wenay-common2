@@ -123,16 +123,31 @@ export const Api = createRpcClientHub(
 ```
 
 ### 3.2 Connection Lifecycle
-```typescript
-// Listen to statuses
-Api.onConnect((count) => console.log(`Socket connected (attempt ${count})`));
 
-// Initiate connect. Creates socket, all channels automatically start.
+`onConnect` and `onDisconnect` are legacy single-slot setters: each call replaces the previous callback, and passing `null` clears that slot. Use the additive listeners when several independent consumers need lifecycle events.
+
+```typescript
+// Legacy single-slot callbacks.
+Api.onConnect((count) => console.log(`Socket connected (attempt ${count})`));
+Api.onDisconnect((reason) => console.log(`Socket disconnected: ${reason}`));
+
+// Additive listeners. Each off handle removes only its own callback.
+const offConnect = Api.connectListen((count) => console.log(`Observer connected: ${count}`));
+const offDisconnect = Api.disconnectListen((reason) => console.log(`Observer disconnected: ${reason}`));
+
+// Hard connect/token generation. The promise resolves after the RPC handshake.
 await Api.connect("USER_SECRET_TOKEN");
 
-// Disconnect
-// await Api.connect(null);
+// Calls inside onConnect/connectListen are safe: those callbacks also run after the handshake.
+offConnect();
+offDisconnect();
 ```
+
+A transient Socket.IO disconnect on the same socket suspends transport without ending logical Listen consumers. After automatic reconnect, the hub recreates one physical subscription for every still-active deduplicated Listen; consumers removed while offline are not restored.
+
+Only logical Listen subscriptions are recovered. Pending or failed ordinary RPC calls and pipelines are not retried, because repeating them could duplicate side effects.
+
+`client.dispose()` is terminal for that RPC client. `Api.setToken(token)` and its `Api.connect(token)` alias are hard rotations: the old socket/client generation and its subscriptions are permanently closed, and the new facade starts without inherited subscriptions. `connect(null)` starts a new anonymous generation; it is not a transient reconnect.
 
 ### 3.3 Call Modes
 Access API channel: `Api.facade.mainAPI`. Hub initializes all channels, so schema loads automatically.

@@ -1,6 +1,6 @@
-// REAL-SOCKET lifecycle: disconnect teardown drains live subscriptions, fires
-// onDisconnect (client + hub), and hard setToken rotation tears down old subs then
-// reconnects (connectCount++). Default = teardown, NO auto-resubscribe. Port 4108.
+// REAL-SOCKET intentional teardown lifecycle: client.dispose() drains live subscriptions,
+// and hard setToken rotation fires onDisconnect, tears down old subs, then connects a fresh
+// socket generation (connectCount++). Neither hard boundary auto-resubscribes. Port 4108.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {listen as createListenPair} from '../../src/Common/events/Listen'
 
