@@ -543,6 +543,7 @@ manager.stopAll()
 
 Contract:
 - `node` subscriptions are address-based, so `store.state.data = {BTC: 10}` keeps `store.node.data.BTC` subscriptions alive.
+- Dynamic node-cache entries are pruned after their state path is deleted unless that path still has a `node` subscription; the subscription keeps its node identity until its final `off()`. Remote `set`/`replace` and the Replay journal write/read raw state, so transient wire keys do not materialize path nodes.
 - Primitive, missing, and later-created paths are subscribable.
 - `{current:true}` emits only when a value exists; absent paths wait for the first value.
 - `drain` is per subscription/sync. Branch subscribers receive whole branch snapshots; mask `.on()` receives the selected snapshot; `.onEach()` receives `(value, ctx)` with route; `store.each()` receives `(key, value, ctx)` per changed top-level key.

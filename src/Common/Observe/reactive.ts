@@ -40,6 +40,7 @@ export type ReactiveChange = {paths: PropertyKey[][]}
 type PathUpdateFn = (change: ReactiveChange) => void
 type Drain = 'micro' | 'immediate' | number | ((flush: Fn) => void)
 export type Opts = {drain?: Drain; depth?: number; eager?: boolean}
+type InternalOpts = Opts & {_onMutation?: (path: PropertyKey[]) => void}
 
 const NODE = Symbol('reactive.node')
 const isObj = (v: any) => v != null && typeof v == 'object'
@@ -81,6 +82,7 @@ type Eng = {
     scheduled: boolean
     waiters: Set<Fn>
     depth: number
+    onMutation?: (path: PropertyKey[]) => void
     schedule: () => void
 }
 
@@ -90,6 +92,10 @@ type Eng = {
 
 export function reactive<T extends object>(root: T, opts: Opts = {}) {
     const {drain = 'immediate', depth = Infinity, eager = false} = opts
+    // Store installs this private hook only while it holds path-node cache entries.
+    // It is intentionally absent from the public reactive options surface.
+    const internalOpts = opts as InternalOpts
+    const hasMutationHook = '_onMutation' in internalOpts
     const fire = scheduler(drain)
     const eng: Eng = {
         live: 0, pathLive: 0, dirty: new Set(), dirtyPaths: [],
@@ -128,6 +134,15 @@ export function reactive<T extends object>(root: T, opts: Opts = {}) {
             })
         },
     }
+    if (hasMutationHook) {
+        let onMutation = internalOpts._onMutation
+        Object.defineProperty(internalOpts, '_onMutation', {
+            configurable: true,
+            get: () => onMutation,
+            set: next => { onMutation = next; eng.onMutation = next },
+        })
+        eng.onMutation = onMutation
+    }
     const rootNode = makeNode(root, null, [], 0, eng)
     if (eager) prewalk(rootNode)
     return rootNode.proxy as T
@@ -162,6 +177,7 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
             if (Array.isArray(proxyTarget) && k == "length") proxyTarget.length = v
             const kid = node.kids.get(k)
             if (kid) rebind(kid, v)                  // an existing child slot got a whole new value
+            node.eng.onMutation?.(dirtyPathFor(node, k))
             if (eng.live > 0) bubble(node, k)        // путь считается ВНУТРИ и только при pathLive — cold write не аллоцирует
             return true
         },
@@ -181,6 +197,7 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
                     if (isReactiveObj(v)) rebind(kid, v)
                     else { node.kids.delete(k); markChanged(kid); detachTree(kid) }
                 }
+                node.eng.onMutation?.(dirtyPathFor(node, k))
                 if (eng.live > 0) bubble(node, k)
             }
             return true
@@ -190,6 +207,7 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
             delete node.target[k]
             const kid = node.kids.get(k)
             if (kid) { node.kids.delete(k); markChanged(kid); detachTree(kid) }
+            node.eng.onMutation?.(dirtyPathFor(node, k))
             if (eng.live > 0) bubble(node, k)
             return true
         },

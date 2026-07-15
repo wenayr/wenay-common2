@@ -14,8 +14,6 @@ export declare function exposeStoreReplay<T extends object>(store: Store<T>, opt
         replace(path: import("./store").StorePath, value: any): void;
         changed: any;
         changedPaths: any;
-        patches?: any;
-        changedData?: any;
     };
     replay: {
         emit: import("../..").Listener<[StorePatch]>;

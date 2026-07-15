@@ -107,10 +107,25 @@ export type Store<T extends object> = {
     count(): number
 }
 
+type StoreReactiveOpts = Parameters<typeof reactive<object>>[1] & {
+    _onMutation?: (path: PropertyKey[]) => void
+}
+
+type StoreNodeEntry = {
+    key: string
+    path: PropertyKey[]
+    parent?: StoreNodeEntry
+    parentKey?: PropertyKey
+    children: Map<PropertyKey, StoreNodeEntry>
+    proxy?: StoreNode<any>
+}
+
 type StoreInternal<T extends object> = Store<T> & {
     _state: T
-    _nodeCache: Map<string, any>
+    _nodeCache: Map<string, StoreNodeEntry>
+    _nodeRoot?: StoreNodeEntry
     _counts: Map<string, number>
+    _reactiveOpts: StoreReactiveOpts
 }
 
 type RemoteStore<T extends object> = {
@@ -206,6 +221,15 @@ function hasAt(root: any, path: StorePath): boolean {
         cur = (cur as any)[k as any]
     }
     return true
+}
+
+function readRawAt(root: any, path: StorePath) {
+    let cur = toRaw(root)
+    for (const k of path) {
+        if (!isObj(cur) || !(k in cur)) return {exists: false, value: undefined}
+        cur = toRaw((cur as any)[k as any])
+    }
+    return {exists: true, value: cur}
 }
 
 function ensureParent(root: any, path: StorePath) {
@@ -490,8 +514,80 @@ function makeCtx<T>(store: StoreInternal<any>, path: PropertyKey[]): StoreCtx<T>
     }
 }
 
+function getNodeEntry(store: StoreInternal<any>, path: StorePath): StoreNodeEntry {
+    const k = pathKey(path)
+    const cached = store._nodeCache.get(k)
+    if (cached) return cached
+
+    const parent = path.length ? getNodeEntry(store, path.slice(0, -1)) : undefined
+    const entry: StoreNodeEntry = {
+        key: k,
+        path: [...path],
+        parent,
+        parentKey: path[path.length - 1],
+        children: new Map<PropertyKey, StoreNodeEntry>(),
+    }
+    store._nodeCache.set(k, entry)
+    if (parent) parent.children.set(entry.parentKey!, entry)
+    else store._nodeRoot = entry
+    refreshNodePruner(store)
+    return entry
+}
+
+function cachedNodeEntry(store: StoreInternal<any>, path: StorePath) {
+    let entry = store._nodeRoot
+    if (!entry) return undefined
+    for (const key of path) {
+        entry = entry.children.get(key)
+        if (!entry) return undefined
+    }
+    return entry
+}
+
+function removeNodeEntry(store: StoreInternal<any>, entry: StoreNodeEntry) {
+    if (entry.path.length == 0) return
+    for (const child of [...entry.children.values()]) removeNodeEntry(store, child)
+    entry.parent?.children.delete(entry.parentKey!)
+    store._nodeCache.delete(entry.key)
+}
+
+function pruneNodeEntry(store: StoreInternal<any>, entry: StoreNodeEntry, exists: boolean, value: any) {
+    for (const [key, child] of [...entry.children]) {
+        const childExists = exists && isObj(value) && key in value
+        const childValue = childExists ? toRaw((value as any)[key as any]) : undefined
+        if (!pruneNodeEntry(store, child, childExists, childValue)) removeNodeEntry(store, child)
+    }
+    return entry.path.length == 0 || exists || (store._counts.get(entry.key) ?? 0) > 0 || entry.children.size > 0
+}
+
+function pruneCachedPath(store: StoreInternal<any>, path: StorePath) {
+    const entry = cachedNodeEntry(store, path)
+    if (!entry) return
+    const current = readRawAt(store._state, path)
+    if (!pruneNodeEntry(store, entry, current.exists, current.value)) removeNodeEntry(store, entry)
+
+    let parent = entry.parent
+    while (parent && parent.path.length) {
+        const currentParent = readRawAt(store._state, parent.path)
+        if (pruneNodeEntry(store, parent, currentParent.exists, currentParent.value)) break
+        const next = parent.parent
+        removeNodeEntry(store, parent)
+        parent = next
+    }
+    refreshNodePruner(store)
+}
+
+function refreshNodePruner(store: StoreInternal<any>) {
+    if (store._nodeCache.size > 1) {
+        store._reactiveOpts._onMutation ??= function pruneStoreNodeCache(path) {
+            pruneCachedPath(store, path)
+        }
+    } else store._reactiveOpts._onMutation = undefined
+}
+
 function incCount(store: StoreInternal<any>, path: StorePath) {
     const k = pathKey(path)
+    getNodeEntry(store, path)
     store._counts.set(k, (store._counts.get(k) ?? 0) + 1)
 }
 
@@ -500,6 +596,7 @@ function decCount(store: StoreInternal<any>, path: StorePath) {
     const n = (store._counts.get(k) ?? 0) - 1
     if (n > 0) store._counts.set(k, n)
     else store._counts.delete(k)
+    pruneCachedPath(store, path)
 }
 
 function subscribePath<T>(store: StoreInternal<any>, path: PropertyKey[], cb: (value: T, ctx: StoreCtx<T>) => void, opts: StoreSubOpts = {}, once = false) {
@@ -557,9 +654,8 @@ function subscribePath<T>(store: StoreInternal<any>, path: PropertyKey[], cb: (v
 // ============================================================
 
 function getNode<T>(store: StoreInternal<any>, path: PropertyKey[]): StoreNode<T> {
-    const k = pathKey(path)
-    const cached = store._nodeCache.get(k)
-    if (cached) return cached
+    const entry = getNodeEntry(store, path)
+    if (entry.proxy) return entry.proxy as StoreNode<T>
 
     const api: StoreNodeApi<T> = {
         get path() { return [...path] },
@@ -589,8 +685,8 @@ function getNode<T>(store: StoreInternal<any>, path: PropertyKey[]): StoreNode<T
         },
         getOwnPropertyDescriptor() { return {enumerable: true, configurable: true} },
     })
-    store._nodeCache.set(k, proxy)
-    return proxy as StoreNode<T>
+    entry.proxy = proxy as StoreNode<T>
+    return entry.proxy as StoreNode<T>
 }
 
 // guardrail-варн onEach-по-корню — один раз на процесс, не спамить
@@ -641,12 +737,14 @@ function createSelection<T, M>(store: StoreInternal<any>, base: PropertyKey[], m
 // ============================================================
 
 export function createStore<T extends object>(initial: T, opts: Parameters<typeof reactive<T>>[1] = {}): Store<T> {
-    const state = reactive(initial, opts)
+    const reactiveOpts: StoreReactiveOpts = {...opts, _onMutation: undefined}
+    const state = reactive(initial, reactiveOpts)
     let store: StoreInternal<T>
     store = {
         _state: state,
-        _nodeCache: new Map<string, any>(),
+        _nodeCache: new Map<string, StoreNodeEntry>(),
         _counts: new Map<string, number>(),
+        _reactiveOpts: reactiveOpts,
         state,
         get node(): StoreNode<T> { return getNode<T>(store, []) },
         get: () => state,
@@ -672,16 +770,8 @@ export function exposeStore<T extends object>(store: Store<T>, opts: StoreExpose
     const api: StoreRemoteApi<T> = {
         get,
         // `set` kept as a wire alias of `replace` — remote clients may call either
-        set: (path: StorePath, value: any) => {
-            let node: StoreNode<any> = store.node
-            for (const k of path) node = node.at(k)
-            node.replace(value)
-        },
-        replace: (path: StorePath, value: any) => {
-            let node: StoreNode<any> = store.node
-            for (const k of path) node = node.at(k)
-            node.replace(value)
-        },
+        set: (path: StorePath, value: any) => setAt(store.state, path, value),
+        replace: (path: StorePath, value: any) => setAt(store.state, path, value),
         changed: store.listen(),
         changedPaths: store.listenPaths(),
     }

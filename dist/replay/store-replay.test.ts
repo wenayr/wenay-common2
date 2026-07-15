@@ -30,6 +30,30 @@ function makeRemote(exposed: ReturnType<typeof exposeStoreReplay<World>>, lag = 
 const ascendingUnique = (seqs: number[]) => seqs.every((s, i) => i == 0 || s > seqs[i - 1])
 
 async function main() {
+    console.log('\n[store-replay] transient dynamic paths do not remain in Store node cache')
+    {
+        const backend = createStore<Record<string, {value: number}>>({})
+        const exposed = exposeStoreReplay(backend, {history: 8})
+        for (let i = 0; i < 200; i++) backend.state['order|' + i] = {value: i}
+        await flushReactive(backend.state)
+        for (let i = 0; i < 200; i++) delete backend.state['order|' + i]
+        await flushReactive(backend.state)
+        ok((backend as any)._nodeCache.size == 0, 'replay journaling does not materialize dynamic path nodes')
+        exposed.close()
+    }
+
+    console.log('\n[store-replay] replay API writes do not materialize dynamic Store nodes')
+    {
+        const backend = createStore<Record<string, {value: number}>>({})
+        const exposed = exposeStoreReplay(backend, {history: 8})
+        for (let i = 0; i < 200; i++) exposed.api.set(['ord|' + i], {value: i})
+        await flushReactive(backend.state)
+        for (let i = 0; i < 200; i++) delete backend.state['ord|' + i]
+        await flushReactive(backend.state)
+        ok((backend as any)._nodeCache.size == 0, 'replay API keeps remote dynamic writes out of the Store node cache')
+        exposed.close()
+    }
+
     console.log('\n[store-replay] fresh mirror: keyframe as root patch')
     {
         const backend = createStore<World>({units: {a: {hp: 100, x: 0}}, tick: 0})

@@ -31,6 +31,8 @@ function scheduler(drain) {
 }
 function reactive(root, opts = {}) {
     const { drain = 'immediate', depth = Infinity, eager = false } = opts;
+    const internalOpts = opts;
+    const hasMutationHook = '_onMutation' in internalOpts;
     const fire = scheduler(drain);
     const eng = {
         live: 0, pathLive: 0, dirty: new Set(), dirtyPaths: [],
@@ -82,6 +84,15 @@ function reactive(root, opts = {}) {
             });
         },
     };
+    if (hasMutationHook) {
+        let onMutation = internalOpts._onMutation;
+        Object.defineProperty(internalOpts, '_onMutation', {
+            configurable: true,
+            get: () => onMutation,
+            set: next => { onMutation = next; eng.onMutation = next; },
+        });
+        eng.onMutation = onMutation;
+    }
     const rootNode = makeNode(root, null, [], 0, eng);
     if (eager)
         prewalk(rootNode);
@@ -122,6 +133,7 @@ function makeNode(target, parent, path, level, eng) {
             const kid = node.kids.get(k);
             if (kid)
                 rebind(kid, v);
+            node.eng.onMutation?.(dirtyPathFor(node, k));
             if (eng.live > 0)
                 bubble(node, k);
             return true;
@@ -149,6 +161,7 @@ function makeNode(target, parent, path, level, eng) {
                         detachTree(kid);
                     }
                 }
+                node.eng.onMutation?.(dirtyPathFor(node, k));
                 if (eng.live > 0)
                     bubble(node, k);
             }
@@ -164,6 +177,7 @@ function makeNode(target, parent, path, level, eng) {
                 markChanged(kid);
                 detachTree(kid);
             }
+            node.eng.onMutation?.(dirtyPathFor(node, k));
             if (eng.live > 0)
                 bubble(node, k);
             return true;

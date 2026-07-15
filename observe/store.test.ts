@@ -179,6 +179,40 @@ async function main() {
         ok(hits == 1, 'selection.once(current) fires once and unsubscribes')
     }
 
+    console.log('\n[store] dynamic path nodes are released after delete')
+    {
+        const store = createStore<Record<string, {value: number}>>({}, {drain: 'micro'})
+        for (let i = 0; i < 200; i++) {
+            const id = 'ord|' + i
+            store.state[id] = {value: i}
+            store.node.at(id)
+        }
+        ok((store as any)._nodeCache.size == 201, 'dynamic paths are materialized while their state exists')
+
+        for (let i = 0; i < 200; i++) delete store.state['ord|' + i]
+        await flushReactive(store.state)
+        ok((store as any)._nodeCache.size == 1, 'deleted, unsubscribed dynamic paths leave the Store cache')
+
+        const watched = store.node.at('ord|active')
+        store.state['ord|active'] = {value: 1}
+        const off = watched.on(() => {})
+        delete store.state['ord|active']
+        await flushReactive(store.state)
+        ok((store as any)._nodeCache.size == 2, 'an active path subscription keeps its node identity after delete')
+        off()
+        ok((store as any)._nodeCache.size == 1, 'the last path subscription releases a deleted node')
+    }
+
+    console.log('\n[store] remote writes do not materialize dynamic path nodes')
+    {
+        const store = createStore<Record<string, {value: number}>>({}, {drain: 'micro'})
+        const api = exposeStore(store)
+        for (let i = 0; i < 200; i++) api.set(['ord|' + i], {value: i})
+        for (let i = 0; i < 200; i++) delete store.state['ord|' + i]
+        await flushReactive(store.state)
+        ok((store as any)._nodeCache.size == 0, 'wire set/replace writes state directly, without Store nodes')
+    }
+
     console.log('\n[store] snapshot: circular Map/Set and shared references')
     {
         const m = new Map<any, any>()

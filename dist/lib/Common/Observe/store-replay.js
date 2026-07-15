@@ -11,13 +11,6 @@ const replay_listen_1 = require("../events/replay-listen");
 const replay_wire_1 = require("../events/replay-wire");
 const replay_route_1 = require("../events/replay-route");
 const replay_history_1 = require("../events/replay-history");
-function makeStorePatch(store, path) {
-    let node = store.node;
-    for (const k of path)
-        node = node.at(k);
-    const exists = node.has();
-    return { path: [...path], exists, value: exists ? node.snapshot() : undefined };
-}
 function storePatchKey(patch) {
     for (const k of patch.path)
         if (typeof k == 'symbol')
@@ -44,12 +37,12 @@ function exposeStoreReplay(store, opts = {}) {
         onJournal: opts.onJournal,
         now: opts.now,
     });
-    const offStore = store.listenPaths().on(function journalStoreChange(change) {
-        for (const path of change.paths)
-            emitPatch(makeStorePatch(store, path));
+    const { patches, changedData: _changedData, ...storeApi } = (0, store_1.exposeStore)(store, { push: true });
+    const offStore = patches.on(function journalStoreChange(patch) {
+        emitPatch(patch);
     });
     return {
-        api: { ...(0, store_1.exposeStore)(store), replay: (0, replay_wire_1.exposeReplay)(lineApi) },
+        api: { ...storeApi, replay: (0, replay_wire_1.exposeReplay)(lineApi) },
         replay: lineApi,
         close: () => { offStore(); },
     };

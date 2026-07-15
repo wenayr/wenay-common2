@@ -25,8 +25,9 @@ such as `Listen3` and `reactive2` are compatibility shims only.
 - **DONE** path cache identity separates dotted keys and distinct symbols.
 - **DONE** brief/rare docs describe the store layer as separate from the coarse
   reactive core.
-- **OPEN** `_nodeCache` and `_counts` are unbounded for dynamic path spaces.
-  Either document bounded-path expectations for applications or add eviction.
+- **DONE** Dynamic path nodes are pruned after their state disappears and the last
+  subscription closes; remote Store writes and replay journaling no longer materialize
+  path nodes just to read or write a value.
 - **OPEN** `schedule` / `createDrained` in `store.ts` still duplicate scheduler
   logic from `reactive.ts`; extract only if more local schedulers appear.
 

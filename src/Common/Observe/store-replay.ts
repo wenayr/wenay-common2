@@ -12,14 +12,6 @@ import {exposeReplay, replaySubscribe, ReplayRemote, ReplaySubscribeOpts} from '
 import {replayRouteSubscribe, ReplayRouteSubscribeOpts} from '../events/replay-route'
 import {openHistory, ReplayStorage} from '../events/replay-history'
 
-/** Патч по пути через ПУБЛИЧНОЕ node-api стора (его внутренний makePatch не нужен). */
-function makeStorePatch(store: Store<any>, path: PropertyKey[]): StorePatch {
-    let node: any = store.node
-    for (const k of path) node = node.at(k)
-    const exists = node.has()
-    return {path: [...path], exists, value: exists ? node.snapshot() : undefined}
-}
-
 export type StoreReplayOpts = Pick<ReplayListenOptions<[StorePatch]>, 'history' | 'getSince' | 'onJournal' | 'now'>
 
 /**
@@ -65,12 +57,15 @@ export function exposeStoreReplay<T extends object>(store: Store<T>, opts: Store
         onJournal: opts.onJournal,
         now: opts.now,
     })
-    const offStore = store.listenPaths().on(function journalStoreChange(change) {
-        for (const path of change.paths) emitPatch(makeStorePatch(store, path))
+    // Store уже умеет строить push-патчи напрямую по raw state. Повторный проход через
+    // store.node.at(path) навсегда оставлял в node-cache каждый временный id ордера/задачи.
+    const {patches, changedData: _changedData, ...storeApi} = exposeStore(store, {push: true})
+    const offStore = patches!.on(function journalStoreChange(patch: StorePatch) {
+        emitPatch(patch)
     })
     return {
         /** Провод-фасад: отдать RPC-серверу (object: api). Совместим с обычным exposeStore. */
-        api: {...exposeStore(store), replay: exposeReplay(lineApi)},
+        api: {...storeApi, replay: exposeReplay(lineApi)},
         /** Локальная replay-линия — in-proc потребители, интроспекция (head/getSince). */
         replay: lineApi,
         close: () => { offStore() },
