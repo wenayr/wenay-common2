@@ -9,6 +9,10 @@
 >
 > Current focus is NOT more transport: see `doc/target/library-uplift-tasks.md` (showcase, SDK facade,
 > file-resource/AI-job layer). Transport items below stay available but rank below everything in that plan.
+> **Shipped in v1.0.78:** `Ai.createAiRunHost/client` now turns that file/job foundation into a
+> provider-neutral AI-run protocol: idempotent create, account-filtered Store/event replay, approval/input
+> waits, cancellation with a late-output guard, semantic deltas and artifact descriptors. Design:
+> `doc/AI-RUN-PROTOCOL.md`; oracle: `replay/ai-run.test.ts`.
 
 ## 0. Distributed Runtime Model
 

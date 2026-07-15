@@ -204,6 +204,35 @@ resource.store.state.jobs                         // queued/running/ready/failed
 `FileJobPolicy` can grant read/write access beyond the owner. Never put bytes, a storage key, or a
 reusable download URL in the shared Store; return short-lived instructions from the storage port.
 
+## 🤖 AI — resumable runs over the existing RPC connection
+> `import { Ai } from 'wenay-common2'` or `import * as Ai from 'wenay-common2/ai'`.
+
+`Ai.createAiRunHost` is provider-neutral: an application injects the model/tool adapter, while the
+library supplies owner-scoped idempotency, Store/replay state, semantic event replay, approval/input
+waits, cancellation and ACL projections. It complements `Resource` — pass resource ids, never bytes.
+
+```ts
+const ai = Ai.createAiRunHost({runner, capabilities: [{kind: 'assistant'}]})
+const conn = ai.connection(account)
+object: {...legacyObject, ai: conn.fragment}
+disconnectListen.on(conn.close)
+
+const runs = Ai.createAiRunClient({remote: c.app.func.ai})
+runs.events.on(event => {})                         // text.delta / approval / artifact / final events
+await runs.ready
+const run = await runs.createRun({
+  requestId: crypto.randomUUID(),                   // owner-scoped safe retry key
+  kind: 'assistant', input: {prompt}, resourceIds: [file.id],
+})
+await runs.cancelRun(run.id)                         // optional provider abort + late-output guard
+runs.store.state.runs[run.id]                       // durable lifecycle/result
+```
+
+States: `queued | running | waiting_input | waiting_approval | completed | failed | cancelled`.
+The final `result` and artifact descriptors are durable state; streamed `text.delta` events enhance
+the live UI. `resolveApproval` and `provideInput` are server-authorized commands. Full contract,
+provider boundary and reconnection rules: `doc/AI-RUN-PROTOCOL.md`; oracle: `replay/ai-run.test.ts`.
+
 ## 🤝 Peer — accounts see each other's stores (one-call SDK)
 > `import { Peer } from "wenay-common2"` or `import * as Peer from "wenay-common2/peer"`.
 > The happy-path facade over rpc + store + replay + route coordinator. Legacy-friendly by design:

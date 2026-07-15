@@ -6,6 +6,7 @@
 
 - Brief API cheat sheet: [`doc/wenay-common2.md`](doc/wenay-common2.md)
 - Extended API cheat sheet: [`doc/wenay-common2-rare.md`](doc/wenay-common2-rare.md)
+- AI run protocol: [`doc/AI-RUN-PROTOCOL.md`](doc/AI-RUN-PROTOCOL.md)
 - Naming migrations: [`doc/NAMING_RENAMES.md`](doc/NAMING_RENAMES.md)
 - Recent changes: [`doc/changes/`](doc/changes/)
 - Project rules for AI/code maintenance: [`CLAUDE.md`](CLAUDE.md)

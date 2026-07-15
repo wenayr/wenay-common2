@@ -263,6 +263,70 @@ The local stand (`npm run demo`) uses a tiny in-memory HTTP storage adapter sole
 upload → confirm → AI progress/result → download path; production code supplies its own storage
 port. Oracle: `replay/file-job.test.ts` (real Socket.IO/RPC, owner ACL, progress, result, cancel).
 
+## 🤖 AI — provider-neutral run protocol
+
+`Ai.createAiRunHost({runner, capabilities?, policy?, id?, now?, history?, drain?})` adds a generic
+model/tool workflow beside existing RPC keys. It is intentionally not an SDK for a particular model:
+the application runner chooses a provider, prompt, tool implementations, persistence and billing;
+the host owns safe lifecycle semantics on the socket boundary.
+
+```ts
+type AiRunRequest = {
+  requestId: string               // required, owner-scoped idempotency key
+  kind: string                    // capability name, e.g. 'assistant'
+  input: unknown                  // runner-only; never copied into Store
+  resourceIds?: string[]          // opaque Resource ids, never file bytes
+}
+
+type AiRunState =
+  'queued' | 'running' | 'waiting_input' | 'waiting_approval' |
+  'completed' | 'failed' | 'cancelled'
+
+type AiRunRunner = {
+  run({run, input, resourceIds, report, emit, artifact,
+       requestApproval, waitForInput, cancelled}) -> {result?, usage?} | Promise<...>
+  cancel?({run, reason?}) -> void | Promise<void>
+}
+
+const host = Ai.createAiRunHost({runner, capabilities: [{kind: 'assistant'}]})
+const conn = host.connection(account)
+createRpcServerAuto({object: {...legacy, ai: conn.fragment}, ...})
+disconnectListen.on(conn.close)
+
+const client = Ai.createAiRunClient({remote: rpc.func.ai})
+client.events.on(event => renderDeltaOrApproval(event)) // attach before ready if initial sync matters
+await client.ready
+const run = await client.createRun({requestId, kind: 'assistant', input: {prompt}, resourceIds})
+```
+
+The fragment exposes `capabilities()`, `state` (account-filtered Store patch replay), `events`
+(account-filtered semantic replay), `createRun`, `cancelRun`, `resolveApproval`, and `provideInput`.
+`AiRunStore` has `{runs, approvals, inputs}`; raw values supplied to `provideInput` are resolved into
+the runner only and are not written to Store. Default `AiRunPolicy` is owner-only;
+`canCreate`/`canRead`/`canWrite` add tenant, quota or delegated-access policy.
+
+Event contract:
+
+- Runner-controlled live events: `text.delta`, `notice`, `tool.call`, `tool.result`.
+- Host-controlled lifecycle events: `started`, `progress`, `artifact`, approval/input requested or
+  resolved, `completed`, `failed`, `cancelled`.
+- An event replay keyframe is a `sync` event containing the caller's currently authorized runs,
+  approvals and input metadata. Use durable `run.result` for a complete transcript/result after a
+  reconnect; deltas are an enhancement, not the only copy of user-visible output.
+
+`requestId` is the crucial command rule: ordinary RPC calls never replay after transport loss, so an
+application may intentionally retry `createRun` with the same id. The host returns the original run
+and never invokes the runner twice. Cancellation immediately marks state terminal, rejects pending
+input/approval waits, calls optional `runner.cancel`, and ignores every later report, event and result.
+
+Security boundary: resource bytes, storage/provider keys, reusable URLs, arbitrary browser callbacks,
+and raw chain-of-thought do not cross this API. Let the application adapter fetch a `resourceId` from
+its authorized storage port; use `artifact({resourceId, descriptor})` for small output descriptors.
+Tool execution stays server-side. If a tool needs user consent, the runner calls `requestApproval` and
+waits for `resolveApproval`; it must never execute a browser-provided callback. The full rationale and
+integration recipe are in `doc/AI-RUN-PROTOCOL.md`. Oracle: `replay/ai-run.test.ts` (real Socket.IO/RPC,
+ACL, idempotent retry after a new connection, approval/input, provider cancellation and late-output guard).
+
 ## 🎙️ Media over socket — browser capture as binary Listen
 > `import { Media } from "wenay-common2"` or `import * as Media from "wenay-common2/media"`.
 > The hot path event is ONE `Uint8Array`: fixed 40-byte common2 media header + raw payload. No JSON envelope.

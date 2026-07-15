@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "1.0.77",
+    "version": "1.0.78",
   "description": "Common library",
   "strict": true,
   "main": "lib/index.js",
@@ -78,6 +78,7 @@
     "./package.json": "./package.json",
     "./media": "./lib/Common/media/media-index.js",
     "./peer": "./lib/Common/peer/peer-index.js",
-    "./resource": "./lib/Common/resource/resource-index.js"
+    "./resource": "./lib/Common/resource/resource-index.js",
+    "./ai": "./lib/Common/ai/ai-index.js"
   }
 }

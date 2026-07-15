@@ -61,7 +61,16 @@ Priority order was 1 -> 2 -> 3. Transport items are NOT forbidden — see the de
   - [x] acceptance: real Socket.IO/RPC oracle proves upload intent, storage confirmation, owner ACL,
         AI progress/result and cancellation; `demo/` visibly exercises the same lifecycle using a
         deliberately tiny in-memory HTTP storage adapter.
-- [ ] 5. Authority layer (`predictedStore`, ROADMAP section 3) — only AFTER the demo demands it;
+- [x] 5. AI run protocol (v1.0.78):
+  - [x] `Ai.createAiRunHost/client`: provider-neutral run contract with capabilities, owner-scoped
+        idempotent `requestId`, durable `runs`/`approvals`/`inputs` Store replay and semantic event replay.
+  - [x] runner control: text/tool events, progress/usage, output artifact descriptors, approval and input
+        waits, cooperative cancellation plus optional provider abort; late reports/events/results are ignored.
+  - [x] acceptance: real Socket.IO/RPC oracle proves ACL, retry after a new connection without duplicate
+        provider side effect, approval/input, cancellation and late-output guard; `demo/` visibly runs it.
+  - [x] full boundary/operational contract: `doc/AI-RUN-PROTOCOL.md` — provider credentials, storage bytes,
+        raw chain-of-thought and browser callbacks are deliberately outside the socket protocol.
+- [ ] 6. Authority layer (`predictedStore`, ROADMAP section 3) — only AFTER the demo demands it;
       the demo defines its shape and keeps it small.
 
 ## Transport — deferred (super-low priority, NOT blocked)
@@ -85,6 +94,7 @@ production systems.
 
 ## Next Action
 
-No transport work is required for the frontend ↔ storage ↔ AI workflow. Apply the resource port to a
-real storage/AI backend next; reopen `predictedStore`, CRDT, tracks/SFU, or a README GIF only when a
-consumer establishes that need.
+No transport work is required for the frontend ↔ storage ↔ AI workflow. Next, apply the injected
+Resource storage port and AI runner to a real provider/queue backend, adding tenant quota/audit policy in
+the application adapter. Reopen `predictedStore`, CRDT, tracks/SFU, or a README GIF only when a consumer
+establishes that need.

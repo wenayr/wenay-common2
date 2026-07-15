@@ -9,6 +9,7 @@ import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {callPortOf, createCallManager, createPeerClient} from '../src/Common/peer/peer-index'
 import {attachAudioPlayer, attachVideoCanvas, createAudioSource, createVideoSource, pipeMediaPublish} from '../src/Common/media/media-index'
 import {createFileJobClient} from '../src/Common/resource/resource-index'
+import {createAiRunClient} from '../src/Common/ai/ai-index'
 
 type World = {cursor: {x: number, y: number}, color: string, name: string}
 
@@ -42,6 +43,10 @@ async function main() {
     await files.ready
     setupFileJobs(files)
     log('file/AI resource view ready')
+    const ai = createAiRunClient({remote: clients.app.func.ai, drain: 'micro'})
+    await ai.ready
+    setupAiRuns(ai, files)
+    log('AI run view ready')
 
     // debug tap: every signaling envelope this account receives (webrtc AND call types)
     ;(clients.app.func.peer.signal.signals as any).on((env: any) => {
@@ -174,6 +179,66 @@ async function main() {
         bindCall(incoming)
     })
     renderCallUi()
+}
+
+// ============== AI run protocol: state is durable; deltas are a replayed enhancement ==============
+function setupAiRuns(ai: ReturnType<typeof createAiRunClient>, files: ReturnType<typeof createFileJobClient>) {
+    const prompt = el('aiPrompt') as HTMLInputElement
+    const start = el('startAiRun') as HTMLButtonElement
+    const cancel = el('cancelAiRun') as HTMLButtonElement
+    const state = el('aiRunState')
+    const text = new Map<string, string>()
+    let selectedId: string | null = null
+
+    function selected() {
+        return selectedId ? ai.store.state.runs[selectedId] : undefined
+    }
+
+    function render() {
+        if (!selected()) selectedId = Object.keys(ai.store.state.runs).at(-1) ?? null
+        const run = selected()
+        const delta = run ? text.get(run.id) : undefined
+        state.textContent = !run ? 'no AI run selected'
+            : `${run.kind} · ${run.state} ${Math.round(run.progress * 100)}%${run.message ? ` — ${run.message}` : ''}` +
+              (delta ? ` · ${delta}` : '') + ((run.result as any)?.answer ? ` · ${(run.result as any).answer}` : '')
+        cancel.disabled = !run || run.state == 'completed' || run.state == 'failed' || run.state == 'cancelled'
+    }
+
+    ai.events.on(function onAiEvent(event) {
+        if (event.type == 'text.delta') text.set(event.runId, (text.get(event.runId) ?? '') + event.text)
+        if (event.type == 'failed') log('AI run failed: ' + event.error)
+        if (event.type == 'cancelled') log('AI run cancelled')
+        render()
+    })
+
+    start.addEventListener('click', async function startAiRun() {
+        try {
+            start.disabled = true
+            const latestResource = Object.values(files.store.state.files).filter(file => file.state == 'uploaded').at(-1)
+            const run = await ai.createRun({
+                requestId: 'demo-' + Date.now() + '-' + Math.random().toString(36).slice(2),
+                kind: 'assistant',
+                input: {prompt: prompt.value},
+                resourceIds: latestResource ? [latestResource.id] : [],
+            })
+            selectedId = run.id
+            render()
+            log('AI run ' + run.id + ' started')
+        } catch (error) {
+            log('AI run failed to start: ' + error)
+        } finally {
+            start.disabled = false
+        }
+    })
+
+    cancel.addEventListener('click', async function cancelAiRun() {
+        if (!selectedId) return
+        try { await ai.cancelRun(selectedId, 'demo user cancelled') }
+        catch (error) { log('AI run could not cancel: ' + error) }
+    })
+
+    ai.store.listen().on(render)
+    render()
 }
 
 // ============== file bytes by storage intent; metadata/progress by Store/replay ==============

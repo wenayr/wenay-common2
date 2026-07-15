@@ -8,6 +8,7 @@ import {listen} from '../src/Common/events/Listen'
 import {SignalEnvelope} from '../src/Common/events/route-signal-webrtc'
 import {createMediaRelay, createPeerHost} from '../src/Common/peer/peer-index'
 import {createFileJobHost} from '../src/Common/resource/resource-index'
+import {createAiRunHost} from '../src/Common/ai/ai-index'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 
 const PORT = Number(process.env.PORT ?? 8390)
@@ -47,6 +48,37 @@ const files = createFileJobHost({
             await delay(500)
             if (cancelled()) return
             return {result: {summary: `Demo AI processed ${file.name} (${file.size} bytes)`}}
+        },
+    },
+    drain: 'micro',
+})
+
+// ============== generic AI run stand ==============
+// A provider adapter belongs here. This deterministic runner makes the protocol
+// observable without placing vendor credentials or model internals in RPC.
+const ai = createAiRunHost({
+    capabilities: [{kind: 'assistant', label: 'Demo assistant', acceptsResources: true}],
+    runner: {
+        async run({input, resourceIds, report, emit, artifact, cancelled}) {
+            const prompt = String((input as any)?.prompt ?? '')
+            report({progress: 0.15, message: 'AI is preparing context'})
+            emit({type: 'text.delta', text: 'I received: '})
+            await delay(350)
+            if (cancelled()) return
+            emit({type: 'text.delta', text: prompt || '(empty prompt)'})
+            report({progress: 0.75, message: 'AI is composing a response', usage: {inputTokens: 8, outputTokens: 12, totalTokens: 20}})
+            await delay(350)
+            if (cancelled()) return
+            const resourceId = resourceIds[0]
+            artifact({
+                kind: 'demo-answer',
+                label: 'Demo AI result',
+                descriptor: {resourceId, text: 'Demo answer for: ' + prompt},
+            })
+            return {
+                result: {answer: 'Demo answer for: ' + prompt, resourceId},
+                usage: {inputTokens: 8, outputTokens: 12, totalTokens: 20},
+            }
         },
     },
     drain: 'micro',
@@ -164,8 +196,9 @@ ioServer.on('connection', function onDemoConnection(socket) {
     const account = String(socket.handshake.auth?.account ?? 'anon')
     const peer = host.connection(account)
     const resource = files.connection(account)
+    const aiRun = ai.connection(account)
     const [disconnect, disconnectListen] = listen<[]>()
-    socket.on('disconnect', () => { disconnect(); peer.close(); resource.close() })
+    socket.on('disconnect', () => { disconnect(); peer.close(); resource.close(); aiRun.close() })
     createRpcServerAuto({
         socket: {emit: (key, data) => socket.emit(key, data), on: (key, cb) => socket.on(key, cb)},
         socketKey: 'app',
@@ -174,6 +207,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
             serverTime: () => new Date().toISOString(),
             peer: peer.fragment,
             files: resource.fragment,
+            ai: aiRun.fragment,
             media: {
                 publish: media.publishOf(account),
                 // policy-gated view: THIS connection's account is what canWatch receives

@@ -37,3 +37,4 @@ export * as Replay from "./Common/events/replay-index";
 export * as Media from "./Common/media/media-index";
 export * as Peer from "./Common/peer/peer-index";
 export * as Resource from "./Common/resource/resource-index";
+export * as Ai from "./Common/ai/ai-index";
