@@ -216,6 +216,53 @@ Contract:
 - Static dotted keys are also supported: `api["a.b"].c` is distinct from `api.a.b.c`. Internal route/listen/cache identity must stay lossless; dotted strings are only a debug display form.
 - If a branch is a fixed public API, keep it strict. If a branch is a personal/dynamic keyspace, wrap that branch in `noStrict` instead of trying to publish all current keys as schema.
 
+## 📦 Resource — file storage intents + AI job coordinator
+
+`Resource.createFileJobHost({storage, runner, policy?, id?, now?, history?, drain?})` is the
+application-facing layer for a frontend file and a backend/AI workflow. It does not choose a
+storage provider, transport URL, or AI vendor.
+
+```ts
+type FileStoragePort = {
+  beginUpload({file}) -> uploadInstruction | Promise<uploadInstruction>
+  confirmUpload?({file}) -> void | Promise<void>
+  download?({file}) -> downloadInstruction | Promise<downloadInstruction>
+}
+type FileJobRunner = {
+  run({file, job, input, report, cancelled}) -> {result?} | Promise<{result?} | void>
+}
+
+const host = Resource.createFileJobHost({storage, runner})
+const conn = host.connection(account)
+createRpcServerAuto({object: {...legacy, files: conn.fragment}, ...})
+disconnectListen.on(conn.close)
+
+const client = Resource.createFileJobClient({remote: rpc.func.files})
+await client.ready
+client.store.state.files[id]  // FileResource: uploading | uploaded | failed
+client.store.state.jobs[id]   // FileJob: queued | running | ready | failed | cancelled
+```
+
+Host control/API split:
+
+- `storage.beginUpload({file})` returns an opaque upload instruction. The browser uploads bytes to
+  that destination directly; `confirmUpload` makes the resource usable only after storage verifies
+  it.
+- `runner.run` receives safe file metadata, opaque job input, `report({progress?, message?, result?})`
+  and `cancelled()`. A late report/result after cancellation is ignored.
+- `connection(account).fragment` exposes `state` (an account-filtered Store patch replay),
+  `startUpload`, `confirmUpload`, `startJob`, `cancelJob`, and `download`. It is designed to be
+  spread beside existing RPC keys; `connection.close()` stops its per-connection projection.
+- Default policy is owner-only. `FileJobPolicy.canRead` controls what reaches the projection;
+  `canWrite` controls confirmation, processing, cancellation, and download. The authoritative
+  global Store is server-only and must not be exposed as an RPC object.
+
+`FileResource` deliberately has no storage key or bytes. `FileJob.result` should be a small
+descriptor, link, or structured AI result — write large output back through the storage port.
+The local stand (`npm run demo`) uses a tiny in-memory HTTP storage adapter solely to show the full
+upload → confirm → AI progress/result → download path; production code supplies its own storage
+port. Oracle: `replay/file-job.test.ts` (real Socket.IO/RPC, owner ACL, progress, result, cancel).
+
 ## 🎙️ Media over socket — browser capture as binary Listen
 > `import { Media } from "wenay-common2"` or `import * as Media from "wenay-common2/media"`.
 > The hot path event is ONE `Uint8Array`: fixed 40-byte common2 media header + raw payload. No JSON envelope.

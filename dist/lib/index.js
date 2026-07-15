@@ -36,7 +36,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Peer = exports.Media = exports.Replay = exports.Observe = exports.Color = exports.Time = exports.Params = exports.Bars = exports.Math = void 0;
+exports.Resource = exports.Peer = exports.Media = exports.Replay = exports.Observe = exports.Color = exports.Time = exports.Params = exports.Bars = exports.Math = void 0;
 __exportStar(require("./Common/node_console"), exports);
 __exportStar(require("./Common/core/Decorator"), exports);
 __exportStar(require("./Common/core/BaseTypes"), exports);
@@ -75,3 +75,4 @@ exports.Observe = __importStar(require("./Common/Observe"));
 exports.Replay = __importStar(require("./Common/events/replay-index"));
 exports.Media = __importStar(require("./Common/media/media-index"));
 exports.Peer = __importStar(require("./Common/peer/peer-index"));
+exports.Resource = __importStar(require("./Common/resource/resource-index"));

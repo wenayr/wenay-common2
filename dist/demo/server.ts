@@ -7,9 +7,50 @@ import {Server as SocketIOServer} from 'socket.io'
 import {listen} from '../src/Common/events/Listen'
 import {SignalEnvelope} from '../src/Common/events/route-signal-webrtc'
 import {createMediaRelay, createPeerHost} from '../src/Common/peer/peer-index'
+import {createFileJobHost} from '../src/Common/resource/resource-index'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 
 const PORT = Number(process.env.PORT ?? 8390)
+
+function delay(ms: number) {
+    return new Promise<void>(resolve => setTimeout(resolve, ms))
+}
+
+// ============== storage intent + AI job stand ==============
+// The resource layer never sees these bytes. A real app swaps this tiny HTTP
+// port for S3/MinIO/etc. and returns its own short-lived signed instructions.
+const uploadTickets = new Map<string, {size: number, ticket: string}>()
+const uploadBytes = new Map<string, Buffer>()
+let nextTicket = 0
+const files = createFileJobHost({
+    storage: {
+        beginUpload({file}) {
+            const ticket = 'demo-upload-' + (++nextTicket)
+            uploadTickets.set(file.id, {size: file.size, ticket})
+            return {url: '/resource-upload/' + file.id + '?ticket=' + ticket, method: 'PUT'}
+        },
+        confirmUpload({file}) {
+            if (!uploadBytes.has(file.id)) throw new Error('the upload endpoint has not received this file')
+        },
+        download({file}) {
+            const ticket = uploadTickets.get(file.id)?.ticket
+            if (!ticket) throw new Error('upload ticket expired')
+            return {url: '/resource-download/' + file.id + '?ticket=' + ticket}
+        },
+    },
+    runner: {
+        async run({file, report, cancelled}) {
+            report({progress: 0.2, message: 'AI reading ' + file.name})
+            await delay(500)
+            if (cancelled()) return
+            report({progress: 0.75, message: 'AI preparing a result'})
+            await delay(500)
+            if (cancelled()) return
+            return {result: {summary: `Demo AI processed ${file.name} (${file.size} bytes)`}}
+        },
+    },
+    drain: 'micro',
+})
 
 // ============== media relay + call-driven watch ACL ==============
 // The signal hub is the single policy boundary, but authorization still needs a tiny
@@ -93,6 +134,25 @@ host.presence.changes.on(function onPresenceEdge(ch) {
 })
 
 const app = express()
+app.put('/resource-upload/:fileId', express.raw({type: '*/*', limit: '100mb'}), function receiveResourceUpload(req, res) {
+    const expected = uploadTickets.get(req.params.fileId)
+    const body = req.body
+    if (!expected || req.query.ticket != expected.ticket || !Buffer.isBuffer(body) || body.byteLength != expected.size) {
+        res.status(400).send('invalid upload instruction')
+        return
+    }
+    uploadBytes.set(req.params.fileId, body)
+    res.status(204).end()
+})
+app.get('/resource-download/:fileId', function downloadResource(req, res) {
+    const expected = uploadTickets.get(req.params.fileId)
+    const bytes = uploadBytes.get(req.params.fileId)
+    if (!expected || req.query.ticket != expected.ticket || !bytes) {
+        res.status(404).end()
+        return
+    }
+    res.type('application/octet-stream').send(bytes)
+})
 app.use(express.static(path.resolve(__dirname, 'public')))
 app.get('/', (_req, res) => res.sendFile(path.resolve(__dirname, 'public', 'index.html')))
 
@@ -103,8 +163,9 @@ const ioServer = new SocketIOServer(httpServer, {maxHttpBufferSize: 1e8})
 ioServer.on('connection', function onDemoConnection(socket) {
     const account = String(socket.handshake.auth?.account ?? 'anon')
     const peer = host.connection(account)
+    const resource = files.connection(account)
     const [disconnect, disconnectListen] = listen<[]>()
-    socket.on('disconnect', () => { disconnect(); peer.close() })
+    socket.on('disconnect', () => { disconnect(); peer.close(); resource.close() })
     createRpcServerAuto({
         socket: {emit: (key, data) => socket.emit(key, data), on: (key, cb) => socket.on(key, cb)},
         socketKey: 'app',
@@ -112,6 +173,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
             // legacy key on the SAME connection — the SDK does not displace old code
             serverTime: () => new Date().toISOString(),
             peer: peer.fragment,
+            files: resource.fragment,
             media: {
                 publish: media.publishOf(account),
                 // policy-gated view: THIS connection's account is what canWatch receives

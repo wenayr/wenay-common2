@@ -8,7 +8,7 @@
 > Status: 🔴 not started · 🟡 partial / ongoing · 🧊 deferred (super-low priority, not forbidden).
 >
 > Current focus is NOT more transport: see `doc/target/library-uplift-tasks.md` (showcase, SDK facade,
-> vertical demo app). Transport items below stay available but rank below everything in that plan.
+> file-resource/AI-job layer). Transport items below stay available but rank below everything in that plan.
 
 ## 0. Distributed Runtime Model
 
@@ -156,6 +156,12 @@ Consumption-layer candidates (2026-07-10, author's ask):
   shipped too: the demo stand rings/accepts/declines with presence, media attaches only while the
   call is active, and the watch-ACL grant set lives in the host `authorize` hook (verified headless,
   two Chromium tabs, zero page errors).
+- ✅ **File resource + AI job coordinator** — SHIPPED in v1.0.77: `Resource.createFileJobHost` /
+  `createFileJobClient` separate opaque storage instructions and byte transfer from an account-filtered
+  Store/replay projection of resource metadata and AI job state. The injected `FileStoragePort` owns
+  `beginUpload` / confirm / download; the injected job runner reports progress/result and obeys
+  cancellation. Oracle `replay/file-job.test.ts` covers real Socket.IO/RPC lifecycle, owner ACL and
+  late-result suppression; the local stand makes the same storage -> AI path visible.
 - **Store-descriptor media bridge** ("streaming center") — the store carries a small descriptor
   (`{kind: 'video', sourceId, state}`), a bridge watches the mirror and auto-attaches/detaches
   `Media.attachVideoCanvas`/`attachAudioPlayer` to the matching binary line. Bytes flow only while
@@ -221,7 +227,7 @@ source of truth. Decompose by write topology:
   wrap a Yjs/Automerge doc as a `RemoteStore`-shaped source and mirror from it — the store↔transport
   decoupling makes this a small adapter, not a rewrite.
 - Status: 🧊 deferred, super-low priority. Prediction layer waits for the demo app to demand and shape
-  it (`doc/target/library-uplift-tasks.md` task 4); CRDT adapter reopens only on a real co-write need.
+  it (`doc/target/library-uplift-tasks.md` task 5); CRDT adapter reopens only on a real co-write need.
   Partitioned-authority already expressible today.
 
 ## 4. Data-transfer optimization backlog (ongoing) 🟡

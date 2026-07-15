@@ -1,11 +1,11 @@
-# Library Uplift Tasks (surface, SDK, demo)
+# Library Uplift Tasks (surface, SDK, resource layer)
 
 Goal: stop measuring progress by transport layers added; measure by what can be shown working.
 The transport/routing/replay lower half is built and oracle-covered (52/52) — the missing value is
-the consumption layer: showcase hygiene, one happy-path SDK facade, and one vertical demo app that
-becomes the library's portfolio and its source of real API pain.
+the consumption layer: showcase hygiene, one happy-path SDK facade, and a small vertical resource
+layer that proves the library against a real frontend ↔ backend/AI workflow.
 
-Priority order: 1 -> 2 -> 3 -> 4. Transport items are NOT forbidden — see the deferred section.
+Priority order was 1 -> 2 -> 3. Transport items are NOT forbidden — see the deferred section.
 
 ## Tasks
 
@@ -29,7 +29,7 @@ Priority order: 1 -> 2 -> 3 -> 4. Transport items are NOT forbidden — see the 
         ship in the npm package for AI convenience; nothing to demote
   - React byRender-emulation (callback-by-map with a micro-pause, register+invoke pair): DROPPED by
         the author as bad style; the chunked/each feeds are enough for the React-layer hooks
-- [ ] 3. Vertical demo app (1-2 weeks) — the forcing function:
+- [x] 3. Vertical demo app — the forcing function:
   - note: a canvas showcase already exists in the React layer (hooks are being added there);
         this demo should CONSUME the SDK facade and feed React-layer hook needs back into task 2
   - [x] shared canvas / cursors in two browser tabs: `demo/` (`npm run demo`) — Peer SDK next to a
@@ -48,10 +48,20 @@ Priority order: 1 -> 2 -> 3 -> 4. Transport items are NOT forbidden — see the 
         glue + byte-preserving media re-emit into the `Media` `Listen`/replay surface (v1.0.76)
   - [x] closes step 7 app-first: account map (`noStrict(accountMap)`) + `createStoreManager`
         lifecycle written as app code; promote into the library only if it generalizes (v1.0.76)
-  - [ ] README GIF: stream migrating relay -> direct with zero dropped frames
+  - [🧊] README GIF: stream migrating relay -> direct with zero dropped frames. Optional storefront
+        asset, not a library delivery requirement.
   - [x] collect real API pain points -> next roadmap items come from here, not speculation
         (v1.0.76: direct replay JSON corrupted `Media` `Uint8Array`; fixed with a portable binary codec)
-- [ ] 4. Authority layer (`predictedStore`, ROADMAP section 3) — only AFTER the demo demands it;
+- [x] 4. File resource + AI job coordinator (v1.0.77):
+  - [x] `Resource.createFileJobHost`: injected storage intent port (`beginUpload` / optional
+        `confirmUpload` / optional `download`), injected cancellable AI runner, owner-only default
+        ACL and per-connection filtered `Store`/replay state.
+  - [x] `Resource.createFileJobClient`: one local mirror with upload -> direct storage -> confirm ->
+        job progress/result/cancel lifecycle; existing RPC keys remain untouched.
+  - [x] acceptance: real Socket.IO/RPC oracle proves upload intent, storage confirmation, owner ACL,
+        AI progress/result and cancellation; `demo/` visibly exercises the same lifecycle using a
+        deliberately tiny in-memory HTTP storage adapter.
+- [ ] 5. Authority layer (`predictedStore`, ROADMAP section 3) — only AFTER the demo demands it;
       the demo defines its shape and keeps it small.
 
 ## Transport — deferred (super-low priority, NOT blocked)
@@ -75,5 +85,6 @@ production systems.
 
 ## Next Action
 
-Finish task 3: capture the relay -> direct README GIF, then feed the remaining real demo pain points
-into the React consumption layer. Keep authority/CRDT work deferred until a consumer demands it.
+No transport work is required for the frontend ↔ storage ↔ AI workflow. Apply the resource port to a
+real storage/AI backend next; reopen `predictedStore`, CRDT, tracks/SFU, or a README GIF only when a
+consumer establishes that need.

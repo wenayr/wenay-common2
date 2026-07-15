@@ -8,6 +8,7 @@ import {io} from 'socket.io-client'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {callPortOf, createCallManager, createPeerClient} from '../src/Common/peer/peer-index'
 import {attachAudioPlayer, attachVideoCanvas, createAudioSource, createVideoSource, pipeMediaPublish} from '../src/Common/media/media-index'
+import {createFileJobClient} from '../src/Common/resource/resource-index'
 
 type World = {cursor: {x: number, y: number}, color: string, name: string}
 
@@ -37,6 +38,10 @@ async function main() {
     const clients = await hub.setToken(null)
     await clients.app.readyStrict()
     log('rpc connected; legacy serverTime() = ' + await clients.app.func.serverTime())
+    const files = createFileJobClient({remote: clients.app.func.files, drain: 'micro'})
+    await files.ready
+    setupFileJobs(files)
+    log('file/AI resource view ready')
 
     // debug tap: every signaling envelope this account receives (webrtc AND call types)
     ;(clients.app.func.peer.signal.signals as any).on((env: any) => {
@@ -169,6 +174,75 @@ async function main() {
         bindCall(incoming)
     })
     renderCallUi()
+}
+
+// ============== file bytes by storage intent; metadata/progress by Store/replay ==============
+function setupFileJobs(files: ReturnType<typeof createFileJobClient>) {
+    const input = el('fileInput') as HTMLInputElement
+    const uploadBtn = el('uploadFile') as HTMLButtonElement
+    const processBtn = el('processFile') as HTMLButtonElement
+    const download = el('downloadFile') as HTMLAnchorElement
+    const state = el('fileJobState')
+    let selectedId: string | null = null
+
+    function selected() {
+        return selectedId ? files.store.state.files[selectedId] : undefined
+    }
+
+    function render() {
+        if (!selected() || selected()?.state == 'failed') selectedId = Object.keys(files.store.state.files)[0] ?? null
+        const file = selected()
+        const jobs = Object.values(files.store.state.jobs).filter(job => job.fileId == file?.id)
+        const job = jobs[jobs.length - 1]
+        state.textContent = !file ? 'no resource selected'
+            : `${file.name} · ${file.state}` + (job ? ` · AI ${job.state} ${Math.round(job.progress * 100)}%${job.message ? ` — ${job.message}` : ''}${(job.result as any)?.summary ? ` · ${(job.result as any).summary}` : ''}` : '')
+        processBtn.disabled = file?.state != 'uploaded'
+        download.hidden = !file || file.state != 'uploaded'
+    }
+
+    uploadBtn.addEventListener('click', async function uploadFile() {
+        const picked = input.files?.[0]
+        if (!picked) { log('choose a file first'); return }
+        try {
+            uploadBtn.disabled = true
+            const started = await files.startUpload({name: picked.name, size: picked.size, mime: picked.type || undefined})
+            const intent = started.upload as {url: string, method?: string}
+            const response = await fetch(intent.url, {method: intent.method ?? 'PUT', body: picked})
+            if (!response.ok) throw new Error('storage upload returned ' + response.status)
+            await files.confirmUpload(started.file.id)
+            selectedId = started.file.id
+            render()
+            log('storage uploaded ' + picked.name + '; resource confirmed')
+        } catch (error) {
+            log('upload failed: ' + error)
+        } finally {
+            uploadBtn.disabled = false
+        }
+    })
+
+    processBtn.addEventListener('click', async function startAiJob() {
+        if (!selectedId) return
+        try {
+            const job = await files.startJob(selectedId, {prompt: 'demo summary'})
+            log('AI job ' + job.id + ' started')
+        } catch (error) {
+            log('AI job failed to start: ' + error)
+        }
+    })
+
+    download.addEventListener('click', async function openDownload(event) {
+        if (!selectedId) return
+        event.preventDefault()
+        try {
+            const intent = await files.download(selectedId) as {url: string}
+            window.open(intent.url, '_blank', 'noopener')
+        } catch (error) {
+            log('download unavailable: ' + error)
+        }
+    })
+
+    files.store.listen().on(render)
+    render()
 }
 
 // ============== media: capture own cam/mic/screen; watch the peer's WHILE IN CALL ==============

@@ -164,6 +164,46 @@ Media.pipeMediaPublish(line, publish, {stamp? = true, onError?}) -> off   // sou
 ```
 Audio default is PCM frames from `AudioWorklet` where available (`mode:'record'` uses MediaRecorder chunks). Video default is camera snapshots (JPEG, low fps for vision) captured hidden-tab-proof: a worker timer ticks (setInterval is throttled to ~1/s in hidden tabs), `ImageCapture.grabFrame()` reads the track (a hidden `<video>` stops painting), and JPEG encode runs in a worker (main-thread `convertToBlob` stalls ~1s hidden) — `worker:false` opts back into the plain in-page path. Screen share is the same video source with an injected stream: `createVideoSource({stream: () => navigator.mediaDevices.getDisplayMedia({video: true})})`. Put `listen` into `createRpcServerAuto` like any other Listen; with `replay:true`, the returned listen is a replay line, so RPC auto exposes legacy + replay surfaces under the same key. Backpressure policy: audio is lossless queue; video `replay:true` defaults to keep-latest frame recovery. `transport:'webrtc'` is reserved for a future SFU/signaling adapter; socket binary is the default today. Living example: the demo stand (`npm run demo`) streams camera / mic / screen share between two tabs through a tiny server-side relay of replay lines (`demo/server.ts` + `demo/client.ts`).
 
+## 📦 Resource — file storage intents + AI job lifecycle
+> `import { Resource } from 'wenay-common2'` or `import * as Resource from 'wenay-common2/resource'`.
+
+The resource layer is deliberately above transport: byte storage is an injected port (S3/MinIO/HTTP
+upload/etc.); per-account Store/replay only carries authorized file metadata and job progress.
+
+```ts
+const files = Resource.createFileJobHost({
+  storage: {
+    beginUpload: ({file}) => signUpload(file),      // opaque `{url, method, ...}`
+    confirmUpload: ({file}) => verifyStorage(file),
+    download: ({file}) => signDownload(file),
+  },
+  runner: {
+    async run({file, input, report, cancelled}) {
+      report({progress: .2, message: 'reading'})
+      const result = await ai.process(file, input)
+      if (!cancelled()) return {result: {resultId: result.id}}
+    },
+  },
+})
+
+// SERVER: another additive fragment on the EXISTING RPC connection.
+const connection = files.connection(account)
+object: {...legacyObject, files: connection.fragment}
+disconnectListen.on(connection.close)
+
+// CLIENT: a local Store mirror with owner-only visibility by default.
+const resource = Resource.createFileJobClient({remote: c.app.func.files})
+await resource.ready
+const {file, upload} = await resource.startUpload({name, size, mime})
+await fetch(upload.url, {method: upload.method ?? 'PUT', body: browserFile})
+await resource.confirmUpload(file.id)
+await resource.startJob(file.id, {prompt})
+resource.store.state.jobs                         // queued/running/ready/failed/cancelled + progress/result
+```
+
+`FileJobPolicy` can grant read/write access beyond the owner. Never put bytes, a storage key, or a
+reusable download URL in the shared Store; return short-lived instructions from the storage port.
+
 ## 🤝 Peer — accounts see each other's stores (one-call SDK)
 > `import { Peer } from "wenay-common2"` or `import * as Peer from "wenay-common2/peer"`.
 > The happy-path facade over rpc + store + replay + route coordinator. Legacy-friendly by design:
