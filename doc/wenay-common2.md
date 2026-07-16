@@ -233,6 +233,39 @@ The final `result` and artifact descriptors are durable state; streamed `text.de
 the live UI. `resolveApproval` and `provideInput` are server-authorized commands. Full contract,
 provider boundary and reconnection rules: `doc/AI-RUN-PROTOCOL.md`; oracle: `replay/ai-run.test.ts`.
 
+## 🧩 Artifact — storage-backed interactive output
+> `import { Artifact } from 'wenay-common2'` or `import * as Artifact from 'wenay-common2/artifact'`.
+
+Artifacts are small, owner-filtered descriptors for generated files or interactive applications.
+`Artifact` never sends HTML/JS bytes, storage keys or signed URLs through Store/replay; storage returns
+a short-lived open instruction only after the authorized client asks for it.
+
+```ts
+// SERVER: a trusted AI/resource runner wrote bytes to storage and received `storageKey`.
+const artifacts = Artifact.createArtifactHost({storage})
+const record = artifacts.register({
+  owner: account,
+  descriptor: {kind: 'report-app', label: 'Report', runtime: 'sandboxed-iframe', mime: 'text/html'},
+  storageKey,
+  retention: {class: 'ephemeral', expiresAt},
+})
+object: {...legacyObject, artifacts: artifacts.connection(account).fragment}
+
+// CLIENT: replayed descriptors + a direct, short-lived open instruction.
+const client = Artifact.createArtifactClient({remote: c.app.func.artifacts})
+await client.ready
+const frame = Artifact.createArtifactFrame({
+  artifacts: client, frame: iframe, allowedOrigins: ['https://artifacts.example'],
+})
+await frame.mount(record.id)  // only sandboxed-iframe; sandbox="allow-scripts", no same-origin/parent bridge
+```
+
+`revoke(id)` and server-side `reap()` prevent new opens and delegate physical removal to the injected
+storage adapter. Persistent retention requires an application database/provider mapping; the host is
+not a hidden durable storage engine. Full security, lifecycle and deployment contract:
+`doc/ARTIFACT-RUNTIME.md`; oracle: `replay/artifact-runtime.test.ts`; the demo creates and opens a
+cross-origin sandboxed counter artifact from an AI run.
+
 ## 🤝 Peer — accounts see each other's stores (one-call SDK)
 > `import { Peer } from "wenay-common2"` or `import * as Peer from "wenay-common2/peer"`.
 > The happy-path facade over rpc + store + replay + route coordinator. Legacy-friendly by design:

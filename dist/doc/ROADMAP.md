@@ -166,6 +166,11 @@ Consumption-layer candidates (2026-07-10, author's ask):
   `beginUpload` / confirm / download; the injected job runner reports progress/result and obeys
   cancellation. Oracle `replay/file-job.test.ts` covers real Socket.IO/RPC lifecycle, owner ACL and
   late-result suppression; the local stand makes the same storage -> AI path visible.
+- ✅ **Artifact runtime stand** — SHIPPED in v1.0.80: `Artifact.createArtifactHost/client` keeps
+  interactive-output descriptors in account-filtered Store/replay while the private storage key,
+  HTML/JS bytes and short-lived open URL remain outside it. `createArtifactFrame` requires an
+  origin allowlist and mounts only a sandboxed iframe; the demo creates an AI-linked counter at the
+  separate `artifact.localhost` origin and proves open/revoke. Oracle: `replay/artifact-runtime.test.ts`.
 - **Store-descriptor media bridge** ("streaming center") — the store carries a small descriptor
   (`{kind: 'video', sourceId, state}`), a bridge watches the mirror and auto-attaches/detaches
   `Media.attachVideoCanvas`/`attachAudioPlayer` to the matching binary line. Bytes flow only while

@@ -70,6 +70,13 @@ Priority order was 1 -> 2 -> 3. Transport items are NOT forbidden — see the de
         provider side effect, approval/input, cancellation and late-output guard; `demo/` visibly runs it.
   - [x] full boundary/operational contract: `doc/AI-RUN-PROTOCOL.md` — provider credentials, storage bytes,
         raw chain-of-thought and browser callbacks are deliberately outside the socket protocol.
+- [x] Artifact runtime stand (v1.0.80):
+  - [x] `Artifact.createArtifactHost/client`: owner-filtered Store/replay descriptors, private server-side
+        storage keys, short-lived authorized open instructions, explicit revoke/expiry and adapter-owned cleanup.
+  - [x] `Artifact.createArtifactFrame`: origin-pinned sandboxed iframe (`allow-scripts`, no same-origin or
+        parent bridge); the demo serves AI-created HTML from separate `artifact.localhost` with restrictive CSP.
+  - [x] acceptance: real Socket.IO/RPC oracle proves ACL, no key/URL in Store, expiry cleanup and iframe
+        mounting policy; live demo proves AI run -> descriptor -> isolated interactive counter -> revoke.
 - [ ] 6. Authority layer (`predictedStore`, ROADMAP section 3) — only AFTER the demo demands it;
       the demo defines its shape and keeps it small.
 
@@ -95,6 +102,6 @@ production systems.
 ## Next Action
 
 No transport work is required for the frontend ↔ storage ↔ AI workflow. Next, apply the injected
-Resource storage port and AI runner to a real provider/queue backend, adding tenant quota/audit policy in
-the application adapter. Reopen `predictedStore`, CRDT, tracks/SFU, or a README GIF only when a consumer
-establishes that need.
+Resource/artifact storage ports and AI runner to a real provider/queue backend, persisting the private
+artifact-key mapping and adding tenant quota/audit policy in the application adapter. Reopen
+`predictedStore`, CRDT, tracks/SFU, or a README GIF only when a consumer establishes that need.

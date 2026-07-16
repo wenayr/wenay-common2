@@ -10,6 +10,7 @@ import {callPortOf, createCallManager, createPeerClient} from '../src/Common/pee
 import {attachAudioPlayer, attachVideoCanvas, createAudioSource, createVideoSource, pipeMediaPublish} from '../src/Common/media/media-index'
 import {createFileJobClient} from '../src/Common/resource/resource-index'
 import {createAiRunClient} from '../src/Common/ai/ai-index'
+import {createArtifactClient, createArtifactFrame} from '../src/Common/artifact/artifact-index'
 
 type World = {cursor: {x: number, y: number}, color: string, name: string}
 
@@ -45,7 +46,10 @@ async function main() {
     log('file/AI resource view ready')
     const ai = createAiRunClient({remote: clients.app.func.ai, drain: 'micro'})
     await ai.ready
-    setupAiRuns(ai, files)
+    const artifacts = createArtifactClient({remote: clients.app.func.artifacts, drain: 'micro'})
+    await artifacts.ready
+    const artifactStand = setupArtifacts(artifacts)
+    setupAiRuns(ai, files, artifactStand)
     log('AI run view ready')
 
     // debug tap: every signaling envelope this account receives (webrtc AND call types)
@@ -182,7 +186,11 @@ async function main() {
 }
 
 // ============== AI run protocol: state is durable; deltas are a replayed enhancement ==============
-function setupAiRuns(ai: ReturnType<typeof createAiRunClient>, files: ReturnType<typeof createFileJobClient>) {
+function setupAiRuns(
+    ai: ReturnType<typeof createAiRunClient>,
+    files: ReturnType<typeof createFileJobClient>,
+    artifactStand: ReturnType<typeof setupArtifacts>,
+) {
     const prompt = el('aiPrompt') as HTMLInputElement
     const start = el('startAiRun') as HTMLButtonElement
     const cancel = el('cancelAiRun') as HTMLButtonElement
@@ -206,6 +214,10 @@ function setupAiRuns(ai: ReturnType<typeof createAiRunClient>, files: ReturnType
 
     ai.events.on(function onAiEvent(event) {
         if (event.type == 'text.delta') text.set(event.runId, (text.get(event.runId) ?? '') + event.text)
+        if (event.type == 'artifact') {
+            const artifactId = (event.artifact.descriptor as any)?.artifactId
+            if (typeof artifactId == 'string') artifactStand.select(artifactId)
+        }
         if (event.type == 'failed') log('AI run failed: ' + event.error)
         if (event.type == 'cancelled') log('AI run cancelled')
         render()
@@ -239,6 +251,65 @@ function setupAiRuns(ai: ReturnType<typeof createAiRunClient>, files: ReturnType
 
     ai.store.listen().on(render)
     render()
+}
+
+// ============== interactive artifacts: descriptor mirror -> authorized open -> sandboxed frame ==============
+function setupArtifacts(artifacts: ReturnType<typeof createArtifactClient>) {
+    const open = el('openArtifact') as HTMLButtonElement
+    const revoke = el('revokeArtifact') as HTMLButtonElement
+    const state = el('artifactState')
+    const frame = el('artifactFrame') as HTMLIFrameElement
+    const origin = location.port ? 'http://artifact.localhost:' + location.port : 'http://artifact.localhost'
+    const runtime = createArtifactFrame({artifacts, frame, allowedOrigins: [origin]})
+    let selectedId: string | null = null
+
+    function selected() {
+        return selectedId ? artifacts.store.state.artifacts[selectedId] : undefined
+    }
+
+    function render() {
+        if (!selected()) selectedId = Object.keys(artifacts.store.state.artifacts).at(-1) ?? null
+        const artifact = selected()
+        state.textContent = !artifact ? 'no artifact selected'
+            : `${artifact.descriptor.label} · ${artifact.state} · ${artifact.retention.class}` + (artifact.retention.expiresAt ? ` · expires ${new Date(artifact.retention.expiresAt).toLocaleTimeString()}` : '')
+        open.disabled = !artifact || artifact.state != 'ready' || artifact.descriptor.runtime != 'sandboxed-iframe'
+        revoke.disabled = !artifact || artifact.state != 'ready'
+        if (artifact?.state != 'ready') { runtime.clear(); frame.hidden = true }
+    }
+
+    async function mountArtifact() {
+        if (!selectedId) return
+        try {
+            await runtime.mount(selectedId)
+            frame.hidden = false
+            log('artifact opened in a sandboxed cross-origin iframe')
+        } catch (error) {
+            log('artifact could not open: ' + error)
+        }
+    }
+
+    async function revokeArtifact() {
+        if (!selectedId) return
+        try {
+            await artifacts.revoke(selectedId)
+            runtime.clear()
+            frame.hidden = true
+            log('artifact revoked; further open instructions are denied')
+        } catch (error) {
+            log('artifact could not revoke: ' + error)
+        }
+    }
+
+    open.addEventListener('click', mountArtifact)
+    revoke.addEventListener('click', revokeArtifact)
+    artifacts.store.listen().on(render)
+    render()
+    return {
+        select(artifactId: string) {
+            selectedId = artifactId
+            render()
+        },
+    }
 }
 
 // ============== file bytes by storage intent; metadata/progress by Store/replay ==============

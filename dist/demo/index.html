@@ -21,6 +21,9 @@
     #fileJobState { font-family: monospace; font-size: 12px; color: #555; max-width: 760px; }
     #aiRunState { font-family: monospace; font-size: 12px; color: #555; max-width: 760px; }
     #downloadFile[hidden] { display: none; }
+    #artifactState { font-family: monospace; font-size: 12px; color: #555; max-width: 760px; }
+    #artifactFrame { width: min(760px, 100%); height: 260px; border: 1px solid #8aa; border-radius: 6px; background: #fff; }
+    #artifactFrame[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -75,6 +78,12 @@
     <button id="cancelAiRun" disabled>cancel AI</button>
     <span id="aiRunState"></span>
 </div>
+<div id="bar">
+    <button id="openArtifact" disabled>🧩 open AI artifact</button>
+    <button id="revokeArtifact" disabled>revoke artifact</button>
+    <span id="artifactState"></span>
+</div>
+<iframe id="artifactFrame" title="sandboxed AI artifact" hidden></iframe>
 <div id="log"></div>
 <script src="client.js"></script>
 </body>

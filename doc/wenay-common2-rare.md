@@ -327,6 +327,67 @@ waits for `resolveApproval`; it must never execute a browser-provided callback. 
 integration recipe are in `doc/AI-RUN-PROTOCOL.md`. Oracle: `replay/ai-run.test.ts` (real Socket.IO/RPC,
 ACL, idempotent retry after a new connection, approval/input, provider cancellation and late-output guard).
 
+## 🧩 Artifact — storage-backed descriptor and sandbox runtime
+
+`Artifact.createArtifactHost({storage, policy?, id?, now?, history?, drain?})` is the explicit
+boundary between AI/resource output and an interactive browser surface. A trusted server-side runner
+first writes bytes into its own provider, then calls `host.register({owner, descriptor, storageKey,
+retention})`. `storageKey` remains in the host's private registry; the account-filtered Store/replay
+contains only `{id, owner, descriptor, state, retention, createdAt, updatedAt}`.
+
+```ts
+type ArtifactDescriptor = {
+  kind: string
+  label: string
+  runtime: 'sandboxed-iframe' | 'download'
+  mime?: string
+  version?: string
+}
+type ArtifactRetention =
+  | {class: 'ephemeral'; expiresAt: number}
+  | {class: 'persistent'; expiresAt?: number}
+type ArtifactStoragePort = {
+  open({artifact, storageKey, account}) -> {url, expiresAt} | Promise<...>
+  remove?({artifact, storageKey, reason: 'revoked' | 'expired'}) -> void | Promise<void>
+}
+
+const host = Artifact.createArtifactHost({storage})
+const connection = host.connection(account)
+createRpcServerAuto({object: {...legacy, artifacts: connection.fragment}, ...})
+
+const client = Artifact.createArtifactClient({remote: rpc.func.artifacts})
+await client.ready
+client.store.state.artifacts[id]                 // descriptor/lifecycle only, never bytes/key/URL
+const open = await client.open(id)               // one authorized, short-lived storage instruction
+await client.revoke(id)                          // owner-only by default
+await host.reap()                                // server scheduler decides when expiry is enforced
+```
+
+`connection(account).fragment` exposes only `state`, `open`, and `revoke`; registration and reaping
+stay server authority. `ArtifactPolicy.canRead` defaults to owner-only, `canRevoke` controls visible
+lifecycle writes, and `canRegister` is the tenant/quota hook for a trusted runner. `open` checks ACL,
+ready state and expiry before calling storage; the adapter must enforce the same rules at its own
+short-lived URL boundary.
+
+For `sandboxed-iframe`, `createArtifactFrame({artifacts, frame, allowedOrigins})` requires an explicit
+client allowlist and sets `sandbox="allow-scripts"`, `referrerpolicy="no-referrer"`, and no feature
+allow-list. It deliberately omits `allow-same-origin`, browser permissions and every parent bridge.
+Serve executable bytes from a dedicated cookie-free origin with restrictive CSP; do not use `srcdoc`,
+inline HTML from Store, or a same-origin convenience URL. `download` is a descriptor only in this
+slice; the application opens its authorized storage instruction itself.
+
+`ephemeral` requires an expiry; `persistent` documents a storage decision, not magical persistence:
+the in-memory host and replay journal are not a database. A restart-safe deployment persists metadata
+and the private provider-key mapping in its storage/application adapter, uses immutable/versioned
+objects, and owns quotas, malware scanning, encryption, legal hold and audit retention. `revoke`/`reap`
+make content unopenable immediately and call optional `storage.remove`; on removal failure the host keeps
+the private key so a later revoke/reap can reconcile it. An adapter may retain a tombstone or archive.
+
+Detailed design and stand assumptions: `doc/ARTIFACT-RUNTIME.md`. Oracle:
+`replay/artifact-runtime.test.ts` (real Socket.IO/RPC owner ACL, no key/URL in Store, short-lived
+open, iframe origin pinning, expiry and storage cleanup). `npm run demo` visibly creates an
+AI-linked counter artifact at `artifact.localhost`, mounts it in the sandboxed iframe, and revokes it.
+
 ## 🎙️ Media over socket — browser capture as binary Listen
 > `import { Media } from "wenay-common2"` or `import * as Media from "wenay-common2/media"`.
 > The hot path event is ONE `Uint8Array`: fixed 40-byte common2 media header + raw payload. No JSON envelope.
