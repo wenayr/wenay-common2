@@ -266,6 +266,47 @@ not a hidden durable storage engine. Full security, lifecycle and deployment con
 `doc/ARTIFACT-RUNTIME.md`; oracle: `replay/artifact-runtime.test.ts`; the demo creates and opens a
 cross-origin sandboxed counter artifact from an AI run.
 
+## 💬 Conversation — channels, structured messages and facts
+> `import { Conversation } from 'wenay-common2'` or
+> `import * as Conversation from 'wenay-common2/conversation'`.
+
+`Conversation` is a logical dialogue layer above the existing RPC/Store/replay stack. One physical
+connection carries many conversations and child channels; messages contain safe versioned data blocks,
+while scoped facts provide explicit, revision-checked context for people and AI workers.
+
+```ts
+// SERVER: add one account-filtered fragment beside existing RPC keys.
+const conversations = Conversation.createConversationHost({persistence})
+const connection = conversations.connection(account)
+object: {...legacyObject, conversation: connection.fragment}
+disconnectListen.on(connection.close)
+
+// CLIENT: mirror state, issue idempotent commands, derive the selected channel view.
+const chat = Conversation.createConversationClient({remote: c.app.func.conversation})
+await chat.ready
+const created = await chat.createConversation({
+  requestId: crypto.randomUUID(), title: 'Workspace', participantIds: ['b'], rootTitle: 'Main',
+})
+const message = await chat.postMessage({
+  requestId: crypto.randomUUID(), conversationId: created.conversation.id, channelId: created.channel.id,
+  blocks: [{kind: 'text', version: 1, text: 'Start here'}],
+})
+const child = await chat.createChannel({
+  requestId: crypto.randomUUID(), conversationId: created.conversation.id,
+  title: 'Details', parentMessageId: message.id, factMode: 'inherit',
+})
+chat.channelMessages(child.id)
+chat.channelFacts(child.id)
+```
+
+Built-in blocks are `text`, `list`, `table`, `fact`, `resource`, `artifact` and `custom`. Unknown custom
+types remain declarative data for a safe fallback renderer; executable applications belong to
+`Artifact`. Every write has an account-scoped `requestId`; fact writes may include `expectedRevision`.
+The optional persistence port atomically commits a semantic event plus private idempotency receipt
+before Store visibility. Full ownership, retention and inheritance contract:
+`doc/CONVERSATION-RUNTIME.md`; oracle: `replay/conversation-runtime.test.ts`; `npm run demo` shows the
+root → child-dialogue → scoped-fact path for two participants.
+
 ## 🤝 Peer — accounts see each other's stores (one-call SDK)
 > `import { Peer } from "wenay-common2"` or `import * as Peer from "wenay-common2/peer"`.
 > The happy-path facade over rpc + store + replay + route coordinator. Legacy-friendly by design:

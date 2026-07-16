@@ -388,6 +388,64 @@ Detailed design and stand assumptions: `doc/ARTIFACT-RUNTIME.md`. Oracle:
 open, iframe origin pinning, expiry and storage cleanup). `npm run demo` visibly creates an
 AI-linked counter artifact at `artifact.localhost`, mounts it in the sandboxed iframe, and revokes it.
 
+## 💬 Conversation — logical channels, versioned blocks and scoped facts
+
+`Conversation.createConversationHost({persistence?, initial?, policy?, id?, now?, history?, drain?})`
+owns the authorized working projection for conversations, channels, immutable messages and facts. It
+does not introduce a transport, run a model, fetch file bytes or execute an artifact. Each authenticated
+RPC connection receives a filtered fragment from `host.connection(account)`:
+
+```ts
+const host = Conversation.createConversationHost({
+  persistence: {
+    // Persist both values atomically and idempotently before resolving.
+    commit({event, receipt}) { return journal.commit(event, receipt) },
+  },
+  initial: {store: rehydratedProjection, receipts: rehydratedReceipts},
+})
+const connection = host.connection(account)
+createRpcServerAuto({object: {...legacy, conversation: connection.fragment}, ...})
+disconnectListen.on(connection.close)
+
+const client = Conversation.createConversationClient({remote: rpc.func.conversation})
+client.events.on(event => renderSemanticEvent(event))
+await client.ready
+```
+
+The fragment exposes `state`, `events`, `createConversation`, `createChannel`, `postMessage`,
+`upsertFact` and `retractFact`. `ConversationPolicy.canCreate/canRead/canWrite` runs on the host; by
+default the creator and explicit `participantIds` can read and write. A guessed id never reveals an
+empty shell. All mutations are serialized and require an account-scoped `requestId`; a retry returns
+the first entity, while reusing that id for another command fails.
+
+`host.control` is the trusted server facade. It adds `appendMessage(account, input)` for
+assistant/system authors and accepts optional AI-run/system provenance on `upsertFact`; its `store`
+is the server projection only. The client facade exposes the mirrored `store`, semantic `events`,
+`stateSeq`/`eventSeq`, lifecycle `close`, commands, and derived sorted views:
+`conversations()`, `channels(conversationId)`, `channelMessages(channelId)` and
+`channelFacts(channelId)`.
+
+Messages accept one or more `{kind, version: 1, ...}` blocks. Built-ins are plain `text`, stable-item
+`list`, column/row `table`, references to a `fact`, `resource` or `artifact`, and namespaced `custom`
+data. Payloads are copied as JSON-like values and reject non-finite numbers, sparse arrays, cycles,
+functions, symbols, class instances, accessors and prototype-polluting keys. Renderers must treat
+unknown custom types as inspectable data. HTML/JS and application execution stay in `Artifact`.
+
+Facts are keyed by `(conversationId, scope, namespace, key)`, keep a stable id and increment their
+revision on each upsert/retraction. `expectedRevision: 0` means create-only. An `inherit` channel sees
+conversation facts, then ancestor and local channel facts with the narrower scope winning; an
+`isolated` channel sees only its local facts. A narrower retracted fact remains a tombstone and hides
+the inherited value instead of revealing it again.
+
+The persistence port receives `{event, receipt}` before Store/event visibility. Persist them in one
+transaction and rehydrate both; receipts are deliberately absent from every client Store. Without the
+adapter the host is in-memory. Replay `history` bounds reconnect/event replay, not durable message
+retention: partition the host or add archive pagination before accepting unbounded chat history.
+
+Detailed contract: `doc/CONVERSATION-RUNTIME.md`. Oracle: `replay/conversation-runtime.test.ts`
+(real Socket.IO/RPC ACL, typed blocks, fork, fact inheritance/conflict/tombstone, persistence failure,
+idempotent restart and reconnect). `npm run demo` exercises the same flow with two participants.
+
 ## 🎙️ Media over socket — browser capture as binary Listen
 > `import { Media } from "wenay-common2"` or `import * as Media from "wenay-common2/media"`.
 > The hot path event is ONE `Uint8Array`: fixed 40-byte common2 media header + raw payload. No JSON envelope.

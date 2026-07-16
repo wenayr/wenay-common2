@@ -7,6 +7,7 @@
 - Brief API cheat sheet: [`doc/wenay-common2.md`](doc/wenay-common2.md)
 - Extended API cheat sheet: [`doc/wenay-common2-rare.md`](doc/wenay-common2-rare.md)
 - AI run protocol: [`doc/AI-RUN-PROTOCOL.md`](doc/AI-RUN-PROTOCOL.md)
+- Conversation runtime: [`doc/CONVERSATION-RUNTIME.md`](doc/CONVERSATION-RUNTIME.md)
 - Naming migrations: [`doc/NAMING_RENAMES.md`](doc/NAMING_RENAMES.md)
 - Recent changes: [`doc/changes/`](doc/changes/)
 - Project rules for AI/code maintenance: [`CLAUDE.md`](CLAUDE.md)
@@ -15,7 +16,8 @@
 
 - [`demo/`](demo/) — runnable from a repository checkout (`npm run demo`): shared cursors in two browser tabs over the
   Peer SDK, relay ⇄ WebRTC direct hand-off next to a legacy rpc key; plus live media — camera,
-  microphone and screen share captured with the `Media` sources and streamed to the watching tab.
+  microphone and screen share captured with the `Media` sources and streamed to the watching tab;
+  plus Resource → AI → Artifact and multi-channel Conversation stands on the same RPC connection.
 - [`replay/`](replay/) · [`observe/`](observe/) · [`oracle/`](oracle/) — the oracle suites CI runs on
   every push; each file doubles as a worked usage example of one subsystem.
 - The package ships readable example sources, not installed CLI scripts. Examples import from the

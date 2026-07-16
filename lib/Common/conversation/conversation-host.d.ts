@@ -1,0 +1,316 @@
+import { StoreDrain } from '../Observe/store';
+import { tConversationData } from './conversation-data';
+export type tConversationState = 'open' | 'closed';
+export type tConversationFactMode = 'inherit' | 'isolated';
+export type tConversationFactState = 'active' | 'retracted';
+export type tConversationListStyle = 'bullet' | 'ordered' | 'check';
+export type tConversationEntityKind = 'conversation' | 'channel' | 'message' | 'block' | 'item' | 'fact';
+export type tConversationCommand = 'createConversation' | 'createChannel' | 'postMessage' | 'upsertFact' | 'retractFact';
+export type Conversation = {
+    id: string;
+    owner: string;
+    title: string;
+    participantIds: string[];
+    rootChannelId: string;
+    state: tConversationState;
+    createdAt: number;
+    updatedAt: number;
+};
+export type ConversationChannelParent = {
+    channelId: string;
+    messageId: string;
+};
+export type ConversationChannel = {
+    id: string;
+    conversationId: string;
+    title: string;
+    createdBy: string;
+    parent?: ConversationChannelParent;
+    factMode: tConversationFactMode;
+    state: tConversationState;
+    createdAt: number;
+    updatedAt: number;
+};
+export type tConversationAuthor = {
+    kind: 'account';
+    account: string;
+    label?: string;
+} | {
+    kind: 'assistant';
+    id: string;
+    label?: string;
+} | {
+    kind: 'system';
+    id: string;
+    label?: string;
+};
+export type ConversationListItem = {
+    id: string;
+    text: string;
+    checked?: boolean;
+};
+export type ConversationTableColumn = {
+    key: string;
+    label: string;
+};
+type ConversationBlockBase = {
+    id: string;
+    version: 1;
+};
+export type tConversationBlock = ConversationBlockBase & ({
+    kind: 'text';
+    text: string;
+} | {
+    kind: 'list';
+    style: tConversationListStyle;
+    items: ConversationListItem[];
+} | {
+    kind: 'table';
+    columns: ConversationTableColumn[];
+    rows: Array<Record<string, tConversationData>>;
+} | {
+    kind: 'fact';
+    factId: string;
+} | {
+    kind: 'resource';
+    resourceId: string;
+    label?: string;
+} | {
+    kind: 'artifact';
+    artifactId: string;
+    label?: string;
+} | {
+    kind: 'custom';
+    type: string;
+    data: tConversationData;
+});
+export type ConversationListItemInput = {
+    text: string;
+    checked?: boolean;
+};
+export type tConversationBlockInput = {
+    kind: 'text';
+    version: 1;
+    text: string;
+} | {
+    kind: 'list';
+    version: 1;
+    style?: tConversationListStyle;
+    items: ConversationListItemInput[];
+} | {
+    kind: 'table';
+    version: 1;
+    columns: ConversationTableColumn[];
+    rows: Array<Record<string, unknown>>;
+} | {
+    kind: 'fact';
+    version: 1;
+    factId: string;
+} | {
+    kind: 'resource';
+    version: 1;
+    resourceId: string;
+    label?: string;
+} | {
+    kind: 'artifact';
+    version: 1;
+    artifactId: string;
+    label?: string;
+} | {
+    kind: 'custom';
+    version: 1;
+    type: string;
+    data: unknown;
+};
+export type ConversationMessage = {
+    id: string;
+    conversationId: string;
+    channelId: string;
+    requestId: string;
+    createdBy: string;
+    author: tConversationAuthor;
+    blocks: tConversationBlock[];
+    createdAt: number;
+};
+export type tConversationFactScope = {
+    kind: 'conversation';
+} | {
+    kind: 'channel';
+    channelId: string;
+};
+export type tConversationFactSource = {
+    kind: 'account';
+    account: string;
+} | {
+    kind: 'message';
+    messageId: string;
+} | {
+    kind: 'ai-run';
+    runId: string;
+} | {
+    kind: 'system';
+    id: string;
+};
+export type ConversationFact = {
+    id: string;
+    conversationId: string;
+    scope: tConversationFactScope;
+    namespace: string;
+    key: string;
+    value: tConversationData;
+    revision: number;
+    state: tConversationFactState;
+    provenance: tConversationFactSource[];
+    createdBy: string;
+    createdAt: number;
+    updatedAt: number;
+};
+export type ConversationStore = {
+    conversations: Record<string, Conversation>;
+    channels: Record<string, ConversationChannel>;
+    messages: Record<string, ConversationMessage>;
+    facts: Record<string, ConversationFact>;
+};
+export type ConversationCreateInput = {
+    requestId: string;
+    title: string;
+    participantIds?: string[];
+    rootTitle?: string;
+};
+export type ConversationCreateResult = {
+    conversation: Conversation;
+    channel: ConversationChannel;
+};
+export type ConversationChannelInput = {
+    requestId: string;
+    conversationId: string;
+    title: string;
+    parentMessageId?: string;
+    factMode?: tConversationFactMode;
+};
+export type ConversationPostInput = {
+    requestId: string;
+    conversationId: string;
+    channelId: string;
+    blocks: tConversationBlockInput[];
+};
+export type ConversationAppendInput = ConversationPostInput & {
+    author: tConversationAuthor;
+};
+export type ConversationFactInput = {
+    requestId: string;
+    conversationId: string;
+    scope: tConversationFactScope;
+    namespace: string;
+    key: string;
+    value: unknown;
+    expectedRevision?: number;
+    sourceMessageId?: string;
+};
+export type ConversationFactRetractInput = {
+    requestId: string;
+    conversationId: string;
+    factId: string;
+    expectedRevision?: number;
+};
+export type ConversationReceipt = {
+    account: string;
+    requestId: string;
+    command: tConversationCommand;
+    entityId: string;
+    createdAt: number;
+};
+export type tConversationMutationEvent = {
+    type: 'conversation.created';
+    conversationId: string;
+    actor: string;
+    requestId: string;
+    conversation: Conversation;
+    channel: ConversationChannel;
+} | {
+    type: 'channel.created';
+    conversationId: string;
+    actor: string;
+    requestId: string;
+    channel: ConversationChannel;
+} | {
+    type: 'message.posted';
+    conversationId: string;
+    actor: string;
+    requestId: string;
+    message: ConversationMessage;
+} | {
+    type: 'fact.upserted';
+    conversationId: string;
+    actor: string;
+    requestId: string;
+    fact: ConversationFact;
+} | {
+    type: 'fact.retracted';
+    conversationId: string;
+    actor: string;
+    requestId: string;
+    fact: ConversationFact;
+};
+export type tConversationEvent = {
+    type: 'sync';
+    conversations: Conversation[];
+    channels: ConversationChannel[];
+    messages: ConversationMessage[];
+    facts: ConversationFact[];
+} | tConversationMutationEvent;
+export type ConversationPersistencePort = {
+    commit(input: {
+        event: tConversationMutationEvent;
+        receipt: ConversationReceipt;
+    }): void | Promise<void>;
+};
+export type ConversationInitial = {
+    store: ConversationStore;
+    receipts?: ConversationReceipt[];
+};
+export type ConversationPolicy = {
+    canRead?: (account: string, conversation: Conversation) => boolean;
+    canWrite?: (account: string, conversation: Conversation) => boolean;
+    canCreate?: (account: string, input: ConversationCreateInput) => boolean;
+};
+export type ConversationHostDeps = {
+    persistence?: ConversationPersistencePort;
+    initial?: ConversationInitial;
+    policy?: ConversationPolicy;
+    id?: (kind: tConversationEntityKind) => string;
+    now?: () => number;
+    history?: number;
+    drain?: StoreDrain;
+};
+export declare function createConversationHost(deps?: ConversationHostDeps): {
+    control: {
+        createConversation: (account: string, input: ConversationCreateInput) => Promise<{
+            conversation: Conversation;
+            channel: ConversationChannel;
+        }>;
+        createChannel: (account: string, input: ConversationChannelInput) => Promise<ConversationChannel>;
+        appendMessage: (account: string, input: ConversationAppendInput) => Promise<ConversationMessage>;
+        upsertFact: (account: string, input: ConversationFactInput, source?: tConversationFactSource) => Promise<ConversationFact>;
+        retractFact: (account: string, input: ConversationFactRetractInput) => Promise<ConversationFact>;
+        store: import("../Observe/store").Store<ConversationStore>;
+    };
+    connection: (account: string) => {
+        fragment: {
+            state: import("../events/replay-wire").ReplayExpose<[import("../Observe/store").StorePatch]>;
+            events: import("../events/replay-wire").ReplayExpose<[tConversationEvent]>;
+            createConversation: (input: ConversationCreateInput) => Promise<{
+                conversation: Conversation;
+                channel: ConversationChannel;
+            }>;
+            createChannel: (input: ConversationChannelInput) => Promise<ConversationChannel>;
+            postMessage: (input: ConversationPostInput) => Promise<ConversationMessage>;
+            upsertFact: (input: ConversationFactInput) => Promise<ConversationFact>;
+            retractFact: (input: ConversationFactRetractInput) => Promise<ConversationFact>;
+        };
+        close(): void;
+    };
+    close(): void;
+};
+export type ConversationHost = ReturnType<typeof createConversationHost>;
+export {};

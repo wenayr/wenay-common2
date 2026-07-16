@@ -11,6 +11,7 @@ import {attachAudioPlayer, attachVideoCanvas, createAudioSource, createVideoSour
 import {createFileJobClient} from '../src/Common/resource/resource-index'
 import {createAiRunClient} from '../src/Common/ai/ai-index'
 import {createArtifactClient, createArtifactFrame} from '../src/Common/artifact/artifact-index'
+import {createConversationClient, tConversationBlock} from '../src/Common/conversation/conversation-index'
 
 type World = {cursor: {x: number, y: number}, color: string, name: string}
 
@@ -51,6 +52,10 @@ async function main() {
     const artifactStand = setupArtifacts(artifacts)
     setupAiRuns(ai, files, artifactStand)
     log('AI run view ready')
+    const conversation = createConversationClient({remote: clients.app.func.conversation, drain: 'micro'})
+    await conversation.ready
+    setupConversation(conversation)
+    log('multi-channel Conversation view ready')
 
     // debug tap: every signaling envelope this account receives (webrtc AND call types)
     ;(clients.app.func.peer.signal.signals as any).on((env: any) => {
@@ -183,6 +188,238 @@ async function main() {
         bindCall(incoming)
     })
     renderCallUi()
+}
+
+// ============== Conversation: logical channels + versioned blocks + scoped facts ==============
+function setupConversation(conversation: ReturnType<typeof createConversationClient>) {
+    const channelBar = el('conversationChannels')
+    const messages = el('conversationMessages')
+    const facts = el('conversationFacts')
+    const messageInput = el('conversationInput') as HTMLInputElement
+    const send = el('conversationSend') as HTMLButtonElement
+    const structured = el('conversationStructured') as HTMLButtonElement
+    const fork = el('conversationFork') as HTMLButtonElement
+    const factScope = el('conversationFactScope') as HTMLSelectElement
+    const factKey = el('conversationFactKey') as HTMLInputElement
+    const factValue = el('conversationFactValue') as HTMLInputElement
+    const factSet = el('conversationFactSet') as HTMLButtonElement
+    const factRetract = el('conversationFactRetract') as HTMLButtonElement
+    let selectedConversationId: string | null = null
+    let selectedChannelId: string | null = null
+
+    function requestId(prefix: string) {
+        return prefix + '-' + me + '-' + Date.now() + '-' + Math.random().toString(36).slice(2)
+    }
+
+    function selectedConversation() {
+        return selectedConversationId ? conversation.store.state.conversations[selectedConversationId] : undefined
+    }
+
+    function selectedChannel() {
+        return selectedChannelId ? conversation.store.state.channels[selectedChannelId] : undefined
+    }
+
+    function renderBlock(block: tConversationBlock) {
+        const box = document.createElement('div')
+        box.className = 'conversationBlock conversationBlock-' + block.kind
+        if (block.kind == 'text') {
+            box.textContent = block.text
+            return box
+        }
+        if (block.kind == 'list') {
+            const list = document.createElement(block.style == 'ordered' ? 'ol' : 'ul')
+            for (const item of block.items) {
+                const row = document.createElement('li')
+                row.textContent = (block.style == 'check' ? (item.checked ? '☑ ' : '☐ ') : '') + item.text
+                list.append(row)
+            }
+            box.append(list)
+            return box
+        }
+        if (block.kind == 'table') {
+            const table = document.createElement('table')
+            const head = document.createElement('tr')
+            for (const column of block.columns) {
+                const cell = document.createElement('th')
+                cell.textContent = column.label
+                head.append(cell)
+            }
+            table.append(head)
+            for (const value of block.rows) {
+                const row = document.createElement('tr')
+                for (const column of block.columns) {
+                    const cell = document.createElement('td')
+                    cell.textContent = String(value[column.key] ?? '')
+                    row.append(cell)
+                }
+                table.append(row)
+            }
+            box.append(table)
+            return box
+        }
+        if (block.kind == 'custom' && block.type == 'demo.metric') {
+            const value = block.data as {value?: unknown, unit?: unknown}
+            box.className += ' conversationMetric'
+            box.textContent = String(value.value ?? '—') + ' · ' + String(value.unit ?? block.type)
+            return box
+        }
+        if (block.kind == 'custom') {
+            box.textContent = block.type + '@' + block.version + ' · ' + JSON.stringify(block.data)
+            return box
+        }
+        if (block.kind == 'fact') box.textContent = 'fact → ' + block.factId
+        if (block.kind == 'resource') box.textContent = 'resource → ' + (block.label ?? block.resourceId)
+        if (block.kind == 'artifact') box.textContent = 'artifact → ' + (block.label ?? block.artifactId)
+        return box
+    }
+
+    function render() {
+        const available = conversation.conversations()
+        if (!selectedConversation() && available[0]) selectedConversationId = available[0].id
+        const currentConversation = selectedConversation()
+        const availableChannels = currentConversation ? conversation.channels(currentConversation.id) : []
+        if (!selectedChannel() || selectedChannel()?.conversationId != currentConversation?.id) {
+            selectedChannelId = currentConversation?.rootChannelId ?? availableChannels[0]?.id ?? null
+        }
+        const currentChannel = selectedChannel()
+
+        channelBar.replaceChildren()
+        for (const channel of availableChannels) {
+            const button = document.createElement('button')
+            button.textContent = (channel.parent ? '↳ ' : '') + channel.title
+            button.className = channel.id == currentChannel?.id ? 'selected' : ''
+            button.addEventListener('click', function selectConversationChannel() {
+                selectedChannelId = channel.id
+                render()
+            })
+            channelBar.append(button)
+        }
+
+        messages.replaceChildren()
+        const visibleMessages = currentChannel ? conversation.channelMessages(currentChannel.id) : []
+        for (const message of visibleMessages) {
+            const card = document.createElement('article')
+            card.className = 'conversationMessage'
+            const author = document.createElement('strong')
+            author.textContent = message.author.kind == 'account'
+                ? message.author.account
+                : message.author.label ?? message.author.id
+            card.append(author)
+            for (const block of message.blocks) card.append(renderBlock(block))
+            messages.append(card)
+        }
+
+        facts.replaceChildren()
+        const visibleFacts = currentChannel ? conversation.channelFacts(currentChannel.id) : []
+        for (const fact of visibleFacts) {
+            const row = document.createElement('div')
+            row.textContent = fact.namespace + '.' + fact.key + ' = ' + JSON.stringify(fact.value) +
+                ' · r' + fact.revision + ' · ' + fact.scope.kind
+            facts.append(row)
+        }
+        if (!visibleFacts.length) facts.textContent = 'no visible facts in this channel'
+
+        send.disabled = !currentChannel
+        structured.disabled = !currentChannel
+        fork.disabled = !currentChannel || visibleMessages.length == 0
+        factSet.disabled = !currentChannel
+        const exactFact = currentConversation && currentChannel ? Object.values(conversation.store.state.facts).find(fact =>
+            fact.conversationId == currentConversation.id && fact.namespace == 'demo' && fact.key == factKey.value &&
+            (factScope.value == 'conversation' ? fact.scope.kind == 'conversation' : fact.scope.kind == 'channel' && fact.scope.channelId == currentChannel.id),
+        ) : undefined
+        factRetract.disabled = !exactFact || exactFact.state == 'retracted'
+    }
+
+    send.addEventListener('click', async function postConversationText() {
+        const currentConversation = selectedConversation()
+        const currentChannel = selectedChannel()
+        if (!currentConversation || !currentChannel || !messageInput.value.trim()) return
+        try {
+            await conversation.postMessage({
+                requestId: requestId('message'), conversationId: currentConversation.id, channelId: currentChannel.id,
+                blocks: [{kind: 'text', version: 1, text: messageInput.value.trim()}],
+            })
+            messageInput.value = ''
+        } catch (error) { log('Conversation message failed: ' + error) }
+    })
+
+    structured.addEventListener('click', async function postStructuredConversationMessage() {
+        const currentConversation = selectedConversation()
+        const currentChannel = selectedChannel()
+        if (!currentConversation || !currentChannel) return
+        try {
+            await conversation.postMessage({
+                requestId: requestId('structured'), conversationId: currentConversation.id, channelId: currentChannel.id,
+                blocks: [
+                    {kind: 'text', version: 1, text: 'Structured blocks stay declarative and renderer-local.'},
+                    {kind: 'list', version: 1, style: 'ordered', items: [{text: 'text'}, {text: 'list'}, {text: 'table'}, {text: 'custom fallback'}]},
+                    {kind: 'table', version: 1, columns: [{key: 'layer', label: 'Layer'}, {key: 'owner', label: 'Owner'}], rows: [
+                        {layer: 'state', owner: 'Store/replay'}, {layer: 'application', owner: 'Artifact'},
+                    ]},
+                    {kind: 'custom', version: 1, type: 'demo.metric', data: {value: Math.floor(Math.random() * 100), unit: 'dynamic score'}},
+                ],
+            })
+        } catch (error) { log('Conversation structured message failed: ' + error) }
+    })
+
+    fork.addEventListener('click', async function forkConversationChannel() {
+        const currentConversation = selectedConversation()
+        const currentChannel = selectedChannel()
+        const latest = currentChannel ? conversation.channelMessages(currentChannel.id).at(-1) : undefined
+        if (!currentConversation || !latest) return
+        try {
+            const child = await conversation.createChannel({
+                requestId: requestId('fork'), conversationId: currentConversation.id,
+                title: 'Thread ' + (conversation.channels(currentConversation.id).length + 1),
+                parentMessageId: latest.id, factMode: 'inherit',
+            })
+            selectedChannelId = child.id
+            render()
+        } catch (error) { log('Conversation fork failed: ' + error) }
+    })
+
+    factSet.addEventListener('click', async function setConversationFact() {
+        const currentConversation = selectedConversation()
+        const currentChannel = selectedChannel()
+        const key = factKey.value.trim()
+        if (!currentConversation || !currentChannel || !key) return
+        const scope = factScope.value == 'conversation' ? {kind: 'conversation'} as const : {kind: 'channel', channelId: currentChannel.id} as const
+        const current = Object.values(conversation.store.state.facts).find(fact =>
+            fact.conversationId == currentConversation.id && fact.namespace == 'demo' && fact.key == key &&
+            (scope.kind == 'conversation' ? fact.scope.kind == 'conversation' : fact.scope.kind == 'channel' && fact.scope.channelId == scope.channelId),
+        )
+        try {
+            await conversation.upsertFact({
+                requestId: requestId('fact'), conversationId: currentConversation.id, scope,
+                namespace: 'demo', key, value: factValue.value, expectedRevision: current?.revision ?? 0,
+            })
+        } catch (error) { log('Conversation fact failed: ' + error) }
+    })
+
+    factRetract.addEventListener('click', async function retractConversationFact() {
+        const currentConversation = selectedConversation()
+        const currentChannel = selectedChannel()
+        if (!currentConversation || !currentChannel) return
+        const current = Object.values(conversation.store.state.facts).find(fact =>
+            fact.conversationId == currentConversation.id && fact.namespace == 'demo' && fact.key == factKey.value &&
+            (factScope.value == 'conversation' ? fact.scope.kind == 'conversation' : fact.scope.kind == 'channel' && fact.scope.channelId == currentChannel.id),
+        )
+        if (!current) return
+        try {
+            await conversation.retractFact({
+                requestId: requestId('retract'), conversationId: currentConversation.id,
+                factId: current.id, expectedRevision: current.revision,
+            })
+        } catch (error) { log('Conversation fact retraction failed: ' + error) }
+    })
+
+    factScope.addEventListener('change', render)
+    factKey.addEventListener('input', render)
+    conversation.store.listen().on(render)
+    conversation.events.on(function logConversationEvent(event) {
+        if (event.type != 'sync') log('Conversation: ' + event.type)
+    })
+    render()
 }
 
 // ============== AI run protocol: state is durable; deltas are a replayed enhancement ==============

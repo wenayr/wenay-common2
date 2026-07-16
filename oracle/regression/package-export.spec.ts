@@ -4,6 +4,7 @@ import {resolve} from 'node:path'
 
 import * as srcIndex from '../../src/index'
 import * as srcObserve from '../../src/Common/Observe/reactive'
+import * as srcConversation from '../../src/Common/conversation/conversation-index'
 
 type Api = {
     reactive: Function
@@ -39,6 +40,13 @@ function assertApi(label: string, api: any): asserts api is Api {
     assertEq(typeof api.listenUpdate, 'function', `${label}.listenUpdate export`)
 }
 
+function assertConversationApi(label: string, api: any) {
+    assert(api, `${label} is missing`)
+    assertEq(typeof api.createConversationHost, 'function', `${label}.createConversationHost export`)
+    assertEq(typeof api.createConversationClient, 'function', `${label}.createConversationClient export`)
+    assertEq(typeof api.copyConversationData, 'function', `${label}.copyConversationData export`)
+}
+
 function skip(name: string, reason: string) {
     console.log(`SKIP ${name}: ${reason}`)
 }
@@ -53,6 +61,12 @@ test('src/index exports Observe namespace', () => {
     assertEq(srcIndex.Observe.onUpdate, srcObserve.onUpdate, 'src/index Observe.onUpdate re-exports direct src module')
 })
 
+test('src/index exports Conversation namespace', () => {
+    assertConversationApi('src/index Conversation', srcIndex.Conversation)
+    assertEq(srcIndex.Conversation.createConversationHost, srcConversation.createConversationHost,
+        'src/index Conversation.createConversationHost re-exports direct src module')
+})
+
 test("package.json exports './observe'", () => {
     const packageJson = requireFromSpec(resolve(rootDir, 'package.json'))
     assertEq(packageJson.exports?.['./observe'], './lib/Common/Observe/index.js', "package.json exports['./observe']")
@@ -65,6 +79,12 @@ test("package.json exports './observe'", () => {
     assertApi('wenay-common2/observe', requireFromSpec('wenay-common2/observe'))
 })
 
+test("package.json exports './conversation'", () => {
+    const packageJson = requireFromSpec(resolve(rootDir, 'package.json'))
+    assertEq(packageJson.exports?.['./conversation'], './lib/Common/conversation/conversation-index.js',
+        "package.json exports['./conversation']")
+})
+
 test('lib root index exports Observe namespace', () => {
     const libIndex = resolve(rootDir, 'lib/index.js')
     if (!existsSync(libIndex)) {
@@ -74,6 +94,17 @@ test('lib root index exports Observe namespace', () => {
 
     const libApi = requireFromSpec(libIndex)
     assertApi('lib/index Observe', libApi.Observe)
+})
+
+test('lib artifacts export Conversation namespace and direct module', () => {
+    const libIndex = resolve(rootDir, 'lib/index.js')
+    const libConversation = resolve(rootDir, 'lib/Common/conversation/conversation-index.js')
+    if (!existsSync(libIndex) || !existsSync(libConversation)) {
+        skip('lib artifacts export Conversation namespace and direct module', 'Conversation build artifacts are not present')
+        return
+    }
+    assertConversationApi('lib/index Conversation', requireFromSpec(libIndex).Conversation)
+    assertConversationApi('lib/Common/conversation', requireFromSpec(libConversation))
 })
 
 test('dist package artifacts include observe export when dist is present', () => {
@@ -97,6 +128,24 @@ test('dist package artifacts include observe export when dist is present', () =>
     assertEq(distPackageJson.exports?.['./observe'], './lib/Common/Observe/index.js', "dist package exports['./observe']")
     assertApi('dist/lib/Common/Observe/reactive.js', requireFromSpec(distObserveJs))
     assertApi('dist/lib/index.js Observe', requireFromSpec(distIndexJs).Observe)
+})
+
+test('dist package artifacts include Conversation exports when dist is present', () => {
+    const distDir = resolve(rootDir, 'dist')
+    if (!existsSync(distDir)) {
+        skip('dist package artifacts include Conversation exports when dist is present', 'dist directory is not present')
+        return
+    }
+    const distPackageJson = requireFromSpec(resolve(distDir, 'package.json'))
+    const distIndex = requireFromSpec(resolve(distDir, 'lib/index.js'))
+    const distConversationPath = resolve(distDir, 'lib/Common/conversation/conversation-index.js')
+    assertEq(distPackageJson.exports?.['./conversation'], './lib/Common/conversation/conversation-index.js',
+        "dist package exports['./conversation']")
+    assert(existsSync(distConversationPath), 'dist Conversation JavaScript artifact is present')
+    assert(existsSync(resolve(distDir, 'lib/Common/conversation/conversation-index.d.ts')),
+        'dist Conversation declaration artifact is present')
+    assertConversationApi('dist/lib/index Conversation', distIndex.Conversation)
+    assertConversationApi('dist/lib/Common/conversation', requireFromSpec(distConversationPath))
 })
 
 async function main() {

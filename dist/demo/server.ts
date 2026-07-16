@@ -10,6 +10,7 @@ import {createMediaRelay, createPeerHost} from '../src/Common/peer/peer-index'
 import {createFileJobHost} from '../src/Common/resource/resource-index'
 import {createAiRunHost} from '../src/Common/ai/ai-index'
 import {createArtifactHost} from '../src/Common/artifact/artifact-index'
+import {createConversationHost} from '../src/Common/conversation/conversation-index'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 
 const PORT = Number(process.env.PORT ?? 8390)
@@ -89,6 +90,34 @@ const artifacts = createArtifactHost({
     },
     drain: 'micro',
 })
+
+// ============== multi-channel conversation + structured facts stand ==============
+// This runtime is deliberately in-memory. A production app injects the documented
+// atomic persistence port and rehydrates both its projection and request receipts.
+const conversations = createConversationHost({drain: 'micro'})
+const conversationReady = (async function prepareDemoConversation() {
+    const created = await conversations.control.createConversation('a', {
+        requestId: 'demo-conversation', title: 'Dynamic AI workspace', rootTitle: 'Main', participantIds: ['b'],
+    })
+    const welcome = await conversations.control.appendMessage('demo-system', {
+        requestId: 'demo-welcome', conversationId: created.conversation.id, channelId: created.channel.id,
+        author: {kind: 'system', id: 'demo', label: 'Stand'},
+        blocks: [
+            {kind: 'text', version: 1, text: 'One conversation can contain native text, lists, tables, facts and child dialogues.'},
+            {kind: 'list', version: 1, style: 'check', items: [
+                {text: 'post from either participant', checked: true},
+                {text: 'fork any latest message into a child dialogue'},
+                {text: 'override inherited facts in that child'},
+            ]},
+            {kind: 'custom', version: 1, type: 'demo.metric', data: {value: 1, unit: 'shared RPC connection'}},
+        ],
+    })
+    await conversations.control.upsertFact('demo-system', {
+        requestId: 'demo-fact-language', conversationId: created.conversation.id, scope: {kind: 'conversation'},
+        namespace: 'workspace', key: 'language', value: 'ru', expectedRevision: 0, sourceMessageId: welcome.id,
+    }, {kind: 'system', id: 'demo-bootstrap'})
+    return created
+})()
 
 // ============== generic AI run stand ==============
 // A provider adapter belongs here. This deterministic runner makes the protocol
@@ -262,8 +291,9 @@ ioServer.on('connection', function onDemoConnection(socket) {
     const resource = files.connection(account)
     const aiRun = ai.connection(account)
     const artifact = artifacts.connection(account)
+    const conversation = conversations.connection(account)
     const [disconnect, disconnectListen] = listen<[]>()
-    socket.on('disconnect', () => { disconnect(); peer.close(); resource.close(); aiRun.close(); artifact.close() })
+    socket.on('disconnect', () => { disconnect(); peer.close(); resource.close(); aiRun.close(); artifact.close(); conversation.close() })
     createRpcServerAuto({
         socket: {emit: (key, data) => socket.emit(key, data), on: (key, cb) => socket.on(key, cb)},
         socketKey: 'app',
@@ -274,6 +304,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
             files: resource.fragment,
             ai: aiRun.fragment,
             artifacts: artifact.fragment,
+            conversation: conversation.fragment,
             media: {
                 publish: media.publishOf(account),
                 // policy-gated view: THIS connection's account is what canWatch receives
@@ -285,9 +316,14 @@ ioServer.on('connection', function onDemoConnection(socket) {
     console.log(`[demo] ${account} connected`)
 })
 
-httpServer.listen(PORT, function onDemoListen() {
-    console.log('[demo] shared-cursor + calls stand is up:')
-    console.log(`  tab A: http://localhost:${PORT}/?me=a&peer=b`)
-    console.log(`  tab B: http://localhost:${PORT}/?me=b&peer=a`)
-    console.log(`  artifact origin: http://artifact.localhost:${PORT} (sandboxed iframe only)`)
-})
+async function startDemo() {
+    await conversationReady
+    httpServer.listen(PORT, function onDemoListen() {
+        console.log('[demo] shared-cursor + calls + Conversation stand is up:')
+        console.log(`  tab A: http://localhost:${PORT}/?me=a&peer=b`)
+        console.log(`  tab B: http://localhost:${PORT}/?me=b&peer=a`)
+        console.log(`  artifact origin: http://artifact.localhost:${PORT} (sandboxed iframe only)`)
+    })
+}
+
+void startDemo()

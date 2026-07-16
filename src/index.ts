@@ -49,4 +49,5 @@ export * as Peer from "./Common/peer/peer-index";
 export * as Resource from "./Common/resource/resource-index";
 export * as Ai from "./Common/ai/ai-index";
 export * as Artifact from "./Common/artifact/artifact-index";
+export * as Conversation from "./Common/conversation/conversation-index";
 

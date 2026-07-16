@@ -24,6 +24,18 @@
     #artifactState { font-family: monospace; font-size: 12px; color: #555; max-width: 760px; }
     #artifactFrame { width: min(760px, 100%); height: 260px; border: 1px solid #8aa; border-radius: 6px; background: #fff; }
     #artifactFrame[hidden] { display: none; }
+    #conversationStand { max-width: 900px; margin-top: 18px; padding: 12px; border: 1px solid #9bb; border-radius: 8px; background: #f8fbff; }
+    #conversationStand h4 { margin: 0 0 8px; }
+    #conversationChannels { display: flex; gap: 6px; flex-wrap: wrap; }
+    #conversationChannels button.selected { background: #dbeafe; border-color: #4f8ef7; }
+    #conversationMessages { display: grid; gap: 8px; max-height: 360px; overflow: auto; margin: 10px 0; }
+    .conversationMessage { padding: 8px 10px; border: 1px solid #ccd8e5; border-radius: 7px; background: #fff; }
+    .conversationBlock { margin-top: 6px; }
+    .conversationBlock ul, .conversationBlock ol { margin: 4px 0; }
+    .conversationBlock table { border-collapse: collapse; }
+    .conversationBlock th, .conversationBlock td { padding: 3px 7px; border: 1px solid #ccd; text-align: left; }
+    .conversationMetric { display: inline-block; padding: 5px 9px; border-radius: 999px; background: #e4f5ea; color: #175b32; font-weight: 600; }
+    #conversationFacts { margin-top: 8px; padding: 7px; background: #fff9e8; border-radius: 6px; font-family: monospace; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -84,6 +96,28 @@
     <span id="artifactState"></span>
 </div>
 <iframe id="artifactFrame" title="sandboxed AI artifact" hidden></iframe>
+<section id="conversationStand">
+    <h4>Conversation — channels, structured blocks and facts</h4>
+    <div id="conversationChannels"></div>
+    <div id="conversationMessages"></div>
+    <div id="bar">
+        <input id="conversationInput" value="hello from this channel" aria-label="conversation message">
+        <button id="conversationSend">send text</button>
+        <button id="conversationStructured">send structured</button>
+        <button id="conversationFork">fork latest message</button>
+    </div>
+    <div id="bar">
+        <select id="conversationFactScope" aria-label="fact scope">
+            <option value="channel">channel fact</option>
+            <option value="conversation">conversation fact</option>
+        </select>
+        <input id="conversationFactKey" value="status" aria-label="fact key">
+        <input id="conversationFactValue" value="active" aria-label="fact value">
+        <button id="conversationFactSet">set fact</button>
+        <button id="conversationFactRetract">retract fact</button>
+    </div>
+    <div id="conversationFacts"></div>
+</section>
 <div id="log"></div>
 <script src="client.js"></script>
 </body>

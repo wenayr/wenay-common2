@@ -1,7 +1,7 @@
 # Library Uplift Tasks (surface, SDK, resource layer)
 
 Goal: stop measuring progress by transport layers added; measure by what can be shown working.
-The transport/routing/replay lower half is built and oracle-covered (52/52) — the missing value is
+The transport/routing/replay lower half is built and covered by the full oracle suite — the missing value is
 the consumption layer: showcase hygiene, one happy-path SDK facade, and a small vertical resource
 layer that proves the library against a real frontend ↔ backend/AI workflow.
 
@@ -77,7 +77,14 @@ Priority order was 1 -> 2 -> 3. Transport items are NOT forbidden — see the de
         parent bridge); the demo serves AI-created HTML from separate `artifact.localhost` with restrictive CSP.
   - [x] acceptance: real Socket.IO/RPC oracle proves ACL, no key/URL in Store, expiry cleanup and iframe
         mounting policy; live demo proves AI run -> descriptor -> isolated interactive counter -> revoke.
-- [ ] 6. Authority layer (`predictedStore`, ROADMAP section 3) — only AFTER the demo demands it;
+- [x] 6. Multi-channel Conversation runtime (v1.0.81):
+  - [x] `Conversation.createConversationHost/client`: participant-filtered Store/replay projection,
+        account/request-id commands and a trusted server control facade on the existing RPC connection.
+  - [x] root/child channel graph, immutable versioned text/list/table/reference/custom blocks, and
+        conversation/channel facts with inheritance, isolation, optimistic revisions and tombstones.
+  - [x] injected atomic persistence event+receipt boundary plus restart rehydration; real Socket.IO/RPC
+        oracle and a two-participant live stand prove branch/fact behavior without touching legacy keys.
+- [ ] 7. Authority layer (`predictedStore`, ROADMAP section 3) — only AFTER the demo demands it;
       the demo defines its shape and keeps it small.
 
 ## Transport — deferred (super-low priority, NOT blocked)
@@ -101,7 +108,9 @@ production systems.
 
 ## Next Action
 
-No transport work is required for the frontend ↔ storage ↔ AI workflow. Next, apply the injected
-Resource/artifact storage ports and AI runner to a real provider/queue backend, persisting the private
-artifact-key mapping and adding tenant quota/audit policy in the application adapter. Reopen
+No transport work is required for the frontend ↔ storage ↔ AI ↔ Conversation workflow. Next, apply
+the injected Resource/Artifact storage ports, AI runner and Conversation persistence port to one real
+provider/queue/database adapter. That application bridge should append final assistant blocks and
+revisioned facts through `host.control`, while durable archive pagination, tenant quota/audit and the
+private artifact-key mapping stay adapter concerns. Add an artifact write-back capability protocol,
 `predictedStore`, CRDT, tracks/SFU, or a README GIF only when a consumer establishes that need.

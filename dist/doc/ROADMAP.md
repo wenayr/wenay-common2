@@ -13,6 +13,10 @@
 > provider-neutral AI-run protocol: idempotent create, account-filtered Store/event replay, approval/input
 > waits, cancellation with a late-output guard, semantic deltas and artifact descriptors. Design:
 > `doc/AI-RUN-PROTOCOL.md`; oracle: `replay/ai-run.test.ts`.
+> **Shipped in v1.0.81:** `Conversation.createConversationHost/client` adds account-filtered logical
+> channels, immutable versioned blocks, scoped revisioned facts, durable idempotency receipts and a
+> live root → child-dialogue stand. Design: `doc/CONVERSATION-RUNTIME.md`; oracle:
+> `replay/conversation-runtime.test.ts`.
 
 ## 0. Distributed Runtime Model
 
@@ -171,6 +175,14 @@ Consumption-layer candidates (2026-07-10, author's ask):
   HTML/JS bytes and short-lived open URL remain outside it. `createArtifactFrame` requires an
   origin allowlist and mounts only a sandboxed iframe; the demo creates an AI-linked counter at the
   separate `artifact.localhost` origin and proves open/revoke. Oracle: `replay/artifact-runtime.test.ts`.
+- ✅ **Multi-channel Conversation runtime** — SHIPPED in v1.0.81: one existing RPC connection carries
+  account-filtered conversations and child channels; immutable text/list/table/reference/custom blocks
+  and scoped revisioned facts replay through Store. Persistence is an atomic event+receipt port, not a
+  hidden database. The stand proves two participants, branching, inheritance/override/tombstones and
+  safe unknown block rendering. Oracle: `replay/conversation-runtime.test.ts`.
+- **Conversation application adapters** — next consumer work: connect the trusted control facade to a
+  real AI runner and durable event/archive store. Add an artifact-to-conversation capability bridge only
+  for a real interactive artifact that needs narrow, revocable write-back; never pass it the raw RPC facade.
 - **Store-descriptor media bridge** ("streaming center") — the store carries a small descriptor
   (`{kind: 'video', sourceId, state}`), a bridge watches the mirror and auto-attaches/detaches
   `Media.attachVideoCanvas`/`attachAudioPlayer` to the matching binary line. Bytes flow only while
@@ -236,7 +248,7 @@ source of truth. Decompose by write topology:
   wrap a Yjs/Automerge doc as a `RemoteStore`-shaped source and mirror from it — the store↔transport
   decoupling makes this a small adapter, not a rewrite.
 - Status: 🧊 deferred, super-low priority. Prediction layer waits for the demo app to demand and shape
-  it (`doc/target/library-uplift-tasks.md` task 5); CRDT adapter reopens only on a real co-write need.
+  it (`doc/target/library-uplift-tasks.md` task 7); CRDT adapter reopens only on a real co-write need.
   Partitioned-authority already expressible today.
 
 ## 4. Data-transfer optimization backlog (ongoing) 🟡
