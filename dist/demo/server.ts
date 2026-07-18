@@ -12,6 +12,7 @@ import {createAiRunHost} from '../src/Common/ai/ai-index'
 import {createArtifactHost} from '../src/Common/artifact/artifact-index'
 import {createConversationHost} from '../src/Common/conversation/conversation-index'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
+import {createWorkboardHost} from './workboard-host'
 
 const portStart = Number(process.env.DEMO_PORT_START ?? 3100)
 const portEnd = Number(process.env.DEMO_PORT_END ?? 3500)
@@ -192,6 +193,15 @@ const ai = createAiRunHost({
         },
     },
     drain: 'micro',
+})
+
+// ============== authoritative Store example ==============
+const workboard = createWorkboardHost({
+    initial: [
+        {id: 'welcome', title: 'Open this stand in another tab', status: 'done'},
+        {id: 'rooms', title: 'Join a video room with both participants', status: 'active'},
+        {id: 'store', title: 'Change this board and watch every tab update', status: 'new'},
+    ],
 })
 
 // ============== video rooms: application policy over the media relay ==============
@@ -444,8 +454,17 @@ ioServer.on('connection', function onDemoConnection(socket) {
     const aiRun = ai.connection(account)
     const artifact = artifacts.connection(account)
     const conversation = conversations.connection(account)
+    const workboardConnection = workboard.connection(account)
     const [disconnect, disconnectListen] = listen<[]>()
-    socket.on('disconnect', () => { disconnect(); peer.close(); resource.close(); aiRun.close(); artifact.close(); conversation.close() })
+    socket.on('disconnect', function closeDemoResources() {
+        disconnect()
+        peer.close()
+        resource.close()
+        aiRun.close()
+        artifact.close()
+        conversation.close()
+        workboardConnection.close()
+    })
     createRpcServerAuto({
         socket: {emit: (key, data) => socket.emit(key, data), on: (key, cb) => socket.on(key, cb)},
         socketKey: 'app',
@@ -463,6 +482,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
             ai: aiRun.fragment,
             artifacts: artifact.fragment,
             conversation: conversation.fragment,
+            workboard: workboardConnection.fragment,
             media: {
                 publish: media.publishOf(account),
                 // policy-gated view: THIS connection's account is what canWatch receives

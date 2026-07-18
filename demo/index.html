@@ -2,172 +2,404 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>wenay-common2 peer stand</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wenay-common2 collaboration stand</title>
 <style>
-    body { font-family: sans-serif; margin: 16px; color: #222; }
-    #canvas { border: 1px solid #bbb; border-radius: 6px; background: #fafafa; display: block; }
-    #bar { display: flex; gap: 12px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
-    #participants { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-    #participants button { padding: 4px 9px; font-size: 12px; }
-    #participants button.selected { border-color: #4f8ef7; background: #dbeafe; }
-    #participants button.self { color: #555; background: #f5f5f5; cursor: default; }
-    #route { font-family: monospace; }
-    button { padding: 6px 14px; border-radius: 6px; border: 1px solid #888; background: #fff; cursor: pointer; }
-    button:hover { background: #f0f0f0; }
-    #log { font-family: monospace; font-size: 12px; margin-top: 8px; max-height: 180px; overflow-y: auto; color: #555; }
-    #videoRooms, #privateCall { max-width: 1120px; margin: 12px 0; padding: 12px; border: 1px solid #9bb; border-radius: 8px; background: #f8fbff; }
-    #videoRooms h4, #privateCall h4 { margin: 0 0 4px; }
-    #roomHelp, #callHelp { margin: 0 0 8px; color: #52606d; font-size: 13px; }
-    #rooms { display: grid; gap: 6px; max-width: 760px; margin: 10px 0; }
-    .roomRow { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 8px 10px; border: 1px solid #ccd8e5; border-radius: 7px; background: #fff; }
-    .roomRow.current { border-color: #4f8ef7; background: #eef6ff; }
-    .roomMembers { display: block; color: #687684; font-size: 12px; margin-top: 2px; }
-    #roomMediaView, #privateMediaView { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 10px; }
+    :root {
+        color-scheme: light;
+        --page: #f3f5f8;
+        --surface: #ffffff;
+        --surface-soft: #f8fafc;
+        --line: #dce2e9;
+        --line-strong: #c7d0db;
+        --text: #17202a;
+        --muted: #657180;
+        --accent: #2864dc;
+        --accent-soft: #eaf1ff;
+        --success: #18794e;
+        --success-soft: #e8f6ef;
+        --warning: #9a6700;
+        --warning-soft: #fff6d8;
+        --danger: #b42318;
+        --danger-soft: #fff0ee;
+        --shadow: 0 10px 30px rgba(30, 42, 60, .07);
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; min-width: 320px; background: var(--page); color: var(--text); font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    button, input, select { font: inherit; }
+    button { min-height: 36px; padding: 7px 13px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text); cursor: pointer; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease; }
+    button:hover:not(:disabled) { border-color: #9eabb9; background: var(--surface-soft); }
+    button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid rgba(40, 100, 220, .18); outline-offset: 1px; border-color: var(--accent); }
+    button:disabled { cursor: not-allowed; opacity: .52; }
+    button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+    button.primary:hover:not(:disabled) { background: #1e55c2; border-color: #1e55c2; }
+    button.secondary { background: var(--surface-soft); }
+    button.danger { border-color: #efb3ad; color: var(--danger); background: var(--danger-soft); }
+    button.compact { min-height: 30px; padding: 4px 9px; font-size: 12px; }
+    input, select { min-height: 36px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text); }
+    input { min-width: 0; }
+    .appShell { width: min(1480px, 100%); margin: 0 auto; min-height: 100vh; }
+    .appHeader { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 18px 24px 12px; }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brandMark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 11px; background: #15233c; color: #fff; font-weight: 800; letter-spacing: -.04em; }
+    .brand h1 { margin: 0; font-size: 17px; letter-spacing: -.01em; }
+    .brand p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+    .identity { display: flex; align-items: center; gap: 10px; color: var(--muted); }
+    #who { color: var(--text); font-weight: 650; }
+    .appNav { display: flex; gap: 4px; margin: 0 24px; padding: 4px; width: fit-content; border: 1px solid var(--line); border-radius: 11px; background: rgba(255, 255, 255, .75); }
+    .appNav button { min-width: 96px; border: 0; background: transparent; color: var(--muted); font-weight: 650; }
+    .appNav button.selected { background: var(--surface); color: var(--text); box-shadow: 0 1px 5px rgba(30, 42, 60, .12); }
+    .presenceBar { display: flex; align-items: center; gap: 12px; margin: 12px 24px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+    #online { white-space: nowrap; color: var(--success); font-size: 12px; font-weight: 700; }
+    #participants { display: flex; flex: 1; gap: 6px; align-items: center; flex-wrap: wrap; }
+    #participants button { min-height: 30px; padding: 4px 9px; font-size: 12px; }
+    #participants button.selected { border-color: var(--accent); background: var(--accent-soft); color: #174aa5; }
+    #participants button.self { color: var(--muted); background: var(--surface-soft); cursor: default; }
+    main { padding: 20px 24px 32px; }
+    .appView { min-width: 0; }
+    .pageHeading { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
+    .pageHeading h2 { margin: 0; font-size: 24px; letter-spacing: -.025em; }
+    .pageHeading p { max-width: 720px; margin: 5px 0 0; color: var(--muted); }
+    .pageMeta { color: var(--muted); font-size: 12px; }
+    .surface { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
+    .surfaceHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 16px; border-bottom: 1px solid var(--line); }
+    .surfaceHeader h3, .surfaceHeader h4 { margin: 0; font-size: 15px; }
+    .surfaceHeader p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+    .surfaceBody { padding: 16px; }
+    .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .toolbar .grow { flex: 1 1 240px; }
+    .roomWorkspace { display: grid; grid-template-columns: minmax(250px, 310px) minmax(0, 1fr); gap: 16px; align-items: start; }
+    .contentStack { display: grid; gap: 16px; min-width: 0; }
+    .roomDirectory { position: sticky; top: 12px; }
+    #rooms { display: grid; gap: 8px; margin-top: 14px; }
+    .roomRow { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
+    .roomRow.current { border-color: #8eb0f4; background: var(--accent-soft); }
+    .roomMembers { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+    #currentRoom { display: block; margin-top: 12px; color: var(--muted); font-size: 12px; }
+    #roomMediaView, #privateMediaView { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-top: 14px; }
     #roomPeers { display: contents; }
-    .mediaTile { margin: 0; padding: 8px; border: 1px solid #ccd8e5; border-radius: 8px; background: #fff; }
-    .mediaTile figcaption { font-size: 12px; color: #667; margin-bottom: 5px; }
-    .mediaCanvas { border: 1px solid #bbb; border-radius: 6px; background: #111; width: 100%; max-width: 480px; height: auto; cursor: zoom-in; display: block; }
-    .mediaCanvas:fullscreen { width: 100vw; height: 100vh; object-fit: contain; background: #000; border: none; }
-    .roomScreen { margin-top: 7px; }
-    .roomScreen summary { cursor: pointer; color: #52606d; font-size: 12px; }
-    .audioStatus, #micStatus { color: #52606d; font-size: 12px; }
-    .audioStatus { margin-top: 7px; padding: 5px 7px; border-radius: 5px; background: #f2f6fa; }
-    #roomEmpty { align-self: center; color: #687684; padding: 12px; }
-    select { padding: 6px 8px; border-radius: 6px; border: 1px solid #888; background: #fff; }
-    #mediaStats { font-family: monospace; font-size: 12px; color: #777; }
-    #otherDemos { max-width: 900px; margin-top: 16px; }
-    #otherDemos > summary { cursor: pointer; font-weight: 600; color: #52606d; }
-    #fileJobState { font-family: monospace; font-size: 12px; color: #555; max-width: 760px; }
-    #aiRunState { font-family: monospace; font-size: 12px; color: #555; max-width: 760px; }
-    #downloadFile[hidden] { display: none; }
-    #artifactState { font-family: monospace; font-size: 12px; color: #555; max-width: 760px; }
-    #artifactFrame { width: min(760px, 100%); height: 260px; border: 1px solid #8aa; border-radius: 6px; background: #fff; }
-    #artifactFrame[hidden] { display: none; }
-    #conversationStand { max-width: 900px; margin-top: 18px; padding: 12px; border: 1px solid #9bb; border-radius: 8px; background: #f8fbff; }
-    #conversationStand h4 { margin: 0 0 8px; }
+    .mediaTile { min-width: 0; margin: 0; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+    .mediaTile figcaption { margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+    .mediaCanvas { display: block; width: 100%; max-width: 560px; height: auto; border: 1px solid #293548; border-radius: 8px; background: #101722; cursor: zoom-in; }
+    .mediaCanvas:fullscreen { width: 100vw; height: 100vh; object-fit: contain; border: 0; border-radius: 0; background: #000; }
+    .roomScreen { margin-top: 8px; }
+    .roomScreen summary { color: var(--muted); font-size: 12px; cursor: pointer; }
+    .audioStatus, #micStatus, #callState { color: var(--muted); font-size: 12px; }
+    .audioStatus { margin-top: 7px; padding: 6px 8px; border-radius: 7px; background: #edf2f7; }
+    #roomEmpty, .emptyState { margin: 0; padding: 16px 10px; color: var(--muted); text-align: center; font-size: 12px; }
+    #mediaStats, #route { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .statusBadge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 999px; background: var(--surface-soft); color: var(--muted); font-size: 12px; font-weight: 700; text-transform: capitalize; }
+    .statusBadge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #8491a1; }
+    .statusBadge[data-state="live"] { background: var(--success-soft); color: var(--success); }
+    .statusBadge[data-state="live"]::before { background: var(--success); }
+    .statusBadge[data-state="connecting"], .statusBadge[data-state="reconnecting"] { background: var(--warning-soft); color: var(--warning); }
+    .statusBadge[data-state="connecting"]::before, .statusBadge[data-state="reconnecting"]::before { background: var(--warning); }
+    .statusBadge[data-state="stale"] { background: var(--danger-soft); color: var(--danger); }
+    .statusBadge[data-state="stale"]::before { background: var(--danger); }
+    .workboardToolbar { display: grid; grid-template-columns: minmax(240px, 1fr) auto auto; gap: 10px; align-items: center; }
+    #workboardCreateForm { display: flex; gap: 8px; min-width: 0; }
+    #workboardTitle { flex: 1; }
+    #workboardCounts, #workboardMeta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    #workboardMessage { min-height: 21px; margin: 10px 0 0; color: var(--muted); font-size: 12px; }
+    #workboardMessage[data-tone="success"] { color: var(--success); }
+    #workboardMessage[data-tone="error"] { color: var(--danger); }
+    #workboardColumns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+    .workColumn { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-soft); }
+    .workColumn > header { display: flex; justify-content: space-between; align-items: center; padding: 2px 3px 10px; }
+    .workColumn > header span { min-width: 24px; padding: 2px 7px; border-radius: 999px; background: #e7ebf0; color: var(--muted); text-align: center; font-size: 11px; font-weight: 700; }
+    .workColumnItems { display: grid; gap: 9px; }
+    .workItem { padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); box-shadow: 0 3px 12px rgba(30, 42, 60, .04); }
+    .workItem[data-changed="true"] { border-color: #99b6ef; }
+    .workItem[data-busy="true"] { opacity: .7; }
+    .workItemTitle { display: flex; align-items: center; gap: 6px; }
+    .workItemTitle input { flex: 1; min-height: 32px; padding: 5px 7px; border-color: transparent; background: transparent; font-weight: 650; }
+    .workItemTitle input:hover, .workItemTitle input:focus { border-color: var(--line-strong); background: var(--surface); }
+    .workItemMeta { margin: 6px 0 9px; color: var(--muted); font-size: 11px; }
+    .workItemActions { display: flex; gap: 5px; flex-wrap: wrap; }
+    .labGrid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr); gap: 16px; align-items: start; }
+    #canvas { display: block; width: 100%; max-width: 760px; height: auto; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface-soft); }
+    #otherDemos > summary { padding: 14px 16px; cursor: pointer; font-weight: 700; }
+    #otherDemos[open] > summary { border-bottom: 1px solid var(--line); }
+    #fileJobState, #aiRunState, #artifactState { max-width: 760px; color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    #downloadFile[hidden], #artifactFrame[hidden] { display: none; }
+    #artifactFrame { width: min(760px, 100%); height: 260px; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; }
+    #conversationStand { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+    #conversationStand h4 { margin: 0 0 10px; }
     #conversationChannels { display: flex; gap: 6px; flex-wrap: wrap; }
-    #conversationChannels button.selected { background: #dbeafe; border-color: #4f8ef7; }
+    #conversationChannels button.selected { border-color: var(--accent); background: var(--accent-soft); }
     #conversationMessages { display: grid; gap: 8px; max-height: 360px; overflow: auto; margin: 10px 0; }
-    .conversationMessage { padding: 8px 10px; border: 1px solid #ccd8e5; border-radius: 7px; background: #fff; }
+    .conversationMessage { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
     .conversationBlock { margin-top: 6px; }
     .conversationBlock ul, .conversationBlock ol { margin: 4px 0; }
     .conversationBlock table { border-collapse: collapse; }
-    .conversationBlock th, .conversationBlock td { padding: 3px 7px; border: 1px solid #ccd; text-align: left; }
-    .conversationMetric { display: inline-block; padding: 5px 9px; border-radius: 999px; background: #e4f5ea; color: #175b32; font-weight: 600; }
-    #conversationFacts { margin-top: 8px; padding: 7px; background: #fff9e8; border-radius: 6px; font-family: monospace; font-size: 12px; }
+    .conversationBlock th, .conversationBlock td { padding: 3px 7px; border: 1px solid var(--line); text-align: left; }
+    .conversationMetric { display: inline-block; padding: 5px 9px; border-radius: 999px; background: var(--success-soft); color: var(--success); font-weight: 700; }
+    #conversationFacts { margin-top: 8px; padding: 8px; border-radius: 7px; background: var(--warning-soft); font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .activityPanel { margin: 0 24px 24px; }
+    .activityPanel > summary { padding: 12px 14px; cursor: pointer; font-weight: 700; }
+    #log { max-height: 220px; overflow-y: auto; padding: 0 14px 14px; color: var(--muted); font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    @media (max-width: 920px) {
+        .roomWorkspace, .labGrid { grid-template-columns: 1fr; }
+        .roomDirectory { position: static; }
+        #workboardColumns { grid-template-columns: 1fr; }
+        .workboardToolbar { grid-template-columns: 1fr; align-items: stretch; }
+        #workboardCounts, #workboardMeta { white-space: normal; }
+    }
+    @media (max-width: 640px) {
+        .appHeader { align-items: flex-start; padding: 14px 14px 8px; }
+        .identity { display: block; text-align: right; }
+        .appNav { width: calc(100% - 28px); margin: 0 14px; }
+        .appNav button { min-width: 0; flex: 1; }
+        .presenceBar { align-items: flex-start; margin: 10px 14px 0; flex-wrap: wrap; }
+        #participants { order: 3; flex-basis: 100%; }
+        main { padding: 16px 14px 24px; }
+        .pageHeading { align-items: flex-start; flex-direction: column; }
+        .surfaceHeader, .surfaceBody { padding: 12px; }
+        #workboardCreateForm { flex-direction: column; }
+        .activityPanel { margin: 0 14px 14px; }
+    }
 </style>
 </head>
 <body>
-<h3>wenay-common2 — relay video rooms and private calls</h3>
-<div id="bar">
-    <span id="who">connecting…</span>
-    <span id="online"></span>
-    <div id="participants" aria-label="online participants"></div>
-    <button id="openParticipant">＋ open participant</button>
-    <button id="direct">Go direct</button>
-    <button id="relay">Back to relay</button>
-    <span id="route"></span>
+<div class="appShell">
+    <header class="appHeader">
+        <div class="brand">
+            <div class="brandMark">W2</div>
+            <div>
+                <h1>wenay-common2 collaboration stand</h1>
+                <p>Store/replay, relay media and direct peer routes</p>
+            </div>
+        </div>
+        <div class="identity">
+            <span id="who">Connecting…</span>
+        </div>
+    </header>
+
+    <nav class="appNav" role="tablist" aria-label="Demo sections">
+        <button data-view-button="rooms" role="tab">Rooms</button>
+        <button data-view-button="store" role="tab">Store</button>
+        <button data-view-button="lab" role="tab">Lab</button>
+    </nav>
+
+    <div class="presenceBar">
+        <span id="online">Connecting…</span>
+        <div id="participants" aria-label="Online participants"></div>
+        <button id="openParticipant" class="secondary">＋ Open participant</button>
+    </div>
+
+    <main>
+        <section class="appView" data-view="rooms">
+            <div class="pageHeading">
+                <div>
+                    <h2>Video rooms</h2>
+                    <p>Create or join a shared room. Every open browser tab is a participant and every publisher in the room appears on the media stage.</p>
+                </div>
+                <span class="pageMeta">Relay media · room ACL · private call</span>
+            </div>
+
+            <div class="roomWorkspace">
+                <aside class="surface roomDirectory">
+                    <div class="surfaceHeader">
+                        <div>
+                            <h3>Available rooms</h3>
+                            <p>Membership updates live for all clients.</p>
+                        </div>
+                    </div>
+                    <div class="surfaceBody">
+                        <div class="toolbar">
+                            <input id="roomName" class="grow" value="My video room" maxlength="48" aria-label="New video room name">
+                            <button id="createRoom" class="primary">Create</button>
+                        </div>
+                        <div id="rooms" aria-label="Video rooms"></div>
+                        <strong id="currentRoom">Not in a room</strong>
+                        <button id="leaveRoom" class="secondary" disabled>Leave current room</button>
+                    </div>
+                </aside>
+
+                <div class="contentStack">
+                    <section id="videoRooms" class="surface">
+                        <div class="surfaceHeader">
+                            <div>
+                                <h3>Room stage</h3>
+                                <p id="roomHelp">Join a room to publish and receive participant media.</p>
+                            </div>
+                            <span id="mediaStats"></span>
+                        </div>
+                        <div class="surfaceBody">
+                            <div class="toolbar">
+                                <button id="cam" class="primary">Start camera</button>
+                                <select id="camRes" title="Camera capture width">
+                                    <option value="320">320p</option>
+                                    <option value="640" selected>640p</option>
+                                    <option value="1280">1280p</option>
+                                    <option value="1920">1920p</option>
+                                </select>
+                                <button id="mic">Share microphone</button>
+                                <button id="screen">Share screen</button>
+                                <button id="roomAudio" class="secondary" disabled>Enable room audio</button>
+                                <span id="micStatus">Microphone is off</span>
+                            </div>
+                            <h4 id="roomParticipantsTitle">Room participants</h4>
+                            <div id="roomMediaView">
+                                <figure class="mediaTile">
+                                    <figcaption id="localCamCap">You · camera is off</figcaption>
+                                    <canvas id="localCam" class="mediaCanvas" width="320" height="180"></canvas>
+                                </figure>
+                                <div id="roomPeers"><div id="roomEmpty">Join a room to see its participants.</div></div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section id="privateCall" class="surface">
+                        <div class="surfaceHeader">
+                            <div>
+                                <h3>Private participant call</h3>
+                                <p id="callHelp">Select an online participant and start a separate private call.</p>
+                            </div>
+                            <span id="callState"></span>
+                        </div>
+                        <div class="surfaceBody">
+                            <div class="toolbar">
+                                <button id="call" class="primary">Call</button>
+                                <button id="accept" class="primary" hidden>Accept</button>
+                                <button id="decline" class="danger" hidden>Decline</button>
+                                <button id="audio" class="secondary" disabled>Enable peer audio</button>
+                            </div>
+                            <div id="privateMediaView">
+                                <figure class="mediaTile">
+                                    <figcaption id="peerCamCap">Remote camera · start and accept a call</figcaption>
+                                    <canvas id="peerCam" class="mediaCanvas" width="320" height="180"></canvas>
+                                </figure>
+                                <figure class="mediaTile">
+                                    <figcaption id="peerScreenCap">Remote screen · available during a call</figcaption>
+                                    <canvas id="peerScreen" class="mediaCanvas" width="480" height="270"></canvas>
+                                </figure>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </section>
+
+        <section class="appView" data-view="store" hidden>
+            <div class="pageHeading">
+                <div>
+                    <h2>Authoritative Store</h2>
+                    <p>Commands carry user intent; Store/replay carries confirmed shared state. Change a work item and every connected tab receives the same revision.</p>
+                </div>
+                <div class="toolbar">
+                    <span id="workboardConnection" class="statusBadge" data-state="connecting">Connecting</span>
+                    <span id="workboardMeta" class="pageMeta"></span>
+                </div>
+            </div>
+            <section id="workboard" class="surface">
+                <div class="surfaceHeader">
+                    <div>
+                        <h3>Operations board</h3>
+                        <p id="workboardCounts">0 new · 0 active · 0 done</p>
+                    </div>
+                    <select id="workboardFilter" aria-label="Work item filter">
+                        <option value="all">All items</option>
+                        <option value="mine">Assigned to me</option>
+                        <option value="unassigned">Unassigned</option>
+                    </select>
+                </div>
+                <div class="surfaceBody">
+                    <div class="workboardToolbar">
+                        <form id="workboardCreateForm">
+                            <input id="workboardTitle" maxlength="120" placeholder="Describe a new work item" aria-label="New work item title">
+                            <button id="workboardCreate" class="primary" type="submit">Create item</button>
+                        </form>
+                        <span>Server-authoritative revisions</span>
+                        <span>Per-item replay updates</span>
+                    </div>
+                    <p id="workboardMessage" data-tone="neutral"></p>
+                    <div id="workboardColumns" aria-live="polite"></div>
+                </div>
+            </section>
+        </section>
+
+        <section class="appView" data-view="lab" hidden>
+            <div class="pageHeading">
+                <div>
+                    <h2>Integration lab</h2>
+                    <p>Inspect route hand-off, shared cursors, AI resources, artifacts and multi-channel conversations on the same connection.</p>
+                </div>
+            </div>
+            <div class="labGrid">
+                <section class="surface">
+                    <div class="surfaceHeader">
+                        <div>
+                            <h3>Relay ⇄ WebRTC direct</h3>
+                            <p id="route">Choose another participant to inspect the route.</p>
+                        </div>
+                        <div class="toolbar">
+                            <button id="direct" class="primary">Go direct</button>
+                            <button id="relay" class="secondary">Back to relay</button>
+                        </div>
+                    </div>
+                    <div class="surfaceBody">
+                        <canvas id="canvas" width="640" height="360"></canvas>
+                    </div>
+                </section>
+
+                <details id="otherDemos" class="surface">
+                    <summary>Other library examples</summary>
+                    <div class="surfaceBody">
+                        <div class="toolbar">
+                            <input id="fileInput" type="file" aria-label="File for storage and AI job">
+                            <button id="uploadFile">Upload file</button>
+                            <button id="processFile" class="primary" disabled>Run AI</button>
+                            <a id="downloadFile" href="#" hidden>Download</a>
+                            <span id="fileJobState"></span>
+                        </div>
+                        <div class="toolbar">
+                            <input id="aiPrompt" class="grow" value="summarize the selected resource" aria-label="Prompt for AI run">
+                            <button id="startAiRun" class="primary">Run assistant</button>
+                            <button id="cancelAiRun" disabled>Cancel AI</button>
+                            <span id="aiRunState"></span>
+                        </div>
+                        <div class="toolbar">
+                            <button id="openArtifact" disabled>Open AI artifact</button>
+                            <button id="revokeArtifact" class="danger" disabled>Revoke artifact</button>
+                            <span id="artifactState"></span>
+                        </div>
+                        <iframe id="artifactFrame" title="Sandboxed AI artifact" hidden></iframe>
+
+                        <section id="conversationStand">
+                            <h4>Conversation · channels, structured blocks and facts</h4>
+                            <div id="conversationChannels"></div>
+                            <div id="conversationMessages"></div>
+                            <div class="toolbar">
+                                <input id="conversationInput" class="grow" value="hello from this channel" aria-label="Conversation message">
+                                <button id="conversationSend" class="primary">Send text</button>
+                                <button id="conversationStructured">Send structured</button>
+                                <button id="conversationFork">Fork latest message</button>
+                            </div>
+                            <div class="toolbar">
+                                <select id="conversationFactScope" aria-label="Fact scope">
+                                    <option value="channel">Channel fact</option>
+                                    <option value="conversation">Conversation fact</option>
+                                </select>
+                                <input id="conversationFactKey" value="status" aria-label="Fact key">
+                                <input id="conversationFactValue" value="active" aria-label="Fact value">
+                                <button id="conversationFactSet">Set fact</button>
+                                <button id="conversationFactRetract">Retract fact</button>
+                            </div>
+                            <div id="conversationFacts"></div>
+                        </section>
+                    </div>
+                </details>
+            </div>
+        </section>
+    </main>
+
+    <details class="surface activityPanel">
+        <summary>Activity log</summary>
+        <div id="log"></div>
+    </details>
 </div>
-<section id="videoRooms">
-    <h4>Video rooms</h4>
-    <p id="roomHelp">1. Создайте комнату или войдите в существующую. Все комнаты и их участники видны сразу.</p>
-    <div id="bar">
-        <input id="roomName" value="My video room" maxlength="48" aria-label="new video room name">
-        <button id="createRoom">＋ create room</button>
-        <button id="leaveRoom" disabled>leave room</button>
-        <strong id="currentRoom">Вы не в комнате</strong>
-    </div>
-    <div id="rooms" aria-label="video rooms"></div>
-    <div id="bar">
-        <button id="cam">📷 start camera</button>
-        <select id="camRes" title="camera capture width">
-            <option value="320">320p</option>
-            <option value="640" selected>640p</option>
-            <option value="1280">1280p</option>
-            <option value="1920">1920p</option>
-        </select>
-        <button id="mic">🎙 передавать микрофон</button>
-        <span id="micStatus">Микрофон выключен</span>
-        <button id="screen">🖥 share screen</button>
-        <button id="roomAudio" disabled>🔊 слушать комнату</button>
-    </div>
-    <h5 id="roomParticipantsTitle">Участники комнаты</h5>
-    <div id="roomMediaView">
-        <figure class="mediaTile">
-            <figcaption id="localCamCap">You · camera is off</figcaption>
-            <canvas id="localCam" class="mediaCanvas" width="320" height="180"></canvas>
-        </figure>
-        <div id="roomPeers"><div id="roomEmpty">Войдите в комнату, чтобы увидеть её участников.</div></div>
-    </div>
-    <div id="mediaStats"></div>
-</section>
-<section id="privateCall">
-    <h4>Private participant call</h4>
-    <p id="callHelp">Select an online participant above and call them privately. Call media also uses the relay; “Go direct” controls the peer data route.</p>
-    <div id="bar">
-        <button id="call">📞 call</button>
-        <button id="accept" hidden>✅ accept</button>
-        <button id="decline" hidden>⛔ decline</button>
-        <button id="audio" disabled>🔊 enable peer audio</button>
-        <span id="callState"></span>
-    </div>
-    <div id="privateMediaView">
-        <figure class="mediaTile">
-            <figcaption id="peerCamCap">Remote camera · start and accept a call</figcaption>
-            <canvas id="peerCam" class="mediaCanvas" width="320" height="180"></canvas>
-        </figure>
-        <figure class="mediaTile">
-            <figcaption id="peerScreenCap">Remote screen · available during a call</figcaption>
-            <canvas id="peerScreen" class="mediaCanvas" width="480" height="270"></canvas>
-        </figure>
-    </div>
-</section>
-<canvas id="canvas" width="640" height="360"></canvas>
-<details id="otherDemos">
-<summary>Other library demos: file, AI, artifact and conversation</summary>
-<div id="bar">
-    <input id="fileInput" type="file" aria-label="file for storage and AI job">
-    <button id="uploadFile">⬆ upload file</button>
-    <button id="processFile" disabled>✨ run AI</button>
-    <a id="downloadFile" href="#" hidden>⇩ download</a>
-    <span id="fileJobState"></span>
-</div>
-<div id="bar">
-    <input id="aiPrompt" value="summarize the selected resource" aria-label="prompt for AI run">
-    <button id="startAiRun">✦ run assistant</button>
-    <button id="cancelAiRun" disabled>cancel AI</button>
-    <span id="aiRunState"></span>
-</div>
-<div id="bar">
-    <button id="openArtifact" disabled>🧩 open AI artifact</button>
-    <button id="revokeArtifact" disabled>revoke artifact</button>
-    <span id="artifactState"></span>
-</div>
-<iframe id="artifactFrame" title="sandboxed AI artifact" hidden></iframe>
-<section id="conversationStand">
-    <h4>Conversation — channels, structured blocks and facts</h4>
-    <div id="conversationChannels"></div>
-    <div id="conversationMessages"></div>
-    <div id="bar">
-        <input id="conversationInput" value="hello from this channel" aria-label="conversation message">
-        <button id="conversationSend">send text</button>
-        <button id="conversationStructured">send structured</button>
-        <button id="conversationFork">fork latest message</button>
-    </div>
-    <div id="bar">
-        <select id="conversationFactScope" aria-label="fact scope">
-            <option value="channel">channel fact</option>
-            <option value="conversation">conversation fact</option>
-        </select>
-        <input id="conversationFactKey" value="status" aria-label="fact key">
-        <input id="conversationFactValue" value="active" aria-label="fact value">
-        <button id="conversationFactSet">set fact</button>
-        <button id="conversationFactRetract">retract fact</button>
-    </div>
-    <div id="conversationFacts"></div>
-</section>
-</details>
-<div id="log"></div>
 <script src="client.js"></script>
 </body>
 </html>

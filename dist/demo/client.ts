@@ -11,8 +11,12 @@ import {createFileJobClient} from '../src/Common/resource/resource-index'
 import {createAiRunClient} from '../src/Common/ai/ai-index'
 import {createArtifactClient, createArtifactFrame} from '../src/Common/artifact/artifact-index'
 import {createConversationClient, tConversationBlock} from '../src/Common/conversation/conversation-index'
+import {setupAppShell} from './app-shell'
 import {createMediaDemo} from './media-demo'
 import {setupVideoRooms} from './video-rooms-demo'
+import {createWorkboardClient} from './workboard-client'
+import type {WorkboardRemote} from './workboard-contract'
+import {setupWorkboardDemo} from './workboard-demo'
 
 type World = {cursor: {x: number, y: number}, color: string, name: string}
 
@@ -38,6 +42,7 @@ function participantName(account: string) {
 }
 
 async function main() {
+    setupAppShell({root: document})
     const hub = createRpcClientHub(
         // Start with polling so an HTTP-only tunnel/proxy can carry RPC, then
         // Socket.IO upgrades to WebSocket whenever the external route permits it.
@@ -51,6 +56,18 @@ async function main() {
     document.title = `participant ${participantName(me)}`
     el('who').textContent = `You are participant ${participantName(me)}`
     log('rpc connected; legacy serverTime() = ' + await clients.app.func.serverTime())
+    const workboard = createWorkboardClient({
+        remote: clients.app.func.workboard as unknown as WorkboardRemote,
+        drain: 'micro',
+        transport: {
+            connected: () => Boolean(hub.socket?.connected),
+            connectListen: cb => hub.connectListen(function workboardConnected() { cb() }),
+            disconnectListen: cb => hub.disconnectListen(cb),
+        },
+    })
+    setupWorkboardDemo({client: workboard, self: me, element: el, participantName, log})
+    await workboard.ready
+    log('authoritative Workboard Store mirror ready')
     const files = createFileJobClient({remote: clients.app.func.files, drain: 'micro'})
     await files.ready
     setupFileJobs(files)

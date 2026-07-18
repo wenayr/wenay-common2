@@ -15,10 +15,9 @@
 
 ## Living examples (shipped in the npm package)
 
-- [`demo/`](demo/) — runnable from a repository checkout (`npm run demo`): shared cursors in two browser tabs over the
-  Peer SDK, relay ⇄ WebRTC direct hand-off next to a legacy rpc key; plus live media — camera,
-  microphone and screen share captured with the `Media` sources and streamed to the watching tab;
-  plus Resource → AI → Artifact and multi-channel Conversation stands on the same RPC connection.
+- [`demo/`](demo/) — runnable from a repository checkout (`npm run demo`): participant-based video rooms and
+  private calls, an authoritative Store/replay operations board, shared cursors with relay ⇄ WebRTC direct
+  hand-off, and Resource → AI → Artifact plus multi-channel Conversation examples on the same RPC connection.
 - Public raw-IP/hostname HTTPS/WSS launch, certificate issuance, router forwarding, and diagnostics:
   [`doc/DEMO-HTTPS.md`](doc/DEMO-HTTPS.md).
 - [`replay/`](replay/) · [`observe/`](observe/) · [`oracle/`](oracle/) — the oracle suites CI runs on

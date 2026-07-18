@@ -160,7 +160,7 @@ export function createMediaDemo(deps: MediaDemoDeps) {
 
         attachLocalCamera()
         bindCaptureButton('cam', 'cam', '📷 start camera', '⏹ stop camera')
-        bindCaptureButton('mic', 'mic', '🎙 передавать микрофон', '⏹ выключить микрофон')
+        bindCaptureButton('mic', 'mic', 'Share microphone', 'Stop microphone')
         bindCaptureButton('screen', 'screen', '🖥 share screen', '⏹ stop sharing')
         enableFullscreen(localCameraCanvas)
 
@@ -184,7 +184,7 @@ export function createMediaDemo(deps: MediaDemoDeps) {
             root.className = 'mediaTile'
 
             const caption = document.createElement('figcaption')
-            caption.textContent = `${participantName(account)} · камера выключена`
+            caption.textContent = `${participantName(account)} · camera is off`
 
             const camCanvas = document.createElement('canvas')
             camCanvas.className = 'mediaCanvas'
@@ -193,12 +193,12 @@ export function createMediaDemo(deps: MediaDemoDeps) {
 
             const audioStatus = document.createElement('div')
             audioStatus.className = 'audioStatus'
-            audioStatus.textContent = `${participantName(account)} · микрофон выключен`
+            audioStatus.textContent = `${participantName(account)} · microphone is off`
 
             const screenDetails = document.createElement('details')
             screenDetails.className = 'roomScreen'
             const screenSummary = document.createElement('summary')
-            screenSummary.textContent = `${participantName(account)} · экран не транслируется`
+            screenSummary.textContent = `${participantName(account)} · screen is not shared`
             const screenCanvas = document.createElement('canvas')
             screenCanvas.className = 'mediaCanvas'
             screenCanvas.width = 480
@@ -256,15 +256,15 @@ export function createMediaDemo(deps: MediaDemoDeps) {
                 peers.append(empty)
             }
             empty.textContent = roomId
-                ? 'Вы пока единственный участник. Откройте вторую вкладку и войдите в эту же комнату.'
-                : 'Войдите в комнату, чтобы увидеть её участников.'
+                ? 'You are the only participant here. Open another tab and join this room.'
+                : 'Join a room to see its participants.'
         }
 
         function renderAudioButton() {
             audioButton.disabled = views.size == 0
             audioButton.textContent = audioEnabled
-                ? '🔇 выключить звук комнаты'
-                : '🔊 слушать комнату'
+                ? 'Mute room audio'
+                : 'Enable room audio'
         }
 
         function setMembership(nextRoomId: string | null, members: string[]) {
@@ -295,14 +295,14 @@ export function createMediaDemo(deps: MediaDemoDeps) {
 
                 view.caption.textContent = cam.width
                     ? `${participantName(view.account)} · ${cam.width}×${cam.height} · ${cam.perSec}/s · click = fullscreen`
-                    : `${participantName(view.account)} · камера выключена`
+                    : `${participantName(view.account)} · camera is off`
                 if (screen.width) {
                     view.screenSummary.textContent = `${participantName(view.account)} screen · ${screen.width}×${screen.height}`
                     view.screenDetails.open = true
                 }
                 view.audioStatus.textContent = audioPerSec
-                    ? `${audioEnabled ? '🔊' : '🎙'} ${participantName(view.account)} · звук ${audioPerSec}/с${audioEnabled ? ' · воспроизводится' : ' · нажмите «слушать комнату»'}`
-                    : `${participantName(view.account)} · звук сейчас не передаётся`
+                    ? `${audioEnabled ? '🔊' : '🎙'} ${participantName(view.account)} · audio ${audioPerSec}/s${audioEnabled ? ' · playing' : ' · enable room audio to listen'}`
+                    : `${participantName(view.account)} · audio is not being published`
             }
             return {participants: views.size, videoFrames, audioFrames}
         }
@@ -399,11 +399,11 @@ export function createMediaDemo(deps: MediaDemoDeps) {
     // -------- one low-cost status loop for the whole media example --------
 
     function captureStatus(state: MediaSource['state']) {
-        if (state == 'requesting') return 'Запрашивается разрешение микрофона…'
-        if (state == 'denied') return 'Нет разрешения на микрофон'
-        if (state == 'no-device') return 'Микрофон не найден'
-        if (state == 'error') return 'Ошибка микрофона (см. лог)'
-        return 'Микрофон выключен'
+        if (state == 'requesting') return 'Requesting microphone permission…'
+        if (state == 'denied') return 'Microphone permission denied'
+        if (state == 'no-device') return 'No microphone found'
+        if (state == 'error') return 'Microphone error (see activity log)'
+        return 'Microphone is off'
     }
 
     function startStats(local: ReturnType<typeof createLocalMedia>, room: ReturnType<typeof createRoomMedia>, privateCall: ReturnType<typeof createPrivateCallMedia>) {
@@ -424,7 +424,7 @@ export function createMediaDemo(deps: MediaDemoDeps) {
 
             const mic = local.sources.mic.getStats()
             microphoneStatus.textContent = mic.state == 'live'
-                ? `Микрофон передаётся · ${mic.frames - previous.mic}/с · уровень ${(mic.rms ?? 0).toFixed(3)}`
+                ? `Microphone is live · ${mic.frames - previous.mic}/s · level ${(mic.rms ?? 0).toFixed(3)}`
                 : captureStatus(mic.state)
 
             const camera = local.cameraStats()

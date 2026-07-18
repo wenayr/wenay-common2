@@ -70,16 +70,16 @@ export async function setupVideoRooms(deps: VideoRoomsDemoDeps) {
 
         rooms.replaceChildren(...snapshot.rooms.map(room => createRoomRow(room, room.id == snapshot.currentRoomId)))
         currentRoom.textContent = current
-            ? `Вы в «${current.name}» · участников: ${current.members.length}`
-            : 'Вы не в комнате'
+            ? `In “${current.name}” · ${current.members.length} participant(s)`
+            : 'Not in a room'
         help.textContent = !current
-            ? '1. Создайте комнату или нажмите join у существующей. Все комнаты и их участники видны сразу.'
+            ? 'Create a room or join an existing one. Rooms and membership update live.'
             : current.members.length == 1
-                ? `2. Вы в «${current.name}». Откройте вторую вкладку и войдите в эту же комнату — участник сразу появится ниже.`
-                : '3. Каждый включает камеру или «передавать микрофон». Для прослушивания нажмите «слушать комнату».'
+                ? `You are in “${current.name}”. Open another tab and join this room to add a participant.`
+                : 'Participants can publish camera, microphone, or screen. Enable room audio to listen.'
         participantsTitle.textContent = current
-            ? `Участники «${current.name}» (${current.members.length})`
-            : 'Участники комнаты'
+            ? `Participants in “${current.name}” (${current.members.length})`
+            : 'Room participants'
         leaveButton.disabled = !current
         media.setMembership(current?.id ?? null, current?.members ?? [])
     }

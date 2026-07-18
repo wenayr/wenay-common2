@@ -2,6 +2,15 @@
 
 Goal: turn the demo into a compact product-like stand that teaches the intended integration style without hiding the library behind framework code.
 
+## Implementation status
+
+- [x] Shared `Rooms` / `Store` / `Lab` application shell and responsive visual language.
+- [x] Server-authoritative Workboard resource with idempotent commands and item revisions.
+- [x] Read-only client replay mirror, connection status, per-item rendering, filters, and command feedback.
+- [x] Real Socket.IO oracle for keyframe, live updates, rejection, delete, and reconnect catch-up.
+- [x] External HTTPS/WSS multi-client verification for Workboard sync and room membership.
+- [x] Release packaging and publication prepared as `1.0.84`.
+
 ## Product shape
 
 - One application shell with clear sections: `Rooms`, `Store`, and the existing protocol examples.
