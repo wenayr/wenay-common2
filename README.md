@@ -6,6 +6,7 @@
 
 - Brief API cheat sheet: [`doc/wenay-common2.md`](doc/wenay-common2.md)
 - Extended API cheat sheet: [`doc/wenay-common2-rare.md`](doc/wenay-common2-rare.md)
+- Public raw-IP/hostname HTTPS demo and certificates: [`doc/DEMO-HTTPS.md`](doc/DEMO-HTTPS.md)
 - AI run protocol: [`doc/AI-RUN-PROTOCOL.md`](doc/AI-RUN-PROTOCOL.md)
 - Conversation runtime: [`doc/CONVERSATION-RUNTIME.md`](doc/CONVERSATION-RUNTIME.md)
 - Naming migrations: [`doc/NAMING_RENAMES.md`](doc/NAMING_RENAMES.md)
@@ -18,6 +19,8 @@
   Peer SDK, relay ⇄ WebRTC direct hand-off next to a legacy rpc key; plus live media — camera,
   microphone and screen share captured with the `Media` sources and streamed to the watching tab;
   plus Resource → AI → Artifact and multi-channel Conversation stands on the same RPC connection.
+- Public raw-IP/hostname HTTPS/WSS launch, certificate issuance, router forwarding, and diagnostics:
+  [`doc/DEMO-HTTPS.md`](doc/DEMO-HTTPS.md).
 - [`replay/`](replay/) · [`observe/`](observe/) · [`oracle/`](oracle/) — the oracle suites CI runs on
   every push; each file doubles as a worked usage example of one subsystem.
 - The package ships readable example sources, not installed CLI scripts. Examples import from the

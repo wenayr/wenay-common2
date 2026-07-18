@@ -1,23 +1,26 @@
 // Demo stand client: shared cursors over the Peer SDK — relay by default,
 // "Go direct" promotes to a real RTCPeerConnection datachannel, "Back to relay"
 // re-interposes. The route hand-off is gap-free by seq; the cursor never jumps.
-// Plus messenger-style calls: presence shows who is online, the call button rings
-// the peer over the SAME signal hub, and media (camera / mic / screen) attaches
-// only while the call is active — the server's watch ACL follows the call.
+// Video rooms use the media socket relay; a server-owned membership policy controls
+// which account lines are visible. Private calls use the same media lines with a
+// separate accepted-call grant, while the cursor/data route can still go WebRTC direct.
 import {io} from 'socket.io-client'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {callPortOf, createCallManager, createPeerClient} from '../src/Common/peer/peer-index'
-import {attachAudioPlayer, attachVideoCanvas, createAudioSource, createVideoSource, pipeMediaPublish} from '../src/Common/media/media-index'
 import {createFileJobClient} from '../src/Common/resource/resource-index'
 import {createAiRunClient} from '../src/Common/ai/ai-index'
 import {createArtifactClient, createArtifactFrame} from '../src/Common/artifact/artifact-index'
 import {createConversationClient, tConversationBlock} from '../src/Common/conversation/conversation-index'
+import {createMediaDemo} from './media-demo'
+import {setupVideoRooms} from './video-rooms-demo'
 
 type World = {cursor: {x: number, y: number}, color: string, name: string}
 
-const params = new URLSearchParams(location.search)
-const me = params.get('me') ?? 'a'
-const other = params.get('peer') ?? (me == 'a' ? 'b' : 'a')
+const tab = sessionStorage.getItem('demo-tab')
+    ?? Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12)
+sessionStorage.setItem('demo-tab', tab)
+if (location.search) history.replaceState(null, '', location.pathname)
+let me = ''
 
 const el = (id: string) => document.getElementById(id)!
 const logBox = () => el('log') as HTMLDivElement
@@ -30,16 +33,23 @@ function log(line: string) {
     while (box.children.length > 30) box.lastChild?.remove()
 }
 
-async function main() {
-    document.title = `peer ${me}`
-    el('who').textContent = `me: ${me}  ·  peer: ${other}`
+function participantName(account: string) {
+    return account.replace(/^person-/, '').toUpperCase()
+}
 
+async function main() {
     const hub = createRpcClientHub(
-        () => io({transports: ['websocket'], auth: {account: me}}),
+        // Start with polling so an HTTP-only tunnel/proxy can carry RPC, then
+        // Socket.IO upgrades to WebSocket whenever the external route permits it.
+        () => io({auth: {tab}}),
         r => ({app: r<any>('app')}) as const,
     )
     const clients = await hub.setToken(null)
     await clients.app.readyStrict()
+    me = await clients.app.func.demo.account()
+    const rtcConfiguration = await clients.app.func.demo.rtcConfiguration() as RTCConfiguration
+    document.title = `participant ${participantName(me)}`
+    el('who').textContent = `You are participant ${participantName(me)}`
     log('rpc connected; legacy serverTime() = ' + await clients.app.func.serverTime())
     const files = createFileJobClient({remote: clients.app.func.files, drain: 'micro'})
     await files.ready
@@ -64,37 +74,73 @@ async function main() {
             (env.candidate ? ` cand=${JSON.stringify(env.candidate).slice(0, 70)}` : ''))
     })
 
-    // ============== presence: is the peer online? ==============
-    const onlineEl = el('online')
-    const onlineSet = new Set<string>()
-    function renderPresence() {
-        const up = onlineSet.has(other)
-        onlineEl.textContent = up ? `● ${other} online` : `○ ${other} offline`
-        onlineEl.style.color = up ? '#2e7d32' : '#999'
-    }
-    // subscribe FIRST, then list() — the changes feed is a plain edge Listen
-    ;(clients.app.func.peer.presence.changes as any).on((ch: any) => {
-        if (ch.online) onlineSet.add(ch.account); else onlineSet.delete(ch.account)
-        if (ch.account != me) log(`presence: ${ch.account} ${ch.online ? 'online' : 'offline'}`)
-        renderPresence()
-    })
-    for (const account of await clients.app.func.peer.presence.list()) onlineSet.add(account)
-    renderPresence()
-
     const client = createPeerClient<World>({
         remote: clients.app.func.peer,
         account: me,
         initial: {
             cursor: {x: 160, y: 120},
-            color: me == 'a' ? '#4f8ef7' : '#f7a44f',
-            name: me,
+            color: '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0'),
+            name: participantName(me),
         },
-        rtc: () => new RTCPeerConnection(),
+        // The deployment supplies STUN/TURN here; peer/route logic stays transport-agnostic.
+        rtc: () => new RTCPeerConnection(rtcConfiguration),
         drain: 'micro',
     })
-    const peer = client.peer(other)
+    const onlineEl = el('online')
+    const participantList = el('participants')
+    const onlineSet = new Set<string>()
+    const peerViews = new Map<string, ReturnType<typeof client.peer>>()
+    let selectedPeer = ''
+
+    function selectedView() {
+        return selectedPeer ? peerViews.get(selectedPeer) : undefined
+    }
+
+    function ensurePeer(account: string) {
+        if (account == me) return
+        const existing = peerViews.get(account)
+        if (existing) return existing
+        const peer = client.peer(account)
+        peerViews.set(account, peer)
+        peer.ready.then(() => log(`participant ${participantName(account)} mirror ready`)).catch(e => log('mirror error: ' + e))
+        return peer
+    }
+
+    function renderPresence() {
+        const accounts = Array.from(onlineSet).sort()
+        const peers = accounts.filter(account => account != me)
+        if (!peers.includes(selectedPeer)) selectedPeer = peers[0] ?? ''
+        participantList.replaceChildren()
+        for (const account of accounts) {
+            const clientButton = document.createElement('button')
+            const self = account == me
+            clientButton.textContent = self ? `You · ${participantName(account)}` : `Participant ${participantName(account)}`
+            clientButton.className = (self ? 'self ' : '') + (account == selectedPeer ? 'selected' : '')
+            clientButton.disabled = self
+            clientButton.addEventListener('click', function selectClient() {
+                selectedPeer = account
+                renderPresence()
+                renderCallUi()
+            })
+            participantList.append(clientButton)
+            if (!self) ensurePeer(account)
+        }
+        onlineEl.textContent = `${accounts.length} participant(s) online`
+        onlineEl.style.color = '#2e7d32'
+    }
+    // subscribe FIRST, then list() — the changes feed is a plain edge Listen
+    ;(clients.app.func.peer.presence.changes as any).on((ch: any) => {
+        if (ch.online) onlineSet.add(ch.account); else onlineSet.delete(ch.account)
+        if (ch.account != me) log(`presence: ${participantName(ch.account)} ${ch.online ? 'online' : 'offline'}`)
+        renderPresence()
+    })
+    for (const account of await clients.app.func.peer.presence.list()) onlineSet.add(account)
+    renderPresence()
+    el('openParticipant').addEventListener('click', function openParticipant() {
+        window.open(location.href, '_blank', 'noopener')
+    })
+
     client.onRoute(ev => log(`route ${ev.key}: ${ev.from} -> ${ev.to}${ev.reason ? ` (${String(ev.reason)})` : ''}`))
-    peer.ready.then(() => log('peer mirror ready (keyframe landed)')).catch(e => log('mirror error: ' + e))
 
     // ============== input: own cursor -> own store ==============
     const canvas = el('canvas') as HTMLCanvasElement
@@ -118,26 +164,49 @@ async function main() {
         ctx.clearRect(0, 0, canvas.width, canvas.height)
         const mine = client.store.state
         drawCursor(mine.cursor, mine.color, mine.name + ' (me)')
-        const theirs = peer.store.state
-        if (theirs?.cursor) drawCursor(theirs.cursor, theirs.color ?? '#999', (theirs.name ?? other) + ` [${peer.route()}]`)
-        el('route').textContent = `route: ${peer.route()}  ·  state: ${peer.state()}  ·  seq: ${peer.seq()}`
+        for (const [account, peer] of peerViews) {
+            const theirs = peer.store.state
+            if (theirs?.cursor) drawCursor(theirs.cursor, theirs.color ?? '#999', (theirs.name ?? participantName(account)) + ` [${peer.route()}]`)
+        }
+        const peer = selectedView()
+        el('route').textContent = peer
+            ? `selected: ${participantName(selectedPeer)} · route: ${peer.route()} · state: ${peer.state()} · seq: ${peer.seq()}`
+            : 'Choose another open tab to connect'
         requestAnimationFrame(frame)
     }
     frame()
 
     // ============== route controls ==============
     el('direct').addEventListener('click', async function goDirect() {
+        const peer = selectedView()
+        if (!peer) return
         log('promoteDirect...')
-        const res = await peer.promoteDirect({timeoutMs: 8000})
+        const res = await peer.promoteDirect()
         log(res.ok ? `direct: ok (${res.state})` : `direct failed: ${String(res.reason)}`)
     })
     el('relay').addEventListener('click', async function backToRelay() {
+        const peer = selectedView()
+        if (!peer) return
         const res = await peer.reinterposeRelay('manual')
         log(res.ok ? 'back on relay' : `re-interpose failed: ${String(res.reason)}`)
     })
 
-    // ============== calls: ring/accept/decline over the same signal hub ==============
-    const media = setupMedia(clients.app.func.media)
+    // ============== rooms + private calls over the same connection ==============
+    const media = createMediaDemo({
+        remote: clients.app.func.media,
+        self: me,
+        element: el,
+        log,
+        participantName,
+    })
+    await setupVideoRooms({
+        remote: clients.app.func.demo.rooms,
+        self: me,
+        media: media.room,
+        element: el,
+        log,
+        participantName,
+    })
     const calls = createCallManager({port: callPortOf(clients.app.func.peer), self: me})
     calls.ready.then(() => log('call signaling ready'))
 
@@ -145,31 +214,43 @@ async function main() {
     const acceptBtn = el('accept') as HTMLButtonElement
     const declineBtn = el('decline') as HTMLButtonElement
     const callStateEl = el('callState')
+    const callHelpEl = el('callHelp')
     let call: any = null
 
     function renderCallUi() {
         const state = call?.state()
         const incoming = call?.direction == 'in' && state == 'ringing'
+        const peerName = call ? participantName(call.peer) : participantName(selectedPeer)
         callBtn.hidden = incoming
         acceptBtn.hidden = !incoming
         declineBtn.hidden = !incoming
         callBtn.textContent = state == 'active' ? '📞 hang up'
             : state == 'ringing' ? '📞 cancel…'
-            : `📞 call ${other}`
+            : selectedPeer ? `📞 call ${participantName(selectedPeer)}` : '📞 choose a participant'
+        callBtn.disabled = !call && !selectedPeer
         callStateEl.textContent = !call ? ''
-            : state == 'ringing' ? (incoming ? `${call.peer} is calling…` : `ringing ${call.peer}…`)
-            : state == 'active' ? `in call with ${call.peer}`
+            : state == 'ringing' ? (incoming ? `${peerName} is calling…` : `ringing ${peerName}…`)
+            : state == 'active' ? `in call with ${peerName}`
             : ''
+        callHelpEl.textContent = !call && !selectedPeer
+            ? 'Open this page in another tab: every tab becomes a participant.'
+            : !call
+                ? `Selected ${participantName(selectedPeer)}. This private call is separate from room membership.`
+                : state == 'ringing'
+                    ? (incoming ? `Accept the private call from ${peerName}.` : `Waiting for ${peerName} to accept.`)
+                    : state == 'active'
+                        ? `Connected to ${peerName}. Remote video appears when ${peerName} starts their camera.`
+                        : 'The call has ended.'
     }
 
     function bindCall(next: any) {
         call = next
         call.changed.on(function onCallState(state: string) {
-            log(`call ${state}${call?.reason() ? ` (${call.reason()})` : ''}`)
-            if (state == 'active') media.attachPeer()
+            log(`call ${state}${next.reason() ? ` (${next.reason()})` : ''}`)
+            if (state == 'active') media.privateCall.attach(next.peer)
             if (state == 'ended') {
-                media.detachPeer()
-                call = null
+                media.privateCall.detach()
+                if (call == next) call = null
             }
             renderCallUi()
         })
@@ -178,13 +259,16 @@ async function main() {
 
     callBtn.addEventListener('click', function onCallButton() {
         if (call) { call.hangup(); return }
-        log(`calling ${other}...`)
-        bindCall(calls.call(other, {kinds: ['cam', 'mic', 'screen']}))
+        if (!selectedPeer) return
+        log(`calling ${participantName(selectedPeer)}...`)
+        bindCall(calls.call(selectedPeer, {kinds: ['cam', 'mic', 'screen']}))
     })
     acceptBtn.addEventListener('click', () => call?.accept())
     declineBtn.addEventListener('click', () => call?.decline())
     calls.rings.on(function onIncomingRing(incoming: any) {
         log(`incoming call from ${incoming.peer}`)
+        selectedPeer = incoming.peer
+        renderPresence()
         bindCall(incoming)
     })
     renderCallUi()
@@ -302,7 +386,7 @@ function setupConversation(conversation: ReturnType<typeof createConversationCli
             card.className = 'conversationMessage'
             const author = document.createElement('strong')
             author.textContent = message.author.kind == 'account'
-                ? message.author.account
+                ? `Client ${participantName(message.author.account)}`
                 : message.author.label ?? message.author.id
             card.append(author)
             for (const block of message.blocks) card.append(renderBlock(block))
@@ -616,159 +700,6 @@ function setupFileJobs(files: ReturnType<typeof createFileJobClient>) {
 
     files.store.listen().on(render)
     render()
-}
-
-// ============== media: capture own cam/mic/screen; watch the peer's WHILE IN CALL ==============
-type tMediaKind = 'cam' | 'mic' | 'screen'
-
-function setupMedia(media: any) {
-    // -------- publish own frames through the relay (fire-and-forget) --------
-    function pipePublish(kind: tMediaKind, src: any) {
-        pipeMediaPublish(src[1], (frame, sentAt) => media.publish(kind, frame, sentAt), {
-            onError: e => log(`media publish ${kind} failed: ${e}`),
-        })
-        return src
-    }
-
-    const camResEl = el('camRes') as HTMLSelectElement
-    function makeCam() {
-        // library fps default (3) targets machine vision; a live stand wants motion
-        return pipePublish('cam', createVideoSource({sourceId: 'cam', fps: 60, width: Number(camResEl.value) || 640, codec: 'jpeg'}))
-    }
-
-    const sources = {
-        cam: makeCam(),
-        screen: pipePublish('screen', createVideoSource({
-            sourceId: 'screen',
-            fps: 10,
-            codec: 'jpeg',
-            quality: 0.5,            // full-screen JPEGs get large fast; favor latency
-            // the documented `stream` injection point: skip getUserMedia, bring getDisplayMedia
-            stream: () => (navigator.mediaDevices as any).getDisplayMedia({video: true}),
-        })),
-        // big buffers on purpose: the worklet's 128-sample chunks would be ~375 socket
-        // messages per second and drown the shared connection (lag for everything)
-        mic: pipePublish('mic', createAudioSource({sourceId: 'mic', worklet: false, bufferSize: 4096})),
-    }
-
-    // resolution stress test: swap the camera source on the fly, keep it live if it was
-    camResEl.addEventListener('change', async function onCamResChange() {
-        const wasLive = sources.cam.state == 'live'
-        sources.cam.stop()
-        sources.cam = makeCam()
-        if (wasLive) {
-            const state = await sources.cam.start()
-            log(`cam @${camResEl.value}p: ${state}`)
-        }
-    })
-
-    // -------- capture toggles --------
-    function bindToggle(id: string, kind: tMediaKind, label: string) {
-        const btn = el(id) as HTMLButtonElement
-        btn.addEventListener('click', async function toggleCapture() {
-            const src = sources[kind]
-            if (src.state == 'live') {
-                src.stop()
-                btn.textContent = label
-                log(`${kind}: stopped`)
-                return
-            }
-            btn.textContent = `${label} …`
-            const state = await src.start()
-            btn.textContent = state == 'live' ? `${label} ⏹` : label
-            log(`${kind}: ${state}${state != 'live' && src.getStats().error ? ' — ' + src.getStats().error : ''}`)
-        })
-    }
-    bindToggle('cam', 'cam', '📷 camera')
-    bindToggle('mic', 'mic', '🎙 mic')
-    bindToggle('screen', 'screen', '🖥 screen')
-
-    // -------- peer viewers: attached only while a call is active --------
-    // The server's watch ACL denies media.watch[peer] outside a call, so the viewers
-    // are created on 'active' and torn down on 'ended' (one-time DOM wiring below).
-    for (const id of ['peerCam', 'peerScreen']) {
-        const canvas = el(id) as HTMLCanvasElement
-        canvas.addEventListener('click', function goFullscreen() {
-            void (document.fullscreenElement == canvas ? document.exitFullscreen() : canvas.requestFullscreen?.())
-        })
-    }
-    const audioBtn = el('audio') as HTMLButtonElement
-    type PeerViews = {
-        cam: ReturnType<typeof attachVideoCanvas>
-        screen: ReturnType<typeof attachVideoCanvas>
-        player: ReturnType<typeof attachAudioPlayer>
-    }
-    let views: PeerViews | null = null
-
-    audioBtn.addEventListener('click', function togglePeerAudio() {
-        if (!views) return
-        if (views.player.enabled) {
-            views.player.disable()
-            audioBtn.textContent = '🔊 peer audio'
-        } else {
-            views.player.enable()
-            audioBtn.textContent = '🔊 peer audio ⏹'
-        }
-    })
-
-    function attachPeer() {
-        if (views) return
-        const watch = media.watch[other]
-        views = {
-            cam: attachVideoCanvas(watch.cam, el('peerCam'), {onError: e => log('video frame render failed: ' + e)}),
-            screen: attachVideoCanvas(watch.screen, el('peerScreen'), {onError: e => log('screen frame render failed: ' + e)}),
-            player: attachAudioPlayer(watch.mic, {onError: e => log('audio frame failed: ' + e)}),
-        }
-        audioBtn.disabled = false
-        log(`watching ${other}'s media (call active)`)
-    }
-
-    function detachPeer() {
-        if (!views) return
-        views.cam.off()
-        views.screen.off()
-        views.player.disable()
-        views.player.off()
-        views = null
-        audioBtn.disabled = true
-        audioBtn.textContent = '🔊 peer audio'
-        for (const id of ['peerCam', 'peerScreen']) {
-            const canvas = el(id) as HTMLCanvasElement
-            canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height)
-        }
-        log('peer media detached (call ended)')
-    }
-    audioBtn.disabled = true
-
-    // -------- stats line: own capture + helper-provided rx metrics --------
-    const statsEl = el('mediaStats')
-    let prevTx = {cam: 0, mic: 0, screen: 0}
-    setInterval(function renderMediaStats() {
-        const parts: string[] = []
-        const nextTx = {cam: 0, mic: 0, screen: 0}
-        for (const kind of ['cam', 'mic', 'screen'] as const) {
-            const s = sources[kind].getStats()
-            nextTx[kind] = s.frames
-            if (s.state != 'idle') parts.push(`${kind}: ${s.state} ${s.frames}f ${s.frames - prevTx[kind]}/s${s.rms != null ? ` rms=${s.rms.toFixed(3)}` : ''}`)
-        }
-        prevTx = nextTx
-        if (views) {
-            const cam = views.cam.stats()
-            const screen = views.screen.stats()
-            const mic = views.player.stats()
-            const caps = [['peerCam', 'peer camera', cam], ['peerScreen', 'peer screen', screen]] as const
-            for (const [id, caption, s] of caps) {
-                if (s.width) el(id + 'Cap').textContent = `${caption} · ${s.width}×${s.height} · click = fullscreen`
-            }
-            if (cam.frames || screen.frames || mic.frames) parts.push(
-                `rx: cam ${cam.frames}f/${cam.drawn}d ${cam.perSec}/s ~${cam.ageMs}ms` +
-                ` · screen ${screen.frames}f/${screen.drawn}d ${screen.perSec}/s ~${screen.ageMs}ms` +
-                ` · mic ${mic.frames}f ${mic.perSec}/s ~${mic.ageMs}ms`)
-        }
-        statsEl.textContent = parts.join('  ·  ')
-    }, 1000)
-
-    return {attachPeer, detachPeer}
 }
 
 main().catch(e => { console.error(e); log('FATAL: ' + e) })

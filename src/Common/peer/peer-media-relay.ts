@@ -88,6 +88,7 @@ export function createMediaRelay(deps: MediaRelayDeps) {
     type WatcherCache = {
         root: Record<string, Record<string, tRelayLine>>
         owners: Map<string, Record<string, tRelayLine>>
+        ownerLines: Map<string, Set<tRelayLine>>
         filtered: Set<tRelayLine>
     }
     const watcherViews = new Map<string, WatcherCache>()
@@ -127,6 +128,7 @@ export function createMediaRelay(deps: MediaRelayDeps) {
         if (!entry) return undefined
         const policyLines: Record<string, tRelayLine> = {}
         for (const name of Object.keys(lines)) policyLines[name] = filteredLine(watcher, owner, name, entry.view[name], cache)
+        cache.ownerLines.set(owner, new Set(Object.values(policyLines)))
         view = noStrict(new Proxy(policyLines, {
             has(t, k) { return typeof k == 'string' && k in t && allowed(watcher, owner, k) },
             get(t, k) {
@@ -146,6 +148,7 @@ export function createMediaRelay(deps: MediaRelayDeps) {
         let cached = watcherViews.get(watcher)
         if (cached) return cached.root
         const owners = new Map<string, Record<string, tRelayLine>>()
+        const ownerLines = new Map<string, Set<tRelayLine>>()
         const filtered = new Set<tRelayLine>()
         // an owner key is visible only when the account exists AND at least one line passes
         function visible(owner: string) {
@@ -158,7 +161,7 @@ export function createMediaRelay(deps: MediaRelayDeps) {
                 return visible(k) ? ownerViewFor(watcher, k, cached!) : undefined
             },
         }))
-        cached = {root, owners, filtered}
+        cached = {root, owners, ownerLines, filtered}
         watcherViews.set(watcher, cached)
         return root
     }
@@ -171,6 +174,7 @@ export function createMediaRelay(deps: MediaRelayDeps) {
         for (const line of cache.filtered) line.close()
         cache.filtered.clear()
         cache.owners.clear()
+        cache.ownerLines.clear()
     }
 
     /** Retire an account: close its lines (live watchers end LOUDLY) and free the keyspace. */
@@ -180,12 +184,13 @@ export function createMediaRelay(deps: MediaRelayDeps) {
         if (ownCache) closeWatcherCache(ownCache)
         watcherViews.delete(account)
         for (const cache of watcherViews.values()) {
-            const ownerView = cache.owners.get(account)
-            if (ownerView) for (const line of Object.values(ownerView)) {
+            const ownerLines = cache.ownerLines.get(account)
+            if (ownerLines) for (const line of ownerLines) {
                 line.close()
                 cache.filtered.delete(line)
             }
             cache.owners.delete(account)
+            cache.ownerLines.delete(account)
         }
         if (!entry) return
         accounts.delete(account)

@@ -4,6 +4,7 @@
 > Notation: `name(args: types) -> ret  // note`. Types are shown where they decide a correct call (callback shape,
 > overloads, return). Short names are **canonical**; removed old names are listed in `NAMING_RENAMES.md`.
 > Full surface → **`wenay-common2-rare.md`**. Code style → `CLAUDE.md`. Full RPC guide → `rpc.md`.
+> Public raw-IP/hostname HTTPS/WSS demo, certificate issuance, router ports, and diagnostics → **[`DEMO-HTTPS.md`](DEMO-HTTPS.md)**.
 
 ## ⭐ events — `listen` / `listenStore`
 ```
@@ -163,6 +164,9 @@ Media.attachAudioPlayer(line, {maxBacklogSec? = 0.35}) -> {enable(), disable(), 
 Media.pipeMediaPublish(line, publish, {stamp? = true, onError?}) -> off   // source -> RPC publish fn; stamp lets viewers measure latency
 ```
 Audio default is PCM frames from `AudioWorklet` where available (`mode:'record'` uses MediaRecorder chunks). Video default is camera snapshots (JPEG, low fps for vision) captured hidden-tab-proof: a worker timer ticks (setInterval is throttled to ~1/s in hidden tabs), `ImageCapture.grabFrame()` reads the track (a hidden `<video>` stops painting), and JPEG encode runs in a worker (main-thread `convertToBlob` stalls ~1s hidden) — `worker:false` opts back into the plain in-page path. Screen share is the same video source with an injected stream: `createVideoSource({stream: () => navigator.mediaDevices.getDisplayMedia({video: true})})`. Put `listen` into `createRpcServerAuto` like any other Listen; with `replay:true`, the returned listen is a replay line, so RPC auto exposes legacy + replay surfaces under the same key. Backpressure policy: audio is lossless queue; video `replay:true` defaults to keep-latest frame recovery. `transport:'webrtc'` is reserved for a future SFU/signaling adapter; socket binary is the default today. Living example: the demo stand (`npm run demo`) streams camera / mic / screen share between two tabs through a tiny server-side relay of replay lines (`demo/server.ts` + `demo/client.ts`).
+
+> Camera, microphone, and screen capture from an external address require a browser secure context.
+> Use the public certificate workflow in [`DEMO-HTTPS.md`](DEMO-HTTPS.md); plain external HTTP is not sufficient.
 
 ## 📦 Resource — file storage intents + AI job lifecycle
 > `import { Resource } from 'wenay-common2'` or `import * as Resource from 'wenay-common2/resource'`.
@@ -342,6 +346,9 @@ get a keyframe folded server-side even while the owner is offline.
 The same replay datachannel preserves `Media` `Uint8Array` frames byte-for-byte, so a direct route
 can feed existing `Media` Listen/replay consumers; native WebRTC tracks/SFU are optional future
 performance adapters, not a second media semantic.
+
+> Public WSS/WebRTC demo setup and certificate verification → [`DEMO-HTTPS.md`](DEMO-HTTPS.md).
+
 Reconnect correctness is self-healing: a publisher gap makes the relay reject the push WITH its last
 seq, and the client repairs from that coordinate automatically (`repair: 'tail'` lossless (default)
 | `'keyframe'` cheap reset for ephemeral state). Server declares journal semantics

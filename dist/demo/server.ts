@@ -13,7 +13,38 @@ import {createArtifactHost} from '../src/Common/artifact/artifact-index'
 import {createConversationHost} from '../src/Common/conversation/conversation-index'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 
-const PORT = Number(process.env.PORT ?? 8390)
+const portStart = Number(process.env.DEMO_PORT_START ?? 3100)
+const portEnd = Number(process.env.DEMO_PORT_END ?? 3500)
+const listenHost = process.env.DEMO_HOST
+let port = portStart
+
+type DemoIceServer = {
+    urls: string | string[]
+    username?: string
+    credential?: string
+}
+
+function isIceServer(value: unknown): value is DemoIceServer {
+    if (value == null || typeof value != 'object') return false
+    const {urls, username, credential} = value as DemoIceServer
+    const validUrls = typeof urls == 'string'
+        || (Array.isArray(urls) && urls.length > 0 && urls.every(url => typeof url == 'string'))
+    return validUrls
+        && (username == null || typeof username == 'string')
+        && (credential == null || typeof credential == 'string')
+}
+
+function readDemoIceServers() {
+    const raw = process.env.DEMO_RTC_ICE_SERVERS
+    if (!raw) return [{urls: 'stun:stun.l.google.com:19302'}]
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed) || !parsed.every(isIceServer)) {
+        throw new Error('DEMO_RTC_ICE_SERVERS must be a JSON array of RTCIceServer objects')
+    }
+    return parsed
+}
+
+const rtcConfiguration = {iceServers: readDemoIceServers()}
 
 function delay(ms: number) {
     return new Promise<void>(resolve => setTimeout(resolve, ms))
@@ -80,7 +111,7 @@ const artifacts = createArtifactHost({
             const expiresAt = Date.now() + 60_000
             artifactTickets.set(ticket, {artifactId: artifact.id, storageKey: String(storageKey), expiresAt})
             // Separate cookie-free origin: the iframe is not the app/RPC origin.
-            return {url: 'http://artifact.localhost:' + PORT + '/artifact-open/' + artifact.id + '?ticket=' + ticket, expiresAt}
+            return {url: 'http://artifact.localhost:' + port + '/artifact-open/' + artifact.id + '?ticket=' + ticket, expiresAt}
         },
         remove({storageKey}) {
             const key = String(storageKey)
@@ -94,7 +125,12 @@ const artifacts = createArtifactHost({
 // ============== multi-channel conversation + structured facts stand ==============
 // This runtime is deliberately in-memory. A production app injects the documented
 // atomic persistence port and rehydrates both its projection and request receipts.
-const conversations = createConversationHost({drain: 'micro'})
+const conversations = createConversationHost({
+    // This stand is one public room: presence, not a pre-seeded account list,
+    // determines who is currently in it.
+    policy: {canRead: () => true, canWrite: () => true},
+    drain: 'micro',
+})
 const conversationReady = (async function prepareDemoConversation() {
     const created = await conversations.control.createConversation('a', {
         requestId: 'demo-conversation', title: 'Dynamic AI workspace', rootTitle: 'Main', participantIds: ['b'],
@@ -158,7 +194,91 @@ const ai = createAiRunHost({
     drain: 'micro',
 })
 
-// ============== media relay + call-driven watch ACL ==============
+// ============== video rooms: application policy over the media relay ==============
+type VideoRoomEntry = {id: string, name: string, members: Set<string>}
+
+function createVideoRooms() {
+    const rooms = new Map<string, VideoRoomEntry>()
+    const accountRooms = new Map<string, string>()
+    const [emitChange, changes] = listen<[number]>()
+    let revision = 0
+    let nextRoom = 1
+
+    rooms.set('room-1', {id: 'room-1', name: 'Demo room', members: new Set()})
+
+    function roomInfo(room: VideoRoomEntry) {
+        return {id: room.id, name: room.name, members: Array.from(room.members).sort()}
+    }
+
+    function changed() {
+        emitChange(++revision)
+    }
+
+    function detach(account: string) {
+        const roomId = accountRooms.get(account)
+        if (!roomId) return false
+        accountRooms.delete(account)
+        rooms.get(roomId)?.members.delete(account)
+        return true
+    }
+
+    function leave(account: string) {
+        const left = detach(account)
+        if (left) changed()
+        return left
+    }
+
+    function join(account: string, roomId: string) {
+        const room = rooms.get(roomId)
+        if (!room) throw new Error('video room does not exist')
+        if (accountRooms.get(account) == roomId) return snapshot(account)
+        detach(account)
+        accountRooms.set(account, roomId)
+        room.members.add(account)
+        changed()
+        return snapshot(account)
+    }
+
+    function create(account: string, requestedName: unknown) {
+        const name = String(requestedName ?? '').trim().slice(0, 48)
+        if (!name) throw new Error('video room name is required')
+        const id = 'room-' + (++nextRoom)
+        rooms.set(id, {id, name, members: new Set()})
+        return join(account, id)
+    }
+
+    function snapshot(account: string) {
+        return {
+            revision,
+            currentRoomId: accountRooms.get(account) ?? null,
+            rooms: Array.from(rooms.values()).map(roomInfo),
+        }
+    }
+
+    function connection(account: string) {
+        return {
+            snapshot: () => snapshot(account),
+            create: (name: unknown) => create(account, name),
+            join: (roomId: string) => join(account, roomId),
+            leave: () => {
+                leave(account)
+                return snapshot(account)
+            },
+            changes,
+        }
+    }
+
+    return {
+        connection,
+        leave,
+        canWatch(watcher: string, owner: string) {
+            const roomId = accountRooms.get(watcher)
+            return watcher != owner && !!roomId && accountRooms.get(owner) == roomId
+        },
+    }
+}
+
+// ============== media relay + room/call-driven watch ACL ==============
 // The signal hub is the single policy boundary, but authorization still needs a tiny
 // server-owned call lifecycle: an arbitrary forged `accept` must never grant media.
 function createCallWatchPolicy() {
@@ -224,10 +344,11 @@ function createCallWatchPolicy() {
     }
 }
 
+const videoRooms = createVideoRooms()
 const callPolicy = createCallWatchPolicy()
 const media = createMediaRelay({
     lines: {cam: 'video', mic: 'audio', screen: 'video'},
-    canWatch: callPolicy.canWatch,
+    canWatch: (watcher, owner) => videoRooms.canWatch(watcher, owner) || callPolicy.canWatch(watcher, owner),
 })
 const host = createPeerHost({authorize: callPolicy.authorize})
 
@@ -235,6 +356,7 @@ const host = createPeerHost({authorize: callPolicy.authorize})
 host.presence.changes.on(function onPresenceEdge(ch) {
     console.log(`[demo] presence: ${ch.account} ${ch.online ? 'online' : 'offline'}`)
     if (ch.online) return
+    videoRooms.leave(ch.account)
     callPolicy.dropAccount(ch.account)
     media.dropAccount(ch.account)
 })
@@ -271,22 +393,52 @@ app.get('/artifact-open/:artifactId', function openArtifact(req, res) {
         return
     }
     res.set({
-        'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors http://localhost:" + PORT,
+        'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors http://localhost:" + port,
         'Cross-Origin-Resource-Policy': 'cross-origin',
         'Referrer-Policy': 'no-referrer',
         'X-Content-Type-Options': 'nosniff',
     })
     res.type('html').send(html)
 })
-app.use(express.static(path.resolve(__dirname, 'public')))
+app.use(express.static(path.resolve(__dirname, 'public'), {
+    // The stand is rebuilt in place; stale browser bundles otherwise keep an
+    // old RPC client alive while the page itself still looks healthy.
+    etag: false,
+    lastModified: false,
+    cacheControl: false,
+    setHeaders(res) {
+        res.setHeader('Cache-Control', 'no-store')
+    },
+}))
 app.get('/', (_req, res) => res.sendFile(path.resolve(__dirname, 'public', 'index.html')))
 
 const httpServer = createServer(app)
 // screen-share JPEG frames can exceed the 1MB Socket.IO default
 const ioServer = new SocketIOServer(httpServer, {maxHttpBufferSize: 1e8})
+const participantAccounts = new Map<string, string>()
+let nextParticipant = 0
+
+function participantAccount(tab: string) {
+    const existing = participantAccounts.get(tab)
+    if (existing) return existing
+    let n = nextParticipant++
+    let label = ''
+    do {
+        label = String.fromCharCode(65 + n % 26) + label
+        n = Math.floor(n / 26) - 1
+    } while (n >= 0)
+    const account = 'person-' + label.toLowerCase()
+    participantAccounts.set(tab, account)
+    return account
+}
 
 ioServer.on('connection', function onDemoConnection(socket) {
-    const account = String(socket.handshake.auth?.account ?? 'anon')
+    const tab = socket.handshake.auth?.tab
+    if (typeof tab != 'string' || !tab) {
+        socket.disconnect(true)
+        return
+    }
+    const account = participantAccount(tab)
     const peer = host.connection(account)
     const resource = files.connection(account)
     const aiRun = ai.connection(account)
@@ -300,6 +452,12 @@ ioServer.on('connection', function onDemoConnection(socket) {
         object: {
             // legacy key on the SAME connection — the SDK does not displace old code
             serverTime: () => new Date().toISOString(),
+            // Deployment owns ICE/TURN credentials; the SDK only receives an rtc factory.
+            demo: {
+                account: () => account,
+                rtcConfiguration: () => rtcConfiguration,
+                rooms: videoRooms.connection(account),
+            },
             peer: peer.fragment,
             files: resource.fragment,
             ai: aiRun.fragment,
@@ -316,14 +474,41 @@ ioServer.on('connection', function onDemoConnection(socket) {
     console.log(`[demo] ${account} connected`)
 })
 
+function listenOn(port: number) {
+    return new Promise<boolean>(function waitForListen(resolve, reject) {
+        function onError(error: NodeJS.ErrnoException) {
+            httpServer.off('listening', onListen)
+            if (error.code == 'EADDRINUSE') {
+                resolve(false)
+                return
+            }
+            reject(error)
+        }
+
+        function onListen() {
+            httpServer.off('error', onError)
+            resolve(true)
+        }
+
+        httpServer.once('error', onError)
+        httpServer.once('listening', onListen)
+        httpServer.listen(port, listenHost)
+    })
+}
+
+async function listenOnAvailablePort() {
+    for (let candidate = portStart; candidate <= portEnd; candidate++) {
+        if (await listenOn(candidate)) return candidate
+    }
+    throw new Error(`no free demo port in ${portStart}-${portEnd}`)
+}
+
 async function startDemo() {
     await conversationReady
-    httpServer.listen(PORT, function onDemoListen() {
-        console.log('[demo] shared-cursor + calls + Conversation stand is up:')
-        console.log(`  tab A: http://localhost:${PORT}/?me=a&peer=b`)
-        console.log(`  tab B: http://localhost:${PORT}/?me=b&peer=a`)
-        console.log(`  artifact origin: http://artifact.localhost:${PORT} (sandboxed iframe only)`)
-    })
+    port = await listenOnAvailablePort()
+    console.log('[demo] shared-cursor + calls + Conversation stand is up:')
+    console.log(`  open each participant tab: http://localhost:${port}/`)
+    console.log(`  artifact origin: http://artifact.localhost:${port} (sandboxed iframe only)`)
 }
 
 void startDemo()

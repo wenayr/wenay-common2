@@ -192,6 +192,10 @@ export function createWebRtcConnector<Z extends any[] = any[]>(deps: WebRtcConne
     let channel: ReplayMessageChannel | null = null
     let offSignals: any = null
     let abortOpen: ((e: unknown) => void) | null = null
+    let offerSent = false
+    let remoteDescriptionReady = false
+    const pendingLocalIce: unknown[] = []
+    const pendingRemoteIce: unknown[] = []
     const [emitFail, failListen] = listen<[unknown]>()
 
     function teardown(next: tConnectorState) {
@@ -231,15 +235,36 @@ export function createWebRtcConnector<Z extends any[] = any[]>(deps: WebRtcConne
         })
         opened.catch(() => {}) // провал ДО await opened не должен дать unhandled rejection от таймера
 
+        function sendLocalIce(candidate: unknown) {
+            void port.send({type: 'ice', pair, from: self, to: peer, candidate})
+        }
+
+        async function acceptAnswer(sdp: string) {
+            await me.setRemoteDescription({type: 'answer', sdp})
+            if (pc != me) return
+            remoteDescriptionReady = true
+            while (pendingRemoteIce.length) {
+                await me.addIceCandidate(pendingRemoteIce.shift())
+                if (pc != me) return
+            }
+        }
+
+        function acceptRemoteIce(candidate: unknown) {
+            if (!remoteDescriptionReady) {
+                pendingRemoteIce.push(candidate)
+                return
+            }
+            void Promise.resolve(me.addIceCandidate(candidate)).catch(fail)
+        }
+
         offSignals = port.signals.on(function onSignal(env: SignalEnvelope) {
             if (env == null || env.pair != pair || env.to != self || pc != me) return
             if (env.type == 'answer' && env.sdp != null) {
-                void Promise.resolve(me.setRemoteDescription({type: 'answer', sdp: env.sdp}))
-                    .catch(fail)
+                void acceptAnswer(env.sdp).catch(fail)
                 return
             }
             if (env.type == 'ice' && env.candidate != null) {
-                void Promise.resolve(me.addIceCandidate(env.candidate)).catch(fail)
+                acceptRemoteIce(env.candidate)
                 return
             }
             if (env.type == 'revoke' || env.type == 'close') {
@@ -252,7 +277,9 @@ export function createWebRtcConnector<Z extends any[] = any[]>(deps: WebRtcConne
                 // RTCIceCandidate — класс-инстанс: по проводу едет его JSON-инит,
                 // иначе сериализация транспорта может отдать пустой объект
                 const c: any = ev.candidate
-                void port.send({type: 'ice', pair, from: self, to: peer, candidate: c?.toJSON ? c.toJSON() : c})
+                const candidate = c?.toJSON ? c.toJSON() : c
+                if (offerSent) sendLocalIce(candidate)
+                else pendingLocalIce.push(candidate)
             }
         }
 
@@ -262,6 +289,8 @@ export function createWebRtcConnector<Z extends any[] = any[]>(deps: WebRtcConne
             const accepted = await port.send({type: 'offer', pair, from: self, to: peer, sdp: offer.sdp, session})
             // сервер не раскрыл endpoint (authorize) или пира нет — direct не состоится
             if (accepted == false) throw new Error('signaling rejected offer (endpoint not exposed): ' + pair)
+            offerSent = true
+            while (pendingLocalIce.length) sendLocalIce(pendingLocalIce.shift())
             await opened
         } catch (e) {
             teardown('failed')
@@ -312,8 +341,14 @@ export type WebRtcAcceptDeps<Z extends any[]> = {
  */
 export function acceptWebRtcDirect<Z extends any[] = any[]>(deps: WebRtcAcceptDeps<Z>) {
     const {port, rtc, self, serve, accept} = deps
-    type Session = {pc: RtcPeerConnection, stop: (() => void) | null}
+    type Session = {
+        pc: RtcPeerConnection
+        stop: (() => void) | null
+        remoteDescriptionReady: boolean
+        pendingIce: unknown[]
+    }
     const sessions = new Map<string, Session>() // `${pair}|${from}` — по сессии на инициатора
+    const pendingOffers = new Map<string, unknown[]>()
     let closed = false
 
     function dropSession(key: string) {
@@ -326,37 +361,59 @@ export function acceptWebRtcDirect<Z extends any[] = any[]>(deps: WebRtcAcceptDe
 
     async function onOffer(env: SignalEnvelope) {
         const key = env.pair + '|' + env.from
-        if (accept && !(await accept(env))) {
-            // отказ приёмной стороны — громко, чтобы инициатор не ждал таймаута
-            void port.send({type: 'revoke', pair: env.pair, from: self, to: env.from, reason: 'offer rejected'})
-            return
+        const pendingIce: unknown[] = []
+        pendingOffers.set(key, pendingIce)
+        let session: Session | null = null
+
+        function currentOffer() {
+            return pendingOffers.get(key) == pendingIce
         }
-        const source = await serve(env)
-        if (!source) {
-            void port.send({type: 'revoke', pair: env.pair, from: self, to: env.from, reason: 'nothing to serve'})
-            return
-        }
-        dropSession(key) // повторный offer той же пары = пересоздание сессии
-        const pc = rtc()
-        const session: Session = {pc, stop: null}
-        sessions.set(key, session)
-        pc.ondatachannel = function onIncomingChannel(ev) {
-            session.stop = serveReplayChannel<Z>(source, channelFromDataChannel(ev.channel))
-        }
-        pc.onicecandidate = function onIce(ev) {
-            if (ev?.candidate != null) {
-                const c: any = ev.candidate
-                void port.send({type: 'ice', pair: env.pair, from: self, to: env.from, candidate: c?.toJSON ? c.toJSON() : c})
-            }
-        }
+
         try {
+            if (accept && !(await accept(env))) {
+                if (currentOffer()) {
+                    void port.send({type: 'revoke', pair: env.pair, from: self, to: env.from, reason: 'offer rejected'})
+                }
+                return
+            }
+            if (!currentOffer()) return
+            const source = await serve(env)
+            if (!currentOffer()) return
+            if (!source) {
+                void port.send({type: 'revoke', pair: env.pair, from: self, to: env.from, reason: 'nothing to serve'})
+                return
+            }
+            dropSession(key)
+            if (!currentOffer()) return
+            const pc = rtc()
+            session = {pc, stop: null, remoteDescriptionReady: false, pendingIce}
+            sessions.set(key, session)
+            pendingOffers.delete(key)
+            pc.ondatachannel = function onIncomingChannel(ev) {
+                session!.stop = serveReplayChannel<Z>(source, channelFromDataChannel(ev.channel))
+            }
+            pc.onicecandidate = function onIce(ev) {
+                if (ev?.candidate != null) {
+                    const c: any = ev.candidate
+                    void port.send({type: 'ice', pair: env.pair, from: self, to: env.from, candidate: c?.toJSON ? c.toJSON() : c})
+                }
+            }
             await pc.setRemoteDescription({type: 'offer', sdp: env.sdp})
+            if (sessions.get(key) != session) return
+            session.remoteDescriptionReady = true
+            while (session.pendingIce.length) await pc.addIceCandidate(session.pendingIce.shift())
             const answer = await pc.createAnswer()
             await pc.setLocalDescription(answer)
             void port.send({type: 'answer', pair: env.pair, from: self, to: env.from, sdp: answer.sdp})
         } catch {
-            dropSession(key)
-            void port.send({type: 'revoke', pair: env.pair, from: self, to: env.from, reason: 'negotiation failed'})
+            if (session && sessions.get(key) == session) {
+                dropSession(key)
+                void port.send({type: 'revoke', pair: env.pair, from: self, to: env.from, reason: 'negotiation failed'})
+            } else if (!session && currentOffer()) {
+                void port.send({type: 'revoke', pair: env.pair, from: self, to: env.from, reason: 'negotiation failed'})
+            }
+        } finally {
+            if (currentOffer()) pendingOffers.delete(key)
         }
     }
 
@@ -365,10 +422,22 @@ export function acceptWebRtcDirect<Z extends any[] = any[]>(deps: WebRtcAcceptDe
         if (env.type == 'offer') { void onOffer(env); return }
         const key = env.pair + '|' + env.from
         if (env.type == 'ice' && env.candidate != null) {
-            void Promise.resolve(sessions.get(key)?.pc.addIceCandidate(env.candidate)).catch(() => dropSession(key))
+            const session = sessions.get(key)
+            if (!session) {
+                pendingOffers.get(key)?.push(env.candidate)
+                return
+            }
+            if (!session.remoteDescriptionReady) {
+                session.pendingIce.push(env.candidate)
+                return
+            }
+            void Promise.resolve(session.pc.addIceCandidate(env.candidate)).catch(() => dropSession(key))
             return
         }
-        if (env.type == 'close' || env.type == 'revoke') dropSession(key)
+        if (env.type == 'close' || env.type == 'revoke') {
+            pendingOffers.delete(key)
+            dropSession(key)
+        }
     })
 
     return function closeAccept() {
@@ -376,6 +445,7 @@ export function acceptWebRtcDirect<Z extends any[] = any[]>(deps: WebRtcAcceptDe
         closed = true
         if (typeof offSignals == 'function') offSignals()
         else (offSignals as any)?.off?.()
+        pendingOffers.clear()
         for (const key of Array.from(sessions.keys())) dropSession(key)
     }
 }

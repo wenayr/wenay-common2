@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "1.0.81",
+  "version": "1.0.83",
   "description": "Common library",
   "strict": true,
   "main": "lib/index.js",
@@ -18,6 +18,8 @@
     "_clearDir": "IF exist lib (rd /s /q lib)  &&  mkdir lib  &&  copy tsconfig_lib.json lib\\tsconfig.json  &&  echo:",
     "demo:build": "esbuild demo/client.ts --bundle --platform=browser --outfile=demo/public/client.js  &&  copy /Y demo\\index.html demo\\public\\index.html",
     "demo": "npm run demo:build  &&  node node_modules/ts-node/dist/bin.js --transpile-only demo/server.ts",
+    "demo:https": "powershell -ExecutionPolicy Bypass -File scripts/start-demo-https.ps1",
+    "demo:https:stop": "powershell -ExecutionPolicy Bypass -File scripts/start-demo-https.ps1 -Stop",
     "test:rpc-guards": "node scripts/assert-rpc-symbol-guard.cjs",
     "test:rpc": "node node_modules/ts-node/dist/bin.js --transpile-only src/Common/rcp/rpc.harness.spec.ts",
     "test:all": "npm run test:rpc-guards && npm run test:rpc && node scripts/run-oracles.mjs"

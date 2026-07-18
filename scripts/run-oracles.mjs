@@ -1,4 +1,4 @@
-// run-oracles.mjs — прогнать ВСЕ оракулы одной командой (npm run test:all).
+﻿// run-oracles.mjs — прогнать ВСЕ оракулы одной командой (npm run test:all).
 // Конвенция oracle/README.md: ts-node --transpile-only, PASS/FAIL в лог,
 // ненулевой exit при провале. Запуск последовательный: socket-оракулы держат порты.
 // В publish-гейт НЕ входит (там остаётся быстрый npm run test) — это команда

@@ -40,7 +40,11 @@ async function waitFor(label: string, cond: () => boolean) {
 // would inject () => new RTCPeerConnection(cfg).
 // =====================================================================
 
-function createFakeRtcNet() {
+function createFakeRtcNet(opts: {
+    synchronousIce?: boolean
+    remoteDescriptionDelayMs?: number
+    requireIce?: boolean
+} = {}) {
     let n = 0
     const pcs = new Map<string, any>()
     const stats = {ice: 0, channels: 0}
@@ -71,6 +75,7 @@ function createFakeRtcNet() {
         if (!me.local || !me.remote) return
         const other = pcs.get(me.remote.sdp)
         if (!other || !other.local || !other.remote || other.remote.sdp != me.id) return
+        if (opts.requireIce && (!me.ice || !other.ice)) return
         const initiator = me.pendingDcs.length ? me : other
         const responder = initiator == me ? other : me
         if (!initiator.pendingDcs.length || initiator.linked) return
@@ -90,7 +95,7 @@ function createFakeRtcNet() {
 
     function pc(): RtcPeerConnection {
         const id = 'sdp-' + (++n)
-        const me: any = {id, local: null, remote: null, pendingDcs: [], linked: false}
+        const me: any = {id, local: null, remote: null, pendingDcs: [], linked: false, ice: 0}
         const api: RtcPeerConnection = {
             createDataChannel() {
                 // локальный конец создаётся ДО соединения: методы делегируются после attach
@@ -113,13 +118,21 @@ function createFakeRtcNet() {
             createAnswer: async () => ({type: 'answer', sdp: id}),
             setLocalDescription(d) {
                 me.local = d
-                setTimeout(function trickleIce() { api.onicecandidate?.({candidate: {via: id}}) }, 0)
+                function trickleIce() { api.onicecandidate?.({candidate: {via: id}}) }
+                if (opts.synchronousIce) trickleIce()
+                else setTimeout(trickleIce, 0)
             },
-            setRemoteDescription(d) {
+            async setRemoteDescription(d) {
+                if (opts.remoteDescriptionDelayMs) await delay(opts.remoteDescriptionDelayMs)
                 me.remote = d
                 tryConnect(me)
             },
-            addIceCandidate() { stats.ice++ },
+            addIceCandidate() {
+                if (opts.requireIce && !me.remote) throw new Error('ICE before remote description')
+                me.ice++
+                stats.ice++
+                tryConnect(me)
+            },
             close() {
                 for (const dc of me.pendingDcs) dc.attach?.(null)
                 me.pendingDcs = []
@@ -237,6 +250,51 @@ async function main() {
         state = 5; emit(state)
         await waitFor('direct again', () => got.includes(5))
         ok(retry.ok && link.state() == 'direct' && json(got.filter(v => typeof v == 'number')) == json([0, 1, 2, 3, 4, 5]), 'pair recovers into direct after denials, still gap-free')
+
+        coord.close()
+        stopAccept()
+        hub.close()
+    }
+
+    console.log('\n[route-webrtc] ICE is ordered around asynchronous remote descriptions')
+    {
+        const [emit, replay] = replayListen<[number]>({history: 100})
+        const hub = createSignalHub()
+        const portA = hub.register('a')
+        const portB = hub.register('b')
+        const rtcNet = createFakeRtcNet({
+            synchronousIce: true,
+            remoteDescriptionDelayMs: 20,
+            requireIce: true,
+        })
+        const stopAccept = acceptWebRtcDirect<[number]>({
+            port: portB,
+            rtc: rtcNet.pc,
+            self: 'b',
+            async serve() {
+                await delay(20)
+                return exposeReplay(replay)
+            },
+        })
+        const coord = createRouteCoordinator<[number]>({
+            connect: (ref, kind) => kind == 'relay'
+                ? makeRelayConnector<[number]>(replay)
+                : createWebRtcConnector<[number]>({
+                    port: portA, rtc: rtcNet.pc, self: 'a', peer: 'b',
+                    pair: ref.key, openTimeoutMs: 1500,
+                }),
+        })
+        const link = coord.pair('a', 'b')
+        const got: number[] = []
+        const sub = link.subscribe(value => got.push(value))
+        await sub.ready
+        ok(sub.seq() == -1, 'cold relay starts without a replay coordinate')
+
+        const res = await link.promoteDirect()
+        emit(7)
+        await waitFor('live event after strict ICE handoff', () => got.includes(7))
+        ok(res.ok && link.state() == 'direct', 'early ICE waits for offer/answer remote descriptions')
+        ok(rtcNet.stats.ice == 2, 'both peers accepted their queued ICE candidate')
 
         coord.close()
         stopAccept()

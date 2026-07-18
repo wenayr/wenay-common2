@@ -129,6 +129,8 @@ async function main() {
     ok(!!(replayVideo[1] as any).line && typeof (replayVideo[1] as any).frame == 'function', 'media replay:true returns replay-listen surface for RPC auto exposure')
     ok(await audio.start() == 'no-device', 'Node without getUserMedia returns typed no-device state, not throw')
     ok(await video.start() == 'no-device', 'video source also returns typed no-device state without browser globals')
+    ok(audio.state == 'no-device' && audio.getStats().state == 'no-device', 'audio state getter stays live after construction')
+    ok(video.state == 'no-device' && video.getStats().state == 'no-device', 'video state getter stays live after construction')
 
     const [emitAudio, audioListen] = audio
     const server = await startRealServer({audio: audioListen})

@@ -3,6 +3,7 @@
 > The full surface. For everyday helpers use **`wenay-common2.md`** (brief). Root import:
 > `import { ... } from "wenay-common2"`. Notation: `name(args) -> ret  // note`. Short names are
 > canonical. Removed old names are listed in `NAMING_RENAMES.md`.
+> Public raw-IP/hostname HTTPS/WSS demo, certificate issuance, router ports, and diagnostics → **[`DEMO-HTTPS.md`](DEMO-HTTPS.md)**.
 
 ## 🔔 events (rare)
 ```
@@ -449,6 +450,7 @@ idempotent restart and reconnect). `npm run demo` exercises the same flow with t
 ## 🎙️ Media over socket — browser capture as binary Listen
 > `import { Media } from "wenay-common2"` or `import * as Media from "wenay-common2/media"`.
 > The hot path event is ONE `Uint8Array`: fixed 40-byte common2 media header + raw payload. No JSON envelope.
+> External browser capture needs a secure context; use [`DEMO-HTTPS.md`](DEMO-HTTPS.md) to obtain and verify the demo certificate.
 ```
 Media.createAudioSource(opts?) -> [emit, listen] & control
 Media.createVideoSource(opts?) -> [emit, listen] & control
@@ -792,6 +794,7 @@ acceptWebRtcDirect({port, rtc, self, serve, accept?}) -> close()
   // responder side: on offer, negotiates answer/ICE and serves serve(env) (exposeReplay(...) as is) into
   //   the incoming datachannel; accept(env) validates session material and rejects with a loud revoke
   //   (the initiator fails fast, not by timeout). Repeated offer for a pair recreates the session.
+  // Public HTTPS/WSS launch and certificate verification -> DEMO-HTTPS.md.
 Peer.createPatchRelayJournal({history?, gap?: 'resume'|'sacred'}) -> {push(env) -> true|false|{seq}, remote, gap, seq(), snapshot(), close()}
   // server-side mirror of an OWNER-sequenced patch line: push() takes the owner's envelopes VERBATIM.
   //   Owner seq space is the point: relay and direct routes share coordinates -> hand-off is a seq resume.

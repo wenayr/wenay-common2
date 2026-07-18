@@ -201,7 +201,8 @@ function createSourceShell(kind, sourceId, transport, replay) {
     return { emit, listenApi, stats, get state() { return state; }, get error() { return error; }, setState, emitFrame };
 }
 function attachControl(pair, control) {
-    return Object.assign(pair, control);
+    Object.defineProperties(pair, Object.getOwnPropertyDescriptors(control));
+    return pair;
 }
 function ensureSocketTransport(mode) {
     if (mode == 'webrtc') {

@@ -304,7 +304,10 @@ function attachControl(
     pair: readonly [MediaEmit, MediaAnyListen],
     control: MediaSourceControl,
 ): MediaSource {
-    return Object.assign(pair, control) as MediaSource
+    // Object.assign evaluates accessors once. Preserve their descriptors so
+    // source.state remains live as capture moves through requesting/live/error.
+    Object.defineProperties(pair, Object.getOwnPropertyDescriptors(control))
+    return pair as MediaSource
 }
 
 function ensureSocketTransport(mode: MediaTransportMode | undefined) {

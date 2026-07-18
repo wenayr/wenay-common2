@@ -7,17 +7,36 @@
     body { font-family: sans-serif; margin: 16px; color: #222; }
     #canvas { border: 1px solid #bbb; border-radius: 6px; background: #fafafa; display: block; }
     #bar { display: flex; gap: 12px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+    #participants { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    #participants button { padding: 4px 9px; font-size: 12px; }
+    #participants button.selected { border-color: #4f8ef7; background: #dbeafe; }
+    #participants button.self { color: #555; background: #f5f5f5; cursor: default; }
     #route { font-family: monospace; }
     button { padding: 6px 14px; border-radius: 6px; border: 1px solid #888; background: #fff; cursor: pointer; }
     button:hover { background: #f0f0f0; }
     #log { font-family: monospace; font-size: 12px; margin-top: 8px; max-height: 180px; overflow-y: auto; color: #555; }
-    #mediaView { display: flex; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
-    #mediaView figure { margin: 0; }
-    #mediaView figcaption { font-size: 12px; color: #777; margin-bottom: 4px; }
-    #peerCam, #peerScreen { border: 1px solid #bbb; border-radius: 6px; background: #111; max-width: 480px; height: auto; cursor: zoom-in; }
-    #peerCam:fullscreen, #peerScreen:fullscreen { width: 100vw; height: 100vh; object-fit: contain; background: #000; border: none; }
+    #videoRooms, #privateCall { max-width: 1120px; margin: 12px 0; padding: 12px; border: 1px solid #9bb; border-radius: 8px; background: #f8fbff; }
+    #videoRooms h4, #privateCall h4 { margin: 0 0 4px; }
+    #roomHelp, #callHelp { margin: 0 0 8px; color: #52606d; font-size: 13px; }
+    #rooms { display: grid; gap: 6px; max-width: 760px; margin: 10px 0; }
+    .roomRow { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 8px 10px; border: 1px solid #ccd8e5; border-radius: 7px; background: #fff; }
+    .roomRow.current { border-color: #4f8ef7; background: #eef6ff; }
+    .roomMembers { display: block; color: #687684; font-size: 12px; margin-top: 2px; }
+    #roomMediaView, #privateMediaView { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 10px; }
+    #roomPeers { display: contents; }
+    .mediaTile { margin: 0; padding: 8px; border: 1px solid #ccd8e5; border-radius: 8px; background: #fff; }
+    .mediaTile figcaption { font-size: 12px; color: #667; margin-bottom: 5px; }
+    .mediaCanvas { border: 1px solid #bbb; border-radius: 6px; background: #111; width: 100%; max-width: 480px; height: auto; cursor: zoom-in; display: block; }
+    .mediaCanvas:fullscreen { width: 100vw; height: 100vh; object-fit: contain; background: #000; border: none; }
+    .roomScreen { margin-top: 7px; }
+    .roomScreen summary { cursor: pointer; color: #52606d; font-size: 12px; }
+    .audioStatus, #micStatus { color: #52606d; font-size: 12px; }
+    .audioStatus { margin-top: 7px; padding: 5px 7px; border-radius: 5px; background: #f2f6fa; }
+    #roomEmpty { align-self: center; color: #687684; padding: 12px; }
     select { padding: 6px 8px; border-radius: 6px; border: 1px solid #888; background: #fff; }
     #mediaStats { font-family: monospace; font-size: 12px; color: #777; }
+    #otherDemos { max-width: 900px; margin-top: 16px; }
+    #otherDemos > summary { cursor: pointer; font-weight: 600; color: #52606d; }
     #fileJobState { font-family: monospace; font-size: 12px; color: #555; max-width: 760px; }
     #aiRunState { font-family: monospace; font-size: 12px; color: #555; max-width: 760px; }
     #downloadFile[hidden] { display: none; }
@@ -39,44 +58,73 @@
 </style>
 </head>
 <body>
-<h3>wenay-common2 — shared cursors (relay ⇄ WebRTC direct)</h3>
+<h3>wenay-common2 — relay video rooms and private calls</h3>
 <div id="bar">
     <span id="who">connecting…</span>
     <span id="online"></span>
+    <div id="participants" aria-label="online participants"></div>
+    <button id="openParticipant">＋ open participant</button>
     <button id="direct">Go direct</button>
     <button id="relay">Back to relay</button>
     <span id="route"></span>
 </div>
-<div id="bar">
-    <button id="call">📞 call</button>
-    <button id="accept" hidden>✅ accept</button>
-    <button id="decline" hidden>⛔ decline</button>
-    <span id="callState"></span>
-</div>
+<section id="videoRooms">
+    <h4>Video rooms</h4>
+    <p id="roomHelp">1. Создайте комнату или войдите в существующую. Все комнаты и их участники видны сразу.</p>
+    <div id="bar">
+        <input id="roomName" value="My video room" maxlength="48" aria-label="new video room name">
+        <button id="createRoom">＋ create room</button>
+        <button id="leaveRoom" disabled>leave room</button>
+        <strong id="currentRoom">Вы не в комнате</strong>
+    </div>
+    <div id="rooms" aria-label="video rooms"></div>
+    <div id="bar">
+        <button id="cam">📷 start camera</button>
+        <select id="camRes" title="camera capture width">
+            <option value="320">320p</option>
+            <option value="640" selected>640p</option>
+            <option value="1280">1280p</option>
+            <option value="1920">1920p</option>
+        </select>
+        <button id="mic">🎙 передавать микрофон</button>
+        <span id="micStatus">Микрофон выключен</span>
+        <button id="screen">🖥 share screen</button>
+        <button id="roomAudio" disabled>🔊 слушать комнату</button>
+    </div>
+    <h5 id="roomParticipantsTitle">Участники комнаты</h5>
+    <div id="roomMediaView">
+        <figure class="mediaTile">
+            <figcaption id="localCamCap">You · camera is off</figcaption>
+            <canvas id="localCam" class="mediaCanvas" width="320" height="180"></canvas>
+        </figure>
+        <div id="roomPeers"><div id="roomEmpty">Войдите в комнату, чтобы увидеть её участников.</div></div>
+    </div>
+    <div id="mediaStats"></div>
+</section>
+<section id="privateCall">
+    <h4>Private participant call</h4>
+    <p id="callHelp">Select an online participant above and call them privately. Call media also uses the relay; “Go direct” controls the peer data route.</p>
+    <div id="bar">
+        <button id="call">📞 call</button>
+        <button id="accept" hidden>✅ accept</button>
+        <button id="decline" hidden>⛔ decline</button>
+        <button id="audio" disabled>🔊 enable peer audio</button>
+        <span id="callState"></span>
+    </div>
+    <div id="privateMediaView">
+        <figure class="mediaTile">
+            <figcaption id="peerCamCap">Remote camera · start and accept a call</figcaption>
+            <canvas id="peerCam" class="mediaCanvas" width="320" height="180"></canvas>
+        </figure>
+        <figure class="mediaTile">
+            <figcaption id="peerScreenCap">Remote screen · available during a call</figcaption>
+            <canvas id="peerScreen" class="mediaCanvas" width="480" height="270"></canvas>
+        </figure>
+    </div>
+</section>
 <canvas id="canvas" width="640" height="360"></canvas>
-<div id="bar">
-    <button id="cam">📷 camera</button>
-    <select id="camRes" title="camera capture width">
-        <option value="320">320p</option>
-        <option value="640" selected>640p</option>
-        <option value="1280">1280p</option>
-        <option value="1920">1920p</option>
-    </select>
-    <button id="mic">🎙 mic</button>
-    <button id="screen">🖥 screen</button>
-    <button id="audio">🔊 peer audio</button>
-    <span id="mediaStats"></span>
-</div>
-<div id="mediaView">
-    <figure>
-        <figcaption id="peerCamCap">peer camera · click = fullscreen</figcaption>
-        <canvas id="peerCam" width="320" height="240"></canvas>
-    </figure>
-    <figure>
-        <figcaption id="peerScreenCap">peer screen · click = fullscreen</figcaption>
-        <canvas id="peerScreen" width="480" height="270"></canvas>
-    </figure>
-</div>
+<details id="otherDemos">
+<summary>Other library demos: file, AI, artifact and conversation</summary>
 <div id="bar">
     <input id="fileInput" type="file" aria-label="file for storage and AI job">
     <button id="uploadFile">⬆ upload file</button>
@@ -118,6 +166,7 @@
     </div>
     <div id="conversationFacts"></div>
 </section>
+</details>
 <div id="log"></div>
 <script src="client.js"></script>
 </body>

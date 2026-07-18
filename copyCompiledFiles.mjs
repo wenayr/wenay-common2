@@ -1,40 +1,40 @@
-import * as fs from "fs"
+﻿import * as fs from "fs"
 import path from "path"
 
-let args= process.argv.slice(2);
+let args= process.argv.slice(2)
 
-let srcDir = "lib";
-let tempDir= args[0];
-//tempDir="dist";
-if (! tempDir) throw new Error("script argument is not defined");
+let srcDir = "lib"
+let tempDir= args[0]
+//tempDir="dist"
+if (! tempDir) throw new Error("script argument is not defined")
 
 if (0)
 if (fs.existsSync("./dist")) {
-    console.log("Remove directory","./dist");
-    fs.rmdirSync("./dist", {recursive: true});
+    console.log("Remove directory","./dist")
+    fs.rmdirSync("./dist", {recursive: true})
 }
 
 // clear directory
 if (fs.existsSync(tempDir)) {
-    console.log("Clear directory",tempDir);
+    console.log("Clear directory",tempDir)
     for (const file of fs.readdirSync(tempDir)) {
-        let filePath= path.join(tempDir, file);
-        //console.log(filePath);
+        let filePath= path.join(tempDir, file)
+        //console.log(filePath)
         if (fs.lstatSync(filePath).isDirectory())
-            fs.rmSync(filePath, { recursive: true, force: true, maxRetries: 1 });
+            fs.rmSync(filePath, { recursive: true, force: true, maxRetries: 1 })
         else
-            fs.unlinkSync(filePath);
+            fs.unlinkSync(filePath)
     }
 }
-else fs.mkdirSync(tempDir);
-console.log("Copy files to",tempDir);
+else fs.mkdirSync(tempDir)
+console.log("Copy files to",tempDir)
 if (1) {
-fs.copyFileSync("./package.json", path.join(tempDir,"package.json"));
+fs.copyFileSync("./package.json", path.join(tempDir,"package.json"))
 
 // дополнительные файлы, которые копируются при наличии
 for (const file of ["README.md", "LICENSE", "CHANGELOG.md", "CLAUDE.md", "rpc.md"]) {
     if (fs.existsSync(file))
-        fs.copyFileSync(file, path.join(tempDir, file));
+        fs.copyFileSync(file, path.join(tempDir, file))
 }
 
 if (fs.existsSync("./doc")) {
@@ -45,7 +45,7 @@ if (fs.existsSync("./doc")) {
             const parts = src.split(path.sep)
             return !parts.includes("target") && !parts.includes("progress")
         },
-    });
+    })
 }
 
 // living examples ship in the package (AI-readable usage): oracle suites + demo stand
@@ -62,10 +62,10 @@ for (const dir of ["replay", "observe", "oracle", "demo"]) {
         })
 }
 
-//fs.symlinkSync("../"+srcDir,  path.join(tempDir, srcDir), "junction");
+//fs.symlinkSync("../"+srcDir,  path.join(tempDir, srcDir), "junction")
 fs.cpSync(srcDir, path.join(tempDir, srcDir), {
     recursive: true, force: true,
     filter: src => !src.endsWith('.tsbuildinfo'),
 })
 }
-//fs.copyFileSync("./lib", path.join(tempDir,"lib"));
+//fs.copyFileSync("./lib", path.join(tempDir,"lib"))

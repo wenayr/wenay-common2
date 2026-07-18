@@ -68,6 +68,24 @@ async function main() {
         'back-to-back incoming rings reserve admission: one rings, one is busy')
     localCalls.close()
 
+    // Resource cleanup must not walk through the public ACL proxy: after revoke
+    // that proxy intentionally hides every line, while the relay still owns them.
+    const cleanupGrants = new Set(['watcher|owner'])
+    const cleanupMedia = createMediaRelay({
+        lines: {cam: 'video'},
+        canWatch: (watcher, owner) => cleanupGrants.has(watcher + '|' + owner),
+    })
+    cleanupMedia.publishOf('owner')
+    const cleanupLine = cleanupMedia.watchOf('watcher').owner.cam
+    let cleanupClosed = false
+    cleanupLine.onClose(() => { cleanupClosed = true })
+    cleanupLine.keyframe()
+    cleanupGrants.clear()
+    let cleanupSafe = true
+    try { cleanupMedia.dropAccount('owner') } catch { cleanupSafe = false }
+    ok(cleanupSafe && cleanupClosed && !cleanupMedia.accounts().includes('owner'), 'dropAccount closes owned lines after watch access is revoked')
+    cleanupMedia.close()
+
     // ================= SERVER: peer fragment + media relay, no call-specific code =================
     // Watch ACL as APP code: media access follows call state — the policy set is
     // maintained by the clients below on 'active'/'ended' (via a legacy-style rpc key).

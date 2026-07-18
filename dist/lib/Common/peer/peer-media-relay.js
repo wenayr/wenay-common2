@@ -73,6 +73,7 @@ function createMediaRelay(deps) {
         const policyLines = {};
         for (const name of Object.keys(lines))
             policyLines[name] = filteredLine(watcher, owner, name, entry.view[name], cache);
+        cache.ownerLines.set(owner, new Set(Object.values(policyLines)));
         view = (0, rpc_dynamic_1.noStrict)(new Proxy(policyLines, {
             has(t, k) { return typeof k == 'string' && k in t && allowed(watcher, owner, k); },
             get(t, k) {
@@ -89,6 +90,7 @@ function createMediaRelay(deps) {
         if (cached)
             return cached.root;
         const owners = new Map();
+        const ownerLines = new Map();
         const filtered = new Set();
         function visible(owner) {
             return accounts.has(owner) && Object.keys(lines).some(name => allowed(watcher, owner, name));
@@ -101,7 +103,7 @@ function createMediaRelay(deps) {
                 return visible(k) ? ownerViewFor(watcher, k, cached) : undefined;
             },
         }));
-        cached = { root, owners, filtered };
+        cached = { root, owners, ownerLines, filtered };
         watcherViews.set(watcher, cached);
         return root;
     }
@@ -114,6 +116,7 @@ function createMediaRelay(deps) {
             line.close();
         cache.filtered.clear();
         cache.owners.clear();
+        cache.ownerLines.clear();
     }
     function dropAccount(account) {
         const entry = accounts.get(account);
@@ -122,13 +125,14 @@ function createMediaRelay(deps) {
             closeWatcherCache(ownCache);
         watcherViews.delete(account);
         for (const cache of watcherViews.values()) {
-            const ownerView = cache.owners.get(account);
-            if (ownerView)
-                for (const line of Object.values(ownerView)) {
+            const ownerLines = cache.ownerLines.get(account);
+            if (ownerLines)
+                for (const line of ownerLines) {
                     line.close();
                     cache.filtered.delete(line);
                 }
             cache.owners.delete(account);
+            cache.ownerLines.delete(account);
         }
         if (!entry)
             return;
