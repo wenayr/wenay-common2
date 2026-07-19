@@ -88,22 +88,48 @@ async function main() {
 
     // ============== instance badge: which node this tab is talking to ==============
     // A mirror instance serves the same board through its cascade replay; the badge
-    // makes the leader/mirror split visible together with the live upstream state.
+    // shows the leader/mirror split, the line epoch and the live upstream state.
+    // When the leader is gone, the badge grows a manual failover control: promote
+    // raises THIS node to leader — the board keeps living, subscriptions survive.
     async function showInstanceBadge() {
         const instance = clients.app.func.demo.instance
         const badge = document.createElement('p')
         badge.id = 'instanceBadge'
-        document.querySelector('.brand h1')?.parentElement?.appendChild(badge)
+        const promoteBtn = document.createElement('button')
+        promoteBtn.id = 'promoteInstance'
+        promoteBtn.textContent = '⚡ promote to leader'
+        promoteBtn.hidden = true
+        promoteBtn.style.cssText = 'margin-top:3px;font-size:11px;padding:2px 8px'
+        const holder = document.querySelector('.brand h1')?.parentElement
+        holder?.appendChild(badge)
+        holder?.appendChild(promoteBtn)
+        async function renderInstanceBadge() {
+            const role = await instance.role()
+            const epoch = await instance.epoch()
+            const upstream = role == 'leader' ? null : await instance.upstream()
+            badge.textContent = `node :${location.port || '80'} · ${role} · epoch ${epoch}`
+                + (upstream && role == 'mirror' ? ` · leader ${upstream.upstream}` : '')
+            promoteBtn.hidden = !(role == 'mirror' && upstream?.upstream == 'offline')
+        }
+        promoteBtn.addEventListener('click', async function promoteThisNode() {
+            promoteBtn.disabled = true
+            try {
+                const result = await instance.promote()
+                log(`failover: this node is now the leader (epoch ${result.epoch})`)
+            } catch (error) {
+                log('promote failed: ' + error)
+            } finally {
+                promoteBtn.disabled = false
+                void renderInstanceBadge()
+            }
+        })
         try {
             const role = await instance.role()
-            async function renderInstanceBadge() {
-                const upstream = role == 'mirror' ? await instance.upstream() : null
-                badge.textContent = `node :${location.port || '80'} · ${role}` + (upstream ? ` · leader ${upstream.upstream}` : '')
-            }
             await renderInstanceBadge()
-            if (role == 'mirror') instance.changed.on(function upstreamEdge() { void renderInstanceBadge() })
+            if (role != 'leader') instance.changed.on(function upstreamEdge() { void renderInstanceBadge() })
         } catch {
             badge.remove()
+            promoteBtn.remove()
         }
     }
     void showInstanceBadge()

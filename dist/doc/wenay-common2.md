@@ -270,6 +270,22 @@ not a hidden durable storage engine. Full security, lifecycle and deployment con
 `doc/ARTIFACT-RUNTIME.md`; oracle: `replay/artifact-runtime.test.ts`; the demo creates and opens a
 cross-origin sandboxed counter artifact from an AI run.
 
+```ts
+// NODE-TO-NODE transfer (dynamic code, safely): catalog replicates as a store,
+// bytes travel lazily by content hash, execution stays in the sandbox.
+Artifact.sha256Hex(bytes) -> Promise<hex>           // descriptor.version = content hash of the bytes
+Artifact.createArtifactByteCache({fetch, maxBytes?, onEvict?}) -> {get(record), has, peek, stats, clear}
+  // get: cache -> single-flight fetch from the source -> sha256 MUST equal descriptor.version
+  //   (tampered bytes throw; artifacts without a content-hash version are refused)
+Artifact.createArtifactMirror({catalog, policy?, open, revoke?}) -> {connection(account), close}
+  // read edge over a mirrored catalog (createStoreFollower<ArtifactStore>): the SAME
+  //   {state, open, revoke} fragment shape as the host — clients cannot tell the nodes apart;
+  //   open() authorizes locally, then your deps serve bytes (byte cache + local ticket URL);
+  //   revoke forwards to the source of truth with the END client's account
+```
+Demo: `npm run demo:mirror` — an AI artifact created on either instance opens on the other
+(catalog via replay, bytes lazily by hash, each node serves from its own sandbox origin).
+
 ## 💬 Conversation — channels, structured messages and facts
 > `import { Conversation } from 'wenay-common2'` or
 > `import * as Conversation from 'wenay-common2/conversation'`.
@@ -444,6 +460,19 @@ Observe.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?} of api.
   // freshness is an option, not consumer boilerplate: {staleMs, onStale} flags a silent line / stale keyframe (edge-triggered both ways; 🎞️ in rare docs)
 Observe.syncStoreReplayRoute(mirror, remote, {label?}) -> off & {switch(nextRemote, opts), ready, seq(), label(), active()}
   // relay/direct promotion and re-interposition: replacement route catches up by seq before the old route closes
+Observe.createStoreFollower<T>({remote, initial?, expose?, staleMs?}) -> {store, status, api, replay, ready, isStale, close}
+  // server-side mirror instance (leader -> follower -> its own clients): syncStoreReplay INTO a local store
+  //   + cascade exposeStoreReplay OVER it — `api` goes into the follower's RPC object like any store line
+  // status = a tiny reactive store {upstream: 'catching-up'|'live'|'offline'|'closed', seq, error} — the
+  //   follower never writes into the mirrored store itself (it must stay byte-equal to the leader)
+  // commands are NOT applied locally: forward them to the leader with the END client's (account, requestId)
+  //   so idempotency receipts and ordering stay on the single leader (demo: DEMO_MIRROR_OF, doc/target plan)
+  // follower.promote() -> {store, replay, epoch}: manual failover — mirroring stops, epoch grows by 1,
+  //   the cascade journal LIVES ON, so this node's subscribers keep their line without a re-keyframe;
+  //   build the command authority OVER the same store (the demo workboard host adopts it via deps.store)
+Observe.diffKeyedState(local, authority) -> {localOnly, authorityOnly, conflicts}
+  // split-brain tail after a failover rejoin: localOnly = re-apply candidates (mempool analogy),
+  //   conflicts = both sides changed one record (the epoch already chose the winner; the pair is preserved)
 Observe.syncStoreReplayEach<T>(remote, (key, value, ctx) => {}, opts?) -> off & {store, ready, seq(), isStale(), lastTs()}
   // one-call remote fold: mirror store + syncStoreReplay + store.each() — the callback fires per CHANGED
   //   top-level key; first delivery = keyframe EXPANDED per key; (key, undefined) = key deleted

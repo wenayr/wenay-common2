@@ -17,5 +17,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 __exportStar(require("./reactive"), exports);
 __exportStar(require("./store"), exports);
 __exportStar(require("./store-replay"), exports);
+__exportStar(require("./store-follower"), exports);
 __exportStar(require("./store-offline"), exports);
 __exportStar(require("./store-manager"), exports);

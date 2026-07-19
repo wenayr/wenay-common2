@@ -29,6 +29,7 @@ export type ReplaySubscribeOpts = {
     since?: number;
     onSeq?: (seq: number) => void;
     onError?: (e: any) => void;
+    onLive?: () => void;
     staleMs?: number;
     onStale?: (info: StaleInfo) => void;
     skewMs?: number;

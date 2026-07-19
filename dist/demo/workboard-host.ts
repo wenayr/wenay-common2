@@ -1,4 +1,4 @@
-import {createStore} from '../src/Common/Observe/store'
+import {createStore, Store} from '../src/Common/Observe/store'
 import {exposeStoreReplay} from '../src/Common/Observe/store-replay'
 import {
     tWorkboardStatus,
@@ -27,6 +27,12 @@ type WorkboardHostDeps = {
     maxItems?: number
     now?: () => number
     makeId?: () => string
+    /**
+     * Failover-передача: строить авторитет НАД ГОТОВЫМ store (например, зеркальным
+     * после promote) — ревизии и содержимое принимаются как есть, seed не применяется,
+     * а живые подписки каскада этого store продолжают работать без разрыва.
+     */
+    store?: Store<WorkboardState>
 }
 
 type tCommand = 'create' | 'rename' | 'move' | 'assign' | 'remove'
@@ -73,7 +79,15 @@ export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
         }
     }
 
-    const store = createStore<WorkboardState>(initial, {drain: 'micro'})
+    const store = deps.store ?? createStore<WorkboardState>(initial, {drain: 'micro'})
+    // Принятый store уже содержит item'ы — счётчик id обязан перепрыгнуть их,
+    // иначе новый лидер после promote выдаст занятый work-N.
+    if (deps.store) {
+        for (const id of Object.keys(store.state)) {
+            const tail = /^work-(\d+)$/.exec(id)
+            if (tail) nextId = Math.max(nextId, Number(tail[1]))
+        }
+    }
     const exposed = exposeStoreReplay(store, {history: deps.history ?? 512})
 
     // ============== business rules ==============

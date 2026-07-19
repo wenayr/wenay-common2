@@ -29,7 +29,7 @@ function unsubscribeHandle(handle) {
         handle.unsubscribe();
 }
 function replaySubscribe(remote, cb, opts = {}) {
-    const { since = -1, onSeq, onError, staleMs, onStale, skewMs = 0, now = Date.now, policy = 'queue', hint } = opts;
+    const { since = -1, onSeq, onError, onLive, staleMs, onStale, skewMs = 0, now = Date.now, policy = 'queue', hint } = opts;
     const lifecycle = (0, transport_lifecycle_1.getRpcTransportLifecycle)(remote);
     let lastDelivered = since;
     let replaying = true;
@@ -229,6 +229,14 @@ function replaySubscribe(remote, cb, opts = {}) {
             replaying = false;
             assessStale();
             settleReady();
+            if (onLive) {
+                try {
+                    onLive();
+                }
+                catch (e) {
+                    setTimeout(function rethrowOnLive() { throw e; }, 0);
+                }
+            }
         }
         catch (error) {
             if (!isCurrent(generation))

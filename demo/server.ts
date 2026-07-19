@@ -17,7 +17,7 @@ import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createStoreFollower} from '../src/Common/Observe/store-follower'
 import {createArtifactByteCache, createArtifactMirror, sha256Hex} from '../src/Common/artifact/artifact-index'
 import type {ArtifactRecord, ArtifactStore} from '../src/Common/artifact/artifact-index'
-import {createWorkboardHost} from './workboard-host'
+import {createWorkboardHost, WorkboardHost} from './workboard-host'
 import type {WorkboardState} from './workboard-contract'
 
 const portStart = Number(process.env.DEMO_PORT_START ?? 3100)
@@ -34,6 +34,9 @@ const mirrorOf = process.env.DEMO_MIRROR_OF?.trim() || null
 // Mirror participants get their own letter namespace (person-za, person-zb, ...)
 // so the shared board never shows two different people as the same "Participant A".
 const accountPrefix = (process.env.DEMO_ACCOUNT_PREFIX ?? (mirrorOf ? 'z' : '')).trim().toLowerCase()
+// Эпоха линии (fork-choice при failover): у самостоятельного лидера — из конфига
+// запуска; зеркало узнаёт эпоху лидера при подключении, promote даёт epoch + 1.
+const demoEpoch = Number(process.env.DEMO_EPOCH ?? 1)
 
 type DemoIceServer = {
     urls: string | string[]
@@ -594,7 +597,9 @@ function mirrorFragment() {
         return function forwardedCommand(who: unknown, input: unknown) {
             const account = mirrorAccount(who)
             return limited(account, function applyForwarded(value: any) {
-                return (workboard.control as any)[name](account, value)
+                // после promote авторитет доски — повышенный хост, не изначальный
+                const authority = upstreamLink?.promotedWorkboard() ?? workboard
+                return (authority.control as any)[name](account, value)
             })(input)
         }
     }
@@ -662,13 +667,31 @@ async function connectUpstream(target: string) {
     const clients = await hub.setToken(null)
     await clients.app.readyStrict()
     const leader = clients.app.func as any
-    const follower = createStoreFollower<WorkboardState>({remote: leader.workboard.state})
+    // Эпоха лидера — точка отсчёта fork-choice: наш promote выдаст leaderEpoch + 1
+    const leaderEpoch = Number(await leader.epoch().catch(() => 1) ?? 1)
+    const follower = createStoreFollower<WorkboardState>({remote: leader.workboard.state, epoch: leaderEpoch})
     follower.status.on(function logLeaderLinkEdge() {
-        const {upstream, seq} = follower.status.state
-        console.log(`[demo] leader link: ${upstream} (seq ${seq})`)
+        const {upstream, seq, epoch} = follower.status.state
+        console.log(`[demo] leader link: ${upstream} (seq ${seq}, epoch ${epoch})`)
     })
+
+    // ============== failover: ручное повышение этого узла до лидера ==============
+    // Каскадный журнал продолжает жить над ТЕМ ЖЕ store — подписки клиентов этого
+    // узла переживают смену роли без разрыва; авторитет команд (ревизии, квитанции,
+    // лимит доски) строится workboard-хостом НАД зеркальным store как есть.
+    let promotedHost: WorkboardHost | null = null
+    function promoteToLeader() {
+        if (promotedHost) return {epoch: follower.status.state.epoch, already: true}
+        const handover = follower.promote()
+        promotedHost = createWorkboardHost({store: handover.store, maxItems: guards.workboardMaxItems})
+        console.log(`[demo] PROMOTED: this node is now the workboard leader (epoch ${handover.epoch})`)
+        return {epoch: handover.epoch, already: false}
+    }
+
     function forwardCommand(name: tWorkboardCommand, account: string) {
         return function forwardToLeader(input: unknown) {
+            // после promote команды применяются локально — этот узел и есть лидер
+            if (promotedHost) return (promotedHost.control as any)[name](account, input)
             if (!(hub.socket as any)?.connected) throw new Error('leader offline — try again soon')
             return leader.mirror.workboard[name](account, input)
         }
@@ -708,14 +731,31 @@ async function connectUpstream(target: string) {
 
     await Promise.all([follower.ready, artifactCatalog.ready])
     console.log('[demo] leader board and artifact catalog mirrored, cascade is live')
-    return {hub, follower, fragmentFor, artifacts: artifactsLink}
+    return {
+        hub,
+        follower,
+        fragmentFor,
+        artifacts: artifactsLink,
+        promote: promoteToLeader,
+        isPromoted: () => promotedHost != null,
+        promotedWorkboard: () => promotedHost,
+    }
 }
 
 // Which node this connection landed on — the client shows it as a badge.
+// В зеркальном режиме сюда же входит ручной failover: promote() повышает этот
+// узел до лидера (доска продолжает жить локально, epoch растёт на 1).
 function instanceFragment() {
-    if (!upstreamLink) return {role: () => 'leader', upstream: () => null}
-    const status = upstreamLink.follower.status
-    return {role: () => 'mirror', upstream: () => status.snapshot(), changed: status.listen()}
+    if (!upstreamLink) return {role: () => 'leader', epoch: () => demoEpoch, upstream: () => null}
+    const link = upstreamLink
+    const status = link.follower.status
+    return {
+        role: () => link.isPromoted() ? 'leader·promoted' : 'mirror',
+        epoch: () => status.state.epoch,
+        upstream: () => status.snapshot(),
+        changed: status.listen(),
+        promote: () => link.promote(),
+    }
 }
 
 ioServer.on('connection', function onDemoConnection(socket) {
@@ -728,7 +768,10 @@ ioServer.on('connection', function onDemoConnection(socket) {
     // account — only the replay line and the trusted forwarded-command entry.
     if (socket.handshake.auth?.role == 'mirror') {
         const expectedToken = process.env.DEMO_MIRROR_TOKEN ?? ''
-        if (mirrorOf || (expectedToken && socket.handshake.auth?.token != expectedToken)) {
+        // Зеркала обслуживает ЛИДЕР — изначальный или повышенный: после failover
+        // этот узел принимает вернувшиеся узлы уже как их новый лидер (epoch выше).
+        const canServeMirrors = !mirrorOf || Boolean(upstreamLink?.isPromoted())
+        if (!canServeMirrors || (expectedToken && socket.handshake.auth?.token != expectedToken)) {
             socket.disconnect(true)
             return
         }
@@ -743,7 +786,9 @@ ioServer.on('connection', function onDemoConnection(socket) {
             socket: {emit: (key, data) => socket.emit(key, data), on: (key, cb) => socket.on(key, cb)},
             socketKey: 'app',
             object: {
-                workboard: {state: workboard.connection('mirror-link').fragment.state},
+                // Повышенный узел раздаёт СВОЮ эпоху и СВОЙ каскад (та же линия, что у его клиентов)
+                epoch: () => upstreamLink ? upstreamLink.follower.status.state.epoch : demoEpoch,
+                workboard: {state: upstreamLink ? upstreamLink.follower.api.replay : workboard.connection('mirror-link').fragment.state},
                 artifacts: mirrorArtifacts.fragment,
                 mirror: {...mirrorFragment(), artifacts: mirrorArtifactsFragment(mirrorArtifacts.fragment)},
             },

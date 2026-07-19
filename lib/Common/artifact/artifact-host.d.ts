@@ -62,6 +62,11 @@ export type ArtifactHostDeps = {
     history?: number;
     drain?: StoreDrain;
 };
+export declare function copyArtifact(artifact: ArtifactRecord): ArtifactRecord;
+export declare function validateOpenInstruction(instruction: ArtifactOpenInstruction, now: number): {
+    url: string;
+    expiresAt: number;
+};
 export declare function createArtifactHost(deps: ArtifactHostDeps): {
     register: (input: ArtifactRegisterInput) => ArtifactRecord;
     reap: (at?: number) => Promise<ArtifactRecord[]>;

@@ -467,6 +467,12 @@ Observe.createStoreFollower<T>({remote, initial?, expose?, staleMs?}) -> {store,
   //   follower never writes into the mirrored store itself (it must stay byte-equal to the leader)
   // commands are NOT applied locally: forward them to the leader with the END client's (account, requestId)
   //   so idempotency receipts and ordering stay on the single leader (demo: DEMO_MIRROR_OF, doc/target plan)
+  // follower.promote() -> {store, replay, epoch}: manual failover — mirroring stops, epoch grows by 1,
+  //   the cascade journal LIVES ON, so this node's subscribers keep their line without a re-keyframe;
+  //   build the command authority OVER the same store (the demo workboard host adopts it via deps.store)
+Observe.diffKeyedState(local, authority) -> {localOnly, authorityOnly, conflicts}
+  // split-brain tail after a failover rejoin: localOnly = re-apply candidates (mempool analogy),
+  //   conflicts = both sides changed one record (the epoch already chose the winner; the pair is preserved)
 Observe.syncStoreReplayEach<T>(remote, (key, value, ctx) => {}, opts?) -> off & {store, ready, seq(), isStale(), lastTs()}
   // one-call remote fold: mirror store + syncStoreReplay + store.each() — the callback fires per CHANGED
   //   top-level key; first delivery = keyframe EXPANDED per key; (key, undefined) = key deleted
