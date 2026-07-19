@@ -85,6 +85,28 @@ async function main() {
     nameInput.value = myName
     nameInput.placeholder = `Participant ${participantName(me)}`
     document.title = `participant ${displayName(me)}`
+
+    // ============== instance badge: which node this tab is talking to ==============
+    // A mirror instance serves the same board through its cascade replay; the badge
+    // makes the leader/mirror split visible together with the live upstream state.
+    async function showInstanceBadge() {
+        const instance = clients.app.func.demo.instance
+        const badge = document.createElement('p')
+        badge.id = 'instanceBadge'
+        document.querySelector('.brand h1')?.parentElement?.appendChild(badge)
+        try {
+            const role = await instance.role()
+            async function renderInstanceBadge() {
+                const upstream = role == 'mirror' ? await instance.upstream() : null
+                badge.textContent = `node :${location.port || '80'} · ${role}` + (upstream ? ` · leader ${upstream.upstream}` : '')
+            }
+            await renderInstanceBadge()
+            if (role == 'mirror') instance.changed.on(function upstreamEdge() { void renderInstanceBadge() })
+        } catch {
+            badge.remove()
+        }
+    }
+    void showInstanceBadge()
     log('rpc connected; legacy serverTime() = ' + await clients.app.func.serverTime())
     const workboard = createWorkboardClient({
         remote: clients.app.func.workboard as unknown as WorkboardRemote,

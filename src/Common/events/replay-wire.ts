@@ -79,6 +79,9 @@ export type ReplaySubscribeOpts = {
     /** Репорт seq каждой доставки — хранить для переподключения. */
     onSeq?: (seq: number) => void
     onError?: (e: any) => void
+    /** Конец КАЖДОГО успешного catch-up (initial и reconnect): линия снова live.
+     *  Дополняет ready (только первый handover) — для статусов вида live/catching-up. */
+    onLive?: () => void
     /** Порог тухлости, мс: и для arrival gap (молчание провода), и для возраста ts конверта. */
     staleMs?: number
     /**
@@ -114,7 +117,7 @@ function unsubscribeHandle(handle: any) {
  * .seq() (последний доставленный — для реконнекта), .isStale() и .lastTs().
  */
 export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Listener<Z>, opts: ReplaySubscribeOpts = {}) {
-    const {since = -1, onSeq, onError, staleMs, onStale, skewMs = 0, now = Date.now, policy = 'queue', hint} = opts
+    const {since = -1, onSeq, onError, onLive, staleMs, onStale, skewMs = 0, now = Date.now, policy = 'queue', hint} = opts
     const lifecycle = getRpcTransportLifecycle(remote)
     let lastDelivered = since
     let replaying = true
@@ -292,6 +295,10 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
             replaying = false
             assessStale()
             settleReady()
+            if (onLive) {
+                try { onLive() }
+                catch (e) { setTimeout(function rethrowOnLive() { throw e }, 0) }
+            }
         } catch (error) {
             if (!isCurrent(generation)) return
             failRecovery(error, point, initial ? 'initial catch-up' : 'reconnect catch-up')

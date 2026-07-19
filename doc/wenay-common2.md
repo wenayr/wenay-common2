@@ -444,6 +444,13 @@ Observe.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?} of api.
   // freshness is an option, not consumer boilerplate: {staleMs, onStale} flags a silent line / stale keyframe (edge-triggered both ways; 🎞️ in rare docs)
 Observe.syncStoreReplayRoute(mirror, remote, {label?}) -> off & {switch(nextRemote, opts), ready, seq(), label(), active()}
   // relay/direct promotion and re-interposition: replacement route catches up by seq before the old route closes
+Observe.createStoreFollower<T>({remote, initial?, expose?, staleMs?}) -> {store, status, api, replay, ready, isStale, close}
+  // server-side mirror instance (leader -> follower -> its own clients): syncStoreReplay INTO a local store
+  //   + cascade exposeStoreReplay OVER it — `api` goes into the follower's RPC object like any store line
+  // status = a tiny reactive store {upstream: 'catching-up'|'live'|'offline'|'closed', seq, error} — the
+  //   follower never writes into the mirrored store itself (it must stay byte-equal to the leader)
+  // commands are NOT applied locally: forward them to the leader with the END client's (account, requestId)
+  //   so idempotency receipts and ordering stay on the single leader (demo: DEMO_MIRROR_OF, doc/target plan)
 Observe.syncStoreReplayEach<T>(remote, (key, value, ctx) => {}, opts?) -> off & {store, ready, seq(), isStale(), lastTs()}
   // one-call remote fold: mirror store + syncStoreReplay + store.each() — the callback fires per CHANGED
   //   top-level key; first delivery = keyframe EXPANDED per key; (key, undefined) = key deleted
