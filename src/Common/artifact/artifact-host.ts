@@ -88,7 +88,7 @@ function copyRetention(retention: ArtifactRetention): ArtifactRetention {
     return {...retention}
 }
 
-function copyArtifact(artifact: ArtifactRecord): ArtifactRecord {
+export function copyArtifact(artifact: ArtifactRecord): ArtifactRecord {
     return {...artifact, descriptor: copyDescriptor(artifact.descriptor), retention: copyRetention(artifact.retention)}
 }
 
@@ -106,7 +106,7 @@ function validateRetention(retention: ArtifactRetention, now: number) {
     }
 }
 
-function validateOpenInstruction(instruction: ArtifactOpenInstruction, now: number) {
+export function validateOpenInstruction(instruction: ArtifactOpenInstruction, now: number) {
     if (!instruction || typeof instruction.url != 'string' || !instruction.url) throw new Error('artifact storage: URL is required')
     if (!Number.isFinite(instruction.expiresAt) || instruction.expiresAt <= now) throw new Error('artifact storage: open instruction is already expired')
     try { new URL(instruction.url) }

@@ -270,6 +270,22 @@ not a hidden durable storage engine. Full security, lifecycle and deployment con
 `doc/ARTIFACT-RUNTIME.md`; oracle: `replay/artifact-runtime.test.ts`; the demo creates and opens a
 cross-origin sandboxed counter artifact from an AI run.
 
+```ts
+// NODE-TO-NODE transfer (dynamic code, safely): catalog replicates as a store,
+// bytes travel lazily by content hash, execution stays in the sandbox.
+Artifact.sha256Hex(bytes) -> Promise<hex>           // descriptor.version = content hash of the bytes
+Artifact.createArtifactByteCache({fetch, maxBytes?, onEvict?}) -> {get(record), has, peek, stats, clear}
+  // get: cache -> single-flight fetch from the source -> sha256 MUST equal descriptor.version
+  //   (tampered bytes throw; artifacts without a content-hash version are refused)
+Artifact.createArtifactMirror({catalog, policy?, open, revoke?}) -> {connection(account), close}
+  // read edge over a mirrored catalog (createStoreFollower<ArtifactStore>): the SAME
+  //   {state, open, revoke} fragment shape as the host — clients cannot tell the nodes apart;
+  //   open() authorizes locally, then your deps serve bytes (byte cache + local ticket URL);
+  //   revoke forwards to the source of truth with the END client's account
+```
+Demo: `npm run demo:mirror` — an AI artifact created on either instance opens on the other
+(catalog via replay, bytes lazily by hash, each node serves from its own sandbox origin).
+
 ## 💬 Conversation — channels, structured messages and facts
 > `import { Conversation } from 'wenay-common2'` or
 > `import * as Conversation from 'wenay-common2/conversation'`.

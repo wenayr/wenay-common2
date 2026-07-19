@@ -15,6 +15,8 @@ import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 import {io as ioClient} from 'socket.io-client'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createStoreFollower} from '../src/Common/Observe/store-follower'
+import {createArtifactByteCache, createArtifactMirror, sha256Hex} from '../src/Common/artifact/artifact-index'
+import type {ArtifactRecord, ArtifactStore} from '../src/Common/artifact/artifact-index'
 import {createWorkboardHost} from './workboard-host'
 import type {WorkboardState} from './workboard-contract'
 
@@ -183,6 +185,10 @@ const artifacts = createArtifactHost({
             for (const [ticket, value] of artifactTickets) if (value.storageKey == key) artifactTickets.delete(ticket)
         },
     },
+    // The stand is one shared room (like the conversation): artifacts are visible
+    // to every participant; revoke stays owner-only. A mirror instance re-applies
+    // this same read policy on its own edge.
+    policy: {canRead: () => true},
     drain: 'micro',
 })
 
@@ -236,14 +242,23 @@ const ai = createAiRunHost({
             await delay(350)
             if (cancelled()) return
             const resourceId = resourceIds[0]
-            const storageKey = 'demo-artifact-' + (++nextArtifactKey)
-            artifactBytes.set(storageKey, artifactPage(prompt))
-            const registered = artifacts.register({
-                owner: run.owner,
-                descriptor: {kind: 'demo-counter', label: 'Interactive demo counter', runtime: 'sandboxed-iframe', mime: 'text/html', version: '1'},
-                storageKey,
-                retention: {class: 'ephemeral', expiresAt: Date.now() + 10 * 60_000},
-            })
+            const html = artifactPage(prompt)
+            const descriptor = {
+                kind: 'demo-counter', label: 'Interactive demo counter', runtime: 'sandboxed-iframe' as const, mime: 'text/html',
+                // Контент-адресация: версия артефакта = hash его байтов; при передаче между узлами она сверяется.
+                version: await sha256Hex(html),
+            }
+            const retention = {class: 'ephemeral' as const, expiresAt: Date.now() + 10 * 60_000}
+            let registered: ArtifactRecord
+            if (upstreamLink) {
+                // Зеркальный инстанс не хранит байты сам: регистрация форвардится источнику истины,
+                // а каталог вернётся сюда обычной репликацией.
+                registered = await upstreamLink.artifacts.register(run.owner, {descriptor, retention, html})
+            } else {
+                const storageKey = 'demo-artifact-' + (++nextArtifactKey)
+                artifactBytes.set(storageKey, html)
+                registered = artifacts.register({owner: run.owner, descriptor, storageKey, retention})
+            }
             artifact({
                 kind: 'demo-artifact',
                 label: registered.descriptor.label,
@@ -588,6 +603,50 @@ function mirrorFragment() {
     return {workboard: commands}
 }
 
+// Trusted artifact entries for a connected mirror: bytes by id (behind the host's
+// own authorization/ticket path), forwarded register with a receiving-side hash
+// check, and revoke executed with the END client's authority.
+function mirrorArtifactsFragment(link: {open: (artifactId: string) => Promise<{url: string}> | {url: string}}) {
+    return {
+        async bytes(artifactId: unknown) {
+            const instruction = await link.open(String(artifactId))
+            const ticket = new URL(instruction.url).searchParams.get('ticket')
+            const stored = ticket ? artifactTickets.get(ticket) : undefined
+            const html = stored ? artifactBytes.get(stored.storageKey) : undefined
+            if (html == null) throw new Error('artifact transfer: bytes are unavailable')
+            return html
+        },
+        register(who: unknown, input: unknown) {
+            const account = mirrorAccount(who)
+            return limited(account, async function registerForwarded(value: any) {
+                const html = String(value?.html ?? '')
+                if (!html || html.length > 2 * 1024 * 1024) throw new Error('artifact register: html size is out of bounds')
+                const base = value?.descriptor ?? {}
+                const descriptor = {
+                    kind: String(base.kind ?? ''),
+                    label: String(base.label ?? ''),
+                    runtime: base.runtime,
+                    mime: base.mime == null ? undefined : String(base.mime),
+                    version: String(base.version ?? ''),
+                }
+                // Приёмная сверка контент-хэша: зеркалу не верим на слово.
+                if (descriptor.version != await sha256Hex(html)) throw new Error('artifact register: content hash mismatch')
+                const retention = (value as any)?.retention?.class == 'persistent'
+                    ? {class: 'persistent' as const}
+                    : {class: 'ephemeral' as const, expiresAt: Date.now() + 10 * 60_000}
+                const storageKey = 'demo-artifact-' + (++nextArtifactKey)
+                artifactBytes.set(storageKey, html)
+                return artifacts.register({owner: account, descriptor, storageKey, retention})
+            })(input)
+        },
+        async revoke(who: unknown, artifactId: unknown) {
+            const connection = artifacts.connection(mirrorAccount(who))
+            try { return await connection.fragment.revoke(String(artifactId)) }
+            finally { connection.close() }
+        },
+    }
+}
+
 type UpstreamLink = Awaited<ReturnType<typeof connectUpstream>>
 let upstreamLink: UpstreamLink | null = null
 
@@ -619,9 +678,37 @@ async function connectUpstream(target: string) {
         for (const name of workboardCommands) fragment[name] = forwardCommand(name, account)
         return fragment
     }
-    await follower.ready
-    console.log('[demo] leader board mirrored, cascade is live')
-    return {hub, follower, fragmentFor}
+
+    // ============== артефакты: каталог-фолловер + ленивые байты по hash ==============
+    const artifactCatalog = createStoreFollower<ArtifactStore>({remote: leader.artifacts.state, initial: {artifacts: {}}})
+    const artifactCache = createArtifactByteCache({
+        fetch: function fetchArtifactBytes(artifact: ArtifactRecord) { return leader.mirror.artifacts.bytes(artifact.id) },
+        onEvict: function dropEvictedBytes(hash: string) { artifactBytes.delete('hash:' + hash) },
+    })
+    const artifactMirror = createArtifactMirror({
+        catalog: artifactCatalog.store,
+        policy: {canRead: () => true},
+        async open({artifact}) {
+            // промах → байты у лидера (RPC) → sha256-сверка в кэше → раздача СВОИМ тикетом
+            const {hash, bytes} = await artifactCache.get(artifact)
+            const key = 'hash:' + hash
+            if (!artifactBytes.has(key)) artifactBytes.set(key, String(bytes))
+            const ticket = 'demo-artifact-ticket-' + (++nextArtifactTicket)
+            const expiresAt = Date.now() + 60_000
+            artifactTickets.set(ticket, {artifactId: artifact.id, storageKey: key, expiresAt})
+            return {url: 'http://artifact.localhost:' + port + '/artifact-open/' + artifact.id + '?ticket=' + ticket, expiresAt}
+        },
+        revoke: function forwardRevoke(account: string, artifactId: string) { return leader.mirror.artifacts.revoke(account, artifactId) },
+        drain: 'micro',
+    })
+    const artifactsLink = {
+        mirror: artifactMirror,
+        register: (who: string, input: {descriptor: unknown, retention: unknown, html: string}) => leader.mirror.artifacts.register(who, input),
+    }
+
+    await Promise.all([follower.ready, artifactCatalog.ready])
+    console.log('[demo] leader board and artifact catalog mirrored, cascade is live')
+    return {hub, follower, fragmentFor, artifacts: artifactsLink}
 }
 
 // Which node this connection landed on — the client shows it as a badge.
@@ -646,8 +733,10 @@ ioServer.on('connection', function onDemoConnection(socket) {
             return
         }
         const [mirrorGone, mirrorGoneListen] = listen<[]>()
+        const mirrorArtifacts = artifacts.connection('mirror-link')
         socket.on('disconnect', function closeMirrorLink() {
             mirrorGone()
+            mirrorArtifacts.close()
             console.log('[demo] mirror link closed')
         })
         createRpcServerAuto({
@@ -655,7 +744,8 @@ ioServer.on('connection', function onDemoConnection(socket) {
             socketKey: 'app',
             object: {
                 workboard: {state: workboard.connection('mirror-link').fragment.state},
-                mirror: mirrorFragment(),
+                artifacts: mirrorArtifacts.fragment,
+                mirror: {...mirrorFragment(), artifacts: mirrorArtifactsFragment(mirrorArtifacts.fragment)},
             },
             disconnectListen: mirrorGoneListen,
         })
@@ -666,7 +756,8 @@ ioServer.on('connection', function onDemoConnection(socket) {
     const peer = host.connection(account)
     const resource = files.connection(account)
     const aiRun = ai.connection(account)
-    const artifact = artifacts.connection(account)
+    // На зеркале каталог артефактов — реплика: та же форма фрагмента, read-edge
+    const artifact = upstreamLink ? upstreamLink.artifacts.mirror.connection(account) : artifacts.connection(account)
     const conversation = conversations.connection(account)
     const workboardConnection = upstreamLink ? null : workboard.connection(account)
     const workboardFragment = upstreamLink ? upstreamLink.fragmentFor(account) : workboardConnection!.fragment
