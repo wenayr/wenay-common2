@@ -47,6 +47,39 @@ function readDemoIceServers() {
 
 const rtcConfiguration = {iceServers: readDemoIceServers()}
 
+// ============== public-exposure guards (demo policy, not library API) ==============
+// The stand is one shared world; these bounds keep a public instance memory-flat
+// and usable when strangers find it. Rate limiting is shown on the two surfaces
+// with hand-written fragments (workboard, rooms); the injected-port stands are
+// bounded by the storage quotas and TTL sweep below.
+const guards = {
+    uploadLimitBytes: 8 * 1024 * 1024,
+    uploadBudgetBytes: 64 * 1024 * 1024,
+    uploadTtlMs: Number(process.env.DEMO_UPLOAD_TTL_MS ?? 15 * 60_000),
+    workboardMaxItems: 200,
+    maxRooms: 40,
+    commandsPerMinute: 120,
+    offlineAccountTtlMs: 60 * 60_000,
+}
+
+const commandUse = new Map<string, {count: number, resetAt: number}>()
+
+function limited<A extends unknown[], R>(account: string, action: (...args: A) => R) {
+    return function limitedCommand(...args: A) {
+        const now = Date.now()
+        const use = commandUse.get(account)
+        if (!use || use.resetAt <= now) commandUse.set(account, {count: 1, resetAt: now + 60_000})
+        else if (++use.count > guards.commandsPerMinute) throw new Error('demo rate limit — slow down a little')
+        return action(...args)
+    }
+}
+
+function limitCommands<T extends Record<string, any>>(account: string, fragment: T, names: (keyof T)[]) {
+    const result: any = {...fragment}
+    for (const name of names) result[name] = limited(account, fragment[name] as any)
+    return result as T
+}
+
 function delay(ms: number) {
     return new Promise<void>(resolve => setTimeout(resolve, ms))
 }
@@ -65,14 +98,30 @@ function artifactPage(prompt: string) {
 // ============== storage intent + AI job stand ==============
 // The resource layer never sees these bytes. A real app swaps this tiny HTTP
 // port for S3/MinIO/etc. and returns its own short-lived signed instructions.
-const uploadTickets = new Map<string, {size: number, ticket: string}>()
+const uploadTickets = new Map<string, {size: number, ticket: string, at: number}>()
 const uploadBytes = new Map<string, Buffer>()
 let nextTicket = 0
+
+function storedUploadBytes() {
+    let total = 0
+    for (const bytes of uploadBytes.values()) total += bytes.byteLength
+    return total
+}
+
+function dropUpload(fileId: string) {
+    uploadTickets.delete(fileId)
+    uploadBytes.delete(fileId)
+}
+
 const files = createFileJobHost({
     storage: {
         beginUpload({file}) {
+            if (file.size > guards.uploadLimitBytes) throw new Error('demo uploads are capped at 8 MB')
+            if (storedUploadBytes() + file.size > guards.uploadBudgetBytes) {
+                throw new Error('demo storage budget is full — old uploads expire in a few minutes')
+            }
             const ticket = 'demo-upload-' + (++nextTicket)
-            uploadTickets.set(file.id, {size: file.size, ticket})
+            uploadTickets.set(file.id, {size: file.size, ticket, at: Date.now()})
             return {url: '/resource-upload/' + file.id + '?ticket=' + ticket, method: 'PUT'}
         },
         confirmUpload({file}) {
@@ -197,6 +246,7 @@ const ai = createAiRunHost({
 
 // ============== authoritative Store example ==============
 const workboard = createWorkboardHost({
+    maxItems: guards.workboardMaxItems,
     initial: [
         {id: 'welcome', title: 'Open this stand in another tab', status: 'done'},
         {id: 'rooms', title: 'Join a video room with both participants', status: 'active'},
@@ -210,11 +260,33 @@ type VideoRoomEntry = {id: string, name: string, members: Set<string>}
 function createVideoRooms() {
     const rooms = new Map<string, VideoRoomEntry>()
     const accountRooms = new Map<string, string>()
+    const emptyTimers = new Map<string, ReturnType<typeof setTimeout>>()
     const [emitChange, changes] = listen<[number]>()
+    // Empty rooms linger briefly so a reload or reconnect does not kill them.
+    const emptyRoomGraceMs = Number(process.env.DEMO_ROOM_TTL_MS ?? 30_000)
     let revision = 0
     let nextRoom = 1
 
     rooms.set('room-1', {id: 'room-1', name: 'Demo room', members: new Set()})
+
+    function scheduleRemoval(roomId: string) {
+        const timer = setTimeout(function removeEmptyRoom() {
+            emptyTimers.delete(roomId)
+            const room = rooms.get(roomId)
+            if (!room || room.members.size > 0) return
+            rooms.delete(roomId)
+            changed()
+        }, emptyRoomGraceMs)
+        ;(timer as any).unref?.()
+        emptyTimers.set(roomId, timer)
+    }
+
+    function cancelRemoval(roomId: string) {
+        const timer = emptyTimers.get(roomId)
+        if (timer == null) return
+        clearTimeout(timer)
+        emptyTimers.delete(roomId)
+    }
 
     function roomInfo(room: VideoRoomEntry) {
         return {id: room.id, name: room.name, members: Array.from(room.members).sort()}
@@ -228,7 +300,12 @@ function createVideoRooms() {
         const roomId = accountRooms.get(account)
         if (!roomId) return false
         accountRooms.delete(account)
-        rooms.get(roomId)?.members.delete(account)
+        const room = rooms.get(roomId)
+        if (room) {
+            room.members.delete(account)
+            // Covers explicit leave, switching rooms and presence-offline cleanup.
+            if (room.members.size == 0) scheduleRemoval(roomId)
+        }
         return true
     }
 
@@ -243,6 +320,7 @@ function createVideoRooms() {
         if (!room) throw new Error('video room does not exist')
         if (accountRooms.get(account) == roomId) return snapshot(account)
         detach(account)
+        cancelRemoval(roomId)
         accountRooms.set(account, roomId)
         room.members.add(account)
         changed()
@@ -252,6 +330,7 @@ function createVideoRooms() {
     function create(account: string, requestedName: unknown) {
         const name = String(requestedName ?? '').trim().slice(0, 48)
         if (!name) throw new Error('video room name is required')
+        if (rooms.size >= guards.maxRooms) throw new Error('demo room limit reached — join an existing room')
         const id = 'room-' + (++nextRoom)
         rooms.set(id, {id, name, members: new Set()})
         return join(account, id)
@@ -363,16 +442,42 @@ const media = createMediaRelay({
 const host = createPeerHost({authorize: callPolicy.authorize})
 
 // Presence cleanup retires media lines and every call/grant involving the account.
+const offlineSince = new Map<string, number>()
 host.presence.changes.on(function onPresenceEdge(ch) {
     console.log(`[demo] presence: ${ch.account} ${ch.online ? 'online' : 'offline'}`)
-    if (ch.online) return
+    if (ch.online) {
+        offlineSince.delete(ch.account)
+        return
+    }
+    offlineSince.set(ch.account, Date.now())
     videoRooms.leave(ch.account)
     callPolicy.dropAccount(ch.account)
     media.dropAccount(ch.account)
 })
 
+// One janitor keeps a long-running public stand memory-flat: expired upload
+// bytes, expired artifact open-tickets, and accounts that never came back.
+const janitor = setInterval(function sweepDemoGarbage() {
+    const now = Date.now()
+    for (const [fileId, ticket] of uploadTickets) {
+        if (now - ticket.at > guards.uploadTtlMs) dropUpload(fileId)
+    }
+    for (const [ticket, value] of artifactTickets) {
+        if (value.expiresAt <= now) artifactTickets.delete(ticket)
+    }
+    for (const [account, since] of offlineSince) {
+        if (now - since <= guards.offlineAccountTtlMs) continue
+        offlineSince.delete(account)
+        commandUse.delete(account)
+        for (const [tab, mapped] of participantAccounts) {
+            if (mapped == account) participantAccounts.delete(tab)
+        }
+    }
+}, 60_000)
+janitor.unref?.()
+
 const app = express()
-app.put('/resource-upload/:fileId', express.raw({type: '*/*', limit: '100mb'}), function receiveResourceUpload(req, res) {
+app.put('/resource-upload/:fileId', express.raw({type: '*/*', limit: '9mb'}), function receiveResourceUpload(req, res) {
     const expected = uploadTickets.get(req.params.fileId)
     const body = req.body
     if (!expected || req.query.ticket != expected.ticket || !Buffer.isBuffer(body) || body.byteLength != expected.size) {
@@ -475,14 +580,14 @@ ioServer.on('connection', function onDemoConnection(socket) {
             demo: {
                 account: () => account,
                 rtcConfiguration: () => rtcConfiguration,
-                rooms: videoRooms.connection(account),
+                rooms: limitCommands(account, videoRooms.connection(account), ['create', 'join', 'leave']),
             },
             peer: peer.fragment,
             files: resource.fragment,
             ai: aiRun.fragment,
             artifacts: artifact.fragment,
             conversation: conversation.fragment,
-            workboard: workboardConnection.fragment,
+            workboard: limitCommands(account, workboardConnection.fragment, ['create', 'rename', 'move', 'assign', 'remove']),
             media: {
                 publish: media.publishOf(account),
                 // policy-gated view: THIS connection's account is what canWatch receives
@@ -532,3 +637,14 @@ async function startDemo() {
 }
 
 void startDemo()
+
+// ============== graceful shutdown ==============
+function shutdown(signal: string) {
+    console.log(`[demo] ${signal} — closing`)
+    ioServer.close()
+    httpServer.close(function exitWhenClosed() { process.exit(0) })
+    const force = setTimeout(function exitForced() { process.exit(0) }, 2000)
+    ;(force as any).unref?.()
+}
+process.on('SIGINT', function onSigint() { shutdown('SIGINT') })
+process.on('SIGTERM', function onSigterm() { shutdown('SIGTERM') })

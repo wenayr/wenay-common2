@@ -5,6 +5,7 @@
 // which account lines are visible. Private calls use the same media lines with a
 // separate accepted-call grant, while the cursor/data route can still go WebRTC direct.
 import {io} from 'socket.io-client'
+import {listen} from '../src/Common/events/Listen'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {callPortOf, createCallManager, createPeerClient} from '../src/Common/peer/peer-index'
 import {createFileJobClient} from '../src/Common/resource/resource-index'
@@ -12,13 +13,22 @@ import {createAiRunClient} from '../src/Common/ai/ai-index'
 import {createArtifactClient, createArtifactFrame} from '../src/Common/artifact/artifact-index'
 import {createConversationClient, tConversationBlock} from '../src/Common/conversation/conversation-index'
 import {setupAppShell} from './app-shell'
+import {CallSession, createCallSession} from './call-app'
+import {createCallTones} from './call-tones'
+import {setupCallUi} from './call-ui'
 import {createMediaDemo} from './media-demo'
 import {setupVideoRooms} from './video-rooms-demo'
 import {createWorkboardClient} from './workboard-client'
 import type {WorkboardRemote} from './workboard-contract'
 import {setupWorkboardDemo} from './workboard-demo'
 
-type World = {cursor: {x: number, y: number}, color: string, name: string}
+type World = {
+    cursor: {x: number, y: number}
+    color: string
+    name: string
+    /** Published capture state, so peers can render "muted"/"camera off" instead of a frozen frame. */
+    av?: {camOn: boolean, micOn: boolean, screenOn: boolean}
+}
 
 const tab = sessionStorage.getItem('demo-tab')
     ?? Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12)
@@ -41,8 +51,15 @@ function participantName(account: string) {
     return account.replace(/^person-/, '').toUpperCase()
 }
 
+function cleanName(value: unknown) {
+    return typeof value == 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, 24) : ''
+}
+
+type PeerClient = ReturnType<typeof createPeerClient<World>>
+type PeerView = ReturnType<PeerClient['peer']>
+
 async function main() {
-    setupAppShell({root: document})
+    const shell = setupAppShell({root: document})
     const hub = createRpcClientHub(
         // Start with polling so an HTTP-only tunnel/proxy can carry RPC, then
         // Socket.IO upgrades to WebSocket whenever the external route permits it.
@@ -53,8 +70,21 @@ async function main() {
     await clients.app.readyStrict()
     me = await clients.app.func.demo.account()
     const rtcConfiguration = await clients.app.func.demo.rtcConfiguration() as RTCConfiguration
-    document.title = `participant ${participantName(me)}`
-    el('who').textContent = `You are participant ${participantName(me)}`
+
+    // ============== identity: a display name over the account label ==============
+    // The name lives in the client's own World store (like cursor and color), so
+    // peers receive it through the ordinary mirror — no extra server surface.
+    const peerViews = new Map<string, PeerView>()
+    const onlineSet = new Set<string>()
+    let myName = cleanName(sessionStorage.getItem('demo-name'))
+    function displayName(account: string) {
+        if (account == me) return myName || participantName(account)
+        return cleanName(peerViews.get(account)?.store.state?.name) || participantName(account)
+    }
+    const nameInput = el('myName') as HTMLInputElement
+    nameInput.value = myName
+    nameInput.placeholder = `Participant ${participantName(me)}`
+    document.title = `participant ${displayName(me)}`
     log('rpc connected; legacy serverTime() = ' + await clients.app.func.serverTime())
     const workboard = createWorkboardClient({
         remote: clients.app.func.workboard as unknown as WorkboardRemote,
@@ -65,7 +95,14 @@ async function main() {
             disconnectListen: cb => hub.disconnectListen(cb),
         },
     })
-    setupWorkboardDemo({client: workboard, self: me, element: el, participantName, log})
+    const workboardUi = setupWorkboardDemo({
+        client: workboard,
+        self: me,
+        element: el,
+        participantName: displayName,
+        participants: () => Array.from(onlineSet).filter(account => account != me).sort(),
+        log,
+    })
     await workboard.ready
     log('authoritative Workboard Store mirror ready')
     const files = createFileJobClient({remote: clients.app.func.files, drain: 'micro'})
@@ -97,17 +134,32 @@ async function main() {
         initial: {
             cursor: {x: 160, y: 120},
             color: '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0'),
-            name: participantName(me),
+            name: myName || participantName(me),
+            av: {camOn: false, micOn: false, screenOn: false},
         },
         // The deployment supplies STUN/TURN here; peer/route logic stays transport-agnostic.
         rtc: () => new RTCPeerConnection(rtcConfiguration),
         drain: 'micro',
     })
+    // Own name edits publish through the store; every consumer re-renders.
+    nameInput.addEventListener('change', function renameSelf() {
+        myName = cleanName(nameInput.value)
+        nameInput.value = myName
+        sessionStorage.setItem('demo-name', myName)
+        client.store.state.name = myName || participantName(me)
+        document.title = `participant ${displayName(me)}`
+        renderPresence()
+        workboardUi.render()
+        roomsUi?.rerender()
+    })
+
     const onlineEl = el('online')
     const participantList = el('participants')
-    const onlineSet = new Set<string>()
-    const peerViews = new Map<string, ReturnType<typeof client.peer>>()
     let selectedPeer = ''
+    // Created below, after media exists; presence rendering only peeks at them.
+    let session: CallSession | undefined
+    let callUi: {render: () => void} | undefined
+    let roomsUi: {rerender: () => void} | undefined
 
     function selectedView() {
         return selectedPeer ? peerViews.get(selectedPeer) : undefined
@@ -119,6 +171,16 @@ async function main() {
         if (existing) return existing
         const peer = client.peer(account)
         peerViews.set(account, peer)
+        // Identity and AV flags ride the same World mirror as the cursor; only
+        // these keys trigger DOM re-renders (cursor stays on the RAF loop).
+        peer.store.each().on(function onPeerWorldField(key: string) {
+            if (key == 'name' || key == 'color') {
+                renderPresence()
+                workboardUi.render()
+                roomsUi?.rerender()
+            }
+            if (key == 'av') callUi?.render()
+        })
         peer.ready.then(() => log(`participant ${participantName(account)} mirror ready`)).catch(e => log('mirror error: ' + e))
         return peer
     }
@@ -129,26 +191,42 @@ async function main() {
         if (!peers.includes(selectedPeer)) selectedPeer = peers[0] ?? ''
         participantList.replaceChildren()
         for (const account of accounts) {
+            if (account != me) ensurePeer(account)
             const clientButton = document.createElement('button')
             const self = account == me
-            clientButton.textContent = self ? `You · ${participantName(account)}` : `Participant ${participantName(account)}`
+            const missed = self ? 0 : session?.missedFrom(account) ?? 0
+            const name = displayName(account)
+            const avatar = document.createElement('span')
+            avatar.className = 'chipAvatar'
+            const world = self ? client.store.state : peerViews.get(account)?.store.state
+            avatar.style.background = typeof world?.color == 'string' ? world.color : '#8491a1'
+            avatar.textContent = (name[0] ?? '?').toUpperCase()
+            const label = document.createElement('span')
+            label.textContent = (self ? `You · ${name}`
+                : name == participantName(account) ? `Participant ${name}` : name)
+                + (missed ? ` · ${missed} missed` : '')
             clientButton.className = (self ? 'self ' : '') + (account == selectedPeer ? 'selected' : '')
             clientButton.disabled = self
             clientButton.addEventListener('click', function selectClient() {
                 selectedPeer = account
                 renderPresence()
-                renderCallUi()
+                callUi?.render()
             })
+            clientButton.append(avatar, label)
             participantList.append(clientButton)
-            if (!self) ensurePeer(account)
         }
         onlineEl.textContent = `${accounts.length} participant(s) online`
         onlineEl.style.color = '#2e7d32'
+        // Presence drives call availability too: a peer appearing/leaving must
+        // refresh the call button without waiting for a chip click.
+        callUi?.render()
     }
     // subscribe FIRST, then list() — the changes feed is a plain edge Listen
+    const [emitPresenceEdge, presenceEdges] = listen<[{account: string, online: boolean}]>()
     ;(clients.app.func.peer.presence.changes as any).on((ch: any) => {
         if (ch.online) onlineSet.add(ch.account); else onlineSet.delete(ch.account)
         if (ch.account != me) log(`presence: ${participantName(ch.account)} ${ch.online ? 'online' : 'offline'}`)
+        emitPresenceEdge({account: ch.account, online: !!ch.online})
         renderPresence()
     })
     for (const account of await clients.app.func.peer.presence.list()) onlineSet.add(account)
@@ -214,81 +292,65 @@ async function main() {
         self: me,
         element: el,
         log,
-        participantName,
+        participantName: displayName,
+        peerAv: account => peerViews.get(account)?.store.state?.av,
     })
-    await setupVideoRooms({
+    roomsUi = await setupVideoRooms({
         remote: clients.app.func.demo.rooms,
         self: me,
         media: media.room,
         element: el,
         log,
-        participantName,
+        participantName: displayName,
     })
+    // Peers render "muted"/"camera off" from these flags instead of guessing
+    // by frame age; the same World store already carries the cursor and name.
+    function publishAvState() {
+        client.store.state.av = {
+            camOn: media.local.state('cam') == 'live',
+            micOn: media.local.state('mic') == 'live',
+            screenOn: media.local.state('screen') == 'live',
+        }
+    }
+    media.local.changes.on(function publishAvOnCapture() { publishAvState() })
+    publishAvState()
+
+    // ============== calls: session owns the rules, UI factories own the DOM ==============
     const calls = createCallManager({port: callPortOf(clients.app.func.peer), self: me})
     calls.ready.then(() => log('call signaling ready'))
-
-    const callBtn = el('call') as HTMLButtonElement
-    const acceptBtn = el('accept') as HTMLButtonElement
-    const declineBtn = el('decline') as HTMLButtonElement
-    const callStateEl = el('callState')
-    const callHelpEl = el('callHelp')
-    let call: any = null
-
-    function renderCallUi() {
-        const state = call?.state()
-        const incoming = call?.direction == 'in' && state == 'ringing'
-        const peerName = call ? participantName(call.peer) : participantName(selectedPeer)
-        callBtn.hidden = incoming
-        acceptBtn.hidden = !incoming
-        declineBtn.hidden = !incoming
-        callBtn.textContent = state == 'active' ? '📞 hang up'
-            : state == 'ringing' ? '📞 cancel…'
-            : selectedPeer ? `📞 call ${participantName(selectedPeer)}` : '📞 choose a participant'
-        callBtn.disabled = !call && !selectedPeer
-        callStateEl.textContent = !call ? ''
-            : state == 'ringing' ? (incoming ? `${peerName} is calling…` : `ringing ${peerName}…`)
-            : state == 'active' ? `in call with ${peerName}`
-            : ''
-        callHelpEl.textContent = !call && !selectedPeer
-            ? 'Open this page in another tab: every tab becomes a participant.'
-            : !call
-                ? `Selected ${participantName(selectedPeer)}. This private call is separate from room membership.`
-                : state == 'ringing'
-                    ? (incoming ? `Accept the private call from ${peerName}.` : `Waiting for ${peerName} to accept.`)
-                    : state == 'active'
-                        ? `Connected to ${peerName}. Remote video appears when ${peerName} starts their camera.`
-                        : 'The call has ended.'
-    }
-
-    function bindCall(next: any) {
-        call = next
-        call.changed.on(function onCallState(state: string) {
-            log(`call ${state}${next.reason() ? ` (${next.reason()})` : ''}`)
-            if (state == 'active') media.privateCall.attach(next.peer)
-            if (state == 'ended') {
-                media.privateCall.detach()
-                if (call == next) call = null
-            }
-            renderCallUi()
-        })
-        renderCallUi()
-    }
-
-    callBtn.addEventListener('click', function onCallButton() {
-        if (call) { call.hangup(); return }
-        if (!selectedPeer) return
-        log(`calling ${participantName(selectedPeer)}...`)
-        bindCall(calls.call(selectedPeer, {kinds: ['cam', 'mic', 'screen']}))
+    const tones = createCallTones()
+    const callSession = createCallSession({
+        calls,
+        tones,
+        media: media.call,
+        capture: media.local,
+        transport: {
+            connectListen: cb => hub.connectListen(function callTransportConnected() { cb() }),
+            disconnectListen: cb => hub.disconnectListen(cb),
+        },
+        presence: presenceEdges,
+        log,
     })
-    acceptBtn.addEventListener('click', () => call?.accept())
-    declineBtn.addEventListener('click', () => call?.decline())
-    calls.rings.on(function onIncomingRing(incoming: any) {
-        log(`incoming call from ${incoming.peer}`)
-        selectedPeer = incoming.peer
+    session = callSession
+    callUi = setupCallUi({
+        session: callSession,
+        tones,
+        capture: media.local,
+        media: media.call,
+        peerColor: account => peerViews.get(account)?.store.state?.color,
+        onlinePeers: () => Array.from(onlineSet).filter(account => account != me).sort(),
+        element: el,
+        participantName: displayName,
+        selectedPeer: () => selectedPeer,
+        reveal: () => shell.show('rooms'),
+        log,
+    })
+    callSession.changed.on(function onCallPhase(phase) {
+        // An incoming or active call pins that participant as the selection.
+        if ((phase == 'incoming' || phase == 'active') && callSession.peer()) selectedPeer = callSession.peer()
         renderPresence()
-        bindCall(incoming)
     })
-    renderCallUi()
+    callSession.historyChanged.on(function onCallHistory() { renderPresence() })
 }
 
 // ============== Conversation: logical channels + versioned blocks + scoped facts ==============

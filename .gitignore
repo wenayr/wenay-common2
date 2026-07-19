@@ -17,3 +17,10 @@ yarn-error.log*
 # Local task progress files
 /doc/progress/*.md
 !/doc/progress/README.md
+
+# Local scratch and generated demo assets
+/_to_delete/
+/demo/public/
+/test/node_modules/
+/test/dist/
+/test/package-lock.json

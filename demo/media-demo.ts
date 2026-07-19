@@ -1,3 +1,5 @@
+import {createAsyncQueue} from '../src/Common/async/waitRun'
+import {listen} from '../src/Common/events/Listen'
 import {
     attachAudioPlayer,
     attachVideoCanvas,
@@ -7,7 +9,7 @@ import {
     pipeMediaPublish,
 } from '../src/Common/media/media-index'
 
-type tMediaKind = 'cam' | 'mic' | 'screen'
+export type tMediaKind = 'cam' | 'mic' | 'screen'
 type tElement = (id: string) => HTMLElement
 type tLog = (line: string) => void
 
@@ -17,15 +19,17 @@ type MediaDemoDeps = {
     element: tElement
     log: tLog
     participantName: (account: string) => string
+    /** Peer-published AV flags (World store) for room-tile badges; optional. */
+    peerAv?: (account: string) => {camOn?: boolean, micOn?: boolean, screenOn?: boolean} | undefined
 }
 
 type RoomTile = {
     root: HTMLElement
-    caption: HTMLElement
-    screenDetails: HTMLDetailsElement
-    screenSummary: HTMLElement
-    audioStatus: HTMLElement
+    nameChip: HTMLElement
+    badge: HTMLElement
     camCanvas: HTMLCanvasElement
+    screenRoot: HTMLElement
+    screenChip: HTMLElement
     screenCanvas: HTMLCanvasElement
 }
 
@@ -47,7 +51,7 @@ type PeerView = {
 // ============== media demo: application integration ==============
 
 export function createMediaDemo(deps: MediaDemoDeps) {
-    const {remote, self, element, log, participantName} = deps
+    const {remote, self, element, log, participantName, peerAv} = deps
 
     function canvas(id: string) {
         return element(id) as HTMLCanvasElement
@@ -74,7 +78,10 @@ export function createMediaDemo(deps: MediaDemoDeps) {
     function createLocalMedia() {
         const cameraResolution = element('camRes') as HTMLSelectElement
         const localCameraCanvas = canvas('localCam')
-        const mediaKinds = ['cam', 'mic', 'screen'] as const
+        // One capture-state feed lets every consumer (room-stage buttons, the
+        // in-call control bar, the published AV flags) stay in sync with the
+        // SAME account-wide sources instead of duplicating capture logic.
+        const [emitCaptureChange, captureChanges] = listen<[tMediaKind]>()
         let localCameraView: ReturnType<typeof attachVideoCanvas> | null = null
 
         function publish(kind: tMediaKind, source: MediaSource) {
@@ -84,11 +91,19 @@ export function createMediaDemo(deps: MediaDemoDeps) {
             return source
         }
 
+        const cameraDevice = element('camDevice') as HTMLSelectElement
+        const microphoneDevice = element('micDevice') as HTMLSelectElement
+
+        function storedDeviceId(key: string) {
+            return sessionStorage.getItem(key) || undefined
+        }
+
         function createCamera() {
             // JPEG keeps this example transport-neutral: the same binary line can go
             // through the relay today and another media transport later.
             return publish('cam', createVideoSource({
                 sourceId: 'cam',
+                deviceId: storedDeviceId('demo-cam-device'),
                 fps: 12,
                 width: Number(cameraResolution.value) || 640,
                 codec: 'jpeg',
@@ -96,15 +111,20 @@ export function createMediaDemo(deps: MediaDemoDeps) {
             }))
         }
 
-        const sources: Record<tMediaKind, MediaSource> = {
-            cam: createCamera(),
-            mic: publish('mic', createAudioSource({
+        function createMicrophone() {
+            return publish('mic', createAudioSource({
                 sourceId: 'mic',
+                deviceId: storedDeviceId('demo-mic-device'),
                 worklet: false,
                 // Larger chunks avoid flooding the shared RPC socket with hundreds
                 // of tiny messages per second.
                 bufferSize: 4096,
-            })),
+            }))
+        }
+
+        const sources: Record<tMediaKind, MediaSource> = {
+            cam: createCamera(),
+            mic: createMicrophone(),
             screen: publish('screen', createVideoSource({
                 sourceId: 'screen',
                 fps: 10,
@@ -123,49 +143,132 @@ export function createMediaDemo(deps: MediaDemoDeps) {
             })
         }
 
-        function bindCaptureButton(id: string, kind: tMediaKind, startLabel: string, stopLabel: string) {
-            const target = button(id)
-            target.addEventListener('click', async function toggleCapture() {
+        // One ordered queue per kind (the library's own async primitive): a click
+        // while getUserMedia is still pending queues AFTER it instead of firing a
+        // second start — an orphan second stream would hold the camera with no
+        // owner left to stop it. `desired` is the intent the queue converges to.
+        const captureQueues: Record<tMediaKind, ReturnType<typeof createAsyncQueue>> = {
+            cam: createAsyncQueue(1),
+            mic: createAsyncQueue(1),
+            screen: createAsyncQueue(1),
+        }
+        const desired: Record<tMediaKind, boolean> = {cam: false, mic: false, screen: false}
+
+        function applyCapture(kind: tMediaKind, on: boolean) {
+            return captureQueues[kind].add(async function applyCaptureState() {
                 const source = sources[kind]
-                if (source.state == 'live') {
+                if (!on) {
+                    if (source.state != 'live') return source.state
                     source.stop()
-                    target.textContent = startLabel
                     if (kind == 'cam') clearCanvas(localCameraCanvas)
                     log(`${kind}: stopped`)
-                    return
+                    emitCaptureChange(kind)
+                    return source.state
                 }
-
-                target.disabled = true
-                target.textContent = `${startLabel} …`
-                try {
-                    const state = await source.start()
-                    target.textContent = state == 'live' ? stopLabel : startLabel
-                    const error = source.getStats().error
-                    log(`${kind}: ${state}${state != 'live' && error ? ' — ' + error : ''}`)
-                } finally {
-                    target.disabled = false
-                }
+                if (source.state == 'live') return source.state
+                const state = await source.start()
+                const error = source.getStats().error
+                log(`${kind}: ${state}${state != 'live' && error ? ' — ' + error : ''}`)
+                emitCaptureChange(kind)
+                // The first permission grant unlocks device labels for the pickers.
+                if (state == 'live') void refreshDevices()
+                return state
             })
         }
 
-        cameraResolution.addEventListener('change', async function changeCameraResolution() {
-            const wasLive = sources.cam.state == 'live'
-            sources.cam.stop()
-            sources.cam = createCamera()
-            attachLocalCamera()
-            if (!wasLive) return
-            const state = await sources.cam.start()
-            log(`cam @${cameraResolution.value}p: ${state}`)
+        function ensure(kind: tMediaKind, on: boolean) {
+            desired[kind] = on
+            return applyCapture(kind, on)
+        }
+
+        function toggle(kind: tMediaKind) {
+            // With operations in flight, invert INTENT (tap-tap during a slow
+            // permission prompt converges to "off"). With an idle queue, decide
+            // from the REAL state — otherwise a failed/denied auto-start leaves
+            // desired=true and the first click becomes a silent no-op.
+            const target = captureQueues[kind].size > 0
+                ? !desired[kind]
+                : sources[kind].state != 'live'
+            return ensure(kind, target)
+        }
+
+        // Sources are immutable once created — a device or resolution change swaps
+        // the source object through the same per-kind queue.
+        function restartSource(kind: 'cam' | 'mic', make: () => MediaSource) {
+            return captureQueues[kind].add(async function runRestart() {
+                const wasLive = sources[kind].state == 'live'
+                sources[kind].stop()
+                sources[kind] = make()
+                if (kind == 'cam') attachLocalCamera()
+                emitCaptureChange(kind)
+                if (!wasLive) return
+                const state = await sources[kind].start()
+                log(`${kind}: restarted — ${state}`)
+                emitCaptureChange(kind)
+            })
+        }
+
+        // -------- device pickers: library listDevices() + per-tab persistence --------
+
+        async function renderDeviceOptions(select: HTMLSelectElement, source: MediaSource, storageKey: string, fallbackLabel: string) {
+            const devices = await source.listDevices()
+            const chosen = sessionStorage.getItem(storageKey) ?? ''
+            const options = [new Option(`Default ${fallbackLabel}`, '')]
+            devices.forEach((device, index) => options.push(new Option(device.label || `${fallbackLabel} ${index + 1}`, device.deviceId)))
+            select.replaceChildren(...options)
+            select.value = devices.some(device => device.deviceId == chosen) ? chosen : ''
+        }
+
+        async function refreshDevices() {
+            await renderDeviceOptions(cameraDevice, sources.cam, 'demo-cam-device', 'camera')
+            await renderDeviceOptions(microphoneDevice, sources.mic, 'demo-mic-device', 'microphone')
+        }
+
+        function bindDevicePicker(select: HTMLSelectElement, kind: 'cam' | 'mic', storageKey: string, make: () => MediaSource) {
+            select.addEventListener('change', function changeCaptureDevice() {
+                sessionStorage.setItem(storageKey, select.value)
+                void restartSource(kind, make)
+            })
+        }
+
+        function bindCaptureButton(id: string, kind: tMediaKind, startLabel: string, stopLabel: string) {
+            const target = button(id)
+            function render() {
+                target.textContent = sources[kind].state == 'live' ? stopLabel : startLabel
+            }
+            target.addEventListener('click', async function toggleCapture() {
+                target.disabled = true
+                try { await toggle(kind) } finally {
+                    target.disabled = false
+                    render()
+                }
+            })
+            captureChanges.on(function renderCaptureButton(changed) {
+                if (changed == kind) render()
+            })
+            render()
+        }
+
+        cameraResolution.addEventListener('change', function changeCameraResolution() {
+            void restartSource('cam', createCamera)
         })
 
         attachLocalCamera()
         bindCaptureButton('cam', 'cam', '📷 start camera', '⏹ stop camera')
         bindCaptureButton('mic', 'mic', 'Share microphone', 'Stop microphone')
         bindCaptureButton('screen', 'screen', '🖥 share screen', '⏹ stop sharing')
+        bindDevicePicker(cameraDevice, 'cam', 'demo-cam-device', createCamera)
+        bindDevicePicker(microphoneDevice, 'mic', 'demo-mic-device', createMicrophone)
+        // Labels unlock after the first permission grant; hot-plug refreshes too.
+        navigator.mediaDevices?.addEventListener?.('devicechange', function onDevicesChanged() { void refreshDevices() })
+        void refreshDevices()
         enableFullscreen(localCameraCanvas)
 
         return {
             sources,
+            toggle,
+            ensure,
+            captureChanges,
             cameraStats: () => localCameraView?.stats(),
         }
     }
@@ -179,37 +282,37 @@ export function createMediaDemo(deps: MediaDemoDeps) {
         let roomId: string | null = null
         let audioEnabled = false
 
+        // Meet-style tile: the video fills a dark 16:9 cell; identity and AV
+        // state ride small overlay chips; a screen share becomes its own tile.
         function createTile(account: string): RoomTile {
             const root = document.createElement('figure')
-            root.className = 'mediaTile'
-
-            const caption = document.createElement('figcaption')
-            caption.textContent = `${participantName(account)} · camera is off`
-
+            root.className = 'roomTile'
             const camCanvas = document.createElement('canvas')
-            camCanvas.className = 'mediaCanvas'
             camCanvas.width = 320
             camCanvas.height = 180
+            const nameChip = document.createElement('div')
+            nameChip.className = 'tileName'
+            nameChip.textContent = participantName(account)
+            const badge = document.createElement('div')
+            badge.className = 'tileBadge'
+            badge.textContent = '⏳ connecting…'
+            root.append(camCanvas, nameChip, badge)
 
-            const audioStatus = document.createElement('div')
-            audioStatus.className = 'audioStatus'
-            audioStatus.textContent = `${participantName(account)} · microphone is off`
-
-            const screenDetails = document.createElement('details')
-            screenDetails.className = 'roomScreen'
-            const screenSummary = document.createElement('summary')
-            screenSummary.textContent = `${participantName(account)} · screen is not shared`
+            const screenRoot = document.createElement('figure')
+            screenRoot.className = 'roomTile roomScreenTile'
+            screenRoot.hidden = true
             const screenCanvas = document.createElement('canvas')
-            screenCanvas.className = 'mediaCanvas'
             screenCanvas.width = 480
             screenCanvas.height = 270
-            screenDetails.append(screenSummary, screenCanvas)
+            const screenChip = document.createElement('div')
+            screenChip.className = 'tileName'
+            screenChip.textContent = `${participantName(account)} · screen`
+            screenRoot.append(screenCanvas, screenChip)
 
-            root.append(caption, camCanvas, audioStatus, screenDetails)
-            peers.append(root)
+            peers.append(root, screenRoot)
             enableFullscreen(camCanvas)
             enableFullscreen(screenCanvas)
-            return {root, caption, screenDetails, screenSummary, audioStatus, camCanvas, screenCanvas}
+            return {root, nameChip, badge, camCanvas, screenRoot, screenChip, screenCanvas}
         }
 
         function attach(account: string) {
@@ -241,6 +344,7 @@ export function createMediaDemo(deps: MediaDemoDeps) {
             view.player.disable()
             view.player.off()
             view.root.remove()
+            view.screenRoot.remove()
             views.delete(account)
         }
 
@@ -268,6 +372,9 @@ export function createMediaDemo(deps: MediaDemoDeps) {
         }
 
         function setMembership(nextRoomId: string | null, members: string[]) {
+            // Joining a room turns listening on (the join click is the gesture);
+            // a manual mute afterwards is respected until the next join.
+            if (roomId == null && nextRoomId != null) audioEnabled = true
             roomId = nextRoomId
             const wanted = new Set(nextRoomId ? members.filter(account => account != self) : [])
             for (const account of Array.from(views.keys())) {
@@ -276,7 +383,7 @@ export function createMediaDemo(deps: MediaDemoDeps) {
             for (const account of wanted) {
                 if (!views.has(account)) attach(account)
             }
-            if (!views.size) audioEnabled = false
+            if (!views.size && !roomId) audioEnabled = false
             renderAudioButton()
             renderEmptyState()
         }
@@ -293,16 +400,14 @@ export function createMediaDemo(deps: MediaDemoDeps) {
                 videoFrames += cam.frames
                 audioFrames += mic.frames
 
-                view.caption.textContent = cam.width
-                    ? `${participantName(view.account)} · ${cam.width}×${cam.height} · ${cam.perSec}/s · click = fullscreen`
-                    : `${participantName(view.account)} · camera is off`
-                if (screen.width) {
-                    view.screenSummary.textContent = `${participantName(view.account)} screen · ${screen.width}×${screen.height}`
-                    view.screenDetails.open = true
-                }
-                view.audioStatus.textContent = audioPerSec
-                    ? `${audioEnabled ? '🔊' : '🎙'} ${participantName(view.account)} · audio ${audioPerSec}/s${audioEnabled ? ' · playing' : ' · enable room audio to listen'}`
-                    : `${participantName(view.account)} · audio is not being published`
+                const flags = peerAv?.(view.account)
+                const name = participantName(view.account)
+                view.nameChip.textContent = name
+                    + (flags?.micOn == false ? ' · 🎙 muted' : audioPerSec ? ' · 🎙' : '')
+                view.nameChip.title = cam.width ? `${cam.width}×${cam.height} · ${cam.perSec}/s` : ''
+                view.badge.hidden = cam.width > 0
+                view.badge.textContent = flags?.camOn == false ? '📷 camera off' : '⏳ connecting…'
+                view.screenRoot.hidden = !screen.width
             }
             return {participants: views.size, videoFrames, audioFrames}
         }
@@ -321,92 +426,194 @@ export function createMediaDemo(deps: MediaDemoDeps) {
         return {setMembership, renderStats}
     }
 
-    // -------- accepted private call -> one temporary peer viewer --------
+    // -------- accepted call -> a dynamic tile grid (1:1 and group) --------
+    // Every participant (including self) is a tile in `#callGrid`. Speaker view
+    // promotes the active speaker; grid view shows equal tiles. Screen shares
+    // become their own wide tile. Reused for private 1:1 and host-centric group.
 
-    function createPrivateCallMedia() {
-        const audioButton = button('audio')
-        let view: PeerView | null = null
+    type CallTile = {
+        account: string
+        root: HTMLElement
+        canvas: HTMLCanvasElement
+        nameChip: HTMLElement
+        badge: HTMLElement
+        cam: ReturnType<typeof attachVideoCanvas>
+        screen?: {root: HTMLElement, view: ReturnType<typeof attachVideoCanvas>}
+        player?: ReturnType<typeof attachAudioPlayer>
+        prevAudio: number
+        speaking: number
+    }
 
-        function renderAudioButton() {
-            audioButton.disabled = !view
-            audioButton.textContent = view?.player.enabled
-                ? '🔇 mute peer audio'
-                : '🔊 enable peer audio'
+    function createCallMedia(local: ReturnType<typeof createLocalMedia>) {
+        const grid = element('callGrid')
+        const tiles = new Map<string, CallTile>() // 'self' + each peer account
+        let soundOn = true
+        let activeSpeaker = ''
+
+        function makeTile(account: string, isSelf: boolean): CallTile {
+            const root = document.createElement('figure')
+            root.className = 'callTile'
+            root.dataset.account = account
+            const cv = document.createElement('canvas')
+            cv.width = 320
+            cv.height = 180
+            const nameChip = document.createElement('div')
+            nameChip.className = 'tileName'
+            nameChip.textContent = isSelf ? 'You' : participantName(account)
+            const badge = document.createElement('div')
+            badge.className = 'tileBadge'
+            badge.textContent = isSelf ? '' : '⏳ connecting…'
+            badge.hidden = isSelf
+            root.append(cv, nameChip, badge)
+            grid.append(root)
+            enableFullscreen(cv)
+            const camLine = isSelf ? local.sources.cam[1] : remote.watch[account].cam
+            const cam = attachVideoCanvas(camLine, cv, {onError: error => log(`call video ${account}: ${error}`)})
+            const tile: CallTile = {account, root, canvas: cv, nameChip, badge, cam, prevAudio: 0, speaking: 0}
+            if (!isSelf) {
+                const watch = remote.watch[account]
+                tile.player = attachAudioPlayer(watch.mic, {onError: error => log(`call audio ${account}: ${error}`)})
+                if (soundOn) tile.player.enable()
+            }
+            return tile
         }
+
+        function ensureSelf() {
+            if (tiles.has('self')) return
+            tiles.set('self', makeTile('self', true))
+        }
+
+        // The self camera source object is replaced on device/resolution change —
+        // re-attach so the self tile keeps drawing from the live source.
+        local.captureChanges.on(function reattachSelfOnCapture(kind) {
+            const selfTile = tiles.get('self')
+            if (kind != 'cam' || !selfTile) return
+            selfTile.cam.off()
+            selfTile.cam = attachVideoCanvas(local.sources.cam[1], selfTile.canvas, {onError: error => log('self tile: ' + error)})
+        })
 
         function attach(account: string) {
-            if (view) return
-            const watch = remote.watch[account]
-            view = {
-                account,
-                cam: attachVideoCanvas(watch.cam, canvas('peerCam'), {
-                    onError: error => log('video frame render failed: ' + error),
-                }),
-                screen: attachVideoCanvas(watch.screen, canvas('peerScreen'), {
-                    onError: error => log('screen frame render failed: ' + error),
-                }),
-                player: attachAudioPlayer(watch.mic, {
-                    onError: error => log('audio frame failed: ' + error),
-                }),
+            ensureSelf()
+            if (tiles.has(account)) return
+            tiles.set(account, makeTile(account, false))
+            log(`call tile added: ${participantName(account)}`)
+        }
+
+        function detach(account: string) {
+            const tile = tiles.get(account)
+            if (!tile) return
+            tile.cam.off()
+            tile.screen?.view.off()
+            tile.screen?.root.remove()
+            tile.player?.disable()
+            tile.player?.off()
+            tile.root.remove()
+            tiles.delete(account)
+        }
+
+        function detachAll() {
+            for (const account of Array.from(tiles.keys())) {
+                if (account != 'self') detach(account)
             }
-            element('peerCamCap').textContent = `${participantName(account)} · waiting for camera frames`
-            element('peerScreenCap').textContent = `${participantName(account)} screen · waiting for sharing`
-            renderAudioButton()
-            log(`watching ${participantName(account)}'s media (call active)`)
+            const selfTile = tiles.get('self')
+            if (selfTile) { selfTile.cam.off(); selfTile.root.remove(); tiles.delete('self') }
+            activeSpeaker = ''
         }
 
-        function detach() {
-            if (!view) return
-            view.cam.off()
-            view.screen.off()
-            view.player.disable()
-            view.player.off()
-            view = null
-            for (const id of ['peerCam', 'peerScreen']) clearCanvas(canvas(id))
-            element('peerCamCap').textContent = 'Remote camera · start and accept a call'
-            element('peerScreenCap').textContent = 'Remote screen · available during a call'
-            renderAudioButton()
-            log('peer media detached (call ended)')
+        function ensureScreenTile(tile: CallTile) {
+            if (tile.screen) return
+            const root = document.createElement('figure')
+            root.className = 'callTile callScreenTile'
+            const cv = document.createElement('canvas')
+            cv.width = 480
+            cv.height = 270
+            const chip = document.createElement('div')
+            chip.className = 'tileName'
+            chip.textContent = `${participantName(tile.account)} · screen`
+            root.append(cv, chip)
+            grid.append(root)
+            enableFullscreen(cv)
+            const view = attachVideoCanvas(remote.watch[tile.account].screen, cv, {onError: error => log(`call screen ${tile.account}: ${error}`)})
+            tile.screen = {root, view}
         }
 
+        function setView(view: 'speaker' | 'grid') {
+            grid.dataset.layout = view
+        }
+
+        function setSound(on: boolean) {
+            soundOn = on
+            for (const tile of tiles.values()) {
+                if (!tile.player) continue
+                if (on) tile.player.enable(); else tile.player.disable()
+            }
+        }
+
+        // One cheap tick: refresh every tile's chip/badge, compute who's talking.
         function renderStats() {
-            if (!view) return ''
-            const cam = view.cam.stats()
-            const screen = view.screen.stats()
-            const mic = view.player.stats()
-            const peer = participantName(view.account)
-            if (cam.width) element('peerCamCap').textContent = `${peer} camera · ${cam.width}×${cam.height} · click = fullscreen`
-            if (screen.width) element('peerScreenCap').textContent = `${peer} screen · ${screen.width}×${screen.height} · click = fullscreen`
-            if (!cam.frames && !screen.frames && !mic.frames) return ''
-            return `rx: cam ${cam.frames}f/${cam.drawn}d ${cam.perSec}/s ~${cam.ageMs}ms` +
-                ` · screen ${screen.frames}f/${screen.drawn}d ${screen.perSec}/s ~${screen.ageMs}ms` +
-                ` · mic ${mic.frames}f ${mic.perSec}/s ~${mic.ageMs}ms`
+            let loudest = ''
+            let loudestScore = 0
+            const localMic = local.sources.mic.getStats()
+            const selfTile = tiles.get('self')
+            if (selfTile) {
+                const talking = local.sources.mic.state == 'live' && (localMic.rms ?? 0) > 0.01
+                selfTile.speaking = talking ? (localMic.rms ?? 0) : 0
+                selfTile.root.dataset.speaking = String(talking)
+                selfTile.nameChip.textContent = 'You' + (local.sources.mic.state != 'live' ? ' · 🎙 off' : talking ? ' · 🎙' : '')
+                selfTile.badge.hidden = local.sources.cam.state == 'live'
+                selfTile.badge.textContent = '📷 camera off'
+            }
+            for (const [account, tile] of tiles) {
+                if (account == 'self' || !tile.player) continue
+                const cam = tile.cam.stats()
+                const mic = tile.player.stats()
+                const perSec = mic.frames - tile.prevAudio
+                tile.prevAudio = mic.frames
+                const flags = peerAv?.(account)
+                const talking = perSec > 0 && flags?.micOn != false
+                tile.speaking = talking ? perSec : 0
+                tile.root.dataset.speaking = String(talking)
+                tile.nameChip.textContent = participantName(account)
+                    + (flags?.micOn == false ? ' · 🎙 muted' : talking ? ' · 🎙' : '')
+                tile.badge.hidden = cam.width > 0
+                tile.badge.textContent = flags?.camOn == false ? '📷 camera off' : '⏳ connecting…'
+                // A peer's screen share appears as (and leaves with) its own tile.
+                const screen = tile.screen?.view.stats().width ?? (remote.watch[account] ? 0 : 0)
+                const hasScreen = (peerAv?.(account)?.screenOn) || (tile.screen && tile.screen.view.stats().width > 0)
+                if (hasScreen) ensureScreenTile(tile)
+                else if (tile.screen && !hasScreen && tile.screen.view.stats().width == 0) { /* keep until detach */ }
+                if (tile.speaking > loudestScore) { loudestScore = tile.speaking; loudest = account }
+            }
+            // Default to showing whoever is talking; hold the last speaker when
+            // the room goes quiet so the stage does not flicker to nobody.
+            if (loudest) activeSpeaker = loudest
+            else if (!activeSpeaker || !tiles.has(activeSpeaker)) {
+                const firstPeer = Array.from(tiles.keys()).find(a => a != 'self')
+                activeSpeaker = firstPeer ?? 'self'
+            }
+            for (const [account, tile] of tiles) tile.root.dataset.active = String(account == activeSpeaker)
+            return {count: tiles.size, activeSpeaker}
         }
 
-        audioButton.addEventListener('click', function togglePeerAudio() {
-            if (!view) return
-            if (view.player.enabled) view.player.disable()
-            else view.player.enable()
-            renderAudioButton()
-        })
-        enableFullscreen(canvas('peerCam'))
-        enableFullscreen(canvas('peerScreen'))
-        renderAudioButton()
+        // Self-driven at a talk-responsive cadence — the active speaker must
+        // follow the conversation, not the coarse 1s media-stats loop.
+        setInterval(function tickCallMedia() { if (tiles.size) renderStats() }, 400)
 
-        return {attach, detach, renderStats}
+        return {attach, detach, detachAll, setView, setSound, activeSpeaker: () => activeSpeaker}
     }
 
     // -------- one low-cost status loop for the whole media example --------
 
-    function captureStatus(state: MediaSource['state']) {
+    function captureStatus(state: MediaSource['state'], error?: string | null) {
         if (state == 'requesting') return 'Requesting microphone permission…'
         if (state == 'denied') return 'Microphone permission denied'
         if (state == 'no-device') return 'No microphone found'
-        if (state == 'error') return 'Microphone error (see activity log)'
+        // Surface the real reason ("Device in use" etc.) instead of "see log".
+        if (state == 'error') return 'Microphone: ' + (error || 'error (see activity log)')
         return 'Microphone is off'
     }
 
-    function startStats(local: ReturnType<typeof createLocalMedia>, room: ReturnType<typeof createRoomMedia>, privateCall: ReturnType<typeof createPrivateCallMedia>) {
+    function startStats(local: ReturnType<typeof createLocalMedia>, room: ReturnType<typeof createRoomMedia>) {
         const output = element('mediaStats')
         const microphoneStatus = element('micStatus')
         let previous = {cam: 0, mic: 0, screen: 0}
@@ -425,7 +632,7 @@ export function createMediaDemo(deps: MediaDemoDeps) {
             const mic = local.sources.mic.getStats()
             microphoneStatus.textContent = mic.state == 'live'
                 ? `Microphone is live · ${mic.frames - previous.mic}/s · level ${(mic.rms ?? 0).toFixed(3)}`
-                : captureStatus(mic.state)
+                : captureStatus(mic.state, mic.error)
 
             const camera = local.cameraStats()
             const cameraState = local.sources.cam.state
@@ -440,11 +647,9 @@ export function createMediaDemo(deps: MediaDemoDeps) {
                             : cameraState == 'no-device'
                                 ? 'You · no camera found'
                                 : cameraState == 'error'
-                                    ? 'You · camera error (see log)'
+                                    ? 'You · camera: ' + (local.sources.cam.getStats().error || 'error (see log)')
                                     : 'You · camera is off'
 
-            const callStats = privateCall.renderStats()
-            if (callStats) parts.push(callStats)
             const roomStats = room.renderStats()
             if (roomStats.participants) {
                 parts.push(`room rx: ${roomStats.participants} participant(s), ${roomStats.videoFrames} camera frame(s), ${roomStats.audioFrames} audio frame(s)`)
@@ -456,12 +661,28 @@ export function createMediaDemo(deps: MediaDemoDeps) {
 
     const local = createLocalMedia()
     const room = createRoomMedia()
-    const privateCall = createPrivateCallMedia()
-    startStats(local, room, privateCall)
+    const call = createCallMedia(local)
+    startStats(local, room)
 
     return {
         room: {setMembership: room.setMembership},
-        privateCall: {attach: privateCall.attach, detach: privateCall.detach},
+        // Dynamic tile grid for the call overlay — 1:1 and host-centric group.
+        call: {
+            attach: call.attach,
+            detach: call.detach,
+            detachAll: call.detachAll,
+            setView: call.setView,
+            setSound: call.setSound,
+            activeSpeaker: call.activeSpeaker,
+        },
+        // Capture facade: the in-call control bar and the published AV flags
+        // drive/observe the SAME sources as the room-stage buttons.
+        local: {
+            toggle: local.toggle,
+            ensure: local.ensure,
+            state: (kind: tMediaKind) => local.sources[kind].state,
+            changes: local.captureChanges,
+        },
     }
 }
 

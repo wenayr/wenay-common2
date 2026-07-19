@@ -23,6 +23,8 @@ type WorkboardSeed = {
 type WorkboardHostDeps = {
     initial?: WorkboardSeed[]
     history?: number
+    /** Hard cap for a shared/public board; create() rejects above it. */
+    maxItems?: number
     now?: () => number
     makeId?: () => string
 }
@@ -116,6 +118,12 @@ export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
 
     function remember(account: string, requestId: string, command: tCommand, result: tCommandResult) {
         receipts.set(receiptKey(account, requestId), {command, result: copyResult(result)})
+        // Idempotency receipts are a retry guard, not history — bound them so a
+        // long-running public stand stays memory-flat (Map keeps insertion order).
+        if (receipts.size > 2000) {
+            const oldest = receipts.keys().next().value
+            if (oldest != null) receipts.delete(oldest)
+        }
         return copyResult(result)
     }
 
@@ -145,6 +153,9 @@ export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
         const requestId = requireRequest(input)
         const previous = previousResult(account, requestId, 'create')
         if (previous) return previous as WorkboardItem
+        if (deps.maxItems && Object.keys(store.state).length >= deps.maxItems) {
+            throw new Error('the demo board is full — remove finished items first')
+        }
         const timestamp = now()
         const id = nextUniqueId()
         const item: WorkboardItem = {

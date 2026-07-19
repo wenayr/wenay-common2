@@ -46,14 +46,16 @@
     .brand h1 { margin: 0; font-size: 17px; letter-spacing: -.01em; }
     .brand p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
     .identity { display: flex; align-items: center; gap: 10px; color: var(--muted); }
-    #who { color: var(--text); font-weight: 650; }
+    #myName { width: 170px; font-weight: 650; }
+    #camDevice, #micDevice { max-width: 165px; }
+    .chipAvatar { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: #8491a1; color: #fff; font-size: 10px; font-weight: 800; text-shadow: 0 1px 2px rgba(0, 0, 0, .55); }
     .appNav { display: flex; gap: 4px; margin: 0 24px; padding: 4px; width: fit-content; border: 1px solid var(--line); border-radius: 11px; background: rgba(255, 255, 255, .75); }
     .appNav button { min-width: 96px; border: 0; background: transparent; color: var(--muted); font-weight: 650; }
     .appNav button.selected { background: var(--surface); color: var(--text); box-shadow: 0 1px 5px rgba(30, 42, 60, .12); }
     .presenceBar { display: flex; align-items: center; gap: 12px; margin: 12px 24px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
     #online { white-space: nowrap; color: var(--success); font-size: 12px; font-weight: 700; }
     #participants { display: flex; flex: 1; gap: 6px; align-items: center; flex-wrap: wrap; }
-    #participants button { min-height: 30px; padding: 4px 9px; font-size: 12px; }
+    #participants button { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 9px; font-size: 12px; }
     #participants button.selected { border-color: var(--accent); background: var(--accent-soft); color: #174aa5; }
     #participants button.self { color: var(--muted); background: var(--surface-soft); cursor: default; }
     main { padding: 20px 24px 32px; }
@@ -83,8 +85,11 @@
     .mediaTile figcaption { margin-bottom: 6px; color: var(--muted); font-size: 12px; }
     .mediaCanvas { display: block; width: 100%; max-width: 560px; height: auto; border: 1px solid #293548; border-radius: 8px; background: #101722; cursor: zoom-in; }
     .mediaCanvas:fullscreen { width: 100vw; height: 100vh; object-fit: contain; border: 0; border-radius: 0; background: #000; }
-    .roomScreen { margin-top: 8px; }
-    .roomScreen summary { color: var(--muted); font-size: 12px; cursor: pointer; }
+    .roomTile { position: relative; margin: 0; aspect-ratio: 16 / 9; min-width: 0; border-radius: 12px; overflow: hidden; background: #131b26; }
+    .roomTile canvas { width: 100%; height: 100%; object-fit: contain; background: #131b26; cursor: zoom-in; }
+    .roomScreenTile { grid-column: 1 / -1; aspect-ratio: auto; min-height: 220px; }
+    .tileName { position: absolute; left: 8px; bottom: 8px; z-index: 2; padding: 4px 10px; border-radius: 999px; background: rgba(10, 15, 22, .72); color: #fff; font-size: 12px; font-weight: 650; max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tileBadge { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); color: #9fb0c3; font-size: 13px; font-weight: 650; white-space: nowrap; }
     .audioStatus, #micStatus, #callState { color: var(--muted); font-size: 12px; }
     .audioStatus { margin-top: 7px; padding: 6px 8px; border-radius: 7px; background: #edf2f7; }
     #roomEmpty, .emptyState { margin: 0; padding: 16px 10px; color: var(--muted); text-align: center; font-size: 12px; }
@@ -109,9 +114,12 @@
     .workColumn > header { display: flex; justify-content: space-between; align-items: center; padding: 2px 3px 10px; }
     .workColumn > header span { min-width: 24px; padding: 2px 7px; border-radius: 999px; background: #e7ebf0; color: var(--muted); text-align: center; font-size: 11px; font-weight: 700; }
     .workColumnItems { display: grid; gap: 9px; }
-    .workItem { padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); box-shadow: 0 3px 12px rgba(30, 42, 60, .04); }
-    .workItem[data-changed="true"] { border-color: #99b6ef; }
+    .workItem { padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); box-shadow: 0 3px 12px rgba(30, 42, 60, .04); cursor: grab; }
+    .workItem[data-changed="true"] { border-color: #99b6ef; box-shadow: 0 0 0 2px rgba(40, 100, 220, .12); }
     .workItem[data-busy="true"] { opacity: .7; }
+    .workColumn.dropTarget { border-color: var(--accent); background: var(--accent-soft); }
+    .assignSelect { min-height: 30px; max-width: 140px; padding: 2px 6px; font-size: 12px; }
+    #workboardFeed { display: grid; gap: 3px; margin-top: 14px; padding-top: 10px; border-top: 1px dashed var(--line); color: var(--muted); font-size: 12px; }
     .workItemTitle { display: flex; align-items: center; gap: 6px; }
     .workItemTitle input { flex: 1; min-height: 32px; padding: 5px 7px; border-color: transparent; background: transparent; font-weight: 650; }
     .workItemTitle input:hover, .workItemTitle input:focus { border-color: var(--line-strong); background: var(--surface); }
@@ -136,6 +144,59 @@
     .conversationBlock th, .conversationBlock td { padding: 3px 7px; border: 1px solid var(--line); text-align: left; }
     .conversationMetric { display: inline-block; padding: 5px 9px; border-radius: 999px; background: var(--success-soft); color: var(--success); font-weight: 700; }
     #conversationFacts { margin-top: 8px; padding: 8px; border-radius: 7px; background: var(--warning-soft); font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .callBanner { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 40; display: flex; align-items: center; gap: 12px; max-width: calc(100% - 20px); padding: 12px 14px; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); box-shadow: 0 14px 40px rgba(30, 42, 60, .22); animation: callBannerIn .18s ease; }
+    @keyframes callBannerIn { from { opacity: 0; margin-top: -8px } to { opacity: 1; margin-top: 0 } }
+    .callAvatar { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; background: var(--accent-soft); color: #174aa5; font-weight: 800; }
+    .callBannerText { display: grid; }
+    .callBannerText strong { font-size: 14px; }
+    .callBannerText span { color: var(--muted); font-size: 12px; }
+    #callHistory { display: grid; gap: 4px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
+    .callHistoryRow { color: var(--muted); font-size: 12px; }
+    .callHistoryRow[data-outcome="missed"], .callHistoryRow[data-outcome="dropped"] { color: var(--danger); }
+    .callOverlay { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: #0d1219; color: #e8edf4; }
+    .callOverlayTop { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; }
+    .callPeerInfo { display: flex; align-items: center; gap: 12px; }
+    .callPeerInfo strong { display: block; font-size: 15px; }
+    #overlayState { color: #92a1b4; font-size: 12px; }
+    .callTopRight { display: flex; gap: 8px; }
+    .callTopRight button { min-height: 34px; border: 0; border-radius: 9px; padding: 0 12px; background: rgba(255, 255, 255, .09); color: #e8edf4; }
+    .callTopRight button:hover { background: rgba(255, 255, 255, .16); }
+    .callAddWrap { position: relative; }
+    .callAddMenu { position: absolute; left: 50%; bottom: 56px; transform: translateX(-50%); min-width: 190px; max-height: 240px; overflow: auto; padding: 6px; border-radius: 12px; background: #1b2431; box-shadow: 0 14px 40px rgba(0,0,0,.5); display: grid; gap: 2px; z-index: 5; }
+    .callAddMenu button { justify-content: flex-start; min-height: 40px; padding: 8px 12px; border: 0; border-radius: 8px; background: transparent; color: #e8edf4; font-weight: 600; text-align: left; }
+    .callAddMenu button:hover { background: rgba(255,255,255,.1); }
+    .callAddMenu .callAddEmpty { padding: 10px 12px; color: #92a1b4; font-size: 12px; }
+    .callStageArea { position: relative; flex: 1; min-height: 0; padding: 8px 20px; }
+    /* Grid view: equal auto-fit tiles. Speaker view: active tile fills, the rest
+       ride a bottom filmstrip. Screen tiles always span the full width. */
+    #callGrid { display: grid; gap: 10px; width: 100%; height: 100%; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); align-content: center; justify-items: center; overflow: auto; }
+    .callTile { position: relative; margin: 0; width: 100%; max-width: 560px; aspect-ratio: 16 / 9; border-radius: 14px; overflow: hidden; background: #131b26; box-shadow: 0 0 0 2px transparent; transition: box-shadow .12s ease; }
+    .callTile canvas { width: 100%; height: 100%; object-fit: contain; background: #131b26; cursor: zoom-in; }
+    .callTile[data-speaking="true"] { box-shadow: 0 0 0 3px #35c07a; }
+    .callTile .tileName { position: absolute; left: 10px; bottom: 10px; z-index: 2; padding: 4px 10px; border-radius: 999px; background: rgba(10, 15, 22, .72); color: #fff; font-size: 12px; font-weight: 650; }
+    .callTile .tileBadge { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); color: #9fb0c3; font-size: 13px; font-weight: 650; }
+    .callScreenTile { grid-column: 1 / -1; aspect-ratio: auto; min-height: 44vh; }
+    /* Speaker view: active speaker fills the stage, own camera drops to a corner
+       PiP, everyone else is hidden — "show whoever is talking" by default. */
+    #callGrid[data-layout="speaker"] { display: block; position: relative; }
+    #callGrid[data-layout="speaker"] .callTile { position: absolute; inset: 0; width: 100%; height: 100%; max-height: none; aspect-ratio: auto; }
+    #callGrid[data-layout="speaker"] .callTile[data-active="false"] { display: none; }
+    #callGrid[data-layout="speaker"] .callTile[data-account="self"][data-active="false"] { display: block; inset: auto; right: 22px; bottom: 22px; width: 190px; height: 107px; z-index: 3; border: 2px solid rgba(255,255,255,.8); }
+    #callGrid[data-layout="speaker"] .callScreenTile { z-index: 2; }
+    .overlayRinging { position: absolute; inset: 0; z-index: 4; display: grid; place-content: center; justify-items: center; gap: 14px; background: #0d1219; }
+    .overlayRinging strong { font-size: 22px; }
+    .overlayRinging p { margin: 0; color: #92a1b4; }
+    .callAvatar.big { width: 96px; height: 96px; font-size: 38px; }
+    .callTray { display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap; padding: 16px 20px 22px; }
+    .callTray button { min-height: 48px; padding: 12px 18px; border: 0; border-radius: 999px; background: rgba(255, 255, 255, .1); color: #e8edf4; font-weight: 650; }
+    .callTray button:hover:not(:disabled) { background: rgba(255, 255, 255, .18); }
+    .callTray button:disabled { opacity: .45; }
+    .callTray button[data-off="true"] { background: #7f1d1d; }
+    .callTray button.danger { background: #d92d20; color: #fff; }
+    .callTray button.danger:hover:not(:disabled) { background: #b42318; }
+    #overlayCancel { min-height: 48px; padding: 12px 22px; border: 0; border-radius: 999px; background: #d92d20; color: #fff; font-weight: 700; }
+    #overlayCancel:hover { background: #b42318; }
+    .callPill { position: fixed; right: 18px; bottom: 18px; z-index: 55; display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 10px 18px; border: 0; border-radius: 999px; background: #18794e; color: #fff; font-weight: 700; box-shadow: 0 10px 26px rgba(10, 40, 28, .45); }
     .activityPanel { margin: 0 24px 24px; }
     .activityPanel > summary { padding: 12px 14px; cursor: pointer; font-weight: 700; }
     #log { max-height: 220px; overflow-y: auto; padding: 0 14px 14px; color: var(--muted); font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
@@ -172,7 +233,8 @@
             </div>
         </div>
         <div class="identity">
-            <span id="who">Connecting…</span>
+            <label for="myName">You are</label>
+            <input id="myName" maxlength="24" placeholder="Connecting…" aria-label="Your display name">
         </div>
     </header>
 
@@ -186,6 +248,16 @@
         <span id="online">Connecting…</span>
         <div id="participants" aria-label="Online participants"></div>
         <button id="openParticipant" class="secondary">＋ Open participant</button>
+    </div>
+
+    <div id="callBanner" class="callBanner" hidden>
+        <span id="callBannerAvatar" class="callAvatar">•</span>
+        <div class="callBannerText">
+            <strong>Incoming call</strong>
+            <span id="callBannerFrom"></span>
+        </div>
+        <button id="callBannerAccept" class="primary">Accept</button>
+        <button id="callBannerDecline" class="danger">Decline</button>
     </div>
 
     <main>
@@ -235,16 +307,18 @@
                                     <option value="1280">1280p</option>
                                     <option value="1920">1920p</option>
                                 </select>
+                                <select id="camDevice" title="Camera device" aria-label="Camera device"></select>
                                 <button id="mic">Share microphone</button>
+                                <select id="micDevice" title="Microphone device" aria-label="Microphone device"></select>
                                 <button id="screen">Share screen</button>
                                 <button id="roomAudio" class="secondary" disabled>Enable room audio</button>
                                 <span id="micStatus">Microphone is off</span>
                             </div>
                             <h4 id="roomParticipantsTitle">Room participants</h4>
                             <div id="roomMediaView">
-                                <figure class="mediaTile">
-                                    <figcaption id="localCamCap">You · camera is off</figcaption>
-                                    <canvas id="localCam" class="mediaCanvas" width="320" height="180"></canvas>
+                                <figure class="roomTile">
+                                    <canvas id="localCam" width="320" height="180"></canvas>
+                                    <div id="localCamCap" class="tileName">You · camera is off</div>
                                 </figure>
                                 <div id="roomPeers"><div id="roomEmpty">Join a room to see its participants.</div></div>
                             </div>
@@ -264,18 +338,9 @@
                                 <button id="call" class="primary">Call</button>
                                 <button id="accept" class="primary" hidden>Accept</button>
                                 <button id="decline" class="danger" hidden>Decline</button>
-                                <button id="audio" class="secondary" disabled>Enable peer audio</button>
+                                <button id="callSounds" class="secondary">🔔 sounds on</button>
                             </div>
-                            <div id="privateMediaView">
-                                <figure class="mediaTile">
-                                    <figcaption id="peerCamCap">Remote camera · start and accept a call</figcaption>
-                                    <canvas id="peerCam" class="mediaCanvas" width="320" height="180"></canvas>
-                                </figure>
-                                <figure class="mediaTile">
-                                    <figcaption id="peerScreenCap">Remote screen · available during a call</figcaption>
-                                    <canvas id="peerScreen" class="mediaCanvas" width="480" height="270"></canvas>
-                                </figure>
-                            </div>
+                            <div id="callHistory" hidden></div>
                         </div>
                     </section>
                 </div>
@@ -316,6 +381,7 @@
                     </div>
                     <p id="workboardMessage" data-tone="neutral"></p>
                     <div id="workboardColumns" aria-live="polite"></div>
+                    <div id="workboardFeed" hidden></div>
                 </div>
             </section>
         </section>
@@ -394,6 +460,43 @@
             </div>
         </section>
     </main>
+
+    <div id="callOverlay" class="callOverlay" hidden>
+        <header class="callOverlayTop">
+            <div class="callPeerInfo">
+                <span id="overlayAvatar" class="callAvatar">•</span>
+                <div>
+                    <strong id="overlayName">—</strong>
+                    <span id="overlayState"></span>
+                </div>
+            </div>
+            <div class="callTopRight">
+                <button id="callViewToggle" title="Switch layout">▦ Grid view</button>
+                <button id="callMinimize" title="Minimize the call">— minimize</button>
+            </div>
+        </header>
+        <div class="callStageArea">
+            <div id="callGrid" data-layout="speaker"></div>
+            <div id="overlayRinging" class="overlayRinging" hidden>
+                <span id="overlayBigAvatar" class="callAvatar big">•</span>
+                <strong id="overlayRingName"></strong>
+                <p>ringing… unanswered calls end on their own</p>
+                <button id="overlayCancel">📞 cancel call</button>
+            </div>
+        </div>
+        <div id="callControls" class="callTray" hidden>
+            <button id="callMic">🎙 mute</button>
+            <button id="callCam">📷 camera</button>
+            <button id="callScreenShare">🖥 share screen</button>
+            <div class="callAddWrap">
+                <button id="callAdd">＋ add</button>
+                <div id="callAddMenu" class="callAddMenu" hidden></div>
+            </div>
+            <button id="callSound">🔊 sound on</button>
+            <button id="callHangup" class="danger">📞 end call</button>
+        </div>
+    </div>
+    <button id="callPill" class="callPill" hidden>📞 <span id="callPillText">In call</span></button>
 
     <details class="surface activityPanel">
         <summary>Activity log</summary>

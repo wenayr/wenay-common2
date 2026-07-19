@@ -25,6 +25,7 @@ export async function setupVideoRooms(deps: VideoRoomsDemoDeps) {
     const leaveButton = element('leaveRoom') as HTMLButtonElement
     let appliedRevision = -1
     let refreshSerial = 0
+    let lastSnapshot: tVideoRoomSnapshot | null = null
     name.value = `${participantName(self)} video room`
 
     async function join(room: tVideoRoom, button: HTMLButtonElement) {
@@ -66,6 +67,7 @@ export async function setupVideoRooms(deps: VideoRoomsDemoDeps) {
     function render(snapshot: tVideoRoomSnapshot) {
         if (snapshot.revision < appliedRevision) return
         appliedRevision = snapshot.revision
+        lastSnapshot = snapshot
         const current = snapshot.rooms.find(room => room.id == snapshot.currentRoomId)
 
         rooms.replaceChildren(...snapshot.rooms.map(room => createRoomRow(room, room.id == snapshot.currentRoomId)))
@@ -125,4 +127,11 @@ export async function setupVideoRooms(deps: VideoRoomsDemoDeps) {
     // Subscribe before the snapshot so a concurrent membership change cannot be lost.
     ;(remote.changes as any).on(function onRoomsChanged() { void refresh() })
     await refresh()
+
+    return {
+        /** Repaint with current display names without asking the server again. */
+        rerender() {
+            if (lastSnapshot) render(lastSnapshot)
+        },
+    }
 }

@@ -6,6 +6,8 @@ type WorkboardDemoDeps = {
     self: string
     element: (id: string) => HTMLElement
     participantName: (account: string) => string
+    /** Online accounts feeding the assignee picker; self is always offered. */
+    participants?: () => string[]
     log: (line: string) => void
 }
 
@@ -28,19 +30,26 @@ function button(label: string, className = '') {
     return result
 }
 
+// The board re-renders on every replay tick; a full rebuild would eat the
+// caret mid-rename. Cards are keyed by item id and patched in place. Sort
+// keys (createdAt, id) are immutable, so a card only ever MOVES between
+// columns — never within one — and a focused rename input stays mounted.
 export function setupWorkboardDemo(deps: WorkboardDemoDeps) {
     const {client, self, element, participantName, log} = deps
     const form = element('workboardCreateForm') as HTMLFormElement
     const titleInput = element('workboardTitle') as HTMLInputElement
     const createButton = element('workboardCreate') as HTMLButtonElement
     const filter = element('workboardFilter') as HTMLSelectElement
-    const columns = element('workboardColumns')
+    const columnsBox = element('workboardColumns')
     const connection = element('workboardConnection')
     const meta = element('workboardMeta')
     const counts = element('workboardCounts')
     const message = element('workboardMessage')
+    const feed = element('workboardFeed')
+    const feedLines: string[] = []
+    const cards = new Map<string, Card>()
+    const columns = new Map<tWorkboardStatus, {items: HTMLElement, count: HTMLElement, empty: HTMLElement}>()
     let requestCounter = 0
-    let lastChanged = ''
 
     function requestId(command: string) {
         requestCounter++
@@ -56,6 +65,15 @@ export function setupWorkboardDemo(deps: WorkboardDemoDeps) {
     function showMessage(text: string, tone: 'neutral' | 'success' | 'error' = 'neutral') {
         message.textContent = text
         message.dataset.tone = tone
+    }
+
+    // The board already holds the newer revision by the time a rejection
+    // lands — translate the protocol text into a human sentence.
+    function friendly(error: unknown) {
+        const text = errorText(error)
+        return /revision conflict/.test(text)
+            ? 'Someone changed this item first — the card has refreshed, try your change again.'
+            : text
     }
 
     function renderStatus() {
@@ -74,119 +92,201 @@ export function setupWorkboardDemo(deps: WorkboardDemoDeps) {
         return true
     }
 
-    async function runItemCommand(card: HTMLElement, action: () => Promise<any>, success: string) {
-        card.dataset.busy = 'true'
-        for (const control of Array.from(card.querySelectorAll<HTMLButtonElement | HTMLInputElement>('button,input'))) control.disabled = true
-        showMessage('Saving authoritative change…')
-        try {
-            await action()
-            showMessage(success, 'success')
-        } catch (error) {
-            const text = errorText(error)
-            showMessage(text, 'error')
-            log('workboard command rejected: ' + text)
-        } finally {
-            renderBoard()
-            renderStatus()
-        }
+    // ============== columns: built once, cards reconcile into them ==============
+    for (const status of client.statuses) {
+        const section = document.createElement('section')
+        section.className = 'workColumn'
+        section.dataset.status = status
+        const heading = document.createElement('header')
+        const label = document.createElement('strong')
+        label.textContent = statusLabels[status]
+        const count = document.createElement('span')
+        heading.append(label, count)
+        const items = document.createElement('div')
+        items.className = 'workColumnItems'
+        const empty = document.createElement('p')
+        empty.className = 'emptyState'
+        empty.textContent = 'No matching items'
+        section.append(heading, items, empty)
+        columnsBox.append(section)
+        columns.set(status, {items, count, empty})
+
+        // Whole column is a drop target — same command path as the buttons.
+        section.addEventListener('dragover', function allowWorkItemDrop(event) {
+            event.preventDefault()
+            section.classList.add('dropTarget')
+        })
+        section.addEventListener('dragleave', function clearWorkItemDrop() {
+            section.classList.remove('dropTarget')
+        })
+        section.addEventListener('drop', function dropWorkItem(event) {
+            event.preventDefault()
+            section.classList.remove('dropTarget')
+            const id = event.dataTransfer?.getData('text/plain')
+            const card = id ? cards.get(id) : undefined
+            if (!card || card.current().status == status) return
+            card.move(status)
+        })
     }
 
-    function renderItem(item: WorkboardItem) {
-        const card = document.createElement('article')
-        card.className = 'workItem'
-        card.dataset.workItemId = item.id
-        card.dataset.changed = String(item.id == lastChanged)
+    // ============== a card: one closure per item id ==============
+    function createCard(initial: WorkboardItem) {
+        let current = initial
+        const root = document.createElement('article')
+        root.className = 'workItem'
+        root.draggable = true
+        root.dataset.workItemId = current.id
+        root.addEventListener('dragstart', function dragWorkItem(event) {
+            event.dataTransfer?.setData('text/plain', current.id)
+            if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+        })
 
         const titleForm = document.createElement('form')
         titleForm.className = 'workItemTitle'
         const title = document.createElement('input')
-        title.value = item.title
         title.maxLength = 120
-        title.setAttribute('aria-label', `Title for ${item.id}`)
+        title.value = current.title
+        title.setAttribute('aria-label', `Title for ${current.id}`)
         const save = button('Save', 'compact secondary')
-        save.disabled = true
-        title.addEventListener('input', function updateRenameState() {
-            save.disabled = !title.value.trim() || title.value.trim() == item.title
-        })
+        titleForm.append(title, save)
+        title.addEventListener('input', function updateRenameState() { renderTitle() })
         titleForm.addEventListener('submit', function renameWorkItem(event) {
             event.preventDefault()
-            void runItemCommand(card, () => client.rename({
-                requestId: requestId('rename'), id: item.id, title: title.value, expectedRevision: item.revision,
+            void run(() => client.rename({
+                requestId: requestId('rename'), id: current.id, title: title.value, expectedRevision: current.revision,
             }), 'Title updated')
         })
-        titleForm.append(title, save)
 
         const details = document.createElement('div')
         details.className = 'workItemMeta'
-        details.textContent = `${accountLabel(item.assignee)} · r${item.revision} · ${accountLabel(item.updatedBy)}`
-
         const actions = document.createElement('div')
         actions.className = 'workItemActions'
-        const statusIndex = client.statuses.indexOf(item.status)
-        if (statusIndex > 0) {
-            const previous = client.statuses[statusIndex - 1]
-            const moveBack = button('← ' + statusLabels[previous], 'compact secondary')
-            moveBack.addEventListener('click', function moveWorkItemBack() {
-                void runItemCommand(card, () => client.move({
-                    requestId: requestId('move'), id: item.id, status: previous, expectedRevision: item.revision,
-                }), `Moved to ${statusLabels[previous]}`)
-            })
-            actions.append(moveBack)
-        }
-        if (statusIndex < client.statuses.length - 1) {
-            const next = client.statuses[statusIndex + 1]
-            const moveNext = button(statusLabels[next] + ' →', 'compact primary')
-            moveNext.addEventListener('click', function moveWorkItemNext() {
-                void runItemCommand(card, () => client.move({
-                    requestId: requestId('move'), id: item.id, status: next, expectedRevision: item.revision,
-                }), `Moved to ${statusLabels[next]}`)
-            })
-            actions.append(moveNext)
-        }
-        const assign = button(item.assignee == self ? 'Unassign' : 'Assign to me', 'compact secondary')
-        assign.addEventListener('click', function assignWorkItem() {
-            void runItemCommand(card, () => client.assign({
-                requestId: requestId('assign'), id: item.id, assignee: item.assignee == self ? null : self,
-                expectedRevision: item.revision,
-            }), item.assignee == self ? 'Item unassigned' : 'Item assigned to you')
+        const back = button('', 'compact secondary')
+        const next = button('', 'compact primary')
+        back.addEventListener('click', function moveWorkItemBack() {
+            const target = client.statuses[client.statuses.indexOf(current.status) - 1]
+            if (target) move(target)
+        })
+        next.addEventListener('click', function moveWorkItemNext() {
+            const target = client.statuses[client.statuses.indexOf(current.status) + 1]
+            if (target) move(target)
+        })
+        const assign = document.createElement('select')
+        assign.className = 'assignSelect'
+        assign.setAttribute('aria-label', `Assignee for ${current.id}`)
+        assign.addEventListener('change', function assignWorkItem() {
+            const assignee = assign.value || null
+            void run(() => client.assign({
+                requestId: requestId('assign'), id: current.id, assignee, expectedRevision: current.revision,
+            }), assignee ? `Assigned to ${accountLabel(assignee)}` : 'Item unassigned')
         })
         const remove = button('Delete', 'compact danger')
         remove.addEventListener('click', function removeWorkItem() {
-            void runItemCommand(card, () => client.remove({
-                requestId: requestId('remove'), id: item.id, expectedRevision: item.revision,
+            void run(() => client.remove({
+                requestId: requestId('remove'), id: current.id, expectedRevision: current.revision,
             }), 'Item deleted')
         })
-        actions.append(assign, remove)
-        card.append(titleForm, details, actions)
-        return card
-    }
+        actions.append(back, next, assign, remove)
+        root.append(titleForm, details, actions)
 
+        function move(target: tWorkboardStatus) {
+            void run(() => client.move({
+                requestId: requestId('move'), id: current.id, status: target, expectedRevision: current.revision,
+            }), `Moved to ${statusLabels[target]}`, target)
+        }
+
+        async function run(action: () => Promise<unknown>, success: string, optimisticStatus?: tWorkboardStatus) {
+            root.dataset.busy = 'true'
+            // Optimistic presentation only: the card slides to the target column
+            // right away; the authoritative replay confirms it or snaps it back.
+            if (optimisticStatus) columns.get(optimisticStatus)?.items.append(root)
+            showMessage('Saving authoritative change…')
+            try {
+                await action()
+                showMessage(success, 'success')
+            } catch (error) {
+                showMessage(friendly(error), 'error')
+                log('workboard command rejected: ' + errorText(error))
+            } finally {
+                root.dataset.busy = 'false'
+                renderBoard()
+                renderStatus()
+            }
+        }
+
+        function renderTitle() {
+            // Never overwrite what the user is typing; sync the rest of the card.
+            if (document.activeElement != title) title.value = current.title
+            save.disabled = !title.value.trim() || title.value.trim() == current.title
+        }
+
+        function renderAssign() {
+            if (document.activeElement == assign) return // an open dropdown stays put
+            const online = deps.participants?.() ?? []
+            const known = Array.from(new Set([self, ...online, ...(current.assignee ? [current.assignee] : [])]))
+            assign.replaceChildren(new Option('Unassigned', ''))
+            for (const account of known) {
+                assign.append(new Option(
+                    account == self ? `Me · ${participantName(account)}` : participantName(account),
+                    account,
+                ))
+            }
+            assign.value = current.assignee ?? ''
+        }
+
+        function update(item: WorkboardItem) {
+            current = item
+            renderTitle()
+            renderAssign()
+            details.textContent = `${accountLabel(item.assignee)} · r${item.revision} · by ${accountLabel(item.updatedBy)}`
+            const index = client.statuses.indexOf(item.status)
+            const backTarget = client.statuses[index - 1]
+            const nextTarget = client.statuses[index + 1]
+            back.hidden = !backTarget
+            next.hidden = !nextTarget
+            if (backTarget) back.textContent = '← ' + statusLabels[backTarget]
+            if (nextTarget) next.textContent = statusLabels[nextTarget] + ' →'
+        }
+
+        update(initial)
+        return {root, update, move, current: () => current, highlight: highlightCard}
+        function highlightCard() {
+            root.dataset.changed = 'true'
+            setTimeout(function clearWorkItemHighlight() { root.dataset.changed = 'false' }, 1400)
+        }
+    }
+    type Card = ReturnType<typeof createCard>
+
+    // ============== keyed reconciliation ==============
     function renderBoard() {
         const currentCounts = client.counts()
         counts.textContent = `${currentCounts.new} new · ${currentCounts.active} active · ${currentCounts.done} done`
-        columns.replaceChildren()
+        const live = new Set<string>()
+        const shown = new Set<string>()
+        const byStatus = new Map<tWorkboardStatus, WorkboardItem[]>(client.statuses.map(status => [status, []]))
+        for (const item of client.items()) {
+            live.add(item.id)
+            if (visible(item)) byStatus.get(item.status)!.push(item)
+        }
+        for (const [id, card] of cards) {
+            if (!live.has(id)) { card.root.remove(); cards.delete(id) }
+        }
         for (const status of client.statuses) {
-            const section = document.createElement('section')
-            section.className = 'workColumn'
-            section.dataset.status = status
-            const heading = document.createElement('header')
-            const label = document.createElement('strong')
-            label.textContent = statusLabels[status]
-            const count = document.createElement('span')
-            const items = client.items(status).filter(visible)
-            count.textContent = String(items.length)
-            heading.append(label, count)
-            const content = document.createElement('div')
-            content.className = 'workColumnItems'
-            for (const item of items) content.append(renderItem(item))
-            if (!items.length) {
-                const empty = document.createElement('p')
-                empty.className = 'emptyState'
-                empty.textContent = 'No matching items'
-                content.append(empty)
-            }
-            section.append(heading, content)
-            columns.append(section)
+            const column = columns.get(status)!
+            const items = byStatus.get(status)!
+            column.count.textContent = String(items.length)
+            column.empty.hidden = items.length > 0
+            items.forEach(function placeWorkItem(item, index) {
+                shown.add(item.id)
+                let card = cards.get(item.id)
+                if (!card) { card = createCard(item); cards.set(item.id, card) }
+                card.update(item)
+                const desired = column.items.children[index] ?? null
+                if (desired != card.root) column.items.insertBefore(card.root, desired)
+            })
+        }
+        for (const [id, card] of cards) {
+            if (!shown.has(id)) card.root.remove() // filtered out, kept for later
         }
     }
 
@@ -201,26 +301,68 @@ export function setupWorkboardDemo(deps: WorkboardDemoDeps) {
             titleInput.value = ''
             showMessage('Item created and broadcast to every participant', 'success')
         } catch (error) {
-            const text = errorText(error)
-            showMessage(text, 'error')
-            log('workboard create rejected: ' + text)
+            showMessage(friendly(error), 'error')
+            log('workboard create rejected: ' + errorText(error))
         } finally {
             renderStatus()
         }
     })
     filter.addEventListener('change', renderBoard)
 
-    // Keyframes and live replay both expand to the same per-item callback.
+    // ============== compact activity feed ==============
+    // The feed diffs against COPIES: the replay mirror applies per-path deltas
+    // into the existing item object (mutation in place), so holding a reference
+    // would always compare the new state with itself.
+    const lastSeen = new Map<string, WorkboardItem>()
+
+    function renderFeed() {
+        feed.hidden = !feedLines.length
+        feed.replaceChildren()
+        for (const line of feedLines) {
+            const row = document.createElement('div')
+            row.textContent = line
+            feed.append(row)
+        }
+    }
+
+    function noteActivity(key: string) {
+        const next = client.store.state[key]
+        const previous = lastSeen.get(key)
+        if (next) lastSeen.set(key, {...next})
+        else lastSeen.delete(key)
+        // The initial keyframe only seeds the snapshot — no narration for it.
+        if (client.status().connection != 'live') return
+        let line: string | null = null
+        if (next && !previous) line = `${accountLabel(next.updatedBy)} added “${next.title}”`
+        else if (!next && previous) line = `“${previous.title}” was removed`
+        else if (next && previous) {
+            if (next.status != previous.status) line = `${accountLabel(next.updatedBy)} moved “${next.title}” to ${statusLabels[next.status]}`
+            else if (next.title != previous.title) line = `${accountLabel(next.updatedBy)} renamed “${previous.title}” to “${next.title}”`
+            else if (next.assignee != previous.assignee) line = `${accountLabel(next.updatedBy)} assigned “${next.title}” to ${accountLabel(next.assignee)}`
+        }
+        if (!line) return
+        feedLines.unshift(`${new Date().toLocaleTimeString()} · ${line}`)
+        if (feedLines.length > 8) feedLines.pop()
+        renderFeed()
+    }
+
+    // Keyframes and live replay both land as per-item callbacks.
     const offItems = client.store.each().on(function renderChangedWorkItem(key) {
-        lastChanged = key
+        noteActivity(key)
         renderBoard()
         renderStatus()
+        cards.get(key)?.highlight()
     })
     const offStatus = client.statusChanges.on(function renderWorkboardStatus() { renderStatus() })
     renderBoard()
     renderStatus()
 
     return {
+        /** Repaint labels (e.g. a participant renamed) without a board change. */
+        render() {
+            renderBoard()
+            renderStatus()
+        },
         close() {
             offItems()
             offStatus()

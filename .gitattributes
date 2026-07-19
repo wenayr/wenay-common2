@@ -1,0 +1,8 @@
+# The repository stores LF for all text files; checkouts get LF on every platform.
+# This guards the tree against editor/tool line-ending flips (2026-07: a tree-wide
+# CRLF rewrite of the working copy produced a 360-file phantom diff).
+* text=auto eol=lf
+*.exe binary
+*.png binary
+*.jpg binary
+*.ico binary
