@@ -447,6 +447,69 @@ Detailed contract: `doc/CONVERSATION-RUNTIME.md`. Oracle: `replay/conversation-r
 (real Socket.IO/RPC ACL, typed blocks, fork, fact inheritance/conflict/tombstone, persistence failure,
 idempotent restart and reconnect). `npm run demo` exercises the same flow with two participants.
 
+## 🔗 Contract — versioned implementation runtime
+
+> `import { Contract } from 'wenay-common2'` or
+> `import * as Contract from 'wenay-common2/contract'`.
+
+The namespace is additive and independent of frontend/build tooling:
+
+```ts
+Contract.createContractOffers(initial?) -> {
+  control: {upsert(offer), remove(id), replace(offers), clear()},
+  api: {list(), changes},
+}
+
+Contract.resolveContractBinding({demand, offers, policy?, unavailable?}) -> Promise<{
+  demand, candidates, accepted, selected,
+}>
+
+Contract.createContractRuntime({offers?, policy?, retryMs?, drainTimeoutMs?, history?, now?}) -> {
+  control: {
+    require(demand), apply(demands), release(slotId, reason?),
+    addOffer(offer), removeOffer(offerId), replaceOffers(offers),
+    revokeOffer(offerId, reason?), restoreOffer(offerId),
+    reconcile(slotId?), rollback(slotId),
+  },
+  api: {status, changed, binding(slotId), acquire<T>(slotId), explain(slotId), history()},
+  close(),
+}
+```
+
+`ContractDemand` is
+`{slotId, contractId, versionRange, generation, authorityId, authorityEpoch, required?, capabilities?, proof?}`.
+Its default order is higher authority epoch, lexical authority id, then higher generation. An exact
+replay is idempotent; different contents at the same coordinate are a conflict. Override the order
+only with `policy.compareDemands`.
+
+`ContractOffer<T>` is a reusable capability:
+`{id, descriptor, priority?, open(ctx) -> ContractSession<T>}`. The descriptor protocol is `1` and
+separates `contractVersion`, `implementationVersion` and optional `runtimeVersion`; it may also carry
+`integrity`, `capabilities` and opaque `proof`. A session is
+`{api, onFail?, drain?, close}`. It is not a package archive or an already-live singleton.
+
+Exact version equality is the default compatibility rule. `policy.compatible`, `acceptDemand`,
+`acceptOffer`, `acceptSession`, `compareOffers` and `compareDemands` are the explicit extension seams.
+Required capabilities are checked before `open`. Higher offer priority wins, then stable id.
+
+Replacement is prepare-before-switch: the current session remains active until the candidate has
+opened and passed `acceptSession`. `api.acquire` returns `{api, binding, release}`; a retired session
+drains only after its leases release or `drainTimeoutMs` expires. An open or active-session failure
+suppresses the offer for `retryMs` and tries the next compatible candidate. Revocation is reversible;
+rollback reopens the previous offer only if it still satisfies the current demand and policy.
+
+Slots report `idle | resolving | preparing | active | degraded | failed | closed`. `required:false`
+with no offer is degraded; a required slot fails. `api.status` is an Observe Store, `changed` emits
+binding transitions, and `explain` exposes candidate rejection reasons. `history()` is bounded by the
+runtime option.
+
+The upper application builds/downloads/loads JavaScript, WebGL or native bundles and turns them into
+offers. This library deliberately does not compile TypeScript at runtime, run a package manager,
+mount UI, fetch a CDN or own a Service Worker. Long-lived Store/replay and connection resources are
+injected below replaceable implementations. Detailed lifecycle and authority contract:
+`doc/CONTRACT-RUNTIME.md`. Oracles: `observe/contract-runtime.test.ts` and
+`oracle/realsocket/contract-runtime.spec.ts`; browser stand: `npm run demo` → Lab.
+
 ## 🎙️ Media over socket — browser capture as binary Listen
 > `import { Media } from "wenay-common2"` or `import * as Media from "wenay-common2/media"`.
 > The hot path event is ONE `Uint8Array`: fixed 40-byte common2 media header + raw payload. No JSON envelope.
@@ -862,6 +925,32 @@ serveReplayChannel(source, channel) <-> channelReplayRemote(channel) -> ReplayRe
   //   in-proc hub + the same signaling over a real Socket.IO/RPC wire).
 exposeStoreReplay(store, opts?)  <->  syncStoreReplay(mirror, remote, opts?)            // layer B: patch line; keyframe = root patch ({path: [], value: snapshot})
 syncStoreReplayRoute(mirror, remote, opts?) -> off & {ready, switch(nextRemote, opts), seq(), label(), active()}   // same patch fold, but route-replaceable for relay/direct promotion
+createStoreReplicaOffers(initial?) -> {control, api}                                    // dynamic registry; api = {list, changes}; subscribe-before-list is handled by createStoreReplicaSet
+createStoreReplicaSet<T>(deps) -> {control, api, close}                                 // layer B.2: self-assembling single-authority Store over arbitrary connection offers
+  // OFFER, not connection: {id, priority?, connect() -> {remote, onFail?, close}}. The controller owns
+  //   session lifetime/retry. remote = {descriptor(), changed?, replay, ping?}; therefore an RPC fragment,
+  //   WebRTC datachannel, worker or in-process edge differs only in the offer adapter.
+  // DESCRIPTOR: {protocol:1, storeId, originId, nodeId, lineId, leaderId, epoch, role,
+  //   authorityLineId, authoritySeq, authorityCost, path, headSeq, proof?}.
+  //   storeId = logical data set; originId = stable lineage; nodeId = physical participant;
+  //   lineId = this process replay space (change on cold restart); authorityLineId = winning writer line.
+  //   path is authority -> ... -> this node (unique ids only); authorityCost is measured cumulative ms.
+  // ROUTE CHOICE: choose the best accepted authority, restrict to its freshest authoritySeq, then minimize
+  //   remote authorityCost + measured local RTT + offer priority. The active route stays until a replacement
+  //   wins by hysteresisMs. A path containing the local node is rejected; so a cheap descendant never loops.
+  //   Same remote replay space hands off by seq; a different cascade/authority line resets through a keyframe.
+  // AUTHORITY: default fork choice is epoch -> leaderId -> authorityLineId (deterministic availability mode).
+  //   Automatic promotion is OFF unless autoPromoteMs is supplied. Without an injected elect/accept policy,
+  //   disconnected eligible components MAY both write; the higher fork wins when the network heals.
+  //   For quorum/lease safety inject elect(ctx), accept(descriptor), compare(a,b); proof is opaque to the core.
+  // CONFLICTS: before a writable losing leader adopts the winner keyframe, `api.conflicts` emits its complete
+  //   local/authority snapshots plus diffKeyedState. The core never silently union-merges divergent branches.
+  // COMMAND RULE: Store itself remains the state primitive and is technically mutable. Application command
+  //   ports MUST admit writes only when canWrite() is true; client/cache nodes use eligible:false.
+  // api.fragment is the transport-facing descriptor/changed/replay/ping namespace; api.ready resolves on the
+  //   first usable leader/follower state; api.status/routes/conflicts are the operational observability surface.
+  // Oracle: observe/store-replica-set.test.ts; real two-socket cascade:
+  //   oracle/realsocket/store-replica-set.spec.ts; browser scenario: npm run demo -> Lab.
 syncStoreReplayEach<T>(remote, cb, opts?) -> off & {store, ready, seq(), isStale(), lastTs()}   // one-call per-key fold over the patch line (mirror + syncStoreReplay + store.each()); most-used surface — full contract + example in wenay-common2.md
 createOfflineStore({key, remote?, initial, storage, version?, debounceMs?, syncOpts?}) -> Promise<OfflineStore<T>>
   // snapshot-mode persisted mirror: read local {version,seq,snapshot,savedAt}, create a normal Store immediately,

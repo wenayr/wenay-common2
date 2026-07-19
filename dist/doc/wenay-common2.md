@@ -327,6 +327,58 @@ before Store visibility. Full ownership, retention and inheritance contract:
 `doc/CONVERSATION-RUNTIME.md`; oracle: `replay/conversation-runtime.test.ts`; `npm run demo` shows the
 root → child-dialogue → scoped-fact path for two participants.
 
+## 🔗 Contract — dynamic versioned implementation binding
+> `import { Contract } from 'wenay-common2'` or
+> `import * as Contract from 'wenay-common2/contract'`.
+
+`Contract` keeps a logical component slot stable while compatible local, RPC, worker or downloaded
+implementations appear, update, fail or are revoked. It is the contract/lifecycle boundary: the
+application loader still owns compilation, package bytes and platform loading; Store/replay and
+physical connections stay below the replaceable implementation.
+
+```ts
+const offers = Contract.createContractOffers()
+const runtime = Contract.createContractRuntime({
+    offers: offers.api,
+    policy: {
+        compatible: (demand, descriptor) => satisfies(descriptor.contractVersion, demand.versionRange),
+        acceptSession: async (demand, offer, api) => ({accepted: await healthCheck(api)}),
+    },
+})
+
+offers.control.upsert({
+    id: 'editor.remote',
+    priority: 20,
+    descriptor: {
+        protocol: 1, contractId: 'workspace.editor', contractVersion: '1.2.0',
+        implementationId: 'editor', implementationVersion: '2026.07.20+7f3a',
+        capabilities: ['save'],
+    },
+    async open(ctx) {
+        const connection = await loader.openEditor(ctx.descriptor)
+        return {api: connection.api, onFail: connection.onFail, close: connection.close}
+    },
+})
+
+await runtime.control.require({
+    slotId: 'main.editor', contractId: 'workspace.editor', versionRange: '^1.2',
+    generation: 14, authorityId: 'backend-a', authorityEpoch: 3,
+    required: true, capabilities: ['save'],
+})
+
+const lease = runtime.api.acquire<EditorApi>('main.editor')
+try { await lease.api.save() } finally { lease.release() }
+```
+
+Exact contract-version equality is the safe default; ranges require an injected compatibility
+policy. A candidate opens and passes policy before the active binding changes. Old sessions drain
+behind explicit leases; failures try the next candidate. `revokeOffer`/`restoreOffer`, compatible
+`rollback`, required/degraded states, `status`, `changed`, `explain` and `history` make every decision
+observable. Replayed demand coordinates are idempotent; stale and same-coordinate conflicting demands
+are rejected. Full model and integration rules: `doc/CONTRACT-RUNTIME.md`. Oracles:
+`observe/contract-runtime.test.ts` and `oracle/realsocket/contract-runtime.spec.ts`; interactive path:
+`npm run demo` → **Lab** → **Versioned contract runtime**.
+
 ## 🤝 Peer — accounts see each other's stores (one-call SDK)
 > `import { Peer } from "wenay-common2"` or `import * as Peer from "wenay-common2/peer"`.
 > The happy-path facade over rpc + store + replay + route coordinator. Legacy-friendly by design:
@@ -470,6 +522,20 @@ Observe.createStoreFollower<T>({remote, initial?, expose?, staleMs?}) -> {store,
   // follower.promote() -> {store, replay, epoch}: manual failover — mirroring stops, epoch grows by 1,
   //   the cascade journal LIVES ON, so this node's subscribers keep their line without a re-keyframe;
   //   build the command authority OVER the same store (the demo workboard host adopts it via deps.store)
+Observe.createStoreReplicaOffers(initial?) -> {control: {upsert, remove, replace, clear}, api: {list, changes}}
+Observe.createStoreReplicaSet<T>({storeId, originId, nodeId, lineId?, store?, initial?, offers?, leadership?, route?})
+  -> {control, api, close}
+  // self-assembling Store above transports: each StoreReplicaOffer is a reusable connect capability;
+  //   its session exposes {descriptor, changed?, replay, ping?} and close/onFail — RPC, WebRTC, a worker,
+  //   or an in-process edge all use the same small boundary
+  // api.fragment = the descriptor + cascading replay line to expose through RPC or another transport;
+  //   client replicas may participate with leadership.eligible:false and still serve downstream copies
+  // route choice = freshest route to the selected authority, then cumulative measured latency + priority;
+  //   hysteresis avoids jitter flaps, path rejects cycles, syncStoreReplayRoute keeps hand-off gap-free
+  // leadership: epoch/leader/authority-line fork choice by default; autoPromoteMs is opt-in availability mode;
+  //   inject elect/accept/compare for quorum certificates or leases. canWrite() is the command admission guard
+  // divergent writable partitions are never merged silently: the losing leader adopts the winning keyframe
+  //   and emits conflicts with localOnly/authorityOnly/same-key pairs for application recovery
 Observe.diffKeyedState(local, authority) -> {localOnly, authorityOnly, conflicts}
   // split-brain tail after a failover rejoin: localOnly = re-apply candidates (mempool analogy),
   //   conflicts = both sides changed one record (the epoch already chose the winner; the pair is preserved)
@@ -551,6 +617,9 @@ await manager.start('video', {explicit: true})
 ```
 Runnable example: `npx tsx observe/store-mirror.example.ts`.
 Offline oracles: `npx tsx replay/offline-store.test.ts`; real Socket.IO/RPC wire: `npx tsx replay/offline-store-socket.test.ts`.
+Replica-set oracle: `node node_modules/ts-node/dist/bin.js --transpile-only observe/store-replica-set.test.ts`;
+real two-hop Socket.IO/RPC wire: `oracle/realsocket/store-replica-set.spec.ts`; interactive network:
+`npm run demo` → **Lab** → **Self-assembling Store replica set** (live offer/session/selected-route graph).
 
 ## 🎞️ Fast ticks vs slow client — replay lines + server-owned lag gate (recipe)
 > The problem: the producer emits faster than a bad link drains. Naive streaming grows an unbounded

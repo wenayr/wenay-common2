@@ -17,6 +17,13 @@
 > channels, immutable versioned blocks, scoped revisioned facts, durable idempotency receipts and a
 > live root → child-dialogue stand. Design: `doc/CONVERSATION-RUNTIME.md`; oracle:
 > `replay/conversation-runtime.test.ts`.
+> **Shipped in v1.0.88:** `Observe.createStoreReplicaSet` assembles redundant single-authority Store
+> replicas from reusable connection capabilities, with deterministic leadership, ping-aware routing,
+> reconnect/failover and visible split-brain reconciliation.
+> **Shipped in v1.0.89:** `Contract.createContractRuntime` reconciles authoritative, versioned component
+> demands to reusable implementation capabilities, with prepare-before-switch bindings, leases,
+> fallback, revoke and compatible rollback. Compilation, package delivery and frontend integration
+> deliberately stay above the library. Design: `doc/CONTRACT-RUNTIME.md`.
 
 ## 0. Distributed Runtime Model
 

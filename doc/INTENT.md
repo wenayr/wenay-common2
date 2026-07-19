@@ -10,8 +10,11 @@ generation and its plan/history docs were deliberately removed; the canonical su
 The current stack is a small distributed-state runtime: a typed RPC core, an `Observe` reactive
 store, a universal replay layer (`seq` + keyframe + deltas), a policy-gated route coordinator
 (relay ⇄ WebRTC direct), a WebRTC signaling adapter, a media-over-socket layer, and a one-call
-`Peer` SDK on top. It is oracle-covered (CI on every push) and shipped with living examples and a
-runnable demo stand in the repository; the npm package carries its readable source.
+`Peer` SDK on top. `StoreReplicaSet` assembles redundant single-authority Store copies from reusable
+connection capabilities; `ContractRuntime` binds versioned implementation capabilities without
+moving compilation or package delivery into the library. It is oracle-covered (CI on every push)
+and shipped with living examples and a runnable demo stand in the repository; the npm package
+carries its readable source.
 
 ## Intent (2026-07)
 
@@ -24,8 +27,11 @@ runnable demo stand in the repository; the npm package carries its readable sour
 - **Value is in being legible and demoable.** The measure of progress is "what can be shown
   working," not layers added. The demo stand and the oracle examples exist to make the design
   readable and hireable, not to chase feature completeness.
-- **Direction if picked up again:** the consumption layer (framework adapters — React hooks first),
-  and the showcase (a hero relay→direct demo). Everything else waits for a concrete need.
+- **The library boundary is contract guarantees, not a frontend framework.** UI/framework adapters,
+  compilation, application bundles and platform delivery live above this package. The shipped
+  contract runtime only owns safe demand/offer selection and implementation lifecycle.
+- **Direction if picked up again:** concrete consumer adapters and showcase flows that exercise the
+  stable contract/Store/transport layers. Everything else waits for a real need.
 
 This file is the durable record of that intent. It is not a worklist; the forward backlog (kept for
 reference, not commitment) lives in `doc/ROADMAP.md` and `doc/target/`.

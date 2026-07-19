@@ -5,6 +5,7 @@ import {resolve} from 'node:path'
 import * as srcIndex from '../../src/index'
 import * as srcObserve from '../../src/Common/Observe/reactive'
 import * as srcConversation from '../../src/Common/conversation/conversation-index'
+import * as srcContract from '../../src/Common/contract/contract-index'
 
 type Api = {
     reactive: Function
@@ -47,6 +48,13 @@ function assertConversationApi(label: string, api: any) {
     assertEq(typeof api.copyConversationData, 'function', `${label}.copyConversationData export`)
 }
 
+function assertContractApi(label: string, api: any) {
+    assert(api, `${label} is missing`)
+    assertEq(typeof api.createContractOffers, 'function', `${label}.createContractOffers export`)
+    assertEq(typeof api.resolveContractBinding, 'function', `${label}.resolveContractBinding export`)
+    assertEq(typeof api.createContractRuntime, 'function', `${label}.createContractRuntime export`)
+}
+
 function skip(name: string, reason: string) {
     console.log(`SKIP ${name}: ${reason}`)
 }
@@ -67,6 +75,12 @@ test('src/index exports Conversation namespace', () => {
         'src/index Conversation.createConversationHost re-exports direct src module')
 })
 
+test('src/index exports Contract namespace', () => {
+    assertContractApi('src/index Contract', srcIndex.Contract)
+    assertEq(srcIndex.Contract.createContractRuntime, srcContract.createContractRuntime,
+        'src/index Contract.createContractRuntime re-exports direct src module')
+})
+
 test("package.json exports './observe'", () => {
     const packageJson = requireFromSpec(resolve(rootDir, 'package.json'))
     assertEq(packageJson.exports?.['./observe'], './lib/Common/Observe/index.js', "package.json exports['./observe']")
@@ -83,6 +97,12 @@ test("package.json exports './conversation'", () => {
     const packageJson = requireFromSpec(resolve(rootDir, 'package.json'))
     assertEq(packageJson.exports?.['./conversation'], './lib/Common/conversation/conversation-index.js',
         "package.json exports['./conversation']")
+})
+
+test("package.json exports './contract'", () => {
+    const packageJson = requireFromSpec(resolve(rootDir, 'package.json'))
+    assertEq(packageJson.exports?.['./contract'], './lib/Common/contract/contract-index.js',
+        "package.json exports['./contract']")
 })
 
 test('lib root index exports Observe namespace', () => {
@@ -105,6 +125,17 @@ test('lib artifacts export Conversation namespace and direct module', () => {
     }
     assertConversationApi('lib/index Conversation', requireFromSpec(libIndex).Conversation)
     assertConversationApi('lib/Common/conversation', requireFromSpec(libConversation))
+})
+
+test('lib artifacts export Contract namespace and direct module', () => {
+    const libIndex = resolve(rootDir, 'lib/index.js')
+    const libContract = resolve(rootDir, 'lib/Common/contract/contract-index.js')
+    if (!existsSync(libIndex) || !existsSync(libContract)) {
+        skip('lib artifacts export Contract namespace and direct module', 'Contract build artifacts are not present')
+        return
+    }
+    assertContractApi('lib/index Contract', requireFromSpec(libIndex).Contract)
+    assertContractApi('lib/Common/contract', requireFromSpec(libContract))
 })
 
 test('dist package artifacts include observe export when dist is present', () => {
@@ -146,6 +177,24 @@ test('dist package artifacts include Conversation exports when dist is present',
         'dist Conversation declaration artifact is present')
     assertConversationApi('dist/lib/index Conversation', distIndex.Conversation)
     assertConversationApi('dist/lib/Common/conversation', requireFromSpec(distConversationPath))
+})
+
+test('dist package artifacts include Contract exports when dist is present', () => {
+    const distDir = resolve(rootDir, 'dist')
+    if (!existsSync(distDir)) {
+        skip('dist package artifacts include Contract exports when dist is present', 'dist directory is not present')
+        return
+    }
+    const distPackageJson = requireFromSpec(resolve(distDir, 'package.json'))
+    const distIndex = requireFromSpec(resolve(distDir, 'lib/index.js'))
+    const distContractPath = resolve(distDir, 'lib/Common/contract/contract-index.js')
+    assertEq(distPackageJson.exports?.['./contract'], './lib/Common/contract/contract-index.js',
+        "dist package exports['./contract']")
+    assert(existsSync(distContractPath), 'dist Contract JavaScript artifact is present')
+    assert(existsSync(resolve(distDir, 'lib/Common/contract/contract-index.d.ts')),
+        'dist Contract declaration artifact is present')
+    assertContractApi('dist/lib/index Contract', distIndex.Contract)
+    assertContractApi('dist/lib/Common/contract', requireFromSpec(distContractPath))
 })
 
 async function main() {

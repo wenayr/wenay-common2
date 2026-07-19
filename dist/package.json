@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "1.0.87",
+  "version": "1.0.89",
   "description": "Common library",
   "strict": true,
   "main": "lib/index.js",
@@ -45,6 +45,7 @@
     "./resource": "./lib/Common/resource/resource-index.js",
     "./ai": "./lib/Common/ai/ai-index.js",
     "./artifact": "./lib/Common/artifact/artifact-index.js",
-    "./conversation": "./lib/Common/conversation/conversation-index.js"
+    "./conversation": "./lib/Common/conversation/conversation-index.js",
+    "./contract": "./lib/Common/contract/contract-index.js"
   }
 }

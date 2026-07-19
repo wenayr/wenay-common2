@@ -16,6 +16,8 @@
         --muted: #657180;
         --accent: #2864dc;
         --accent-soft: #eaf1ff;
+        --relay: #7655c7;
+        --relay-soft: #f1edff;
         --success: #18794e;
         --success-soft: #e8f6ef;
         --warning: #9a6700;
@@ -120,12 +122,68 @@
     .workColumn.dropTarget { border-color: var(--accent); background: var(--accent-soft); }
     .assignSelect { min-height: 30px; max-width: 140px; padding: 2px 6px; font-size: 12px; }
     #workboardFeed { display: grid; gap: 3px; margin-top: 14px; padding-top: 10px; border-top: 1px dashed var(--line); color: var(--muted); font-size: 12px; }
+    #replicaMesh { grid-column: 1 / -1; grid-row: 1; }
+    .replicaPipeline { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .replicaPipeline + .toolbar { margin-top: 12px; }
+    .replicaStage { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px 12px; border-radius: 11px; background: var(--surface-soft); }
+    .replicaStageNumber { display: grid; flex: 0 0 28px; place-items: center; width: 28px; height: 28px; border-radius: 9px; background: var(--accent-soft); color: #174aa5; font-weight: 800; }
+    .replicaStage strong, .replicaStage span { display: block; }
+    .replicaStage span { margin-top: 1px; color: var(--muted); font-size: 11px; }
+    .replicaGraphViewport { min-width: 0; margin-top: 12px; border: 1px solid var(--line); border-radius: 13px; overflow: hidden; background: radial-gradient(circle at 50% 38%, #fff 0, var(--surface-soft) 68%); }
+    #replicaMeshGraph { display: block; width: 100%; min-height: 300px; }
+    .replicaGraph .graphOffer { fill: none; stroke-width: 1.5; opacity: .3; transition: opacity .18s ease, stroke .18s ease; }
+    .replicaGraph .graphOffer[data-kind="direct"] { stroke: var(--accent); }
+    .replicaGraph .graphOffer[data-kind="relay"] { stroke: var(--relay); stroke-dasharray: 7 6; }
+    .replicaGraph .graphOffer[data-enabled="false"] { stroke: var(--danger); opacity: .1; }
+    .replicaGraph .graphRoute { fill: none; stroke: var(--success); stroke-width: 4; stroke-linecap: round; marker-end: url(#replicaRouteArrow); }
+    .replicaGraph .graphNode circle { fill: var(--surface); stroke: var(--line-strong); stroke-width: 2; }
+    .replicaGraph .graphNode[data-role="leader"] circle { fill: var(--success-soft); stroke: var(--success); stroke-width: 3; }
+    .replicaGraph .graphNode[data-role="offline"] circle, .replicaGraph .graphNode[data-role="electing"] circle { fill: var(--warning-soft); stroke: var(--warning); }
+    .replicaGraph .graphNodeName { fill: var(--text); font-size: 13px; font-weight: 750; text-anchor: middle; text-transform: capitalize; }
+    .replicaGraph .graphNodeRole, .replicaGraph .graphNodeCost { fill: var(--muted); font-size: 10px; text-anchor: middle; text-transform: uppercase; letter-spacing: .04em; }
+    .replicaGraph .graphNodeCost { text-transform: none; letter-spacing: 0; }
+    .replicaGraphLegend { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 8px; color: var(--muted); font-size: 11px; }
+    .replicaLegendItem { display: inline-flex; align-items: center; gap: 6px; }
+    .replicaLegendLine { width: 26px; border-top: 2px solid var(--accent); }
+    .replicaLegendLine.relay { border-color: var(--relay); border-top-style: dashed; }
+    .replicaLegendLine.active { border-color: var(--success); border-top-width: 4px; }
+    .replicaContract { margin-top: 10px; color: var(--muted); font-size: 11px; }
+    .replicaContract summary { cursor: pointer; color: var(--text); font-weight: 700; }
+    .replicaContract code { display: block; margin-top: 7px; padding: 9px 10px; border-radius: 8px; background: #17202a; color: #eaf1ff; overflow-wrap: anywhere; }
+    .replicaContract p { margin: 6px 0 0; }
+    .replicaMeshNodes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+    .replicaNode { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); }
+    .replicaNode[data-role="leader"] { border-color: color-mix(in srgb, var(--success) 65%, var(--line)); box-shadow: inset 0 3px 0 var(--success); }
+    .replicaNode[data-role="electing"], .replicaNode[data-role="reconciling"] { border-color: var(--warning); }
+    .replicaNode header { display: flex; justify-content: space-between; gap: 8px; align-items: center; margin-bottom: 8px; }
+    .replicaNode p { margin: 4px 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+    #replicaMeshEvents { display: grid; gap: 3px; margin-top: 12px; color: var(--muted); font-size: 11px; }
+    #contractRuntime { grid-column: 1 / -1; }
+    #contractRuntimeSummary { display: inline-flex; align-items: center; padding: 4px 9px; border-radius: 999px; background: var(--accent-soft); color: #174aa5; font-size: 11px; font-weight: 750; text-transform: uppercase; }
+    #contractRuntimeSummary[data-state="active"] { background: var(--success-soft); color: var(--success); }
+    #contractRuntimeSummary[data-state="failed"] { background: var(--danger-soft); color: var(--danger); }
+    #contractRuntimeSummary[data-state="preparing"], #contractRuntimeSummary[data-state="resolving"] { background: var(--warning-soft); color: var(--warning); }
+    .contractRuntimeFlow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 34px; margin-top: 14px; }
+    .contractRuntimeStage { position: relative; min-width: 0; padding: 13px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); }
+    .contractRuntimeStage:not(:last-child)::after { content: "→"; position: absolute; right: -25px; top: 50%; transform: translateY(-50%); color: var(--accent); font-size: 22px; font-weight: 800; }
+    .contractRuntimeStage > em { display: block; margin-bottom: 5px; color: var(--muted); font-size: 10px; font-style: normal; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .contractRuntimeStage strong, .contractRuntimeStage span { display: block; overflow-wrap: anywhere; }
+    .contractRuntimeStage span { margin-top: 3px; color: var(--muted); font-size: 11px; }
+    .contractRuntimeBody { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(260px, .75fr); gap: 14px; margin-top: 14px; }
+    #contractOffers { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 9px; }
+    .contractOfferCard { min-width: 0; padding: 11px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-soft); }
+    .contractOfferCard[data-state="active"] { border-color: var(--success); box-shadow: inset 0 3px 0 var(--success); background: var(--success-soft); }
+    .contractOfferCard[data-state="rejected"] { opacity: .58; }
+    .contractOfferCard header { display: flex; justify-content: space-between; gap: 7px; align-items: center; }
+    .contractOfferCard header span { padding: 2px 6px; border-radius: 999px; background: var(--surface); color: var(--muted); font-size: 9px; font-weight: 800; }
+    .contractOfferCard p { margin: 5px 0 0; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+    #contractHistory { display: grid; align-content: start; gap: 5px; min-height: 100%; padding: 11px; border: 1px solid var(--line); border-radius: 11px; background: #17202a; color: #dbe7f7; font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
     .workItemTitle { display: flex; align-items: center; gap: 6px; }
     .workItemTitle input { flex: 1; min-height: 32px; padding: 5px 7px; border-color: transparent; background: transparent; font-weight: 650; }
     .workItemTitle input:hover, .workItemTitle input:focus { border-color: var(--line-strong); background: var(--surface); }
     .workItemMeta { margin: 6px 0 9px; color: var(--muted); font-size: 11px; }
     .workItemActions { display: flex; gap: 5px; flex-wrap: wrap; }
-    .labGrid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr); gap: 16px; align-items: start; }
+    .labGrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(480px, 1.15fr); gap: 16px; align-items: start; }
     #canvas { display: block; width: 100%; max-width: 760px; height: auto; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface-soft); }
     #otherDemos > summary { padding: 14px 16px; cursor: pointer; font-weight: 700; }
     #otherDemos[open] > summary { border-bottom: 1px solid var(--line); }
@@ -204,6 +262,8 @@
         .roomWorkspace, .labGrid { grid-template-columns: 1fr; }
         .roomDirectory { position: static; }
         #workboardColumns { grid-template-columns: 1fr; }
+        .replicaMeshNodes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .contractRuntimeBody { grid-template-columns: 1fr; }
         .workboardToolbar { grid-template-columns: 1fr; align-items: stretch; }
         #workboardCounts, #workboardMeta { white-space: normal; }
     }
@@ -217,7 +277,12 @@
         main { padding: 16px 14px 24px; }
         .pageHeading { align-items: flex-start; flex-direction: column; }
         .surfaceHeader, .surfaceBody { padding: 12px; }
+        .replicaPipeline { grid-template-columns: 1fr; }
+        #replicaMeshGraph { min-height: 400px; }
         #workboardCreateForm { flex-direction: column; }
+        .replicaMeshNodes { grid-template-columns: 1fr; }
+        .contractRuntimeFlow { grid-template-columns: 1fr; gap: 9px; }
+        .contractRuntimeStage:not(:last-child)::after { display: none; }
         .activityPanel { margin: 0 14px 14px; }
     }
 </style>
@@ -279,6 +344,20 @@
                         </div>
                     </div>
                     <div class="surfaceBody">
+                        <div class="replicaPipeline" aria-label="Connection capability lifecycle">
+                            <div class="replicaStage">
+                                <span class="replicaStageNumber">1</span>
+                                <div><strong>Discover capabilities</strong><span><b id="replicaOfferCount">0</b> reusable StoreReplicaOffer values</span></div>
+                            </div>
+                            <div class="replicaStage">
+                                <span class="replicaStageNumber">2</span>
+                                <div><strong>Open and probe sessions</strong><span><b id="replicaSessionCount">0</b> descriptors + ping samples</span></div>
+                            </div>
+                            <div class="replicaStage">
+                                <span class="replicaStageNumber">3</span>
+                                <div><strong>Carry one Store tree</strong><span><b id="replicaRouteCount">0</b> selected replay routes</span></div>
+                            </div>
+                        </div>
                         <div class="toolbar">
                             <input id="roomName" class="grow" value="My video room" maxlength="48" aria-label="New video room name">
                             <button id="createRoom" class="primary">Create</button>
@@ -407,6 +486,82 @@
                     </div>
                     <div class="surfaceBody">
                         <canvas id="canvas" width="640" height="360"></canvas>
+                    </div>
+                </section>
+
+                <section id="replicaMesh" class="surface">
+                    <div class="surfaceHeader">
+                        <div>
+                            <h3>Self-assembling Store replica set</h3>
+                            <p id="replicaMeshSummary">forming the mesh…</p>
+                        </div>
+                    </div>
+                    <div class="surfaceBody">
+                        <div class="toolbar">
+                            <button id="replicaMeshWrite" class="primary">Write on leader</button>
+                            <button id="replicaMeshRoutes">Swap route latency</button>
+                            <button id="replicaMeshFail" class="danger">Isolate leader</button>
+                            <button id="replicaMeshSplit">Split 2 + 2</button>
+                            <button id="replicaMeshFork" disabled>Write both partitions</button>
+                            <button id="replicaMeshMerge" disabled>Merge network</button>
+                            <button id="replicaMeshReset" class="secondary">Reset</button>
+                        </div>
+                        <div class="replicaGraphViewport">
+                            <svg id="replicaMeshGraph" class="replicaGraph" role="img" aria-label="Available direct and relay connection capabilities with the currently selected Store replay routes"></svg>
+                        </div>
+                        <div class="replicaGraphLegend" aria-label="Network diagram legend">
+                            <span class="replicaLegendItem"><i class="replicaLegendLine"></i>direct capability</span>
+                            <span class="replicaLegendItem"><i class="replicaLegendLine relay"></i>relay capability</span>
+                            <span class="replicaLegendItem"><i class="replicaLegendLine active"></i>selected Store flow</span>
+                        </div>
+                        <details class="replicaContract">
+                            <summary>What the application actually supplies</summary>
+                            <code>StoreReplicaOffer.connect() → { remote: { descriptor, changed, replay, ping }, onFail, close }</code>
+                            <p>This deterministic stand supplies direct/relay adapters. The same boundary is verified over real Socket.IO/RPC; WebRTC, workers and service discovery plug in without changing Store replication.</p>
+                        </details>
+                        <div id="replicaMeshNodes" class="replicaMeshNodes" aria-live="polite"></div>
+                        <div id="replicaMeshEvents"></div>
+                    </div>
+                </section>
+
+                <section id="contractRuntime" class="surface">
+                    <div class="surfaceHeader">
+                        <div>
+                            <h3>Versioned contract runtime</h3>
+                            <p>Replace an implementation without replacing its Store, connection layer or public contract.</p>
+                        </div>
+                        <span id="contractRuntimeSummary">starting</span>
+                    </div>
+                    <div class="surfaceBody">
+                        <div class="toolbar">
+                            <button id="contractUpdate" class="primary">Load compatible v1.1</button>
+                            <button id="contractBroken" class="danger">Try broken v1.2</button>
+                            <button id="contractRequireV2">Backend requires ^2</button>
+                            <button id="contractFail" class="danger">Fail active session</button>
+                            <button id="contractRollback">Rollback</button>
+                            <button id="contractWrite">Write through binding</button>
+                            <button id="contractReset" class="secondary">Reset</button>
+                        </div>
+                        <div class="contractRuntimeFlow" aria-label="Contract reconciliation flow">
+                            <div id="contractDemand" class="contractRuntimeStage">
+                                <em>1 · Desired contract</em><strong>waiting</strong><span>backend projection</span>
+                            </div>
+                            <div id="contractBinding" class="contractRuntimeStage">
+                                <em>2 · Atomic binding</em><strong>waiting</strong><span>resolver + lifecycle</span>
+                            </div>
+                            <div id="contractStore" class="contractRuntimeStage">
+                                <em>3 · Stable state</em><strong>Store value 1</strong><span>survives implementation swaps</span>
+                            </div>
+                        </div>
+                        <div class="contractRuntimeBody">
+                            <div id="contractOffers" aria-live="polite"></div>
+                            <div id="contractHistory" aria-label="Contract binding history"></div>
+                        </div>
+                        <details class="replicaContract">
+                            <summary>Library boundary</summary>
+                            <code>ContractDemand + ContractOffer.open() → versioned ContractBinding → acquired ContractSession.api</code>
+                            <p>The demo offers are deterministic factories. A frontend loader may compile elsewhere and download JS/WASM, while this library only guarantees compatibility, generation order, atomic replacement, leases, fallback and rollback.</p>
+                        </details>
                     </div>
                 </section>
 
