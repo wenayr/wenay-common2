@@ -1,11 +1,11 @@
 // =====================================================================
-// Байт-кэш артефактов: hash-адресация, fetch у источника, проверка целостности
+// Artifact byte cache: hash-addressing, fetch from source, integrity check
 // =====================================================================
-// Каталог артефактов реплицируется как store (мелкое и горячее), а байты —
-// крупное, холодное и immutable — едут лениво: кэш спрашивает источник ТОЛЬКО
-// на промахе, сверяет sha256 с descriptor.version и хранит по hash. Подмена
-// содержимого по дороге физически не проходит проверку. Артефакты без
-// content-hash версии кэш не обслуживает — это контракт безопасной передачи.
+// The artifact catalog is replicated as a store (small and hot), while bytes —
+// large, cold and immutable — arrive lazily: the cache queries the source ONLY
+// on miss, verifies sha256 against descriptor.version and stores by hash. Content
+// substitution in transit physically fails verification. The cache does not serve
+// artifacts without content-hash version — this is the safe transfer contract.
 
 import {ArtifactRecord} from './artifact-host'
 import {artifactBytesOf, sha256Hex} from './artifact-hash'
@@ -13,13 +13,13 @@ import {artifactBytesOf, sha256Hex} from './artifact-hash'
 export type tArtifactBytes = string | Uint8Array
 
 export type ArtifactByteCacheDeps = {
-    /** Достать байты у источника (лидер / дескриптор маршрута / p2p) — любой транспорт. */
+    /** Fetch bytes from source (leader / route descriptor / p2p) — any transport. */
     fetch: (artifact: ArtifactRecord) => Promise<tArtifactBytes> | tArtifactBytes
-    /** Бюджет кэша в байтах; старейшие по использованию вытесняются. */
+    /** Cache budget in bytes; oldest by usage are evicted. */
     maxBytes?: number
-    /** Хук вытеснения — снять копию из внешних структур (например, карты раздачи). */
+    /** Eviction hook — remove copy from external structures (e.g., seeding map). */
     onEvict?: (hash: string, bytes: tArtifactBytes) => void
-    /** Подменяемый hash (тесты). По умолчанию sha256Hex. */
+    /** Mockable hash (tests). Defaults to sha256Hex. */
     hash?: (bytes: tArtifactBytes) => Promise<string> | string
 }
 
@@ -33,7 +33,7 @@ function requireContentHash(artifact: ArtifactRecord) {
 
 export function createArtifactByteCache(deps: ArtifactByteCacheDeps) {
     const {fetch, maxBytes = 64 * 1024 * 1024, onEvict, hash = sha256Hex} = deps
-    // Map сохраняет порядок вставки — re-insert на попадании даёт дешёвый LRU.
+    // Map preserves insertion order — re-insert on hit gives cheap LRU.
     const entries = new Map<string, tArtifactBytes>()
     const inflight = new Map<string, Promise<tArtifactBytes>>()
     let totalBytes = 0
@@ -71,7 +71,7 @@ export function createArtifactByteCache(deps: ArtifactByteCacheDeps) {
         return bytes
     }
 
-    /** Байты по записи каталога: кэш → single-flight fetch → sha256-проверка. */
+    /** Bytes for catalog record: cache → single-flight fetch → sha256 verification. */
     async function get(artifact: ArtifactRecord) {
         const key = requireContentHash(artifact)
         const cached = entries.get(key)
@@ -81,7 +81,7 @@ export function createArtifactByteCache(deps: ArtifactByteCacheDeps) {
             return {hash: key, bytes: cached}
         }
         misses++
-        // Параллельные open одного артефакта складываются в ОДИН поход к источнику.
+        // Parallel opens of the same artifact fold into ONE trip to the source.
         let pending = inflight.get(key)
         if (!pending) {
             pending = fetchVerified(artifact, key)
@@ -95,7 +95,7 @@ export function createArtifactByteCache(deps: ArtifactByteCacheDeps) {
     return {
         get,
         has: (hashKey: string) => entries.has(hashKey),
-        /** Прямое чтение уже закэшированного (для локальной раздачи), без похода в сеть. */
+        /** Direct read of already cached (for local seeding), no network trip. */
         peek: (hashKey: string) => entries.get(hashKey),
         stats: () => ({entries: entries.size, totalBytes, hits, misses}),
         clear() {

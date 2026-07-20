@@ -3,11 +3,21 @@ import { ReplayListenOptions, ReplayEvent } from '../events/replay-listen';
 import { ReplayRemote, ReplaySubscribeOpts } from '../events/replay-wire';
 import { ReplayRouteSubscribeOpts } from '../events/replay-route';
 import { ReplayStorage } from '../events/replay-history';
-export type StoreReplayOpts = Pick<ReplayListenOptions<[StorePatch]>, 'history' | 'getSince' | 'onJournal' | 'now'>;
+export type StoreReplayOpts = Pick<ReplayListenOptions<[StorePatch]>, 'history' | 'getSince' | 'onJournal' | 'now' | 'firstSeq'> & {
+    describe?: Record<string, any>;
+};
 export declare function storePatchKey(patch: StorePatch): string | null;
 export declare function exposeStoreReplay<T extends object>(store: Store<T>, opts?: StoreReplayOpts): {
     api: {
-        replay: import("../events/replay-wire").ReplayExpose<[StorePatch]>;
+        replay: import("../events/replay-wire").ReplayExpose<[StorePatch]> | {
+            describe: () => {
+                [x: string]: any;
+            };
+            line: import("../..").ListenApi<[ReplayEvent<[StorePatch]>]>;
+            since: (seq: number) => ReplayEvent<[StorePatch]>[] | null;
+            keyframe: () => ReplayEvent<[StorePatch]> | null;
+            frame: (sinceSeq: number, hint?: unknown) => ReplayEvent<[StorePatch]>[];
+        };
         get(): T;
         get<M extends import("./store").StoreMask<T>>(mask: M): import("./store").StorePick<T, M>;
         set(path: import("./store").StorePath, value: any): void;

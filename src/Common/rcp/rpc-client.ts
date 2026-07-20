@@ -12,12 +12,12 @@ import {
     RPC_TRANSPORT_CONTROL,
     RPC_TRANSPORT_LIFECYCLE,
 } from '../events/transport-lifecycle'
-// только типы (без рантайм-цикла): replay-члены API проецируются в клиентскую
-// replay-поверхность (line/since/keyframe/frame) — replaySubscribe(client.func.key) без кастов
+// Types only (no runtime cycle): replay members of the API are projected into the client
+// replay surface (line/since/keyframe/frame) — replaySubscribe(client.func.key) without casts
 import type { IsReplayMember, InferArgs, ReplaySocketListen } from "./listen-deep";
 
-// Общий пул id на (socket × key): два клиента на одном сокете+ключе делят id-пространство,
-// иначе их reqId коллизируют и чужой RESP резолвит оба ожидания.
+// Shared id pool per (socket × key): two clients on the same socket+key share the id space,
+// otherwise their reqId collide and a foreign RESP resolves both waits.
 const SHARED_POOLS = new WeakMap<object, Map<string, idPool>>();
 function sharedPool(socket: object, key: string) {
     let byKey = SHARED_POOLS.get(socket);
@@ -27,12 +27,12 @@ function sharedPool(socket: object, key: string) {
     return pool;
 }
 
-// Объект ошибки с провода → экземпляр MyError (name/stack/code/data/cause сохраняются).
-// Не-объекты и чужие формы отдаём как есть.
+// Wire error object → MyError instance (name/stack/code/data/cause are preserved).
+// Non-objects and foreign shapes are returned as-is.
 const reviveErr = (o: any): any => {
     if (o == null || typeof o != "object" || typeof o.message != "string" || typeof o.name != "string") return o;
-    // data распаковываем симметрично errToObj (rich-типы: BigInt/Date/Map/Set). Для plain-JSON
-    // unpackResult — identity, поэтому со старым сервером (сырой data) тоже корректно.
+    // data is unpacked symmetrically with errToObj (rich types: BigInt/Date/Map/Set). For plain JSON
+    // unpackResult is identity, so with an old server (raw data) it also works correctly.
     const o2 = o.data !== undefined ? { ...o, data: unpackResult(o.data) } : o;
     const err = MyError.fromWire(o2);
     if (o.cause !== undefined) (err as any).cause = reviveErr(o.cause);
@@ -79,28 +79,28 @@ function createPathProxyCache() {
 
     return {get, set}
 }
-// Вспомогательные типы
+// Helper types
 type UnwrapPromise<T> = T extends Promise<infer R> ? R : T;
 
 export type DeepDataOnly<T> = T extends Function
     ? never
     : T extends readonly any[]
-        // mapped tuple: кортежи сохраняются ([string, number] не деградирует в (string|number)[] —
-        // важно для replay-конвертов {seq, ts, event: Z}); обычные массивы мапятся как раньше
+        // mapped tuple: tuples are preserved ([string, number] does not degrade to (string|number)[] —
+        // important for replay converts {seq, ts, event: Z}); regular arrays are mapped as before
         ? { [I in keyof T]: DeepDataOnly<T[I]> }
         : T extends object
             ? { [K in keyof T as T[K] extends Function ? never : K]: DeepDataOnly<T[K]> }
             : T;
 
-// --- 1. ТИПИЗАЦИЯ ДЛЯ ОБЫЧНЫХ ВЫЗОВОВ (БЕЗ PIPE) ---
+// --- 1. TYPING FOR REGULAR CALLS (WITHOUT PIPE) ---
 export type ClientAPIAll<T> = {
     [K in keyof T as T[K] extends Function ? K : T[K] extends object ? K : never]:
-        // replay-член (детекция как в listen-deep) → клиентская replay-поверхность,
-        // структурно совместимая с ReplayRemote: replaySubscribe(client.func.key) без кастов
+        // replay member (detection as in listen-deep) → client replay surface,
+        // structurally compatible with ReplayRemote: replaySubscribe(client.func.key) without casts
         IsReplayMember<T[K]> extends true
             ? ReplaySocketListen<InferArgs<T[K]>>
             : T[K] extends (...args: infer A) => infer R
-                // Обычный вызов возвращает ТОЛЬКО Promise с чистыми данными. Никакого продолжения цепочки.
+                // Regular call returns ONLY Promise with clean data. No chain continuation.
                 ? (...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>>
                 : T[K] extends object
                     ? ClientAPIAll<T[K]>
@@ -115,8 +115,8 @@ export type ClientAPIStrict<T> = {
         : NonFalsy<T[K]> extends object
             ? K
             : never]:
-    // replay-член — как в ClientAPIAll; уже спроецированный ReplaySocketListen (auto-путь,
-    // ClientAPIStrict<DeepSocketListen<T>>) сюда не попадает (у него нет getSince) и мапится ниже
+    // replay member — as in ClientAPIAll; already projected ReplaySocketListen (auto-path,
+    // ClientAPIStrict<DeepSocketListen<T>>) does not reach here (it has no getSince) and is mapped below
     IsReplayMember<NonFalsy<T[K]>> extends true
         ? ReplaySocketListen<InferArgs<NonFalsy<T[K]>>>
         : NonFalsy<T[K]> extends (...args: infer A) => infer R
@@ -128,12 +128,12 @@ export type ClientAPIStrict<T> = {
 
 
 
-// --- 2. ТИПИЗАЦИЯ ДЛЯ PIPE ВЫЗОВОВ ---
-// Интерфейс для работы с массивами внутри pipe (если сервер возвращает массив, 
-// мы можем продолжить путь по индексу или через map)
+// --- 2. TYPING FOR PIPE CALLS ---
+// Interface for working with arrays inside pipe (if the server returns an array,
+// we can continue the path by index or via map)
 export interface PipeArrayAPI<T> extends Promise<DeepDataOnly<T[]>> {
     [index: number]: PipeAPI<T>;
-    // map и filter можно добавить, если серверная часть (и наш Proxy) научится их обрабатывать
+    // map and filter can be added if the server side (and our Proxy) learns to handle them
 }
 
 export type PipeAPI<T> = T extends Array<infer U>
@@ -141,7 +141,7 @@ export type PipeAPI<T> = T extends Array<infer U>
     : {
         [K in keyof T as T[K] extends Function ? K : T[K] extends object ? K : never]:
             T[K] extends (...args: infer A) => infer R
-                // Pipe-вызов возвращает и Promise (для await), и продолжает PipeAPI для цепочки
+                // Pipe call returns both Promise (for await) and continues PipeAPI for chaining
                 ? (...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>> & PipeAPI<UnwrapPromise<R>>
                 : T[K] extends object
                     ? PipeAPI<T[K]>
@@ -156,7 +156,7 @@ type ClientApiHandle = {
     clearCallbacks: () => void;
     remove: (fn: Function) => void;
     end: (fn: Function) => void;
-    /** Живые сетевые подписки (дедуп включён): адрес + число локальных потребителей. */
+    /** Live network subscriptions (dedup enabled): address + number of local consumers. */
     subscriptions: () => { key: string; consumers: number }[];
 };
 
@@ -164,28 +164,28 @@ const IS_RPC_PIPE = Symbol.for("isRpcPipe");
 
 function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: { limit?: number; limits?: RpcLimits; dedupeListen?: boolean; token?: any; opt?: RpcOpt }) {
     const limit = opts?.limit ?? 10000;
-    // opt-in: без опции limits поведение прежнее (ответы сервера не ограничиваются)
+    // opt-in: without the limits option, behavior is as before (server responses are unlimited)
     const lim = opts?.limits ? resolveLimits(opts.limits) : undefined;
     const pool = sharedPool(socket, key);
     type tPending = {ok: Function; fail: Function; cbs: number[]; promise?: Promise<any>}
     const pending = new Map<number, tPending>();
     const callbacks = new Map<number, Function>();
-    // компактные тики подписки: cbId → (shapeId → порядок ключей), задекларированные сервером в Pkt.SHAPE
+    // compact subscription ticks: cbId → (shapeId → key order), declared by server in Pkt.SHAPE
     const compactShapes = new Map<number, string[][]>();
-    let capsSent = false; // CAPS (свой битсет фич) шлём один раз по приходу первого MAP
-    const clientCaps = optToCaps(opts?.opt); // что объявляем серверу (0 = ничего → сервер не уплотняет)
-    let peerServerCaps: tCaps = 0; // что объявил сервер (для двусторонних будущих фич)
-    // id отменённых запросов/колбэков: НЕ возвращаем в пул сразу — поздний RESP/CB_END
-    // сервера по переиспользованному id угнал бы чужой новый запрос
+    let capsSent = false; // CAPS (own feature bitset) sent once on first MAP arrival
+    const clientCaps = optToCaps(opts?.opt); // what we declare to server (0 = nothing → server does not compact)
+    let peerServerCaps: tCaps = 0; // what the server declared (for future bidirectional features)
+    // ids of canceled requests/callbacks: NOT returned to pool immediately — a late RESP/CB_END
+    // from server could steal a newly reused id for a different request
     const zombies = new Set<number>();
     const retire = (id: number) => { zombies.add(id); };
     let disposed = false;
     // A direct createRpcClient owns no socket lifecycle and remains immediately usable.
     // createRpcClientHub explicitly switches this control to managed-offline until handshake.
     const transport = createTransportLifecycle(true)
-    // onDisconnect: тонкий регистратор в стиле strictWaiters/authWaiters этого файла.
-    // Зовётся ровно ОДИН раз из dispose() (teardown по разрыву/ротации). off()-хендл —
-    // через makeOff; промис резолвится на самом дисконнекте.
+    // onDisconnect: thin registrar in the style of strictWaiters/authWaiters of this file.
+    // Called exactly ONCE from dispose() (teardown on break/rotation). off()-handle via
+    // makeOff; promise resolves on actual disconnect.
     let disconnectCbs: ((reason: string) => void)[] = [];
     let disconnectResolve: (reason: string) => void = () => {};
     const disconnectPromise = new Promise<string>(res => { disconnectResolve = res; });
@@ -202,16 +202,16 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
 
     // --- in-band auth (Pkt.HELLO/authAck) ---
     let authToken: any = opts?.token ?? null;
-    let authStatus: any = undefined; // последний authAck сервера; null = сервер без auth (4-эл. MAP)
+    let authStatus: any = undefined; // server's last authAck; null = server without auth (4-element MAP)
     let authWaiters: ((s: any) => void)[] = [];
-    let authPending = false; // идёт HELLO/reauth → auth() ждёт свежий ack, а не отдаёт прошлый
+    let authPending = false; // HELLO/reauth in progress → auth() waits for fresh ack, not the old one
     const drainAuth = (s: any) => { authPending = false; const w = authWaiters; authWaiters = []; for (const r of w) r(s); };
     const setAuthStatus = (s: any) => { authStatus = s; drainAuth(s); };
 
     socket.on(key, (msg: any) => {
         if (!Array.isArray(msg)) return;
         if (disposed) {
-            // после dispose только возвращаем зомби-id в общий пул, остальное игнорируем
+            // after dispose, only return zombie-ids to the shared pool, ignore everything else
             if ((msg[0] == Pkt.RESP || msg[0] == Pkt.CB_END) && zombies.delete(msg[1])) pool.release(msg[1]);
             return;
         }
@@ -224,7 +224,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 for (const cbId of req.cbs) { if (callbacks.delete(cbId)) pool.release(cbId); }
                 if (msg[3]) req.fail(reviveErr(msg[3]));
                 else {
-                    // нарушение лимитов/битый payload в ответе — отклоняем именно этот запрос
+                    // limit violation/corrupt payload in response — reject this request only
                     try { req.ok(unpackResult(msg[2], lim)); }
                     catch (e) { req.fail(e); }
                 }
@@ -234,24 +234,24 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 const cb = callbacks.get(msg[1]);
                 if (!cb) break;
                 let cbArgs: any[];
-                // у стрима нет канала ошибки — битый/превышающий лимиты пакет дропаем
-                // (раньше .map(unpackResult) ещё и передавал index вторым аргументом как lim)
+                // stream has no error channel — drop corrupt/limit-exceeding packet
+                // (previously .map(unpackResult) also passed index as a second argument like lim)
                 try { cbArgs = (msg[2] || []).map((a: any) => unpackResult(a, lim)); }
                 catch (e) { if (debug) console.log("[RPC CB] dropped:", e); break; }
                 cb(...cbArgs);
                 break;
             }
             case Pkt.SHAPE: {
-                // Поздняя shape от умершей transport-generation не должна создавать хвост состояния.
+                // Late shape from dead transport-generation should not create state tail.
                 if (!callbacks.has(msg[1])) break
-                // сервер задекларировал форму компактных тиков для cbId: shapeId → порядок ключей
+                // server declared shape of compact ticks for cbId: shapeId → key order
                 let m = compactShapes.get(msg[1]);
                 if (!m) { m = []; compactShapes.set(msg[1], m); }
                 m[msg[2]] = msg[3];
                 break;
             }
             case Pkt.CBV: {
-                // компактный тик: восстанавливаем объект по форме + значениям и зовём колбэк как обычный CB
+                // compact tick: reconstruct object from shape + values and call callback as regular CB
                 const cb = callbacks.get(msg[1]);
                 if (!cb) break;
                 const keys = compactShapes.get(msg[1])?.[msg[2]];
@@ -266,22 +266,22 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             case Pkt.CB_END: {
                 const cbId = msg[1] as number;
                 compactShapes.delete(cbId);
-                // release только если id наш (трекался) — чужой/поздний CB_END не должен
-                // освобождать id, занятый другим запросом
+                // release only if id is ours (tracked) — foreign/late CB_END must not
+                // release id occupied by another request
                 if (callbacks.delete(cbId)) pool.release(cbId);
                 else if (zombies.delete(cbId)) pool.release(cbId);
                 break;
             }
             case Pkt.CAPS: {
-                // сервер объявил свой битсет договорных фич — запоминаем (двусторонняя половина
-                // рукопожатия). Для COMPACT клиент не гейтит: CBV приходит лишь если МЫ объявили COMPACT.
+                // server declared its bitset of contract features — remember (bidirectional half
+                // of handshake). For COMPACT client does not gate: CBV arrives only if WE declared COMPACT.
                 peerServerCaps = typeof msg[1] === "number" ? msg[1] : 0;
                 break;
             }
             case Pkt.MAP: {
                 schemaKnown = true
-                // Чистим перед слиянием: при смене principal (re-auth) индексы routeMap другие —
-                // устаревшая запись увела бы числовой ref на чужой метод.
+                // Clean before merging: on principal change (re-auth) routeMap indices differ —
+                // stale entry would take numeric ref to wrong method.
                 if (msg[1]) { for (const k of Object.keys(routeCache)) delete routeCache[k]; Object.assign(routeCache, msg[1]); }
                 // A fresh declaration replaces the previous principal/connection schema.
                 // Only declared Listen nodes are safe to recreate automatically: legacy
@@ -298,14 +298,14 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                     for (const r of strictWaiters) r(undefined);
                     strictWaiters = [];
                 }
-                // Ответ на HELLO ВСЕГДА 5-элементный (authAck или null для сервера без auth) — только он
-                // трогает auth. 4-элементный MAP (STRICT/начальный пуш) схема-only: не резолвит auth(),
-                // поэтому ожидающий auth() не словит преждевременный null от STRICT-компаньона.
+                // Response to HELLO is ALWAYS 5-element (authAck or null for server without auth) — only it
+                // touches auth. 4-element MAP (STRICT/initial push) is schema-only: does not resolve auth(),
+                // so waiting auth() will not catch premature null from STRICT companion.
                 if (msg.length > 4) setAuthStatus(msg[4]);
-                // CAPS один раз по приходу MAP: соединение установлено, сервер слушает, тики ещё не шли.
-                // Здесь, а НЕ в init(): динамический c.func init() не вызывает (MAP сервер пушит сам).
-                // Шлём CAPS только если есть что объявить: clientCaps==0 (opt.compact:false) → молчим,
-                // чтобы и СТАРЫЙ сервер (трактует сам факт CAPS как «умею компакт») остался на обычном CB.
+                // CAPS once on MAP arrival: connection established, server listening, ticks not yet sent.
+                // Here, not in init(): dynamic c.func init() does not call it (server pushes MAP itself).
+                // Send CAPS only if we have something to declare: clientCaps==0 (opt.compact:false) → silence,
+                // so even OLD server (interprets CAPS fact itself as "I can compact") stays on regular CB.
                 if (!capsSent) { capsSent = true; if (clientCaps) socket.emit(key, [Pkt.CAPS, clientCaps]); }
                 break;
             }
@@ -316,7 +316,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         if (disposed) return wait ? Promise.reject(new Error('RPC client disposed')) : Promise.resolve()
         if (!transport.api.connected()) return wait ? Promise.reject(new Error('RPC transport disconnected')) : Promise.resolve()
         const cbIds: number[] = [];
-        // Упаковываем аргументы во всех шагах вызова (call)
+        // Pack arguments in all call steps
         const cleanSteps = steps.map(step => {
             if (step.type === 'call') {
                 return { type: 'call', args: pack(step.args, pool, callbacks, cbIds) };
@@ -329,14 +329,14 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             socket.emit(key, [Pkt.PIPE, 0, ref, cleanSteps, false]);
             return Promise.resolve();
         }
-        // Идиома off() НЕ распространяется на PIPE — осознанная граница слоёв:
-        //   1) pipe-прокси ЛЕНИВ: buildPipeProxy отдаёт прокси-цепочку, а sendPipe
-        //      вызывается лишь из геттера `.then`/`.catch` (для await) — любой makeOff-хендл
-        //      здесь до вызывающего НЕ доходит (его сразу оборачивает `(...a)=>p.then(...a)`).
-        //   2) протокол PIPE не даёт адресуемой точки teardown для непрозрачной цепочки:
-        //      один RESP, без серверного стопа (контраст с CALL `removeCallback`).
-        // Долгоживущие подписки с off() живут на CALL/listen-поверхности (subscribeShared
-        // + makeOff). PIPE — для трансформаций; богатые типы/лимиты в нём уже на паритете с CALL.
+        // off() idiom does NOT extend to PIPE — intentional layer boundary:
+        //   1) pipe-proxy is LAZY: buildPipeProxy gives proxy chain, sendPipe
+        //      is called only from `.then`/`.catch` getter (for await) — any makeOff-handle
+        //      here does NOT reach the caller (it is immediately wrapped by `(...a)=>p.then(...a)`).
+        //   2) PIPE protocol gives no addressable teardown point for opaque chain:
+        //      one RESP, no server stop (contrast with CALL `removeCallback`).
+        // Long-lived subscriptions with off() live on CALL/listen surface (subscribeShared
+        // + makeOff). PIPE — for transforms; rich types/limits in it already at parity with CALL.
         let record: tPending | undefined
         const promise = new Promise(function trackPipe(resolve, reject) {
             if (pending.size >= limit) { reject(new Error('RPC limit')); return }
@@ -370,7 +370,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                     return (...a: any[]) => (promise as any).finally(...a);
                 }
                 if (p === "__executeRemainingPipe") {
-                    // Для серверной прозрачной ретрансляции
+                    // For server-side transparent relay
                     return (remaining: any[]) => sendPipe(path, [...steps, ...remaining], wait);
                 }
                 if (p === Symbol.toPrimitive) return undefined;
@@ -459,7 +459,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         stop: (socketAlive?: boolean) => void
     }
     const wireSubs = new Map<string, tSub>()
-    // адреса Listen-узлов, задекларированные сервером в Pkt.MAP; null = старый сервер (без декларации)
+    // Listen node addresses declared by server in Pkt.MAP; null = old server (without declaration)
     let declaredListens: Set<string> | null = null
 
     const OMIT_LISTEN_FUNCTION = Symbol('omit listen function')
@@ -680,14 +680,14 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     const sendCall = (path: string[], args: any[], wait: boolean): any => {
         const last = path[path.length - 1];
         const wireArgs = normalizeListenWireArgs(path, args)
-        // `.on(fn)` и `.callback(fn)` — обе «подписка по факту установки колбэка». Имя НЕ переписываем:
-        // `.on` уходит проводом КАК `.on` (сервер имеет оба метода). Дедуп — по АДРЕСУ УЗЛА
-        // (см. subscribeShared), поэтому on/callback на один Listen-узел делят одну сетевую подписку.
+        // `.on(fn)` and `.callback(fn)` — both "subscription on callback setup fact". Name NOT rewritten:
+        // `.on` goes on the wire AS `.on` (server has both methods). Dedup — by NODE ADDRESS
+        // (see subscribeShared), so on/callback on one Listen node share one network subscription.
         if (dedupe && wait && path.length > 1 && (last == "callback" || last == "on") && wireArgs.some(a => typeof a == "function")) {
             // New calls made offline are never deferred into the next connection.
             if (!transport.api.connected()) return sendCallWire(path, wireArgs, wait)
-            // точно: сервер задекларировал адрес как Listen (Pkt.MAP[3]);
-            // fallback для старого сервера — эвристика по форме маршрута `*.callback(fn)`/`*.on(fn)`
+            // exactly: server declared address as Listen (Pkt.MAP[3]);
+            // fallback for old server — heuristic by route shape `*.callback(fn)`/`*.on(fn)`
             const isListen = declaredListens ? declaredListens.has(rpcPathKey(path.slice(0, -1))) : true;
             if (isListen) return subscribeShared(path, wireArgs);
         }
@@ -818,9 +818,9 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         for (const sub of subs) sub.stop(socketAlive)
     }
 
-    // отцепить клиента: отклонить висящие, игнорировать дальнейшие пакеты, отбивать новые вызовы.
-    // socketAlive (default true) — слать ли wire removeCallback; на заведомо мёртвом сокете
-    // передай { socketAlive: false } (потребители всё равно резолвятся).
+    // Detach client: reject pending, ignore subsequent packets, reject new calls.
+    // socketAlive (default true) — whether to send wire removeCallback; on a dead socket
+    // pass { socketAlive: false } (consumers will resolve anyway).
     function dispose(reason = 'RPC client disposed', opts?: {socketAlive?: boolean}) {
         if (disposed) return
         const socketAlive = opts?.socketAlive ?? true
@@ -860,22 +860,22 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     const space = buildProxy([], false, proxyCaches.space) as ClientAPIAll<T>
     const strict = buildStrict([], true) as ClientAPIStrict<T>
     const pipe = buildPipeProxy([], [], true) as PipeAPI<T>;
-    const pipeStrict = buildPipeProxy([], [], true) as PipeAPI<T>; // пока ≡ pipe — строгая валидация не реализована (PLAN: API honesty)
+    const pipeStrict = buildPipeProxy([], [], true) as PipeAPI<T>; // currently ≡ pipe — strict validation not yet implemented (PLAN: API honesty)
 
     let _ready: null | Promise<void> = null;
     let ready = () => _ready ? _ready : _ready = init()
     const init = async (obj?: object) => {
         if (obj) { strictData = obj; schemaKnown = true; return; }
-        // с токеном — предъявляем его (HELLO); ответ на HELLO всегда придёт 5-элементным (ack/null).
+        // with token — present it (HELLO); response to HELLO always arrives as 5-element (ack/null).
         if (authToken != null) { authPending = true; socket.emit(key, [Pkt.HELLO, authToken]); }
-        // STRICT всегда: запрос схемы и fallback для СТАРОГО сервера, который HELLO не знает (не зависнем).
+        // STRICT always: schema request and fallback for OLD server that doesn't know HELLO (no hang).
         socket.emit(key, Pkt.STRICT);
         await new Promise(r => { strictWaiters.push(r); });
     }
 
-    // Мягкий re-auth по ЖИВОМУ сокету: подписки не рвутся (тот же socket, те же cb-id);
-    // сервер пере-verify и шлёт новый MAP (routeMap нового principal) + authAck.
-    // ВНИМАНИЕ: не запускай конкурентные reauth — вейтеры общие, без корреляции; дожидайся каждый.
+    // Soft re-auth on LIVE socket: subscriptions are not broken (same socket, same cb-id);
+    // server re-verifies and sends new MAP (routeMap of new principal) + authAck.
+    // WARNING: do not run concurrent reauths — waiters are shared, without correlation; wait for each.
     function reauth(token: any) {
         if (disposed) return Promise.resolve({ok: false, reason: 'RPC client disposed'})
         if (!transport.api.connected()) return Promise.resolve({ok: false, reason: 'RPC transport disconnected'})
@@ -885,40 +885,40 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         socket.emit(key, [Pkt.HELLO, token]);
         return new Promise<any>(res => authWaiters.push(res));
     }
-    // Текущий authAck (null = сервер без auth); во время идущего reauth ждёт свежий, а не отдаёт прошлый.
-    // После dispose резолвимся сразу (иначе вейтер никогда не дренится — MAP уже игнорируется).
+    // Current authAck (null = server without auth); during ongoing reauth waits for fresh one, not old.
+    // After dispose resolve immediately (otherwise waiter never drains — MAP already ignored).
     const auth = () => disposed
         ? Promise.resolve(authStatus !== undefined ? authStatus : { ok: false, reason: "RPC client disposed" })
         : (authStatus !== undefined && !authPending) ? Promise.resolve(authStatus) : new Promise<any>(res => authWaiters.push(res));
 
     return {
-        func,           // <- Тип ClientAPI (нет цепочек)
-        pipe,           // <- Тип PipeAPI (есть цепочки)
-        pipeStrict,     // <- Тип PipeAPI (есть цепочки)
+        func,           // <- ClientAPI type (no chains)
+        pipe,           // <- PipeAPI type (has chains)
+        pipeStrict,     // <- PipeAPI type (has chains)
         space,
         all: func as ClientAPIAll<T>,
-        strict, // <- Тип ClientAPI (нет цепочек)
+        strict, // <- ClientAPI type (no chains)
         api,
         [RPC_TRANSPORT_CONTROL]: transport.control,
         abortAll,
         dispose,
-        /** Закрыть клиента (универсальный teardown, парный к onDisconnect): дренирует подписки,
-         *  отклоняет висящие, снимает ожидающих. Делегирует в {@link dispose}; продвинутый
-         *  `{ socketAlive:false }` — там же. */
+        /** Close the client (universal teardown, paired with onDisconnect): drains subscriptions,
+         *  rejects pending, removes waiters. Delegates to {@link dispose}; advanced
+         *  `{ socketAlive:false }` — there. */
         close: dispose,
         schema: () => strictData,
         readyStrict: ready,
-        /** Дождаться рукопожатия/схемы (STRICT). Делегирует в {@link readyStrict}. */
+        /** Wait for handshake/schema (STRICT). Delegates to {@link readyStrict}. */
         ready,
         initStrict: init,
-        /** Инициализировать клиента (HELLO+STRICT) либо засеять схему объектом. Делегирует в {@link initStrict}. */
+        /** Initialize client (HELLO+STRICT) or seed schema with object. Delegates to {@link initStrict}. */
         init,
-        /** Мягкий re-auth по живому сокету (подписки сохраняются). Резолвится новым authAck. */
+        /** Soft re-auth on live socket (subscriptions preserved). Resolves with new authAck. */
         reauth,
-        /** Текущий authAck сервера; ждёт первого/свежего. Резолвится null против сервера без auth. */
+        /** Current server authAck; waits for first/fresh. Resolves null for server without auth. */
         auth,
-        /** Наблюдать teardown клиента (dispose/разрыв/ротация). Callable off-хендл; await — на
-         *  дисконнекте. Подписки к этому моменту уже сняты (честный teardown, без авто-resubscribe). */
+        /** Watch client teardown (dispose/break/rotation). Callable off-handle; await — on
+         *  disconnect. Subscriptions already unsubscribed by then (honest teardown, no auto-resubscribe). */
         onDisconnect,
     };
 }
@@ -926,50 +926,50 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
 export type RpcClientReturn<T extends object> = {
     func: ClientAPIAll<T>;
     pipe: PipeAPI<T>;
-    /** Пока идентичен {@link pipe}: строгая валидация по схеме ещё не реализована. */
+    /** Currently identical to {@link pipe}: strict schema validation not yet implemented. */
     pipeStrict: PipeAPI<T>;
     space: ClientAPIAll<T>;
     all: ClientAPIAll<T>;
     strict: ClientAPIStrict<T>;
     api: ClientApiHandle;
     abortAll: (reason: string) => void;
-    /** Отцепить клиента: висящие отклоняются, дальнейшие пакеты игнорируются, новые вызовы отбиваются.
-     *  Подписки дренируются (честный teardown). На заведомо мёртвом сокете — `{ socketAlive: false }`.
-     *  @deprecated используй {@link close} — тот же teardown с той же сигнатурой. */
+    /** Detach client: pending are rejected, subsequent packets ignored, new calls rejected.
+     *  Subscriptions drained (honest teardown). On dead socket — `{ socketAlive: false }`.
+     *  @deprecated use {@link close} — same teardown with same signature. */
     dispose: (reason?: string, opts?: { socketAlive?: boolean }) => void;
-    /** Закрыть клиента (универсальный teardown, парный к onDisconnect). Делегирует в {@link dispose}. */
+    /** Close the client (universal teardown, paired with onDisconnect). Delegates to {@link dispose}. */
     close: (reason?: string, opts?: { socketAlive?: boolean }) => void;
     schema: () => any;
-    /** @deprecated используй {@link ready} — суффикс Strict не несёт смысла (нет не-strict варианта). */
+    /** @deprecated use {@link ready} — Strict suffix has no meaning (no non-strict variant). */
     readyStrict: () => Promise<void>;
-    /** Дождаться рукопожатия/схемы. Делегирует в {@link readyStrict}. */
+    /** Wait for handshake/schema. Delegates to {@link readyStrict}. */
     ready: () => Promise<void>;
-    /** @deprecated используй {@link init} — суффикс Strict не несёт смысла (нет не-strict варианта). */
+    /** @deprecated use {@link init} — Strict suffix has no meaning (no non-strict variant). */
     initStrict: (obj?: object) => Promise<void>;
-    /** Инициализировать клиента либо засеять схему объектом. Делегирует в {@link initStrict}. */
+    /** Initialize client or seed schema with object. Delegates to {@link initStrict}. */
     init: (obj?: object) => Promise<void>;
-    /** Мягкий re-auth по живому сокету: предъявляет новый токен, подписки сохраняются. */
+    /** Soft re-auth on live socket: presents new token, subscriptions preserved. */
     reauth: (token: any) => Promise<any>;
-    /** Текущий authAck сервера (5-й элемент Pkt.MAP); резолвится null против сервера без auth. */
+    /** Current server authAck (5th element of Pkt.MAP); resolves null for server without auth. */
     auth: () => Promise<any>;
-    /** Наблюдать teardown клиента (dispose/разрыв/ротация). Callable off-хендл; await — на дисконнекте. */
+    /** Watch client teardown (dispose/break/rotation). Callable off-handle; await — on disconnect. */
     onDisconnect: (cb: (reason: string) => void) => ReturnType<typeof makeOff>;
 };
 
 export function createRpcClient<T extends object>({ socket, socketKey: key, limit, limits, dedupeListen, token, opt }: {
     socket: SocketTmpl; socketKey: string; limit?: number;
-    /** Opt-in лимиты на ВХОДЯЩИЕ данные (ответы/колбэки сервера); без опции — как раньше, без ограничений. */
+    /** Opt-in limits on INCOMING data (server responses/callbacks); without option — as before, unlimited. */
     limits?: RpcLimits;
-    /** Дедуп подписок (по умолчанию ВКЛЮЧЁН): одно сетевое соединение на Listen-адрес,
-     *  новые потребители ретранслируются локально, сетевой стоп — после ухода последнего.
-     *  Подписка (`*.on(cb)`, legacy `*.callback(cb)`) возвращает callable off-handle с `.off()/.unsubscribe()`. */
+    /** Dedup subscriptions (enabled by default): one network connection per Listen address,
+     *  new consumers relayed locally, network stop — after last one leaves.
+     *  Subscription (`*.on(cb)`, legacy `*.callback(cb)`) returns callable off-handle with `.off()/.unsubscribe()`. */
     dedupeListen?: boolean;
-    /** Токен авторизации: при initStrict() клиент предъявит его через Pkt.HELLO (in-band auth).
-     *  In-band auth подразумевает ОДИН логический клиент на socket+key (модель хаба): два
-     *  токен-клиента на одном сокете затирали бы routeCache/authAck друг друга при смене principal. */
+    /** Authorization token: on initStrict() client presents it via Pkt.HELLO (in-band auth).
+     *  In-band auth assumes ONE logical client per socket+key (hub model): two
+     *  token clients on one socket would wipe routeCache/authAck of each other on principal change. */
     token?: any;
-    /** Оптимизации провода (договариваются рукопожатием): { compact?: false } отключает
-     *  адаптивное уплотнение тиков (Pkt.SHAPE/CBV) для этого соединения. По умолчанию — вкл. */
+    /** Wire optimizations (negotiated by handshake): { compact?: false } disables
+     *  adaptive tick compression (Pkt.SHAPE/CBV) for this connection. Default — enabled. */
     opt?: RpcOpt;
 }): RpcClientReturn<T> {
     return createClient<T>(socket, key, { limit, limits, dedupeListen, token, opt });

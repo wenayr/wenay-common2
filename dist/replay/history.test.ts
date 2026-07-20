@@ -1,13 +1,13 @@
 // ============================================================
 //  replay/history.test.ts
 //
-//  Слой C: архиватор (каданс keyframe'ов) + читатель истории.
-//  Часть 1 — seek по seq/ts, часть 2 — playback и дыра в архиве,
-//  часть 3 — handover архив → живой журнал → live, часть 4 —
-//  «перемотка на 12:00» с бесшовным доигрыванием до live,
-//  часть 5 — машина времени для стора, часть 6 — файловое
-//  хранилище (jsonl) как доказательство «лямбды = что угодно».
-//  Запуск:
+//  Layer C: archiver (keyframe cadence) + history reader.
+//  Part 1 — seek by seq/ts, part 2 — playback and archive gap,
+//  part 3 — handover archive → live log → live, part 4 —
+//  "rewind to 12:00" with seamless catchup to live,
+//  part 5 — time machine for store, part 6 — file
+//  storage (jsonl) as proof "lambdas = anything".
+//  Run:
 //      npx ts-node replay/history.test.ts
 // ============================================================
 
@@ -33,14 +33,14 @@ type World = {
     tick: number
 }
 
-// счётчик-линия с подменяемыми часами: событие n = абсолютное значение n,
-// ts события n = 1000 + 1000*n → последний конверт = состояние
+// counter-line with injectable clock: event n = absolute value n,
+// ts of event n = 1000 + 1000*n → latest envelope = state
 function makeCounterLine(storage: ReplayStorage<[number]>, everyEvents: number, useAsJournal = false) {
     let clock = 1000
     let value = 0
     const [emit, replay] = replayListen<[number]>({
         current: () => [value],
-        // «память снаружи»: живой журнал = тот же архив → playback→live без скачка
+        // "memory outside": live log = same archive → playback→live without jump
         ...(useAsJournal
             ? {getSince: (s: number) => storage.getEvents(s, Infinity)}
             : {history: 5}),
@@ -79,7 +79,7 @@ async function main() {
         const [emit, replay] = replayListen<[number]>({current: () => [value], history: 5, now: () => clock})
         const arch = archiveReplay(replay, {storage, everyEvents: 1000, everyMs: 5000})
         for (let n = 1; n <= 12; n++) { value = n; clock = n * 1000; emit(n) }
-        // кадры на ts 5000 и 10000 (+ базовый) — событий мало, время истекло
+        // keyframes at ts 5000 and 10000 (+ base) — few events, time expired
         ok(arch.stats().keyframes == 3, `everyMs cuts keyframes by time when events are sparse (got ${arch.stats().keyframes})`)
         arch.close()
     }
@@ -97,7 +97,7 @@ async function main() {
         ok(sub.seq() == 35, 'reader reports the reconnect point')
         arch.close()
 
-        // архив с вытеснением: события 1..25 потеряны, keyframe'ы целы
+        // archive with eviction: events 1..25 lost, keyframes intact
         const capped = createMemoryReplayStorage<[number]>({maxEvents: 10})
         const line2 = makeCounterLine(capped, 10)
         for (let n = 1; n <= 35; n++) line2.push(n)
@@ -111,7 +111,7 @@ async function main() {
     console.log('\n[history] handover: archive replay → live journal → live')
     {
         const storage = createMemoryReplayStorage<[number]>()
-        const {replay, arch, push} = makeCounterLine(storage, 10)  // живой журнал: кольцо на 5
+        const {replay, arch, push} = makeCounterLine(storage, 10)  // live log: ring of 5
         for (let n = 1; n <= 35; n++) push(n)
 
         const got: number[] = []
@@ -132,7 +132,7 @@ async function main() {
     console.log('\n[history] rewind to a moment, then play forward into live (no jump)')
     {
         const storage = createMemoryReplayStorage<[number]>()
-        // getSince линии смотрит в ЭТОТ ЖЕ архив → зазор архив→live закрыт по построению
+        // getSince of line looks into SAME archive → gap archive→live closed by design
         const {replay, arch, push} = makeCounterLine(storage, 10, true)
         for (let n = 1; n <= 35; n++) push(n)
 
@@ -171,7 +171,7 @@ async function main() {
         ok(json(storeReplayAt<World>(storage, {ts: 23 * 1000})) == snapAt[23], 'state at ts («what did the world look like at 12:00»)')
         ok(json(storeReplayAt<World>(storage)) == snapAt[30], 'no target = latest archived state')
 
-        // зеркало целиком из архива + живой хвост
+        // mirror entirely from archive + live tail
         const mirror = createStore<World>({units: {}, tick: -1})
         const h = openHistory(storage, exposed.replay)
         h.subscribe(function applyToMirror(patch) { applyStorePatch(mirror, patch) })
@@ -190,7 +190,7 @@ async function main() {
         const kfFile = path.join(dir, 'keyframes.jsonl')
         const readAll = (file: string): ReplayEvent<[number]>[] =>
             fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : []
-        // наивный jsonl-архив: append на запись, полный скан на чтение — для оракула достаточно
+        // naive jsonl-archive: append on write, full scan on read — enough for oracle
         const fileStorage: ReplayStorage<[number]> = {
             putEvent: ev => fs.appendFileSync(evFile, JSON.stringify(ev) + '\n'),
             putKeyframe: kf => fs.appendFileSync(kfFile, JSON.stringify(kf) + '\n'),

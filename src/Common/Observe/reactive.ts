@@ -77,7 +77,7 @@ type Eng = {
     pathLive: number
     dirty: Set<Node>
     dirtyPaths: PropertyKey[][]
-    dirtyPathKeys: Set<string>   // keyed dedup за O(1) на путь — линейный скан по dirtyPaths квадратичен на hot-write
+    dirtyPathKeys: Set<string>   // keyed dedup in O(1) per path — linear scan over dirtyPaths is quadratic on hot-write
     pathKey: (path: PropertyKey[]) => string
     scheduled: boolean
     waiters: Set<Fn>
@@ -110,7 +110,7 @@ export function reactive<T extends object>(root: T, opts: Opts = {}) {
                 eng.scheduled = false
                 const batch = [...eng.dirty]; eng.dirty.clear()
                 const dirtyPaths = eng.dirtyPaths; eng.dirtyPaths = []
-                // свежий keyer на окно: карта symbol-идентичности не копит чужие символы
+                // fresh keyer per window: symbol-identity map does not accumulate foreign symbols
                 eng.dirtyPathKeys = new Set(); eng.pathKey = createPathKeyer()
                 let err: any
                 for (const n of batch) {
@@ -178,7 +178,7 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
             const kid = node.kids.get(k)
             if (kid) rebind(kid, v)                  // an existing child slot got a whole new value
             node.eng.onMutation?.(dirtyPathFor(node, k))
-            if (eng.live > 0) bubble(node, k)        // путь считается ВНУТРИ и только при pathLive — cold write не аллоцирует
+            if (eng.live > 0) bubble(node, k)        // path is computed INSIDE and only when pathLive — cold write does not allocate
             return true
         },
         defineProperty(_, k, d) {
@@ -234,7 +234,7 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
 }
 
 // the fact bubbles UP: this node + every ancestor that has subscribers fires once.
-// Полный путь материализуется только когда его кто-то потребит (pathLive > 0).
+// Full path is materialized only when someone consumes it (pathLive > 0).
 function bubble(from: Node, key: PropertyKey) {
     const eng = from.eng
     if (eng.pathLive > 0) addDirtyPath(eng, dirtyPathFor(from, key))
@@ -263,9 +263,9 @@ function dirtyPathFor(node: Node, key: PropertyKey) {
     return Array.isArray(node.target) ? [...node.path] : [...node.path, key]
 }
 
-// collision-proof строковый ключ пути: length-prefixed сегменты (строка с любым
-// содержимым не склеится через границу), символы — по identity через карту keyer'а.
-// Keyer живёт одно drain-окно / один вызов, поэтому символы в карте не копятся.
+// collision-proof string path key: length-prefixed segments (string with any
+// content cannot merge across boundary), symbols — by identity via keyer map.
+// Keyer lives one drain window / one call, so symbols do not accumulate in the map.
 function createPathKeyer() {
     let symIds: Map<symbol, number> | null = null
     return function pathKey(path: PropertyKey[]) {
@@ -289,7 +289,7 @@ function addDirtyPath(eng: Eng, path: PropertyKey[]) {
     const k = eng.pathKey(path)
     if (eng.dirtyPathKeys.has(k)) return
     eng.dirtyPathKeys.add(k)
-    eng.dirtyPaths.push(path)     // path — свежий массив из dirtyPathFor, копия не нужна
+    eng.dirtyPaths.push(path)     // path is a fresh array from dirtyPathFor, no copy needed
 }
 
 function startsWithPath(path: PropertyKey[], prefix: PropertyKey[]) {

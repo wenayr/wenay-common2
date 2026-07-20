@@ -1,9 +1,9 @@
 // ============================================================
 //  observe/usage-real-socket.ts
 //
-//  Тот же store mirror add/delete, но через настоящий Socket.IO
-//  localhost WebSocket, а не in-memory loopback.
-//  Запуск:
+//  Same store mirror add/delete, but via real Socket.IO
+//  localhost WebSocket, not in-memory loopback.
+//  Run:
 //      npx tsx observe/usage-real-socket.ts
 // ============================================================
 
@@ -141,7 +141,7 @@ async function main() {
         const mirror = createStoreMirror<StrategyStore>(remote, {strategies: {}, meta: {status: ''}}, {drain: 'micro'})
         const stopSync = await mirror.sync({strategies: true}, {current: true, drain: 'micro'})
         await waitFor('initial mirror sync over socket', () => 'alpha' in mirror.state.strategies)
-        await delay(80) // даем сетевой подписке changedPaths точно встать
+        await delay(80) // give network subscription changedPaths time to settle exactly
         pulls.length = 0
 
         scenario('case A: server добавляет beta', 'client mirror увидит alpha,beta; по сети уйдет pull mask {strategies:{beta:true}}')

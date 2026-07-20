@@ -1,11 +1,11 @@
-// Проверяем, находимся ли мы в среде Node.js
+// Check if we are in Node.js environment
 const isNode = typeof process !== 'undefined' && process.versions != null && process.versions.node != null;
 
-// Пытаемся безопасно достать нативный метод для Node.js (чтобы Webpack не ругался в браузере)
+// Try to safely get native method for Node.js (so Webpack doesn't complain in browser)
 let nodeIsProxy: ((value: any) => boolean) | undefined;
 if (isNode) {
     try {
-        // Используем eval('require') или __non_webpack_require__, чтобы бандлеры фронтенда не пытались это спарсить
+        // Use eval('require') or __non_webpack_require__ so frontend bundlers don't try to parse this
         const util = eval("require('util')");
         nodeIsProxy = util.types.isProxy;
     } catch (e) {}
@@ -13,7 +13,7 @@ if (isNode) {
 
 const m = new WeakSet<object>();
 function set() {
-    // В Node.js нам этот хак не нужен, там есть нативный метод
+    // In Node.js we don't need this hack, there is a native method
     if (nodeIsProxy) return;
 
     const proxy = Proxy;
@@ -40,10 +40,10 @@ export function isProxyInit() {
 export const installProxyTracking = isProxyInit
 
 export function isProxy(a: any) {
-    // Если мы в Node.js, используем встроенную магию
+    // If we are in Node.js, use built-in magic
     if (nodeIsProxy) return nodeIsProxy(a);
 
-    // Иначе фоллбэк на твой браузерный вариант
+    // Otherwise fallback to your browser variant
     if (!init) throw new Error("isProxyInit not called in start project");
     return m.has(a);
 }

@@ -1,12 +1,12 @@
 // =====================================================================
 // Replay wire over a plain message channel (datachannel, worker, pipe)
 // =====================================================================
-// Тот же контракт, что exposeReplay ⇄ replaySubscribe, но транспорт — любой
-// упорядоченный канал строковых сообщений: WebRTC datachannel, MessagePort,
-// worker, in-proc pipe. RPC-ядро не участвует: крошечный JSON req/res-протокол
-// ({t:'sub'|'req'|'ev'|'res'}), потому что прямой канал живёт ВНЕ основного
-// rpc-соединения — в этом весь смысл direct-маршрута.
-// Закрытие канала = не-конверт (null) в line — replay-подписчики шумят, не молчат.
+// Same contract as exposeReplay ⇄ replaySubscribe, but transport — any
+// ordered message channel: WebRTC datachannel, MessagePort,
+// worker, in-proc pipe. RPC core not involved: tiny JSON req/res protocol
+// ({t:'sub'|'req'|'ev'|'res'}), because direct channel lives OUTSIDE the main
+// rpc connection — that's the whole point of direct routing.
+// Closing channel = non-envelope (null) in line — replay subscribers make noise, not silence.
 
 import {ReplayRemote} from './replay-wire'
 
@@ -64,7 +64,7 @@ function parseMessage(raw: string) {
     })
 }
 
-/** Минимальный упорядоченный канал строк — форма datachannel/MessagePort/pipe. */
+/** Minimal ordered string channel — shape of datachannel/MessagePort/pipe. */
 export type ReplayMessageChannel = {
     send: (data: string) => void
     onMessage: (cb: (data: string) => void) => (() => void) | void
@@ -72,7 +72,7 @@ export type ReplayMessageChannel = {
     close?: () => void
 }
 
-// хендл отписки бывает функцией (Listen) или объектом (SubscriptionHandle провода)
+// unsubscribe handle can be a function (Listen) or object (SubscriptionHandle of wire)
 function unsubscribeHandle(handle: any) {
     if (typeof handle == 'function') { handle(); return }
     if (typeof handle?.off == 'function') handle.off()
@@ -80,9 +80,9 @@ function unsubscribeHandle(handle: any) {
 }
 
 /**
- * Серверная сторона: отдать replay-линию (форма exposeReplay/ReplayRemote)
- * в канал. Линия подписывается лениво — по первому {t:'sub'} потребителя.
- * Возвращает close() (снять line-подписку и перестать отвечать).
+ * Server side: serve replay-line (shape exposeReplay/ReplayRemote)
+ * over channel. Line subscribes lazily — on first consumer {t:'sub'}.
+ * Returns close() (unsubscribe from line and stop responding).
  */
 export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, channel: ReplayMessageChannel) {
     let lineOff: any = null
@@ -96,7 +96,7 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
                 : undefined
             if (!closed) channel.send(stringifyMessage({t: 'res', id: msg.id, ok: true, v: v ?? null}))
         } catch (e) {
-            // священная линия и прочие броски едут потребителю громко, как в rpc-проекции
+            // the sacred line and other throws reach the consumer loudly, same as in the rpc projection
             if (!closed) channel.send(stringifyMessage({t: 'res', id: msg.id, ok: false, e: String(e)}))
         }
     }
@@ -126,8 +126,8 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
 }
 
 /**
- * Клиентская сторона: ReplayRemote поверх канала — скармливается любому
- * replaySubscribe / replayRouteSubscribe / syncStoreReplay как обычный remote.
+ * Client side: ReplayRemote over channel — fed to any
+ * replaySubscribe / replayRouteSubscribe / syncStoreReplay as a normal remote.
  */
 export function channelReplayRemote<Z extends any[]>(channel: ReplayMessageChannel): ReplayRemote<Z> {
     let nextId = 1
@@ -157,7 +157,7 @@ export function channelReplayRemote<Z extends any[]>(channel: ReplayMessageChann
         closed = true
         for (const [, p] of pending) p.reject(new Error('replay channel closed'))
         pending.clear()
-        // не-конверт = конец линии: replayRouteSubscribe/replaySubscribe репортят onError
+        // non-envelope = end of line: replayRouteSubscribe/replaySubscribe report onError
         for (const cb of Array.from(lineCbs)) cb(null)
         lineCbs.clear()
     })

@@ -15,7 +15,15 @@ export type ArtifactMirrorDeps = {
 export declare function createArtifactMirror(deps: ArtifactMirrorDeps): {
     connection: (account: string) => {
         fragment: {
-            state: import("../events/replay-wire").ReplayExpose<[import("../Observe/store").StorePatch]>;
+            state: import("../events/replay-wire").ReplayExpose<[import("../Observe/store").StorePatch]> | {
+                describe: () => {
+                    [x: string]: any;
+                };
+                line: import("../..").ListenApi<[import("../events/replay-listen").ReplayEvent<[import("../Observe/store").StorePatch]>]>;
+                since: (seq: number) => import("../events/replay-listen").ReplayEvent<[import("../Observe/store").StorePatch]>[] | null;
+                keyframe: () => import("../events/replay-listen").ReplayEvent<[import("../Observe/store").StorePatch]> | null;
+                frame: (sinceSeq: number, hint?: unknown) => import("../events/replay-listen").ReplayEvent<[import("../Observe/store").StorePatch]>[];
+            };
             open: (artifactId: string) => Promise<{
                 url: string;
                 expiresAt: number;

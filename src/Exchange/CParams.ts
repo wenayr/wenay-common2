@@ -30,12 +30,12 @@ type TimeStr_HHMMSS = `${Hour}:${Minute}:${Second}`;
 
 type TimeStr= TimeStr_HHMM | TimeStr_HHMMSS;
 
-//export type DateTimeStr= DateStr | `${DateStr} ${TimeStr}`;  // почему-то приводит к ошибке компиляции
+//export type DateTimeStr= DateStr | `${DateStr} ${TimeStr}`;  // for some reason causes compilation error
 export type DateTimeStr= `${Year}-${Month}-${Day} ${Hour}:${Minute}`;
 
 type DateTime = DateTimeStr | const_Date;
 
-// типовая проверка: компилируется, но НЕ исполняется при импорте
+// type check: compiles, but NOT executed on import
 function _typeCheck_DateTimeStr() {
     let ts : `${DateStr} ${TimeStr}` = "2025-06-01 16:25:25";
     return ts
@@ -119,27 +119,27 @@ type ParamType= "number"|"string"|"boolean"|"time"|"symbol";
 
 export type AnyEnumVal= number|string|const_Date|object;
 
-// Интерфейс параметра
+// Parameter interface
 
 interface IParamBase0 { //extends Readonly<{
-    name? : string; // имя
+    name? : string; // name
 
     commentary?: string[],
-    //value : string|number|boolean | (number|string|boolean)[] | IParams;  // значение по умолчанию
-    range? : (number|string|DateTime|object)[] | UserNumRange | UserTimeRange | undefined;  // допустимый диапазон значений
-    //defaultRange? : Partial<NumRange>|undefined; // допустимый диапазон значений
-    progressive? : boolean|undefined;  // "прогрессивный" числовой параметр (значения можно перебирать по геометрической прогрессии)
-    enabled? : boolean|undefined;  // включён ли параметр по умолчанию
-    hidden? : boolean;  // скрытость параметра
-    //constLength? :boolean|undefined;  // фиксированная длина массива
+    //value : string|number|boolean | (number|string|boolean)[] | IParams;  // default value
+    range? : (number|string|DateTime|object)[] | UserNumRange | UserTimeRange | undefined;  // allowed range of values
+    //defaultRange? : Partial<NumRange>|undefined; // allowed range of values
+    progressive? : boolean|undefined;  // "progressive" numeric parameter (values can be iterated by geometric progression)
+    enabled? : boolean|undefined;  // is parameter enabled by default
+    hidden? : boolean;  // parameter visibility
+    //constLength? :boolean|undefined;  // fixed array length
     type? :ParamType|undefined;
-    //nonResizable? :boolean|undefined; // неизменяемый размер массива
+    //nonResizable? :boolean|undefined; // immutable array size
 } //> { }
 
 interface IParamBase1<T = never> {
-    value : string|number|boolean|DateTime|IParams | T | (number|string|boolean|DateTime|IParams|T)[];  // значение по умолчанию
-    constLength? :boolean|undefined;  // фиксированная длина массива
-    elementsEnabled? :boolean|undefined|(boolean[]);  // включён ли элемент массива по умолчанию
+    value : string|number|boolean|DateTime|IParams | T | (number|string|boolean|DateTime|IParams|T)[];  // default value
+    constLength? :boolean|undefined;  // fixed array length
+    elementsEnabled? :boolean|undefined|(boolean[]);  // is array element enabled by default
 }
 
 // export interface IParamBase extends Readonly<IParamBase0 & IParamBase1> {
@@ -266,7 +266,7 @@ export interface IParamEnum2<T extends number|string> extends IParamBaseDefault 
     enabled? : undefined;
 }
 
-// типовая проверка: компилируется, но НЕ исполняется при импорте
+// type check: compiles, but NOT executed on import
 function _typeCheck_IParamEnum2() { let x : IParamEnum2<5|6> = { value: 5, range : [5, 6] }; return x }
 
 //type TupleToUnion<T extends [...unknown[]]> = T extends [number,...infer T2] ? (T[0] | TupleToUnion<T2>) : never;
@@ -350,7 +350,7 @@ export function isParamBase<T extends IParamReadonly> (param :T) {
 
 //let timeParam : IParamTime = { value : "2020-01-01 15:26", type: "time", range : ["2020-01-01 15:26"] };
 
-// Интерфейс группы параметров
+// Parameter group interface
 export type IParams= {
     [key in string]: IParam;
 }
@@ -395,7 +395,7 @@ export function isSimpleParams2<TParams extends IParamsReadonly>(params: TParams
     let t = false
     for (let key in params) {
         const tr = (params[key] as any)["value"] as any
-        if (tr == null) return true;   // было !tr — 0/false/"" это валидные значения, не «простой» признак
+        if (tr == null) return true;   // was !tr — 0/false/"" are valid values, not a "simple" indicator
         else {
             if (typeof tr == "object") {
                 const r = isSimpleParams(tr)
@@ -408,15 +408,15 @@ export function isSimpleParams2<TParams extends IParamsReadonly>(params: TParams
 export function isSimpleParams<TParams extends IParamsReadonly>(params: TParams | SimpleParams) {
     for (let key in params) {
         const param = params[key] as any;
-        // Если это примитив или null — это простой параметр
+        // If it's a primitive or null - it's a simple parameter
         if (param == null || typeof param !== "object") {
             return true;
         }
-        // Если у объекта нет свойства "value" — это простой параметр
+        // If object has no "value" property - it's a simple parameter
         if (!("value" in param)) {
             return true;
         }
-        // Если value — объект (но не Date и не Array), рекурсивно проверяем
+        // If value is an object (but not Date or Array), check recursively
         const val = param.value;
         if (typeof val === "object" && val !== null && !(val instanceof Date) && !Array.isArray(val)) {
             const r = isSimpleParams(val);
@@ -441,7 +441,7 @@ export function* iterateParams<TObj extends IParamsReadonly, TVal extends IParam
         }
 }
 
-// создаёт копию параметров со всеми включёнными/выключенными параметрами (enabled= true/false)
+// creates copy of parameters with all parameters enabled/disabled (enabled= true/false)
 
 export function enableAllParams<T extends IParamsReadonly> (params :T, enabled=true) {
     const paramsInfoClone= deepCloneMutable(params) as IParams;
@@ -482,7 +482,7 @@ export function enableAllParams<T extends IParamsReadonly> (params :T, enabled=t
 
 type IParamsReadonly2= { readonly [key in string]: ReadonlyFull<IParam> }
 
-// типовая проверка: компилируется, но НЕ исполняется при импорте
+// type check: compiles, but NOT executed on import
 function _typeCheck_CParamsReadonly() {
     class C extends CParams { lastBar = { name: "Last_Bar", value: 0, range: { defaultMin:-10000, max:0, step:1 } }; }
     let xxx= {} as ReadonlyFull<C & IParamsReadonly2>;
@@ -503,7 +503,7 @@ function _typeCheck_CParamsReadonly() {
 
 
 
-// Пример
+// Example
 const param : IParams= {
     p0 : {name: "MA0", value: [10, 20], range: [10, 20 ,30] },
     p1 : {name: "MA1", commentary:["fgf"], value: 20, range: {min: 10, max: 20, step: 2} },
@@ -567,7 +567,7 @@ class Test extends CParams {
         }
     }
 }
-// так не стоит делать
+// this shouldn't be done
 function TestFunction() {
     return {
         //[param :string] : IParam2;
@@ -651,8 +651,8 @@ export function GetSimpleParams<T extends ReadonlyFull<IParams>>(params : T) //:
 // strip metadata to plain (enabled) values — pairs with fromValues
 export const toValues = GetSimpleParams
 
-// типовая проверка GetSimpleParams: компилируется, но НЕ исполняется при импорте
-// (раньше new Test() + GetSimpleParams реально выполнялись на каждый импорт модуля)
+// type check GetSimpleParams: compiles, but NOT executed on import
+// (previously new Test() + GetSimpleParams were actually executed on every module import)
 function _typeCheck_GetSimpleParams() {
     let p= GetSimpleParams(new Test());
 
@@ -664,7 +664,7 @@ function _typeCheck_GetSimpleParams() {
 
     let p5 : number|undefined = p.p5?.p1;
 
-    //let p6 : number = p.p5.p1; // пример ошибки
+    //let p6 : number = p.p5.p1; // example of error
     return [p0, p3, p4, p5] as const
 }
 
@@ -726,7 +726,7 @@ function convert_(valuesObj :{[key :string] :any}, srcObj : IParamsReadonly | re
 // //  ~~~~ The typo is now caught!
 // } satisfies Record<Colors, string | RGB>;
 
-// слияние значений параметров
+// merging of parameter values
 
 /** @deprecated use {@link fromValues} */
 export function mergeParamValuesToInfos<TParams extends IParamsReadonly|IParams, TParams2 extends IParamsReadonly|IParams> (srcObj :TParams, valuesObj :SimpleParams<TParams2>|TParams2) {

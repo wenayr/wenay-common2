@@ -1,16 +1,16 @@
-// HELLO — клиент предъявляет токен в самом канале (in-band): сервер verify → principal →
-// фасад, и отвечает Pkt.MAP с 5-м элементом authAck. Аддитивно: старые пиры HELLO не шлют/не ждут.
-// SHAPE/CBV/CAPS — адаптивное уплотнение тиков подписки (под версией): клиент шлёт CAPS
-// (умею компакт), сервер на частой форме объекта шлёт SHAPE один раз, дальше CBV (только значения).
-// Аддитивно: старый клиент CAPS не шлёт → сервер шлёт обычный CB; старый сервер CAPS игнорирует.
+// HELLO — client presents token in-band: server verify → principal →
+// facade, responds Pkt.MAP with authAck in 5th element. Additive: old peers don't send/await HELLO.
+// SHAPE/CBV/CAPS — adaptive compression of subscription ticks (versioned): client sends CAPS
+// (can do compact), server on frequent object shape sends SHAPE once, then CBV (values only).
+// Additive: old client doesn't send CAPS → server sends usual CB; old server ignores CAPS.
 export const Pkt = { CALL: 0, RESP: 1, CB: 2, MAP: 3, STRICT: 4, CB_END: 5, PIPE: 6, HELLO: 7, SHAPE: 8, CBV: 9, CAPS: 10 } as const;
 
-// Сентинел конца стрима. Едет ПО ПРОВОДУ первым аргументом колбэка —
-// поэтому строка (Symbol через JSON не проедет); значение менять нельзя (wire compat).
+// Stream end sentinel. Goes ON WIRE as first callback argument —
+// hence string (Symbol won't travel via JSON); value must not change (wire compat).
 export const RPC_STOP = "___STOP";
 
-// Серверная пометка «этот узел — Listen-обёртка» (не путешествует по проводу;
-// по проводу сервер декларирует АДРЕСА таких узлов 4-м элементом Pkt.MAP).
+// Server marker 'this node is Listen wrapper' (doesn't travel on wire;
+// on wire server declares ADDRESSES of such nodes in 4th element of Pkt.MAP).
 export const IS_RPC_LISTEN = Symbol.for("isRpcListen");
 
 export type SocketTmpl = {

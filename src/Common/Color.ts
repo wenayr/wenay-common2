@@ -1,11 +1,11 @@
 declare type Nominal<T, Name extends string> = T & { [Symbol.species]: Name; }
 
-// // Создаём числовой тип Index
+// // Creating a numeric type Index
 // type Index = Nominal<number, 'Index'>;
 //
 // let index : Index;
 //
-// index= 42; // Ошибка
+// index= 42; // Error
 //
 // index = 42 as Index;  // OK
 
@@ -32,10 +32,10 @@ export type ColorAny = ColorNumber | ColorString | Readonly<ColorRGBA>;
 
 export type Color = ColorString;
 
-export function rgb(red :number, green :number, blue :number) : ColorString { return `rgb(${red},${green},${blue})`; } // Генератор цветов
+export function rgb(red :number, green :number, blue :number) : ColorString { return `rgb(${red},${green},${blue})`; } // Color generator
 
-// min - минимальная яркость/диапазон
-// max - максимальная яркость/диапазон
+// min - minimum brightness/range
+// max - maximum brightness/range
 export function* colorGenerator(min= 0 , max= 254): Generator<[number, number, number]> {
     for (let step= Math.floor((max - min)/2); step>=1; step/=2) {
         let v= (max - min)/step;
@@ -50,8 +50,8 @@ export function* colorGenerator(min= 0 , max= 254): Generator<[number, number, n
     yield [-1, -1, -1];
 }
 
-// максимальный разбор оттенков в одном цветовом контрасте
-// min - контрастность, 0 - максимальное значение
+// maximum shades decomposition in one color contrast
+// min - contrast, 0 - maximum value
 export function* colorGenerator2(data?: { min?: number, max?: number}): Generator<[number, number, number]> {
     const max = data?.max ?? 255
     const min = data?.min ?? 0
@@ -104,11 +104,11 @@ export function* colorGenerator2(data?: { min?: number, max?: number}): Generato
     yield [-1, -1, -1];
 }
 
-//светлость оттенков
+//lightness of shades
 /** @deprecated use {@link hueRGB} */
 export function colorGeneratorByCount2(value=180, count=100, index=1): [number, number, number] {
     const step = Math.floor(value * 6 * index / count)
-    const p = Math.floor(step / value) % 6   // на обороте (p==6) иначе чёрный [0,0,0] вместо красного
+    const p = Math.floor(step / value) % 6   // on wrap (p==6) otherwise black [0,0,0] instead of red
     const z = Math.floor(step % value)
     const r = (p==0 || p==5) ? value : (p==1) ? value-z : (p==4) ? z : 0
     const g = (p==1 || p==2) ? value : (p==3) ? value-z : (p==0) ? z : 0
@@ -137,7 +137,7 @@ export function colorStringToRGBA(str: string): [number, number, number, number]
     if (match) {
         const [r, g, b] = match.slice(1).map(Number);
         if (isValidRGBValue(r) && isValidRGBValue(g) && isValidRGBValue(b)) {
-            return [r, g, b, 1]; // Альфа по умолчанию: 1
+            return [r, g, b, 1]; // Default alpha: 1
         }
     }
 
@@ -149,29 +149,29 @@ export function colorStringToRGBA(str: string): [number, number, number, number]
         }
     }
 
-    return undefined; // Возвращаем undefined для некорректных строк
+    return undefined; // Return undefined for incorrect strings
 }
 
 // idiomatic alias (preserves both overloads via the value's type), pairs with rgb()
 export const toRGBA = colorStringToRGBA
 
-// Проверяет, является ли значение RGB допустимым (0-255)
+// Checks if RGB value is valid (0-255)
 function isValidRGBValue(value: number): boolean {
     return value >= 0 && value <= 255;
 }
 
-// Проверяет, является ли значение альфа-канала допустимым (0.0-1.0)
+// Checks if alpha channel value is valid (0.0-1.0)
 function isValidAlphaValue(value: number): boolean {
     return value >= 0 && value <= 1;
 }
 
 export function toColorString(str :string) { if (colorStringToRGBA(str)) return str as ColorString;  throw `the string '${str}' is not valid 'rgb' or 'rgba' string`; }
 
-// Проверяет цвета на схожесть по заданной максимальной дельте
+// Checks colors for similarity by given maximum delta
 export function isSimilarColors(color1 :ColorString|readonly[number,number,number], color2 :ColorString|readonly[number,number,number], maxDelta = 32) {
 	let c1 = typeof color1=="string" ? colorStringToRGBA(color1) : color1;
 	let c2 = typeof color2=="string" ? colorStringToRGBA(color2) : color2;
-	// невалидная строка => colorStringToRGBA вернёт undefined; деструктуризация бросила бы TypeError
+	// invalid string => colorStringToRGBA will return undefined; destructuring would throw TypeError
 	if (!c1 || !c2) return false;
 	let [r1, g1, b1] = c1;
 	let [r2, g2, b2] = c2;

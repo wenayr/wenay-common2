@@ -24,6 +24,7 @@ export type ReplayRemote<Z extends any[] = any[]> = {
     frameLine?: {
         on: (cb: (ev: ReplayEvent<Z>) => void) => any;
     };
+    describe?: () => Promise<Record<string, any> | null | undefined> | Record<string, any> | null | undefined;
 };
 export type ReplaySubscribeOpts = {
     since?: number;
@@ -37,6 +38,7 @@ export type ReplaySubscribeOpts = {
     policy?: 'queue' | 'frame';
     hint?: unknown;
 };
+export declare function readReplayDescriptor(remote: Pick<ReplayRemote, 'describe'>): Promise<Record<string, any> | null>;
 export declare function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Listener<Z>, opts?: ReplaySubscribeOpts): (() => void) & {
     ready: Promise<void>;
     seq: () => number;

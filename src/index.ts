@@ -1,5 +1,3 @@
-export * from "./Common/node_console";
-
 export * from "./Common/core/Decorator";
 export * from "./Common/core/BaseTypes";
 export * from "./Common/core/type";

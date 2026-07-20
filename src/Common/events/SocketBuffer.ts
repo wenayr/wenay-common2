@@ -46,7 +46,7 @@ export function listenSnapshot<T extends SocketSource<any | any[]>, T2 extends (
                 api.close()
                 // @ts-ignore
                 d?.()
-                // без сброса следующий connect() видит d != null и не переподключается
+                // without reset next connect() sees d != null and doesn't reconnect
                 d = null
             }
             if (type == "add" && count == 1) api.run()

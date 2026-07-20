@@ -1,19 +1,19 @@
 // ============================================================
 //  replay/video-socket.demo.ts
 //
-//  «Видео» через replay-линию по НАСТОЯЩЕМУ Socket.IO:
-//  сервер стримит анимацию (мячик в ASCII-кадре) как store-патчи.
-//  Кадр = состояние стора; дельта-кадр (P-frame) = патчи строк;
-//  keyframe (I-frame) = снапшот. Ровно та же механика, что у
-//  маркет-даты/зеркала стора — payload-agnostic.
+//  "Video" over replay-line via real Socket.IO:
+//  server streams animation (ball in ASCII-frame) as store patches.
+//  Frame = store state; delta-frame (P-frame) = row patches;
+//  keyframe (I-frame) = snapshot. Exactly the same mechanic as
+//  market-data/store mirror — payload-agnostic.
 //
-//    - зритель A смотрит с начала (все дельты)
-//    - зритель B приходит к СЕРЕДИНЕ фильма: получает keyframe
-//      текущей картинки + live, а НЕ бэклог прошедших кадров
-//    - зритель B «лагает» (обрыв на несколько кадров): реконнект
-//      через since → только пропущенный хвост дельт
+//    - viewer A watches from start (all deltas)
+//    - viewer B joins at MIDWAY: gets keyframe
+//      of current frame + live, NOT backlog of past frames
+//    - viewer B "lags" (gap of several frames): reconnect
+//      via since → only the skipped tail of deltas
 //
-//  Запуск: npx ts-node replay/video-socket.demo.ts
+//  Run: npx ts-node replay/video-socket.demo.ts
 // ============================================================
 
 import express from 'express'
@@ -43,7 +43,7 @@ function assert(cond: any, message: string) {
     console.log('  OK  ', message)
 }
 
-// ============ «кодек»: мячик по кадру ============
+// ============ "codec": ball per frame ============
 function renderRow(y: number, bx: number, by: number) {
     let row = ''
     for (let x = 0; x < W; x++) row += (x == bx && y == by) ? 'O' : '·'
@@ -51,7 +51,7 @@ function renderRow(y: number, bx: number, by: number) {
 }
 
 function paintFrame(video: Video, bx: number, by: number, prevBy: number) {
-    // дельта-кадр: перерисовываем только изменившиеся строки (P-frame)
+    // delta-frame: redraw only changed rows (P-frame)
     video.rows[prevBy] = renderRow(prevBy, -1, -1)
     video.rows[by] = renderRow(by, bx, by)
     video.tick++
@@ -62,7 +62,7 @@ function printFrame(title: string, video: Video) {
     for (let y = 0; y < H; y++) console.log('  ' + (video.rows[y] ?? ''.padEnd(W, '?')))
 }
 
-// ============ провод ============
+// ============ wire ============
 async function startRealServer(object: object) {
     const app = express()
     const httpServer = createServer(app)
@@ -114,11 +114,11 @@ async function connectViewer(port: number, name: string) {
 async function main() {
     console.log('\n[video] bouncing ball over a real Socket.IO wire')
 
-    // ============ сервер: «съёмка» ============
+    // ============ server: "recording" ============
     const film = createStore<Video>({tick: 0, rows: Object.fromEntries(
         Array.from({length: H}, (_, y) => [y, renderRow(y, 2, 3)]),
     )})
-    const exposed = exposeStoreReplay(film, {history: 40})  // журнал ~13 кадров (3 патча/кадр)
+    const exposed = exposeStoreReplay(film, {history: 40})  // log ~13 frames (3 patches/frame)
     const stats = {keyframe: 0, since: 0}
     const facade = {
         ...exposed.api,
@@ -145,7 +145,7 @@ async function main() {
 
     const closers: (() => void)[] = []
     try {
-        // ============ зритель A: с первого кадра ============
+        // ============ viewer A: from first frame ============
         const a = await connectViewer(server.port, 'viewer A')
         closers.push(a.close)
         const screenA = createStore<Video>({tick: -1, rows: {}})
@@ -157,7 +157,7 @@ async function main() {
         await delay(60)
         assert(json(screenA.state) == json(film.snapshot()), 'viewer A is frame-perfect after 25 frames')
 
-        // ============ зритель B: опоздал к середине фильма ============
+        // ============ viewer B: joined at midway ============
         const b = await connectViewer(server.port, 'viewer B (late)')
         closers.push(b.close)
         const screenB = createStore<Video>({tick: -1, rows: {}})
@@ -169,17 +169,17 @@ async function main() {
         assert(framesTraveledToB == 1, `keyframe, not a 25-frame backlog (deliveries: ${framesTraveledToB})`)
         printFrame('viewer B first sees', screenB.state)
 
-        // ============ зритель B лагает: короткий обрыв → хвост дельт ============
+        // ============ viewer B lags: short gap → delta tail ============
         subB()
         const kfBefore = stats.keyframe
-        await playFrames(4)   // 12 патчей мимо B — влезают в журнал (40)
+        await playFrames(4)   // 12 patches past B — fit in log (40)
         let lagDeliveries = 0
         const subB2 = syncStoreReplay(screenB, b.remote, {since: seqB, onSeq: s => { seqB = s; lagDeliveries++ }})
         await subB2.ready
         assert(json(screenB.state) == json(film.snapshot()), 'lagging viewer B caught up via delta tail')
         assert(stats.keyframe == kfBefore, `no keyframe needed for a short lag (tail of ${lagDeliveries} patches)`)
 
-        // ============ финал: все смотрят одно и то же ============
+        // ============ final: everyone watches the same ============
         await playFrames(FRAMES - 29)
         await delay(80)
         assert(json(screenA.state) == json(film.snapshot()), 'final frame: viewer A pixel-perfect')

@@ -37,7 +37,7 @@ const Queue = createAsyncQueue(1);
 let _tmpSeq = 0;
 const saveSubscribers = (subs: Map<string, Subscriber>) => {
     const obj = Object.fromEntries([...subs].map(([k, s]) => [k, { url: s.url, tag: s.tag, expireAt: s.expireAt }]));
-    // атомарно: temp+rename — крах посреди записи не портит subscribers.json
+    // atomically: temp+rename — crash mid-write doesn't corrupt subscribers.json
     Queue.enqueue(async () => {
         const tmp = `${SUBSCRIBERS_FILE}.${++_tmpSeq}.tmp`;
         await fs.promises.writeFile(tmp, JSON.stringify(obj, null, 2), 'utf-8');
@@ -47,8 +47,8 @@ const saveSubscribers = (subs: Map<string, Subscriber>) => {
 
 const normalizeIP = (ip: string) => ip?.startsWith('::ffff:') ? ip.slice(7) : ip;
 
-// Безопасный self-URL: строим http://<ip-клиента><raw> и требуем, чтобы итоговый host совпал с ip клиента.
-// Отсекает SSRF вида "@evil.com" (host угоняется в userinfo); легитимный ":port/path" проходит без изменений.
+// Safe self-URL: build http://<client-ip><raw> and require the resulting host to match client ip.
+// Blocks SSRF like "@evil.com" (host stolen in userinfo); legitimate ":port/path" passes unchanged.
 export const buildSelfWebhookUrl = (clientIp: string, raw: unknown): string | null => {
     if (typeof raw !== 'string' || !raw) return null;
     let u: URL;
@@ -150,8 +150,8 @@ export const createWebhookClient = (options: WebhookClientOptions) => {
 
     const activeTags = new Set<string>();
     const timers = new Map<string, ReturnType<typeof setInterval>>();
-    // Один ПОСТОЯННЫЙ route на путь + карта tag→handler: Express 5 не даёт снимать
-    // route-слои (мутация app._router.stack удалена), а повторный app.post копил дубли.
+    // One PERMANENT route per path + map tag→handler: Express 5 doesn't allow removing
+    // route layers (mutation of app._router.stack removed), repeated app.post accumulated duplicates.
     const handlers = new Map<string, (payload: any) => void>();
     const registeredPaths = new Set<string>();
 
@@ -167,7 +167,7 @@ export const createWebhookClient = (options: WebhookClientOptions) => {
             registeredPaths.add(path);
             app.post(path, (req: Request, res: Response) => {
                 const h = handlers.get(tag);
-                if (!h) { res.status(404).end(); return; } // отписан — маршрут инертен
+                if (!h) { res.status(404).end(); return; } // unsubscribed — route is inert
                 h(req.body); res.end();
             });
         }
@@ -190,9 +190,9 @@ export const createWebhookClient = (options: WebhookClientOptions) => {
         await Promise.all(arr.map(async tag => {
             await axios.delete(`${serverUrl}/webHook_unsubscribe`, { data: { url: makeUrl(tag) }, headers }).catch(e => console.error("unsub fail:", tag, e.message));
             activeTags.delete(tag);
-            // убиваем таймер
+            // kill the timer
             const t = timers.get(tag); if (t) { clearInterval(t); timers.delete(tag); }
-            // маршрут остаётся, но становится инертным (handlers — единственный источник истины)
+            // route remains, but becomes inert (handlers — single source of truth)
             handlers.delete(tag);
         }));
     };

@@ -205,7 +205,7 @@ function createClientProxyStrict<T extends object>(soc2: ScreenerSoc2<T>, getTar
             getOwnPropertyDescriptor: typeof tgt != "object" ? undefined : (target: any, prop: string | symbol) => ({enumerable: true, configurable: true}),
             get: (_, p: string | symbol) => {
                 if (p == "call" && tgt == "func") {
-                    // Первый параметр будет добавлен как this его надо удалить
+                    // First parameter will be added as this, need to remove it
                     return (_: any, ...args: any[]) => {
                         const fns: Func[] = [];
                         args.forEach((arg, i) => { if (typeof arg === "function") { fns.push(arg); args[i] = "___FUNC"; } });
@@ -214,11 +214,11 @@ function createClientProxyStrict<T extends object>(soc2: ScreenerSoc2<T>, getTar
                 }
                 return tgt?.[p] === "null" ? undefined : chain([...path, String(p)]);
             },
-            // скорее всего больше не нужно прокси на apply
+            // likely no longer need proxy on apply
             apply: (_, __, args: any[]) => {
                 console.log(path)
                 if (path.at(-1) === "call") {
-                    // Первый параметр будет добавлен как this его надо удалить
+                    // First parameter will be added as this, need to remove it
                     path.length--; args.splice(0, 1);
                 }
                 const fns: Func[] = [];

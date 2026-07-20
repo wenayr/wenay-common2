@@ -4,8 +4,8 @@ import {CBar} from "./Bars";
 import {sleepAsync} from "../Common/core/common";
 
 type RequestInfo = any //
-type RequestInit = any // это библиотека dom
-type Response = any // это библиотека dom
+type RequestInit = any // this is dom library
+type Response = any // this is dom library
 
 export type tSymbol = string;
 export type tExchange = string;
@@ -20,30 +20,30 @@ export type tLoadFist<IntervalNameT extends (number| string)> = {fetch: tFetch3,
 
 export type tSetHistoryData = CBar & {tf?: TF}
 type tBinanceLoadBase<Bar extends {time?: number} | {time?: Date} | object, maxLoadBarType extends (number| Date), IntervalNameT extends (number| string) > = {
-    // адрес загрузки // http
+    // download address // http
     base : string
-    // максимум загрузки баров за раз при первом запроса
+    // maximum bars download at once in first request
     maxLoadBars : maxLoadBarType;
-    // максимум загрузки баров при докачке
+    // maximum bars download on retry
     maxLoadBars2? : maxLoadBarType//number|Date;
-    // максимальное количество запросов в пределах времени лимитов
+    // maximum number of requests within time limits
     countConnect : number;
-    // период сброса лимитов
+    // period of reset limits
     time?: number,
-    // загрузка и сохранения баров
+    // download and save bars
     funcLoad: (data: tFuncLoad<maxLoadBarType,IntervalNameT>) => Promise<Bar[]>,
-    // дата начала доступной истории
+    // date of start of available history
     funcFistTime: (data: tLoadFist<IntervalNameT>) => Promise<Date>,
-    // перевод timeframe в название интервалов
+    // translate timeframe to interval names
     intervalToName: { time: TF, name: IntervalNameT }[],
-    // имя ключа, к которому будет применяться данный веся
+    // name of key to which this weight will be applied
     nameKey?: string,
-    // контроль верного порядка времени, авто переворот при необходимости
+    // control correct time order, auto flip if needed
     controlTimeToNumber?: (bar: Bar) => number
 }
 
 
-// Обертка для создания запросов котировок по времени и лимиту
+// Wrapper for creating quote requests by time and limit
 export function LoadQuoteBase<Bar extends object, T extends (number| Date), T2 extends (number| string) > (setting: tBinanceLoadBase<Bar, T, T2> & {maxLoadBars : T}, data?: { fetch?: tFetch3, error?: boolean}){
     const {base,maxLoadBars,countConnect,intervalToName} = setting
     const maxLoadBars2 = setting.maxLoadBars2 ?? maxLoadBars
@@ -75,8 +75,8 @@ export function LoadQuoteBase<Bar extends object, T extends (number| Date), T2 e
         // console.log('info')
         // console.log(info)
         const infoTF = mapTimeToName.get(info.tf.sec)
-        if (!_fetch) throw "_fetch - не определен";
-        if (!infoTF) throw "нет такого таймфрейма";
+        if (!_fetch) throw "_fetch - not defined";
+        if (!infoTF) throw "no such timeframe";
 
         let lastTime: number
         const nameForMap = info.exchangeName + info.symbol + infoTF.name
@@ -91,7 +91,7 @@ export function LoadQuoteBase<Bar extends object, T extends (number| Date), T2 e
                 else return [] as Bar[]
             }
         }
-        // если запрос превышает первую котировку слева, то сократим, запрос, до котировки
+        // if request exceeds the first quote on the left, we'll shorten the request to the quote
 
         const [time1, time2] = [Math.max(info.time1.valueOf(), leftTime.valueOf()), info.time2.valueOf()]
         if (time2 <= time1) {return []}
@@ -99,7 +99,7 @@ export function LoadQuoteBase<Bar extends object, T extends (number| Date), T2 e
         const [t1, t2] = info.right ? [time1, time2] : [time2, time1]
         const arr: number[] = []
         const interval = infoTF.time.valueOf()
-        // это было на случай если в первом и втором шаге, доступно различное количество баров
+        // this was in case in the first and second step, different number of bars available
         const map: Promise <Bar[]>[]= []
         if (maxLoadBars instanceof Date) {
             const [step1//, step2

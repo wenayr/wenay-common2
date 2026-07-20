@@ -5,3 +5,6 @@ export * from "./store-follower";
 export * from './store-replica-set';
 export * from "./store-offline";
 export * from "./store-manager";
+export * from "./store-durable";
+export * from "./store-playback";
+export * from "./node-health";

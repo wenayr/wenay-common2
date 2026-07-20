@@ -717,3 +717,47 @@ facade — details in rare docs. New code should declare `frame` on the line ins
 Wire-level proof/oracles: `npx ts-node replay/rpc-auto.test.ts` (real Socket.IO: auto-exposure, legacy
 parity, frame equivalence, gate lag sim), plus `replay/conflate-socket.test.ts`, `replay/conflate.test.ts`,
 `replay/coalesce.test.ts`. Full generic surface (history/time-travel, archive) → 🎞️ in rare docs.
+
+## 💾 durability, flight recorder, node health
+```
+import { Observe, Replay, createNodeIdMinter } from "wenay-common2"
+import { openFsReplayStorage } from "wenay-common2/server"
+
+// The persistence PORT is Replay.ReplayStorage {putEvent, putKeyframe, getKeyframe, getEvents}:
+// createMemoryReplayStorage (reference), openFsReplayStorage(file) (node, JSONL append-log,
+// .compact() = atomic [latest keyframe + tail] rewrite), or your DB adapter behind the same lambdas.
+
+Observe.createDurableStoreReplay<T>({storage, initial?, everyEvents? = 64, everyMs?, drain?, expose?})
+    -> {store, api, replay, restored: {seq, fromArchive}, stats, close}
+  // the line SURVIVES a process restart: state hydrates from [keyframe + deltas], seq numbering
+  // continues (firstSeq), a mirror reconnecting with its old seq gets the exact persisted tail
+  // (no keyframe reset), every new patch + cadence keyframes go back into storage.
+  // Leadership/epoch stay upper-layer (follower/replica-set). Oracle: oracle/realsocket/store-durable.spec.ts
+
+// flight recorder — record any replay line, play it back at any pace
+Replay.createJsonlReplayWriter(write: (line: string) => void) -> ReplayStorage  // write-only sink for archiveReplay
+Replay.loadJsonlReplay(lines | text) -> ReplayStorage                           // recording -> seekable archive
+Observe.playbackStoreReplay<T>(storage, {speed? = 1 | Infinity, maxStepMs?, drain?, expose?})
+    -> {store, api, replay, range: {from, to}, done: Promise, close}
+  // re-emits the recorded patch line as an ORDINARY head — mirrors consume it like live;
+  // random access stays Observe.storeReplayAt(storage, {seq|ts}). Oracle: replay/record-playback.test.ts
+
+// node health — stats() of local primitives aggregated into ONE mirrorable store
+Observe.createNodeHealth({node, intervalMs?, now?, drain?})
+    -> {store, register(name, probe: () => plainData) -> off, refresh(name?), close}
+  // a throwing probe records {error} without breaking the rest; publish with exposeStoreReplay —
+  // monitoring of the replication IS replication. Oracle: observe/node-health.test.ts
+
+// post-failover id safety + artifact catalog adopt
+createNodeIdMinter({node, start?}) -> {next(kind? = 'id'), adopt(ids) -> ownSeen, current, node}
+  // `${kind}-${node}-${n}`: namespaces disjoint by construction (node without '-');
+  // adopt() rescans inherited state so a promoted/restarted node never re-issues a taken id
+createArtifactHost({store: promotedFollower.store, storage: {open, adoptKey?}, ...})
+  // adopt a promoted mirror's catalog: the artifact-N id line continues, adoptKey(artifact)
+  // recovers private keys (content-hash version -> local byte cache).
+  // Oracle: oracle/regression/artifact-adopt.spec.ts
+
+// line descriptor — additive source hints on the wire
+Observe.exposeStoreReplay(store, {describe: {schema: 'v2', originId: 'n1'}})   // serves remote.describe()
+Replay.readReplayDescriptor(remote) -> Promise<object | null>                  // null on older servers
+```

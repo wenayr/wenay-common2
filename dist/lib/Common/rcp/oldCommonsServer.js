@@ -9,9 +9,9 @@ exports.CreatAPIFacadeClientOld = CreatAPIFacadeClientOld;
 exports.CreatAPIFacadeServerOld = CreatAPIFacadeServerOld;
 exports.fMiniTest = fMiniTest;
 const common_1 = require("../core/common");
-const old_ommonsServerMini_1 = require("./old\u0421ommonsServerMini");
+const oldCommonsServerMini_1 = require("./oldCommonsServerMini");
 function funcPromiseServer(data, obj) {
-    return (0, old_ommonsServerMini_1.promiseServer)(data, obj);
+    return (0, oldCommonsServerMini_1.promiseServer)(data, obj);
 }
 function funcPromiseServerOld(data, obj) {
     const buf = data;
@@ -90,7 +90,7 @@ function funcPromiseServer2(sendMessage, obj) {
     };
 }
 function funcForWebSocket(data) {
-    return (0, old_ommonsServerMini_1.wsWrapper)(data);
+    return (0, oldCommonsServerMini_1.wsWrapper)(data);
 }
 function funcForWebSocketOld(data) {
     const limit = data.limit;
@@ -196,7 +196,7 @@ function funcForWebSocketOld(data) {
     };
 }
 function funcScreenerClient2(data, wait) {
-    return (0, old_ommonsServerMini_1.createClientProxy)(data, wait);
+    return (0, oldCommonsServerMini_1.createClientProxy)(data, wait);
 }
 function funcScreenerClient2Old(data, wait) {
     const tr = (address) => new Proxy((() => { }), {
@@ -340,7 +340,7 @@ function CreatAPIFacadeClientOld({ socketKey, socket, limit }) {
     };
 }
 function CreatAPIFacadeServerOld(params) {
-    return (0, old_ommonsServerMini_1.createAPIFacadeServer)(params);
+    return (0, oldCommonsServerMini_1.createAPIFacadeServer)(params);
 }
 function CreatAPIFacadeServerOldImpl({ object, socket, socketKey, debug = false }) {
     function ff(obj) {

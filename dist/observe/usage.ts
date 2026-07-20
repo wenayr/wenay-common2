@@ -1,8 +1,8 @@
 // ============================================================
 //  observe/usage.ts
 //
-//  Локальные self-check примеры для Observe / reactive.
-//  Запуск:
+//  Local self-check examples for Observe / reactive.
+//  Run:
 //      npx tsx observe/usage.ts
 // ============================================================
 

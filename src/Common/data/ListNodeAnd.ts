@@ -13,26 +13,26 @@ export class CListNodeAnd<T>  extends  CBaseList<T> implements iListNodeMini{
         return this._home?._count??-1;
     }
 
-//Просто узлы с контрольным первым и последним узлом - данный узел не доступен через метод Prev() Next() он вернет undefined, тет система закольцовано с жестким разделителем поэтому доступ через методы не будет закольцован) но это джава скриптовый язык
-    //так как система закольцована в ней никогда не может содержаться undefined, если он как то туда попал то был нарушен доступ к приватным переменным
+//Just nodes with control first and last nodes - this node is not accessible via Prev() Next() method it will return undefined, system is cyclic with hard separator so access via methods will not be cyclic) but this is JavaScript
+    //since system is cyclic it can never contain undefined, if it got there, private member access was violated
     //data;
 
-    private  _stop:boolean=false;//waring   запрещено изменение вне из класа и внутри клсса только при инициализации класса(списка)
+    private  _stop:boolean=false;//warning - changes forbidden outside class and inside class only during initialization
 
     protected _count:number =0
-    private _prev:CListNodeAnd<T>=this;            //для закольцовывания должна быть приватной
-    private _next:CListNodeAnd<T>=this;            //для закольцовывания должна быть приватной
-    private _home:CListNodeAnd<T>|undefined;            //центральный элемент
+    private _prev:CListNodeAnd<T>=this;            //must be private for cycling
+    private _next:CListNodeAnd<T>=this;            //must be private for cycling
+    private _home:CListNodeAnd<T>|undefined;            //central element
     private _Init(prev:CListNodeAnd<T>,next:CListNodeAnd<T>, home:CListNodeAnd<T>)        {
         this._prev=prev;
         this._next=next;
         prev._next=next._prev=this;
         this._home=home;
-        this.countRef(); // технически может быть про инициализировано множество цепочек за раз, поэтому и пересчитываю количество
+        this.countRef(); // technically multiple chains can be initialized at once, so I recalculate count
         return this;
-    } //для закольцовывания должна быть приватной
-    //работает только если введено два значения, при пустой инициализации создает новый список т.е. контрольный узел, в котором еще нету рабочих узлов и игнорирует data
-    //переносить можно лишь рабочие узлы
+    } //must be private for cycling
+    //works only if two values given, with empty initialization creates new list i.e. control node which has no working nodes yet and ignores data
+    //can only move working nodes
     constructor(prev?:CListNodeAnd<T>,next?:CListNodeAnd<T>, home?:CListNodeAnd<T>)  {
         super();
 //        console.log(CListNode._valueG);
@@ -63,7 +63,7 @@ export class CListNodeAnd<T>  extends  CBaseList<T> implements iListNodeMini{
     isPrev():boolean        {return !this._prev._stop;}
     isNext():boolean        {return !this._next._stop;}
 
-    //если произошло зацикливание - значит где есть обращение к приватным методом, скорее свего был сброшен флаг _first и _end
+    //if cycling occurred - then private methods were called, most likely flags _first and _end were reset
     private _First():CListNodeAnd<T>           {let buf:CListNodeAnd<T>=this; while (!buf._stop) {buf=buf._prev;} return buf;}//private
     private _End():CListNodeAnd<T>             {let buf:CListNodeAnd<T>=this; while (!buf._stop) {buf=buf._next;} return buf;}//private
 
@@ -78,7 +78,7 @@ export class CListNodeAnd<T>  extends  CBaseList<T> implements iListNodeMini{
 
     isForbidden():boolean   {return this._stop;}
     isExists():boolean      {return this.isForbidden() || this._prev._stop || this._next._stop;}
-    //надо дописать для возможного забирания всех элементов списка, ну типо если добавляем целый списко в этотм список, чтобы происходило
+    //need to write for taking all list elements, like if we add whole list into this list, so it happens
     private static _Add<T>(prev:CListNodeAnd<T>,next:CListNodeAnd<T>,home:CListNodeAnd<T>,a:T):CListNodeAnd<T> {let buf=new CListNodeAnd<T>(prev,next, home); buf.data=a; return buf;}
     AddNext(a?:CListNodeAnd<T>|T):CListNodeAnd<T>   {return a instanceof CListNodeAnd? a._Init(this,this._next, this): arguments.length ? CListNodeAnd._Add<T>(this,this._next,this._home!,a as T) : new CListNodeAnd<T>(this,this._next);}
     AddPrev(a?:CListNodeAnd<T>|T):CListNodeAnd<T>   {return a instanceof CListNodeAnd? a._Init(this._prev,this, this): arguments.length ? CListNodeAnd._Add<T>(this._prev,this,this._home!,a as T) : new CListNodeAnd<T>(this._prev,this);}
@@ -90,15 +90,15 @@ export class CListNodeAnd<T>  extends  CBaseList<T> implements iListNodeMini{
     GetArray():T[] {let a:T[]=[]; this.forEach(e=>a.push(e)); return a}
     find(el:(e:CListNodeAnd<T>)=>boolean):CListNodeAnd<T>|undefined       {let buf=this.First(); for (; buf; buf=buf.Next()) { if (el(buf)) return buf;} return undefined;}
     DeleteLink()             {this._prev._next=this._next; this._next._prev=this._prev; this._prev=this._next=this; this._stop=true; this._home?.countRef(); CListNodeAnd._valueG2--; this._home=undefined; }//console.log("DeleteLink")}
-    //добавление пачки узлов, переносит только рабочие узлы, можно сослаться на контрольный узел и тогда перенес начнеться с первого рабочего узла
-    // AddNextArrayList(start:CListNode<T>,finish:CListNode<T>|undefined=undefined) {// метод не реализован
+    //adding batch of nodes, transfers only working nodes, can reference control node and then transfer starts from first working node
+    // AddNextArrayList(start:CListNode<T>,finish:CListNode<T>|undefined=undefined) {// method not implemented
     //     if (finish===undefined) finish=this.End();
     //     if (start instanceof CListNode && finish instanceof CListNode) {
     //         if (start._stop)  start = start._next;
     //         if (finish._stop) finish=finish._prev;
     //         if (this._prev) {this._prev._next=this._next;} if (this._next) {this._prev._next=this._next;} this._prev=undefined; this._next=undefined;
-    //         start ._prev._next=finish._next;//вырезали из прошлого списка
-    //         finish._next._prev=start ._prev;//вырезали из прошлого списка
+    //         start ._prev._next=finish._next;//cut from previous list
+    //         finish._next._prev=start ._prev;//cut from previous list
     //         finish._next=this._next;
     //         start ._prev=this;
     //         this._next._prev=finish;

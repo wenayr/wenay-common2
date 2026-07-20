@@ -1,91 +1,91 @@
 // =====================================================================
 // conflateReplay — per-client conflation + snapshot recovery
 // =====================================================================
-// Ворота на replay-линии ОДНОГО клиента, серверная сторона. Пока исходящий
-// буфер клиента ниже порога — конверты идут как есть; выше порога — дельты
-// перестают отправляться СОВСЕМ (никакой очереди — killer property), клиент
-// помечен «нужен keyframe»; буфер слился — свежий keyframe уходит ТЕМ ЖЕ
-// конвертом линии, дельты продолжаются с его seq. Клиент не меняется вообще:
-// replaySubscribe и так дедупит по seq, keyframe — событие того же типа
-// (для стора — root-патч).
+// Gate on replay-line of ONE client, server side. While client's outgoing
+// buffer is below threshold — envelopes go as-is; above threshold — deltas
+// stop being sent AT ALL (no queue — killer property), client
+// marked "needs keyframe"; buffer drained — fresh keyframe goes as SAME
+// envelope on line, deltas resume from its seq. Client unchanged at all:
+// replaySubscribe dedupes by seq anyway, keyframe — event of same type
+// (for store — root-patch).
 //
-// Транспорт декоратор не знает: сигнал заполненности — лямбда pending()
-// (для socket.io — например, socket.conn.writeBuffer.length). Единицы любые
-// (байты, пакеты, кадры…), но у pending() и порогов — одни и те же.
+// Transport decorator doesn't know: fullness signal — pending() lambda
+// (for socket.io — e.g., socket.conn.writeBuffer.length). Units any
+// (bytes, packets, frames…), but pending() and thresholds — same ones.
 //
-// Схлопывание по ключу (opts.keyOf): пока клиент лагает, вместо чистого дропа
-// держим карту «ключ → ПОСЛЕДНИЙ конверт»; буфер слился — уходит хвост из
-// последних значений затронутых ключей (по возрастанию seq), а не полный
-// keyframe. Тысяча тиков одного ключа = один конверт; большой стор не едет
-// целиком из-за пары изменившихся ключей. Память ограничена числом ключей
-// (maxKeys), не числом событий — killer property на месте. Корректность:
-// событие обязано быть АБСОЛЮТНЫМ по своему ключу (полностью задавать его
-// состояние, как store-патч по пути); порядок карты = порядок последних
-// касаний = по seq, поэтому хвост — подпоследовательность линии, где каждый
-// выброшенный конверт замаскирован более поздним с тем же ключом.
-// Неключуемое событие (keyOf → null) или ключей больше maxKeys → эпизод
-// деградирует до классического keyframe recovery — поэтому current-провайдер
-// обязателен и в этом режиме.
+// Collapsing by key (opts.keyOf): while client lags, instead of clean drop
+// we hold map "key → LAST envelope"; buffer drained — tail of
+// last values of affected keys (in seq order) goes, not full
+// keyframe. Thousand ticks of one key = one envelope; big store doesn't
+// stall because of a couple changed keys. Memory bounded by number of keys
+// (maxKeys), not number of events — killer property in place. Correctness:
+// event must be ABSOLUTE for its key (fully set its
+// state, like store-patch on path); map order = order of last
+// touches = by seq, so tail — subsequence of line where each
+// dropped envelope is masked by later one with same key.
+// Unkeyed event (keyOf → null) or more keys than maxKeys → episode
+// degrades to classic keyframe recovery — so current-provider
+// is required in this mode too.
 //
-// Строится PER-CONNECTION — там же, где создаётся rpc-сервер соединения:
+// Built PER-CONNECTION — where rpc server of connection is created:
 //     const gated = conflateReplay(exposed.replay, {pending, highWater})
-//     object = {...exposed.api, replay: gated.api}   // вместо exposeReplay
+//     object = {...exposed.api, replay: gated.api}   // instead of exposeReplay
 //     disconnect → gated.close()
-// Однострочная альтернатива — exposeReplay(replay, {conflate: opts}) в replay-wire.
+// One-liner alternative — exposeReplay(replay, {conflate: opts}) in replay-wire.
 
 import {createListen, NormalizeTuple} from './Listen'
 import {ListenReplayApi, ReplayEvent} from './replay-listen'
 
 export type ConflateOpts<Z extends any[] = any[]> = {
-    /** Заполненность исходящего буфера ЭТОГО клиента (единицы те же, что у порогов). */
+    /** Fullness of outgoing buffer of THIS client (units same as thresholds). */
     pending: () => number
-    /** Вход в conflation: pending() > highWater → дельты для клиента останавливаются. */
+    /** Entry to conflation: pending() > highWater → deltas for client stop. */
     highWater: number
-    /** Выход из conflation (default 0): pending() <= lowWater → keyframe + дельты дальше. */
+    /** Exit from conflation (default 0): pending() <= lowWater → keyframe + deltas continue. */
     lowWater?: number
-    /** Период опроса pending() в режиме conflation, мс (default 25) — восстановление и при тихой линии. */
+    /** Poll interval for pending() in conflation mode, ms (default 25) — recovery even on quiet line. */
     pollMs?: number
     /**
-     * @deprecated Уплотнение переехало на линию: объявите `frame` в опциях
-     * replayListen/withReplayListen (там же, где current) — его подхватят и эти ворота
-     * (recovery через replay.frame), и авто-путь rpc-server-auto, и клиентский catch-up.
-     * keyOf-механика (held-карта) остаётся рабочей для старых вызовов.
+     * @deprecated Compaction moved to line: declare `frame` in options
+     * replayListen/withReplayListen (same place as current) — will be picked up by these gates
+     * (recovery via replay.frame), and auto-path rpc-server-auto, and client catch-up.
+     * keyOf-mechanics (held-map) stays working for old calls.
      *
-     * Схлопывание по ключу: во время conflation хранится ПОСЛЕДНИЙ конверт каждого
-     * ключа, восстановление = хвост этих конвертов вместо полного keyframe.
-     * Событие обязано быть абсолютным по своему ключу (store-патч: storePatchKey).
-     * null/undefined = событие не схлопывается → эпизод деградирует до keyframe.
+     * Collapsing by key: during conflation stores LAST envelope of each
+     * key, recovery = tail of these envelopes instead of full keyframe.
+     * Event must be absolute for its key (store-patch: storePatchKey).
+     * null/undefined = event doesn't collapse → episode degrades to keyframe.
      */
     keyOf?: (...event: Z) => PropertyKey | null | undefined
-    /** @deprecated Вместе с keyOf. Потолок карты ключей эпизода (default 1024): больше → деградация до keyframe. */
+    /** @deprecated Together with keyOf. Ceiling of key map of episode (default 1024): more → degrade to keyframe. */
     maxKeys?: number
 }
 
 export function conflateReplay<T>(replay: ListenReplayApi<T>, opts: ConflateOpts<NormalizeTuple<T>>) {
     type Z = NormalizeTuple<T>
     const {pending, highWater, lowWater = 0, pollMs = 25, keyOf, maxKeys = 1024} = opts
-    // без current-провайдера восстановиться нечем: дропнутые дельты стали бы молчаливой дырой
-    if (!replay.hasKeyframe) throw new TypeError('conflateReplay: нужен current-провайдер (keyframe recovery)')
+    // without current-provider nothing to recover with: dropped deltas would become silent hole
+    if (!replay.hasKeyframe) throw new TypeError('conflateReplay: need current-provider (keyframe recovery)')
 
-    // персональная линия конвертов этого клиента
+    // personal envelope line of this client
     const gate = createListen<[ReplayEvent<Z>]>(() => {})
     gate.run()
 
     let conflating = false
     let closed = false
-    let dropped = 0        // дельты, выброшенные целиком (схлопнутся в keyframe)
-    let keyframes = 0      // восстановления полным keyframe
-    let coalesced = 0      // конверты, поглощённые более поздним по тому же ключу
-    let flushes = 0        // восстановления хвостом схлопнутых дельт (вместо keyframe)
-    // карта эпизода схлопывания: ключ → последний конверт; null = keyframe-режим.
-    // delete+re-insert при обновлении → порядок итерации = последние касания = по seq.
+    let dropped = 0        // deltas dropped entirely (collapse into keyframe)
+    let keyframes = 0      // recoveries with full keyframe
+    let coalesced = 0      // envelopes absorbed by later one with same key
+    let flushes = 0        // recoveries with tail of collapsed deltas (instead of keyframe)
+    // episode collapse map: key → last envelope; null = keyframe-mode.
+    // delete+re-insert on update → iteration order = last touches = by seq.
     let held: Map<PropertyKey, ReplayEvent<Z>> | null = null
     let timer: any = null
 
     function stopPoll() {
         if (timer) { clearInterval(timer); timer = null }
     }
-    // опрос нужен, чтобы восстановиться и когда линия молчит (буфер слился, событий нет)
+    // poll needed to recover even when line is quiet (buffer drained, no events)
     function startPoll() {
         if (timer || closed) return
         timer = setInterval(recoverIfDrained, pollMs)
@@ -97,7 +97,7 @@ export function conflateReplay<T>(replay: ListenReplayApi<T>, opts: ConflateOpts
         conflating = false
         stopPoll()
         if (held) {
-            // восстановление хвостом: последние значения затронутых ключей, по возрастанию seq
+            // tail recovery: last values of affected keys, in seq order
             const tail = [...held.values()]
             held = null
             flushes++
@@ -105,10 +105,10 @@ export function conflateReplay<T>(replay: ListenReplayApi<T>, opts: ConflateOpts
             return
         }
         const kf = replay.keyframe()
-        // kf.seq == head → дедуп клиента по seq сам вырежет перекрытие с дальнейшими дельтами
+        // kf.seq == head → client's dedup by seq will cut overlap with subsequent deltas
         if (kf) { keyframes++; gate.emit(kf as ReplayEvent<Z>) }
     }
-    // поглотить конверт в карту эпизода; не схлопывается → деградация до keyframe-режима
+    // absorb envelope into episode map; doesn't collapse → degrade to keyframe-mode
     function absorb(ev: ReplayEvent<Z>) {
         const k = keyOf!(...ev.event)
         if (k == null || (!held!.has(k) && held!.size >= maxKeys)) {
@@ -128,12 +128,12 @@ export function conflateReplay<T>(replay: ListenReplayApi<T>, opts: ConflateOpts
         }
         if (conflating) {
             if (held) {
-                // поглотить ДО проверки осушения: если слился — хвост включает ЭТО событие
+                // absorb BEFORE drain check: if drained — tail includes THIS event
                 absorb(ev)
                 recoverIfDrained()
                 return
             }
-            // не ждать таймера: если слился — keyframe уже включает ЭТО событие (журнал пишется до fan-out)
+            // don't wait for timer: if drained — keyframe already includes THIS event (journal written before fan-out)
             recoverIfDrained()
             if (conflating) dropped++
             return
@@ -151,8 +151,8 @@ export function conflateReplay<T>(replay: ListenReplayApi<T>, opts: ConflateOpts
     }
 
     return {
-        /** Провод-фасад ЭТОГО клиента: форма exposeReplay, но line — персональные ворота.
-         *  Форма инлайнится (не импортируется), чтобы граф replay-wire → replay-conflate остался ацикличным. */
+        /** Wire-facade of THIS client: shape of exposeReplay, but line — personal gates.
+         *  Shape inlines (not imported) so graph replay-wire → replay-conflate stays acyclic. */
         api: {
             line: gate,
             since: (seq: number) => replay.getSince(seq) ?? null,
@@ -160,7 +160,7 @@ export function conflateReplay<T>(replay: ListenReplayApi<T>, opts: ConflateOpts
             frame: (seq: number, hint?: unknown) => replay.frame(seq, hint),
         },
         close,
-        /** Интроспекция для метрик/тестов. */
+        /** Introspection for metrics/tests. */
         stats: () => ({conflating, dropped, keyframes, coalesced, flushes}),
     }
 }

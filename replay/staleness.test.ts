@@ -1,14 +1,14 @@
 // ============================================================
 //  replay/staleness.test.ts
 //
-//  Вотчдог тухлости: продьюсер (withReplayListen {staleMs, onStale},
-//  isStale()/lastTs()) и клиент (replaySubscribe {staleMs, onStale,
-//  skewMs}, off.isStale()/off.lastTs()). Сценарии: молчащая линия
-//  (edge в обе стороны, не будильник); холодная линия без таймера;
-//  ленивые геттеры без onStale; тухлый keyframe — stale сразу по
-//  доставке; НЕТ флапа на историческом хвосте since-catch-up;
-//  допуск skewMs; снятие таймеров off()/close().
-//  Запуск:
+//  Staleness watchdog: producer (withReplayListen {staleMs, onStale},
+//  isStale()/lastTs()) and client (replaySubscribe {staleMs, onStale,
+//  skewMs}, off.isStale()/off.lastTs()). Scenarios: silent wire
+//  (edges both ways, not a timer); cold wire without timer;
+//  lazy getters without onStale; stale keyframe — stale right at
+//  delivery; NO flap on historical tail of since-catch-up;
+//  skewMs tolerance; timer cleanup by off()/close().
+//  Run:
 //      npx ts-node replay/staleness.test.ts
 // ============================================================
 
@@ -116,7 +116,7 @@ async function main() {
     console.log('\n[staleness] client: stale keyframe reported IMMEDIATELY at delivery')
     {
         let state = 7
-        // часы продьюсера «остановились» 500 мс назад — keyframe приедет сейчас, но с старым ts
+        // producer clock "stopped" 500 ms ago — keyframe arrives now, but with old ts
         const producerNow = () => Date.now() - 500
         const [, listen] = replayListen<[number]>({history: 8, current: () => [state], now: producerNow})
         const remote = exposeReplay(listen) as unknown as ReplayRemote<[number]>
@@ -135,9 +135,9 @@ async function main() {
     {
         let t = Date.now() - 300
         const [emit, listen] = replayListen<[number]>({history: 16, now: () => t})
-        emit(1); emit(2); emit(3)          // старый хвост (ts на 300 мс в прошлом)
+        emit(1); emit(2); emit(3)          // old tail (ts 300 ms in the past)
         t = Date.now()
-        emit(4); emit(5)                   // голова свежая
+        emit(4); emit(5)                   // head is fresh
         const remote = exposeReplay(listen) as unknown as ReplayRemote<[number]>
         const edges: StaleInfo[] = []
         const seen: number[] = []
@@ -153,7 +153,7 @@ async function main() {
     console.log('\n[staleness] client: skewMs tolerance for producer/client clock disagreement')
     {
         let state = 1
-        const skewedNow = () => Date.now() - 80   // продьюсер отстаёт на 80 мс
+        const skewedNow = () => Date.now() - 80   // producer lags by 80 ms
         const [, listen] = replayListen<[number]>({history: 8, current: () => [state], now: skewedNow})
         const remote = exposeReplay(listen) as unknown as ReplayRemote<[number]>
         const strict: StaleInfo[] = []

@@ -5,7 +5,7 @@ const Listen_1 = require("./Listen");
 function conflateReplay(replay, opts) {
     const { pending, highWater, lowWater = 0, pollMs = 25, keyOf, maxKeys = 1024 } = opts;
     if (!replay.hasKeyframe)
-        throw new TypeError('conflateReplay: нужен current-провайдер (keyframe recovery)');
+        throw new TypeError('conflateReplay: need current-provider (keyframe recovery)');
     const gate = (0, Listen_1.createListen)(() => { });
     gate.run();
     let conflating = false;

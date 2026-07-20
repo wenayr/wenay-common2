@@ -25,7 +25,7 @@ export class OHLC {
 export type IBar = CBarBase;
 
 
-export class CBarBase  // класс бара
+export class CBarBase  // bar class
 {
 	readonly time : const_Date;
 	readonly open : number;
@@ -116,36 +116,36 @@ export abstract class IBars implements Iterable<CBar> // extends Array<CBar>
 {
 	readonly [key : number] : CBar;
 
-	[Symbol.iterator]() { return this.data[Symbol.iterator]() as Iterator<CBar>; }//  let x = this.data[Symbol.iterator]();  }  //убираем отсюда, иначе невозможно будет неявное преобразование: IBars -> IBars
+	[Symbol.iterator]() { return this.data[Symbol.iterator]() as Iterator<CBar>; }//  let x = this.data[Symbol.iterator]();  }  // remove from here, otherwise implicit conversion won't be possible: IBars -> IBars
 
-	// Таймфрейм
+	// Timeframe
 	readonly Tf : TF;
 
 	constructor(tf :TF) { //,  bars :Iterable<CBar>,  tickSize? :number) { //isImmutable? : boolean) {
 		//this._data= isImmutable && (bars instanceof Array)  ? bars  : [...bars];
 		this.Tf= tf;
-		console.assert(tf.msec <= TF.W1.msec);  // Делаем такую проверку, т.к. функция closeTime пока не считает для MN1
+		console.assert(tf.msec <= TF.W1.msec);  // We do this check because the closeTime function currently doesn't calculate for MN1
 		return lib.CreateArrayProxy(this,(i)=>this.data[i]);
 	}
 
 	abstract get data() : readonly CBar[];  //get data() : readonly CBar[] { return this._data; }
 
-	// Виртуальное свойство мутабельности
+	// Virtual mutability property
 	abstract readonly Mutable : boolean;  // { return false; }
 	//abstract get isMutable() : boolean;  // { return false; }
 	get Immutable() { return !this.Mutable; }
 
-	// Получить иммутабельный объект
+	// Get immutable object
 	toImmutable() : IBarsImmutable { return this.Mutable ? new CBars(this.Tf, this.data, getDraftTickSize(this)) : this as IBarsImmutable; }
 
-	// число баров
+	// number of bars
 	get count() : number { return this.data?.length ?? 0; }
-	// число баров
+	// number of bars
 	get length() : number { return this.count; }
-	// последний бар
+	// last bar
 	get last() : CBar|undefined { return this.count>0 ?  this.data[this.count-1] :  undefined; }
 
-	// Получение бара по индексу задом наперёд
+	// Get bar by index backwards
 	backwardBar(i :number) { return this.data[this.length-1-i]; }
 
 	_getBar(i :number, prop :string) { return this.data[i] ?? (()=>{console.trace();throw("Wrong bar index: i="+i+", barsTotal="+this.count+", property: "+prop) })() }
@@ -161,21 +161,21 @@ export abstract class IBars implements Iterable<CBar> // extends Array<CBar>
 	tickVolume(i : number) : number { return this._getBar(i, "tickVolume").tickVolume; }
 
 	closeTime(i :number) : const_Date { return Period.EndTime(this.Tf, this.time(i)); }
-	// Время первого бара
+	// Time of first bar
 	get firstTime() : const_Date|null { return this.count>0 ? this.data[0].time : null; }
-	// Время последнего бара
+	// Time of last bar
 	get lastTime() : const_Date|null { return this.count>0 ?  this.data[this.count-1].time:  null; }
 	get lastCloseTime() : const_Date|null { return this.count>0 ? this.closeTime(this.count-1) : null; }
 
-	// Размер тика
+	// Tick size
 	abstract get tickSize() : number; //
 
-	// Массив значений баров по заданному геттеру значения
+	// Array of bar values by specified getter function
 	Values<T>(getter : (bar:CBar)=>T) { return new VirtualItems((i)=>getter(this.data[i]), ()=>this.data.length); }
 
-	// виртуальные массивы значений баров:
-	get times() { return this.Values((bar)=>bar.time); } // массив времени   // return new VirtualItems((i)=>this._data[i].time, ()=>this._data.length); }
-	get opens() { return this.Values((bar)=>bar.open); } // массив цен открытия
+	// virtual bar value arrays:
+	get times() { return this.Values((bar)=>bar.time); } // time array   // return new VirtualItems((i)=>this._data[i].time, ()=>this._data.length); }
+	get opens() { return this.Values((bar)=>bar.open); } // array of opening prices
 	get highs() { return this.Values((bar)=>bar.high); }
 	get lows() { return this.Values((bar)=>bar.low); }
 	get closes() { return this.Values((bar)=>bar.close); }
@@ -183,19 +183,19 @@ export abstract class IBars implements Iterable<CBar> // extends Array<CBar>
 
 	entries() { return this.data.entries() as IterableIterator<[number, CBar]>; }
 
-	//*times2()  { for (let bar of this.data) yield bar.time; }  // Итератор времени
-	//*closes()  { for (let bar of this._data) yield bar.close; } // Итератор цен закрытия
-	//*volumes()  { for (let bar of this._data) yield bar.volume; } // Итератор объёмов
+	//*times2()  { for (let bar of this.data) yield bar.time; }  // Iterator of time
+	//*closes()  { for (let bar of this._data) yield bar.close; } // Iterator of closing prices
+	//*volumes()  { for (let bar of this._data) yield bar.volume; } // Iterator of volumes
 
-	// Индекс бара по времени (match - тип соответствия времени:  меньше/равно, равно, больше/равно). Проверяется попадание искомого времени в бар!
+	// Bar index by time (match - type of time matching: less/equal, equal, greater/equal). Checks if the sought time falls within the bar!
 	indexOf(time :const_Date, match? :SearchMatchMode) : number {
 		time = Period.StartTime(this.Tf, time);
 		return lib.BSearch(this.data, time, (bar, time) => bar.time.valueOf() - time.valueOf(), match ? match : BSearch.EQUAL);
 	}
-	// Индекс совпадающего или более раннего бара
+	// Index of matching or earlier bar
 	indexOfLessOrEqual(time : const_Date) { return this.indexOf(time, "lessOrEqual"); }
 
-	// Создать объект с добавленными барами в конце (текущий объект не меняется)
+	// Create object with bars added at the end (current object unchanged)
 	concat(newBars : readonly CBar[]|CBar) : CBars|null {
 		let bars= newBars instanceof Array ? newBars : [newBars];
 		let time= bars && bars.length>0 && this.count>0  ? bars[0].time  : null;
@@ -203,7 +203,7 @@ export abstract class IBars implements Iterable<CBar> // extends Array<CBar>
 		return new CBars(this.Tf, this.data.concat(bars), this.tickSize);
 	}
 
-	// Создать объект баров в диапазоне
+	// Create bars object in range
 	slice(startIndex :number, stopIndex? :number) : CBars { let result= this.data.slice(startIndex, stopIndex);  return new CBars(this.Tf, result, this.tickSize); }
 
 	sliceMutable(startIndex :number, stopIndex? :number) : CBarsMutable { let result= this.data.slice(startIndex, stopIndex);  return new CBarsMutable(this.Tf, result, this.tickSize); }
@@ -221,7 +221,7 @@ export abstract class IBars implements Iterable<CBar> // extends Array<CBar>
 			yield this.data[i];
 	}
 
-	// Получение массива баров в диапазоне времени
+	// Get array of bars in time range
 	getArray(startTime? :const_Date|null, lastTime? :const_Date|null) : CBar[]|null
 	{
 		//if (startTime != Period.StartTime(this.Tf, startTime)) startTime= new PeriodSpan(this.Tf, startTime).next().StartTime();
@@ -234,21 +234,21 @@ export abstract class IBars implements Iterable<CBar> // extends Array<CBar>
 		return this.data.slice(istart, ilast+1);
 	}
 
-	// Получение новых баров с выбранным таймфреймом
+	// Get new bars with selected timeframe
 	toBars(tf :TF, endDayTime_s? :number) : CBarsMutableBase
 	{
 		let bars= this.toBarsArray(tf, endDayTime_s);
 		return new CBarsMutable(tf, bars, this instanceof CBarsBase ? this._tickSize : this.tickSize);
 	}
 
-	// Получение новых баров с выбранным таймфреймом
+	// Get new bars with selected timeframe
 	toBarsImmutable(tf :TF, endDayTime_s? :number) : IBarsImmutable
 	{
 		if (tf==this.Tf && endDayTime_s==null) return this.toImmutable();
 		return Object.assign(this.toBars(tf, endDayTime_s), {Mutable: false}) as IBarsImmutable;
 	}
 
-	// Получение новых баров с выбранным таймфреймом
+	// Get new bars with selected timeframe
 	toBarsArray(dstTf :TF, endDayTime_s? :number) : CBar[] //readonly CBar[]|null
 	{
 		const src = this;
@@ -294,7 +294,7 @@ export abstract class IBars implements Iterable<CBar> // extends Array<CBar>
 			}
 			ilast= i;
 		}
-		dst.length= n; //splice(n, dst.length-n);  // Удаляем элементы в конце
+		dst.length= n; //splice(n, dst.length-n);  // Remove elements at the end
 		return dst;
 	}
 
@@ -380,7 +380,7 @@ export abstract class CBarsBase extends IBars
 		*/
 		//let data= JSON.parse(str);
 		//console.log("!!!! ",data.bars.Tf);
-		let d= data as unknown as CBars; //{[key in keyof CBars]};  // Задаём тип CBars, чтобы обращаться к именам свойств
+		let d= data as unknown as CBars; //{[key in keyof CBars]};  // Set type to CBars to access property names
 		let tf= TF.fromSec(d.Tf.sec);  if (!tf) { console.assert(tf!=null);  throw("wrong TF"); }
 		let obj= new CBars(tf, d._data.map((el)=>CBar.fromParsedJSON(el as unknown as typeof data[0]))); //new CBar(new Date(el.time as any), el.open, el.high, el.low, el.close, el.volume)));
 		return obj;
@@ -436,10 +436,10 @@ export abstract class CBarsMutableBase extends CBarsBase
 	//constructor(tf :TF,  tickSize? :number);                          //{ super(tf, bars, tickSize);  this._tickSizeAuto= !tickSize; }
 	//constructor(tf :TF,  paramOne? :readonly CBar[]|number,  paramTwo? :number)  { super(tf, typeof paramOne!="number" ? bars, tickSize);  this._tickSizeAuto= !tickSize; }
 
-	// Виртуальное свойство мутабельности
+	// Virtual mutability property
 	//readonly Mutable = true;
 
-	// Добавление баров в конец
+	// Add bars at the end
 	/** @deprecated use {@link push} */
 	Add(Bars : readonly CBar[]|CBar) : void {
 		let bars= Bars instanceof Array ? Bars : [Bars];
@@ -451,9 +451,9 @@ export abstract class CBarsMutableBase extends CBarsBase
 		this.data.push(...bars); //this._Add(bars);
 		if (this._tickSizeAuto) this._ticksize=0;
 	}//{ this._data = this._data.concat(bars); } //= [...this._data, ...bars]; }
-    // Добавление баров в конец
+    // Add bars at the end
 	push(bars : readonly CBar[]|CBar) { this.Add(bars); }
-	// обновить последний бар или добавить новый
+	// Update last bar or add new one
 	updateLast(bar :CBar) {
         if (this.lastTime)
             if (bar.time.valueOf()==this.lastTime.valueOf()) {
@@ -465,7 +465,7 @@ export abstract class CBarsMutableBase extends CBarsBase
         this.push(bar);
     }
 
-	// Добавить тик в конец
+	// Add tick at the end
 	/** @deprecated use {@link addTick} */
 	AddTick(tick : ITick) : boolean {
 		if (! tick) return false;
@@ -487,10 +487,10 @@ export abstract class CBarsMutableBase extends CBarsBase
 		if (!this._data) this._data= [];
 		Object.freeze(bar);
 		this.data[i]= bar;
-		if (this._tickSizeAuto) this._ticksize= 0;  // новый/обновлённый бар меняет closes → сбросить кэш tickSize
+		if (this._tickSizeAuto) this._ticksize= 0;  // new/updated bar changes closes -> reset tickSize cache
 		return true;
 	}
-	// Добавить тики в конец
+	// Add ticks at the end
 	/** @deprecated use {@link addTicks} */
 	AddTicks(ticks : readonly ITick[]) : boolean  { for(let tick of ticks) if (! this.AddTick(tick)) return false;  return true; }
 
@@ -499,14 +499,14 @@ export abstract class CBarsMutableBase extends CBarsBase
 	// append ticks
 	addTicks(ticks : readonly ITick[]) { return this.AddTicks(ticks); }
 
-	// Клонирование объекта
+	// Clone object
 	//static Clone(source : CBars) : CBarsMutable { return (source instanceof CBarsMutable) ? { ...(new CBarsMutable) } : new CBarsMutable(source.Tf, source.tickSize, source.data); }
 }
 
 
 export class CBarsMutable extends CBarsMutableBase
 {
-	// Виртуальное свойство мутабельности
+	// Virtual mutability property
 	readonly Mutable = true;
 }
 
@@ -516,14 +516,14 @@ export class CBarsMutableExt extends CBarsMutable implements IBarsExt {
 }
 
 
-// Создание рандомных баров
+// Create random bars
 /** @deprecated use {@link createRandomBars} */
 export function CreateRandomBars(tf: TF,  startTime: const_Date,  endTime: const_Date,  startPrice? :number,  volatility? :number|`${number}%`, ticksize? :number)  : CBars;
-// Создание рандомных баров
+// Create random bars
 /** @deprecated use {@link createRandomBars} */
 export function CreateRandomBars(tf: TF,  startTime: const_Date,  barsCount: number,  startPrice? :number,  volatility? :number|`${number}%`, ticksize? :number)  : CBars;
 
-// Создание рандомных баров
+// Create random bars
 export function CreateRandomBars(tf: TF,  startTime: const_Date, endTimeOrCount: const_Date|number,  startPrice :number =100,  volatility :number|`${number}%`= "1%", tickSize? :number)  : CBars|null
 {
 	if (! tf || tf.msec==0) return null;

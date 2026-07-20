@@ -4,7 +4,7 @@
 // The Store carries only small lifecycle descriptors. Storage owns bytes and
 // short-lived read instructions; the private provider key never crosses RPC.
 
-import {createStore, StoreDrain} from '../Observe/store'
+import {createStore, Store, StoreDrain} from '../Observe/store'
 import {exposeStoreReplay} from '../Observe/store-replay'
 
 export type ArtifactRuntime = 'sandboxed-iframe' | 'download'
@@ -46,6 +46,12 @@ export type ArtifactStoragePort = {
     open(input: {artifact: ArtifactRecord, storageKey: unknown, account: string}): ArtifactOpenInstruction | Promise<ArtifactOpenInstruction>
     /** Optional physical deletion/tombstone hook after the artifact is no longer openable. */
     remove?(input: {artifact: ArtifactRecord, storageKey: unknown, reason: 'revoked' | 'expired'}): void | Promise<void>
+    /**
+     * Recover a private key for an ADOPTED record (host built over a promoted mirror's
+     * catalog): e.g. content-hash version → local byte cache. undefined = key unknown;
+     * open() for that record keeps failing with 'storage key is unavailable'.
+     */
+    adoptKey?(artifact: ArtifactRecord): unknown | undefined
 }
 
 export type ArtifactRegisterInput = {
@@ -69,6 +75,13 @@ export type ArtifactPolicy = {
 export type ArtifactHostDeps = {
     storage: ArtifactStoragePort
     policy?: ArtifactPolicy
+    /**
+     * Adopt a ready catalog store (promoted mirror — workboard-host deps.store convention):
+     * the host becomes the authority OVER this store, existing artifact-N ids are rescanned
+     * so the new leader never re-issues a taken id, and storage.adoptKey() recovers
+     * per-record private keys. Adopt only a store you now own (after promote()).
+     */
+    store?: Store<ArtifactStore>
     id?: () => string
     now?: () => number
     history?: number
@@ -118,8 +131,20 @@ export function createArtifactHost(deps: ArtifactHostDeps) {
     const {storage, policy, history, drain, now = Date.now} = deps
     let nextId = 0
     const makeId = deps.id ?? function defaultId() { return 'artifact-' + (++nextId) }
-    const store = createStore<ArtifactStore>({artifacts: {}}, drain !== undefined ? {drain} : {})
+    const store = deps.store ?? createStore<ArtifactStore>({artifacts: {}}, drain !== undefined ? {drain} : {})
     const storageKeys = new Map<string, unknown>()
+    if (deps.store) {
+        // Adopted catalog (promoted mirror): continue the id line so the new leader never
+        // re-issues a taken artifact-N, and recover per-record private keys through
+        // storage.adoptKey (e.g. content-hash version → local byte cache).
+        if (!store.state.artifacts) store.state.artifacts = {}
+        for (const [id, artifact] of Object.entries(store.state.artifacts)) {
+            const tail = /^artifact-(\d+)$/.exec(id)
+            if (tail) nextId = Math.max(nextId, Number(tail[1]))
+            const key = storage.adoptKey?.(copyArtifact(artifact))
+            if (key !== undefined) storageKeys.set(id, key)
+        }
+    }
     const views = new Set<ArtifactView>()
     let closed = false
 

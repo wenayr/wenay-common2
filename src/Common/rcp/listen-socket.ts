@@ -7,18 +7,18 @@ import { endCallback, makeOff, type Off } from "./rpc-off";
 type ListenCallbackResult<T extends any[] = any[]> = ReturnType<typeof createListen<T>>;
 
 // ===================================================================
-// Тип хендла подписки — ровно рантайм-форма makeOff (Off из rpc-off)
+// Subscription handle type — exactly the runtime form of makeOff (Off from rpc-off)
 // ===================================================================
-// on(fn) на КЛИЕНТСКОМ слое отдаёт ВЫЗЫВАЕМЫЙ хендл:
-//   off = sub; off()      // отписка
-//   await sub             // ждёт завершения стрима (thenable)
-//   sub.off()             // явное имя для того же stop
-//   sub.unsubscribe()     // back-compat-имя (rpc-client дедуп)
-//   sub.removeCallback()  // back-compat-имя (listen-socket)
-// Это в точности Off<void, { off; unsubscribe; removeCallback }> из rpc-off — поэтому
-// рантайм makeOff(...) и ЭТОТ тип согласованы (один и тот же контракт).
-// Здесь только ТИП: на listen-socket-слое on в рантайме отдаёт
-// makeOff(wait, off) (см. ниже), а вызываемость материализует он же.
+// on(fn) at CLIENT layer returns CALLABLE handle:
+//   off = sub; off()      // unsubscribe
+//   await sub             // waits for stream completion (thenable)
+//   sub.off()             // explicit name for the same stop
+//   sub.unsubscribe()     // back-compat name (rpc-client dedup)
+//   sub.removeCallback()  // back-compat name (listen-socket)
+// This is exactly Off<void, { off; unsubscribe; removeCallback }> from rpc-off — so
+// runtime makeOff(...) and THIS type are aligned (same contract).
+// Here only TYPE: at listen-socket layer on returns at runtime
+// makeOff(wait, off) (see below), and callability is materialized by it.
 export type SubscriptionHandle = Off<void, { off: () => void; unsubscribe: () => void; removeCallback: () => void }>
 export type RpcListenSubscribeOpts = {current?: boolean}
 
@@ -26,34 +26,34 @@ function wireSubscribeOpts(opts: RpcListenSubscribeOpts | undefined) {
     return opts?.current == true ? {current: true as const} : undefined
 }
 // ===================================================================
-// Утилита: throttle с trailing-latest (leading + trailing-latest)
+// Utility: throttle with trailing-latest (leading + trailing-latest)
 // ===================================================================
-// Слой-нейтральна: знает только про аргументы эмиссии, ничего про сокеты/Listen.
-// Семантика: первый вызов проходит СРАЗУ (leading); далее не чаще раза в ms, но в
-// окне запоминается ПОСЛЕДНИЙ набор аргументов и доставляется на границе окна
-// (trailing-latest) — потребитель не залипает на устаревшем значении. cancel() гасит
-// подвешенный trailing-таймер (отписка/STOP). НЕ переиспользуем enhancedWaitRun.
-// throttleAsync: он leading-ТОЛЬКО, роняет trailing (lastValue не хранит) и завязан
-// на async-цепочку — не та форма для синхронного fan-out.
+// Layer-neutral: knows only about emission arguments, nothing about sockets/Listen.
+// Semantics: first call passes IMMEDIATELY (leading); then no more than once per ms, but in
+// the window remembers LAST set of arguments and delivers at window boundary
+// (trailing-latest) — consumer doesn't stick to stale value. cancel() cancels
+// pending trailing timer (unsubscribe/STOP). NOT reusing enhancedWaitRun.
+// throttleAsync: it's leading-ONLY, drops trailing (doesn't store lastValue) and tied
+// to async chain — not the form for synchronous fan-out.
 function createThrottleLatest<A extends any[]>(ms: number, sink: (...a: A) => void) {
     let timer: ReturnType<typeof setTimeout> | null = null
     let pending: A | null = null
-    let killed = false // терминальный флаг: после cancel() канал мёртв навсегда (listenSocket
-                       // строит свежий канал на каждый on(), так что переиспользования нет)
+    let killed = false // terminal flag: after cancel() channel is dead forever (listenSocket
+                       // builds fresh channel for each on(), so no reuse)
     function flush() {
         timer = null
         if (pending) { const a = pending; pending = null; emit(...a) }
     }
     function emit(...a: A) {
         sink(...a)
-        // НЕ пере-арми, если sink синхронно снёс подписку (status()==false → removeCallback →
-        // cancel) — иначе утёк бы setTimeout, переживающий teardown на целый интервал.
-        if (!killed) timer = setTimeout(flush, ms) // окно охлаждения; trailing уйдёт во flush
+        // Don't re-arm if sink synchronously removed subscription (status()==false → removeCallback →
+        // cancel) — otherwise setTimeout would leak, outliving teardown by a full interval.
+        if (!killed) timer = setTimeout(flush, ms) // cooling window; trailing goes to flush
     }
     function push(...a: A) {
         if (killed) return
-        if (timer) { pending = a; return } // в окне — копим только ПОСЛЕДНИЙ набор
-        emit(...a)                         // leading: первый/после простоя — сразу
+        if (timer) { pending = a; return } // in window — store only LAST set
+        emit(...a)                         // leading: first/after idle — immediately
     }
     function cancel() {
         killed = true
@@ -70,10 +70,10 @@ export function listenSocket<Z extends any[] = any[]>(
         readonly closeOn?: ListenCallbackResult<any>;
         readonly stop?: (x: Listener<Z>) => any;
         readonly paramsModify?: (...e: Z) => any[];
-        /** Opt-in: эмитить не чаще раза в `throttle` мс (leading + trailing-latest).
-         *  undefined/0 = без троттлинга (поведение и байты прежние, байт-в-байт).
-         *  Серверная сторона: гасит лишние эмиссии ДО отправки в провод — экономия
-         *  трафика для back-to-back. На STOP/отписке подвешенный trailing снимается. */
+        /** Opt-in: emit no more than once per `throttle` ms (leading + trailing-latest).
+         *  undefined/0 = no throttling (behavior and bytes unchanged, byte-for-byte).
+         *  Server side: cancels excess emissions BEFORE sending to wire — saves
+         *  traffic for back-to-back. On STOP/unsubscribe pending trailing is cancelled. */
         readonly throttle?: number;
     },
 ) {
@@ -87,8 +87,8 @@ export function listenSocket<Z extends any[] = any[]>(
     let activeOff: (() => void) | null = null;
     let closeSignalOff: (() => void) | null = null;
     let resolveWait: (() => void) | null = null;
-    // активный throttle-канал текущей подписки (null без опции) — чтобы off()/STOP
-    // могли cancel() подвешенный trailing-таймер и не прислать эмиссию после off().
+    // active throttle channel of current subscription (null without option) — so off()/STOP
+    // could cancel() pending trailing timer and not send emission after off().
     let throttleCh: ReturnType<typeof createThrottleLatest<any>> | null = null;
 
     function finish() {
@@ -104,11 +104,11 @@ export function listenSocket<Z extends any[] = any[]>(
         return true;
     }
 
-    /** @deprecated Используйте off(). */
+    /** @deprecated Use off(). */
     const removeCallback = off
 
-    // НЕ async: иначе async-обёртка проглотила бы вызываемый makeOff-хендл и вернула
-    // бы голый Promise<void> — off() перестал бы работать. В теле нет await, де-async безопасен.
+    // NOT async: otherwise async wrapper would swallow callable makeOff handle and return
+    // bare Promise<void> — off() would stop working. No await in body, de-async is safe.
     function on(z: Listener<Z>, opts?: RpcListenSubscribeOpts) {
         if (typeof z !== "function") {
             throw new TypeError("listenSocket.on expects a function");
@@ -127,17 +127,17 @@ export function listenSocket<Z extends any[] = any[]>(
         }
         if (status) {
             const wrapped = handler;
-            // отписка ЛЕНИВАЯ by design: события смены статуса нет, поэтому false
-            // обнаруживается на ближайшей эмиссии — до неё слушатель остаётся подвешен
+            // unsubscribe LAZY by design: no status change event, so false
+            // is detected on nearest emission — listener remains pending until then
             handler = (...a: any[]) => {
                 if (status()) wrapped(...a);
                 else off();
             };
         }
 
-        // throttle (opt-in): оборачиваем ИМЕННО inner, а не active — RPC_STOP в active
-        // короткозамкнут ВЫШЕ и идёт мимо троттла (teardown остаётся синхронным).
-        // trailing-latest гарантирует доставку последнего значения на границе окна.
+        // throttle (opt-in): wrap EXACTLY inner, not active — RPC_STOP in active
+        // is short-circuited ABOVE and bypasses throttle (teardown remains synchronous).
+        // trailing-latest guarantees delivery of latest value at window boundary.
         let inner = handler;
         if (throttle) {
             if (throttleCh) throttleCh.cancel();
@@ -173,19 +173,19 @@ export function listenSocket<Z extends any[] = any[]>(
             createdOff()
             active = null
         }
-        // off = sub; off(): handle == off(), при этом await handle резолвится
-        // на завершении стрима (wait) ровно как прежний Promise<void>. Отдельный
-        // removeCallback из { callback, removeCallback } по-прежнему доступен как legacy.
-        // Алиасы .unsubscribe/.removeCallback вешаем на сам handle — чтобы РАНТАЙМ совпал
-        // с типом SubscriptionHandle, который обещают клиентские обёртки (иначе sub.removeCallback()
-        // тип-чек проходит, но падает в рантайме). Каст хранит публичную сигнатуру callback
-        // (Promise<void>) байт-в-байт: базовый listenSocket ждёт rpc-server-auto (done.then);
-        // вызываемость тип-видна только на обёртках (First/All/Smart) и Deep.
+        // off = sub; off(): handle == off(), meanwhile await handle resolves
+        // at stream completion (wait) exactly like former Promise<void>. Separate
+        // removeCallback from { callback, removeCallback } still available as legacy.
+        // Aliases .unsubscribe/.removeCallback attached to handle itself — so RUNTIME matches
+        // SubscriptionHandle type promised by client wrappers (else sub.removeCallback()
+        // type-check passes but fails at runtime). Cast preserves public signature of callback
+        // (Promise<void>) byte-for-byte: base listenSocket waits rpc-server-auto (done.then);
+        // callability type-visible only on wrappers (First/All/Smart) and Deep.
         return makeOff(wait, off, { off, unsubscribe: off, removeCallback }) as unknown as Promise<void>;
     }
 
-    // callback — legacy-алиас: новые вызовы должны идти через on(cb), тот же off()/await-хендл.
-    // once — однократная подписка: первое событие + конец стрима (RPC_STOP→CB_END), затем off.
+    // callback — legacy alias: new calls should go through on(cb), same off()/await handle.
+    // once — single subscription: first event + stream end (RPC_STOP→CB_END), then off.
     function once(z: Listener<Z>, opts?: RpcListenSubscribeOpts) {
         if (typeof z !== "function") {
             throw new TypeError("listenSocket.once expects a function");
@@ -199,7 +199,7 @@ export function listenSocket<Z extends any[] = any[]>(
         }) as Listener<Z>;
         return on(oneShot, opts);
     }
-    // close — закрыть весь Listen-источник (полный teardown, влияет на ВСЕХ потребителей узла).
+    // close — close entire Listen source (full teardown, affects ALL node consumers).
     function closeStream() { (e as any).close?.(); }
     function callback(z: Listener<Z>, opts?: RpcListenSubscribeOpts) {
         if (typeof z !== "function") throw new TypeError("listenSocket.callback expects a function");

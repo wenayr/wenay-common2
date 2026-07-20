@@ -20,7 +20,15 @@ export declare function createStoreFollower<T extends object>(deps: StoreFollowe
     status: import("./store").Store<FollowerStatus>;
     isStale: () => boolean;
     api: {
-        replay: import("../events/replay-wire").ReplayExpose<[StorePatch]>;
+        replay: import("../events/replay-wire").ReplayExpose<[StorePatch]> | {
+            describe: () => {
+                [x: string]: any;
+            };
+            line: import("../..").ListenApi<[import("../events/replay-listen").ReplayEvent<[StorePatch]>]>;
+            since: (seq: number) => import("../events/replay-listen").ReplayEvent<[StorePatch]>[] | null;
+            keyframe: () => import("../events/replay-listen").ReplayEvent<[StorePatch]> | null;
+            frame: (sinceSeq: number, hint?: unknown) => import("../events/replay-listen").ReplayEvent<[StorePatch]>[];
+        };
         get(): T;
         get<M extends import("./store").StoreMask<T>>(mask: M): import("./store").StorePick<T, M>;
         set(path: import("./store").StorePath, value: any): void;

@@ -36,13 +36,14 @@ function exposeStoreReplay(store, opts = {}) {
         getSince: opts.getSince,
         onJournal: opts.onJournal,
         now: opts.now,
+        firstSeq: opts.firstSeq,
     });
     const { patches, changedData: _changedData, ...storeApi } = (0, store_1.exposeStore)(store, { push: true });
     const offStore = patches.on(function journalStoreChange(patch) {
         emitPatch(patch);
     });
     return {
-        api: { ...storeApi, replay: (0, replay_wire_1.exposeReplay)(lineApi) },
+        api: { ...storeApi, replay: opts.describe ? { ...(0, replay_wire_1.exposeReplay)(lineApi), describe: () => ({ ...opts.describe }) } : (0, replay_wire_1.exposeReplay)(lineApi) },
         replay: lineApi,
         close: () => { offStore(); },
     };

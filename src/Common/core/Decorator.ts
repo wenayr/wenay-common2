@@ -36,7 +36,7 @@ export function enhancedDecorator<T extends (...args: any[]) => any>(
                 })
                 .catch((err) => {
                     optAsync?.onCatch?.(err);
-                    throw err;   // onCatch — наблюдатель, а не обработчик: промис должен остаться отклонённым
+                    throw err;   // onCatch is an observer, not a handler: promise must remain rejected
                 })
                 .finally(() => optAsync?.onFinally?.()) as ReturnType<T>;
         } else {
@@ -51,7 +51,7 @@ export function enhancedDecorator<T extends (...args: any[]) => any>(
 export const wrap = enhancedDecorator
 
 /**
- * Оборачивает функцию для выполнения определённой пост-обработки.
+ * Wraps function to perform specific post-processing.
  * @deprecated use {@link wrap}
  */
 export function enhancedTransformer<T extends (...args: any[]) => any, R>(
@@ -60,13 +60,13 @@ export function enhancedTransformer<T extends (...args: any[]) => any, R>(
 ): (...args: Parameters<T>) => R {
     return (...args: Parameters<T>): R => {
         const result = fn(...args);
-        // Трансформация результата с учетом исходных параметров
+        // Transform result taking into account original parameters
         return transform([args, result]) as R;
     };
 }
 
 /**
- * Поддержка старого метода `Decorator` через перенаправление на новую улучшенную версию.
+ * Support for old `Decorator` method via redirection to new enhanced version.
  * @deprecated use {@link wrap}
  */
 export function Decorator<T extends (...args: any[]) => any>(
@@ -79,7 +79,7 @@ export function Decorator<T extends (...args: any[]) => any>(
         resultModifier?: (res: ReturnType<T>) => ReturnType<T>,
     }
 ) {
-    // Преобразуем старые параметры в новые
+    // Convert old parameters to new ones
     return enhancedDecorator(fn, {
         beforeParams: opt?.parameters,
         modifyParams: opt?.parametersModifier,
@@ -90,7 +90,7 @@ export function Decorator<T extends (...args: any[]) => any>(
 }
 
 /**
- * Поддержка старого метода `Transformer` через перенаправление на новую улучшенную версию.
+ * Support for old `Transformer` method via redirection to new enhanced version.
  * @deprecated use {@link wrap}
  */
 export function TransformerResult<T extends (...args: any[]) => any, R>(

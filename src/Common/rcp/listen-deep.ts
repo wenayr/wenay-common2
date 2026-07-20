@@ -4,20 +4,20 @@ import { createListen, type ListenOn } from "../events/Listen";
 import type { ReplayEvent } from "../events/replay-listen";
 import { listenSocket, listenSocketFirst, listenSocketAll, listenSocketSmart, type SubscriptionHandle } from "./listen-socket";
 
-// Клиентская проекция результата listenSocket: on(fn) отдаёт ВЫЗЫВАЕМЫЙ
-// хендл (off()/await/.off/.unsubscribe/.removeCallback), callback/removeCallback — legacy.
-// Только ТИП: нужен потому, что БАЗОВЫЙ listenSocket намеренно типизирован как
-// Promise<void> (его ждёт rpc-server-auto: `done.then`), а клиентский слой должен
-// видеть хендл. First/All/Smart уже получают SubscriptionHandle через свой каст.
-// on/callback отдают SubscriptionHandle & Promise<void>: пересечение с Promise<void> хранит
-// строгую аддитивность — старое `const p: Promise<void> = deep.ev.callback(fn)` всё ещё
-// компилится, а вызываемость/await/.off/.unsubscribe/.removeCallback доступны поверх.
+// Client projection of listenSocket result: on(fn) gives CALLABLE
+// handle (off()/await/.off/.unsubscribe/.removeCallback), callback/removeCallback — legacy.
+// TYPE-only: needed because BASE listenSocket intentionally typed as
+// Promise<void> (awaited by rpc-server-auto: `done.then`), client layer must
+// see handle. First/All/Smart already get SubscriptionHandle via their cast.
+// on/callback give SubscriptionHandle & Promise<void>: intersection with Promise<void> preserves
+// strict additivity — old `const p: Promise<void> = deep.ev.callback(fn)` still
+// compiles, callability/await/.off/.unsubscribe/.removeCallback available on top.
 type WithSubHandle<R> = R extends { callback: (...a: infer A) => any }
     ? Omit<R, 'callback' | 'on' | 'once'> & {
           callback: (...a: A) => SubscriptionHandle & Promise<void>;
-          /** Основное имя подписки по факту установки колбэка. */
+          /** Primary subscription name once callback is set. */
           on: (...a: A) => SubscriptionHandle & Promise<void>;
-          /** Однократная подписка: одно событие, затем стрим закрывается. */
+          /** Single subscription: one event, then stream closes. */
           once: (...a: A) => SubscriptionHandle & Promise<void>;
       }
     : R
@@ -25,38 +25,38 @@ type WithSubHandle<R> = R extends { callback: (...a: infer A) => any }
 type Obj = Record<string, any>;
 type ListenBase<T extends any[]> = ReturnType<typeof createListen<T>>;
 
-// Надежно достаем типы аргументов из метода on
+// Reliably extract argument types from on method
 export type InferArgs<T> = T extends { on: (cb: (...args: infer R) => void, ...rest: any[]) => any } ? R : never;
 
-// Клиентская проекция merged replay-узла (rpc-server-auto, Feature A): ПОД ТЕМ ЖЕ
-// ключом легаси Listen-поверхность (байт-в-байт plain) плюс replay-провод.
-// Структурно совместим с ReplayRemote — deep.key отдаётся в replaySubscribe как есть.
+// Client projection of merged replay node (rpc-server-auto, Feature A): UNDER SAME
+// key legacy Listen surface (byte-for-byte plain) plus replay wire.
+// Structurally compatible with ReplayRemote — deep.key passed to replaySubscribe as-is.
 export type ReplaySocketListen<Z extends any[]> = WithSubHandle<ReturnType<typeof listenSocket<Z>>> & {
-    /** Линия конвертов {seq, ts, event} — live-часть replay-клиента (политика 'queue'). */
+    /** Line of envelopes {seq, ts, event} — live part of replay client (policy 'queue'). */
     line: WithSubHandle<ReturnType<typeof listenSocket<[ReplayEvent<Z>]>>>
-    /** Линия политики 'frame': на лаге сервер вправе пропускать, восстанавливая кадром. */
+    /** Policy 'frame' line: on lag server may skip, recovering with frame. */
     frameLine: WithSubHandle<ReturnType<typeof listenSocket<[ReplayEvent<Z>]>>>
-    /** Хвост журнала после seq. null = вытеснено. */
+    /** Log tail after seq. null = evicted. */
     since: (seq: number) => Promise<ReplayEvent<Z>[] | null>
-    /** Свежий keyframe. null = current-провайдер не задан. */
+    /** Fresh keyframe. null = current provider not set. */
     keyframe: () => Promise<ReplayEvent<Z> | null>
-    /** Кадр: catch-up одним вызовом (хвост/мини-кадрик/keyframe — выбирает линия). */
+    /** Frame: catch-up in single call (tail/mini-frame/keyframe — line chooses). */
     frame: (seq: number, hint?: unknown) => Promise<ReplayEvent<Z>[]>
 }
-// Детекция replay-члена на уровне типов — зеркалит рантайм-бренд (структурно:
-// plain Listen не имеет getSince/keyframe/line, store-Listen — getSince/line).
+// Replay member detection at type level — mirrors runtime brand (structurally:
+// plain Listen lacks getSince/keyframe/line, store-Listen — getSince/line).
 export type IsReplayMember<V> = V extends { getSince: Function; keyframe: Function; line: object; on: Function } ? true : false
 
-// Типы для различных вариантов Socket-лиссенеров
+// Types for various Socket listener variants
 export type DeepSocketListen<T> = {
     [K in keyof T]: IsReplayMember<T[K]> extends true
         ? ReplaySocketListen<InferArgs<T[K]>>
         : T[K] extends { on: Function }
         ? WithSubHandle<ReturnType<typeof listenSocket<InferArgs<T[K]>>>>
-        : T[K] extends ListenOn<infer Z>   // голый on (брендирован) → та же подписка {on, once, close, ...}
+        : T[K] extends ListenOn<infer Z>   // bare on (branded) → same subscription {on, once, close, ...}
         ? WithSubHandle<ReturnType<typeof listenSocket<Z>>>
         : T[K] extends (...a: any[]) => any ? T[K]
-        : T[K] extends Promise<any> ? T[K] // экземпляры Promise проходят как есть (typeof Promise ловил только конструктор)
+        : T[K] extends Promise<any> ? T[K] // Promise instances pass as-is (typeof Promise caught only constructor)
         : T[K] extends typeof Promise ? T[K]
         : T[K] extends object ? DeepSocketListen<T[K]>
         : T[K];
@@ -67,7 +67,7 @@ export type DeepSocketListenFirst<T> = {
         ? ReturnType<typeof listenSocketFirst<InferArgs<T[K]>>>
         : T[K] extends ListenOn<infer Z> ? ReturnType<typeof listenSocketFirst<Z>>
         : T[K] extends (...a: any[]) => any ? T[K]
-        : T[K] extends Promise<any> ? T[K] // экземпляры Promise проходят как есть (typeof Promise ловил только конструктор)
+        : T[K] extends Promise<any> ? T[K] // Promise instances pass as-is (typeof Promise caught only constructor)
         : T[K] extends typeof Promise ? T[K]
         : T[K] extends object ? DeepSocketListenFirst<T[K]> 
         : T[K];
@@ -78,7 +78,7 @@ export type DeepSocketListenAll<T> = {
         ? ReturnType<typeof listenSocketAll<InferArgs<T[K]>>>
         : T[K] extends ListenOn<infer Z> ? ReturnType<typeof listenSocketAll<Z>>
         : T[K] extends (...a: any[]) => any ? T[K]
-        : T[K] extends Promise<any> ? T[K] // экземпляры Promise проходят как есть (typeof Promise ловил только конструктор)
+        : T[K] extends Promise<any> ? T[K] // Promise instances pass as-is (typeof Promise caught only constructor)
         : T[K] extends typeof Promise ? T[K]
         : T[K] extends object ? DeepSocketListenAll<T[K]> 
         : T[K];
@@ -99,12 +99,12 @@ export type DeepSocketListenSmart<T> = {
         ? ReturnType<typeof listenSocketSmart<InferArgs<NonNullable<T[K]>>>> | Extract<T[K], undefined | null>
         : NonNullable<T[K]> extends ListenOn<infer Z> ? ReturnType<typeof listenSocketSmart<Z>>
         : NonNullable<T[K]> extends (...a: any[]) => any ? T[K]
-            : NonNullable<T[K]> extends Promise<any> ? T[K] // экземпляры Promise проходят как есть
+            : NonNullable<T[K]> extends Promise<any> ? T[K] // Promise instances pass as-is
             : NonNullable<T[K]> extends typeof Promise ? T[K]
                 : NonNullable<T[K]> extends object ? DeepSocketListenSmart<T[K]>
                     : T[K];
 };
-// ── Утилиты ─────────────────────────────────────────────────────
+// ── Utilities ─────────────────────────────────────────────────────
 
 function isLeafValue(value: unknown): boolean {
     return (
@@ -141,19 +141,19 @@ export function deepMapByKeys<T, T2 extends Obj, T3>(
     obj2: T2,
     func: (a: T2) => T3,
 ): T3 | T | null {
-    // тонкая обёртка над deepMapByKeysList — единое тело рекурсии (раньше дублировалось)
+    // thin wrapper over deepMapByKeysList — single recursion body (used to be duplicated)
     return deepMapByKeysList(obj1, Object.keys(obj2), func as (a: any) => T3) as any;
 }
 
-// ── Дедуп: НАМЕРЕННО не здесь (layering) ────────────────────────
-// Эти deepListen*/listenSocket-обёртки в client-auto в итоге гонят тот же провод
-// `*.callback(fn)`, который УЖЕ дедупит rpc-client (subscribeShared, ветка sendCall
-// по path[-1]=="callback"). Дедуп на этом слое был бы повторным: задвоил бы счётчик
-// потребителей и развилку отписки и мог бы оборвать сетевую подписку, пока жив
-// соседний локальный потребитель. Владелец сокета/id-пула (rpc-client) и владеет
-// wire-дедупом; этот слой остаётся тонким per-subscriber мультиплексором.
+// ── Dedup: INTENTIONALLY not here (layering) ────────────────────────
+// These deepListen*/listenSocket wrappers in client-auto ultimately drive same wire
+// `*.callback(fn)`, which ALREADY deduped by rpc-client (subscribeShared, sendCall branch
+// by path[-1]=="callback"). Dedup at this layer would be redundant: would double subscriber counter
+// and unsub branch and could break network subscription while neighbor
+// local consumer alive. Socket/id-pool owner (rpc-client) owns
+// wire dedup; this layer remains thin per-subscriber multiplexor.
 
-// ── Deep-модификаторы ───────────────────────────────────────────
+// ── Deep modifiers ───────────────────────────────────────────
 
 const NOOP_LISTEN = createListen((_e) => {});
 

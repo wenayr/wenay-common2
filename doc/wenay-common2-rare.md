@@ -196,7 +196,7 @@ matchKeys(a,b) · matchKeysList(a, keys) · deepMapByKeys · deepMapByKeysList
 RpcLimits (opt, per server/client): maxDepth 32 · maxKeys 1000 · maxArgs 64 · maxArrayLen 10k
   · maxStringLen 1M · maxCallbacks 100 · maxPathLen 16 · maxBinaryLen 8MB (bytes per binary leaf)
 // modes: func (proxy) · strict (schema-safe) · pipe (whole chain in one packet) · space (fire-and-forget)
-// legacy (oldCommonsServer.ts, @deprecated forwarders onto oldСommonsServerMini — identical wire):
+// legacy (oldCommonsServer.ts, @deprecated forwarders onto oldCommonsServerMini — identical wire):
 //   funcPromiseServer->promiseServer · funcForWebSocket->wsWrapper · funcScreenerClient2->createClientProxy
 //   CreatAPIFacadeServerOld->createAPIFacadeServer ; CreatAPIFacadeClientOld & funcPromiseServer2 kept as-is
 ```

@@ -1,21 +1,21 @@
 // =====================================================================
 // Route coordinator — policy-gated relay <-> direct promotion over replay
 // =====================================================================
-// Слои разведены жёстко: коннектор — ЧИСТЫЙ транспорт (open/close, состояние,
-// метрики, отказы, capabilities); координатор — единственный владелец решений
-// о маршруте (state machine + policy-хуки); непрерывность данных — целиком
-// replayRouteSubscribe (catch-up по seq, дедуп, старый маршрут жив до готовности
-// нового). Оптимизация маршрута НЕ меняет authority/ACL/replay-семантику:
-// facade-API потребителя не знает, каким путём едут конверты.
-// WebRTC здесь не упоминается намеренно: это просто ещё один RouteConnector.
+// Layers are strictly separated: a connector is PURE transport (open/close, state,
+// metrics, failures, capabilities); the coordinator is the single owner of route
+// decisions (state machine + policy hooks); data continuity lives entirely in
+// replayRouteSubscribe (catch-up by seq, dedupe, the old route stays alive until
+// the new one is ready). Route optimization does NOT change authority/ACL/replay semantics:
+// the consumer's facade API does not know which path envelopes travel by.
+// WebRTC is deliberately not mentioned here: it is just another RouteConnector.
 
 import {listen, Listener} from './Listen'
 import {ReplayRemote} from './replay-wire'
 import {replayRouteSubscribe, ReplayRouteSubscribeOpts} from './replay-route'
 
 // =====================================================================
-// Connector contract — то, что обязан дать любой транспорт (socket, in-proc,
-// WebRTC datachannel). Никаких решений о маршруте на этом уровне.
+// Connector contract — what any transport must provide (socket, in-proc,
+// WebRTC datachannel). No routing decisions at this level.
 // =====================================================================
 
 export type tRouteKind = 'relay' | 'direct'
@@ -23,10 +23,10 @@ export type tRouteKind = 'relay' | 'direct'
 export type tConnectorState = 'idle' | 'opening' | 'open' | 'closed' | 'failed'
 
 export type RouteConnectorInfo = {
-    /** Метка маршрута для событий/диагностики: 'relay', 'direct', 'direct+shadowRelay'... */
+    /** Route label for events/diagnostics: 'relay', 'direct', 'direct+shadowRelay'... */
     label: string
     kind: tRouteKind
-    /** Capabilities — факты для policy, координатор их не форсит. */
+    /** Capabilities — facts for policy; coordinator doesn't enforce them. */
     binary?: boolean
     ordered?: boolean
     reliable?: boolean
@@ -36,19 +36,19 @@ export type RouteConnectorMetrics = {rtt?: number, pending?: number}
 
 export type RouteConnector<Z extends any[] = any[]> = {
     info: RouteConnectorInfo
-    /** Установить транспорт и вернуть replay-провод, едущий по нему. */
+    /** Open transport and return replay-wire running through it. */
     open: () => Promise<ReplayRemote<Z>> | ReplayRemote<Z>
     close: () => void
     state: () => tConnectorState
     metrics?: () => RouteConnectorMetrics
-    /** Отказ транспорта (линк умер, endpoint отозван) — сигнал для fallback. */
+    /** Transport failure (link died, endpoint revoked) — signal for fallback. */
     onFail?: {on: (cb: (reason?: unknown) => void) => any}
 }
 
 // =====================================================================
-// Policy — бизнес-правила маршрутизации. Проверяются ДО транспортных действий.
-// Отсутствующий хук = разрешено (сам вызов promoteDirect уже opt-in);
-// заданный хук обязан вернуть true.
+// Policy — routing business rules. Checked BEFORE transport actions.
+// Missing hook = allowed (promoteDirect call itself is opt-in);
+// provided hook must return true.
 // =====================================================================
 
 export type RoutePairRef = {a: string, b: string, key: string}
@@ -58,15 +58,15 @@ export type RoutePolicyCtx = RoutePairRef & {state: tRouteState, reason?: unknow
 type tPolicyHook = (ctx: RoutePolicyCtx) => boolean | Promise<boolean>
 
 export type RoutePolicy = {
-    /** Может ли пара вообще пытаться идти напрямую. */
+    /** Can a pair attempt to go direct at all. */
     canDirect?: tPolicyHook
-    /** Принудительный relay (NDA/audit/moderation/reauth) — сильнее canDirect. */
+    /** Forced relay (NDA/audit/moderation/reauth) — stronger than canDirect. */
     mustRelay?: tPolicyHook
-    /** Прямой payload-путь разрешён, но relay держит audit/observe-копию. */
+    /** Direct payload path allowed, but relay keeps audit/observe copy. */
     mustShadowRelay?: tPolicyHook
-    /** Можно ли раскрывать peer'у endpoint/session-материал при сигналинге. */
+    /** Can endpoint/session material be exposed to peer during signaling. */
     canExposeEndpoint?: tPolicyHook
-    /** Может ли relay вернуться в путь (re-interposition). */
+    /** Can relay re-enter the path (re-interposition). */
     canReinterpose?: tPolicyHook
 }
 
@@ -93,25 +93,25 @@ export type RouteChangeEvent = RoutePairRef & {
 export type RouteOpResult = {ok: boolean, state: tRouteState, reason?: unknown}
 
 export type PromoteDirectOpts = {
-    /** Ограничение catch-up замены: не успела — старый маршрут остаётся, switch провален. */
+    /** Catch-up replacement limit: if it fails, old route stays, switch failed. */
     timeoutMs?: number
-    /** Прокинуть причину в policy-ctx и route-событие. */
+    /** Pass reason into policy-ctx and route-event. */
     reason?: unknown
 }
 
 export type RouteCoordinatorDeps<Z extends any[] = any[]> = {
     policy?: RoutePolicy
-    /** Транспортная фабрика: как добыть коннектор данного вида для пары. */
+    /** Transport factory: how to obtain a connector of this kind for a pair. */
     connect: (ref: RoutePairRef, kind: tRouteKind) => RouteConnector<Z>
-    /** Audit/observe-копия для direct+shadowRelay: события relay-линии пары. */
+    /** Audit/observe copy for direct+shadowRelay: events of the pair's relay line. */
     shadow?: (ref: RoutePairRef, ...ev: Z) => void
-    /** Дефолт timeoutMs для promoteDirect. */
+    /** Default timeoutMs for promoteDirect. */
     catchUpTimeoutMs?: number
 }
 
 type RouteSub = ReturnType<typeof replayRouteSubscribe<any>>
 
-// хендл отписки бывает функцией (Listen) или объектом (SubscriptionHandle провода)
+// unsubscribe handle is either a function (Listen) or object (wire SubscriptionHandle)
 function unsubscribeHandle(handle: any) {
     if (typeof handle == 'function') { handle(); return }
     if (typeof handle?.off == 'function') handle.off()
@@ -119,9 +119,9 @@ function unsubscribeHandle(handle: any) {
 }
 
 /**
- * Ленивый ReplayRemote поверх connector.open(): подписки/запросы валидны сразу,
- * транспорт поднимается один раз при первом использовании. Ошибка open всплывает
- * через catch-up (switch проваливается, старый маршрут остаётся жив).
+ * Lazy ReplayRemote over connector.open(): subscriptions/requests valid immediately,
+ * transport raised once on first use. open error bubbles through catch-up (switch fails,
+ * old route stays alive).
  */
 function lazyRemote<Z extends any[]>(connector: RouteConnector<Z>): ReplayRemote<Z> {
     let opened: Promise<ReplayRemote<Z>> | null = null
@@ -139,7 +139,7 @@ function lazyRemote<Z extends any[]>(connector: RouteConnector<Z>): ReplayRemote
     }
     return {
         line: lazyLine(r => r.line),
-        // policy 'frame' честно падает на line, если транспорт не даёт frameLine
+        // policy 'frame' honestly fails over to line when the transport gives no frameLine
         frameLine: lazyLine(r => r.frameLine ?? r.line),
         since: async seq => (await get()).since(seq),
         keyframe: async () => (await get()).keyframe(),
@@ -151,10 +151,10 @@ function lazyRemote<Z extends any[]>(connector: RouteConnector<Z>): ReplayRemote
 }
 
 /**
- * Координатор маршрутов пар аккаунтов: relay -> direct promotion, shadow relay,
- * re-interposition, fallback, block — как policy-управляемая state machine поверх
- * чистых коннекторов. Данные потребителей едут через replayRouteSubscribe, поэтому
- * любой перевод маршрута gap-free по контракту seq.
+ * Route coordinator for account pairs: relay -> direct promotion, shadow relay,
+ * re-interposition, fallback, block — a policy-driven state machine on top of
+ * pure connectors. Consumer data travels through replayRouteSubscribe, so any
+ * route switch is gap-free by the seq contract.
  */
 export function createRouteCoordinator<Z extends any[] = any[]>(deps: RouteCoordinatorDeps<Z>) {
     const {policy = {}, connect, shadow, catchUpTimeoutMs} = deps
@@ -170,7 +170,7 @@ export function createRouteCoordinator<Z extends any[] = any[]>(deps: RouteCoord
     }
 
     // =================================================================
-    // Link — состояние и операции одной пары
+    // Link — state and operations of one pair
     // =================================================================
     function createLink(a: string, b: string) {
         const ref: RoutePairRef = {a, b, key: pairKey(a, b)}
@@ -182,7 +182,7 @@ export function createRouteCoordinator<Z extends any[] = any[]>(deps: RouteCoord
         let directRemote: ReplayRemote<Z> | null = null
         let shadowSub: RouteSub | null = null
         const subs = new Set<RouteSub>()
-        // операции маршрута сериализованы: promote во время reinterpose невозможен
+        // route operations serialized: promote during reinterpose impossible
         let opChain: Promise<unknown> = Promise.resolve()
 
         function chained<T>(run: () => Promise<T>) {
@@ -192,7 +192,7 @@ export function createRouteCoordinator<Z extends any[] = any[]>(deps: RouteCoord
         }
 
         function setState(to: tRouteState, reason?: unknown) {
-            if (state == 'closed') return // close синхронный и терминальный: хвосты in-flight операций молчат
+            if (state == 'closed') return // close is synchronous and terminal: in-flight ops tails silent
             const from = state
             state = to
             lastReason = reason
@@ -215,11 +215,11 @@ export function createRouteCoordinator<Z extends any[] = any[]>(deps: RouteCoord
         function watchFail(conn: RouteConnector<Z>, kind: tRouteKind) {
             conn.onFail?.on(function onConnectorFail(reason?: unknown) {
                 if (kind == 'relay') {
-                    // реконнект relay — забота транспорта; координатору важен только сигнал
+                    // relay reconnect — transport's responsibility; coordinator only needs the signal
                     if (conn == relayConn) emitRoute({...ref, from: state, to: state, reason})
                     return
                 }
-                // отзыв endpoint/смерть линка direct: закрыть direct, вернуться на relay с seq
+                // endpoint revoke/direct link death: close direct, fall back to relay with seq
                 if (conn == directConn && (state == 'direct' || state == 'direct+shadowRelay')) {
                     demoteToRelay('fallback', reason).catch(() => {})
                 }
@@ -249,7 +249,7 @@ export function createRouteCoordinator<Z extends any[] = any[]>(deps: RouteCoord
             finally { clearTimeout(timer) }
         }
 
-        // подписки, добавленные во время переключения, доводим до текущего маршрута
+        // subscriptions added during a switch are brought up to the current route
         function resyncStraySubs() {
             const remote = currentRemote()
             const label = currentLabel()
@@ -260,9 +260,9 @@ export function createRouteCoordinator<Z extends any[] = any[]>(deps: RouteCoord
 
         function attachShadow() {
             if (!shadow || shadowSub) return
-            // audit-копия прибита к relay и НЕ участвует в promotion. Стартует
-            // с seq-координаты потребителей: окно между переключением на direct
-            // и подъёмом shadow не выпадает из аудита (иначе keyframe его съест)
+            // audit copy pinned to relay and does NOT participate in promotion. Starts
+            // from consumer seq coordinate: window between direct switch and shadow
+            // startup doesn't drop out of audit (else keyframe eats it)
             const since = subs.size ? Math.min(...Array.from(subs, sub => sub.seq())) : -1
             shadowSub = replayRouteSubscribe<Z>(ensureRelay(),
                 function shadowTap(...ev: Z) { shadow(ref, ...ev) },
@@ -300,7 +300,7 @@ export function createRouteCoordinator<Z extends any[] = any[]>(deps: RouteCoord
                     resyncStraySubs()
                     return {ok: true, state}
                 } catch (e) {
-                    // relay не догнал: остаёмся на живом direct, откат не состоялся
+                    // relay didn't catch up: stay on live direct, fallback failed
                     setState(shadowSub ? 'direct+shadowRelay' : 'direct', e)
                     return {ok: false, state, reason: e}
                 }
@@ -312,7 +312,7 @@ export function createRouteCoordinator<Z extends any[] = any[]>(deps: RouteCoord
                 const {timeoutMs = catchUpTimeoutMs, reason} = opts
                 if (state == 'blocked' || state == 'closed') return {ok: false, state, reason: state}
                 if (state == 'direct' || state == 'direct+shadowRelay') return {ok: true, state}
-                // policy строго ДО транспорта: при отказе direct даже не пытается открыться
+                // policy strictly BEFORE transport: if denied, direct doesn't even try opening
                 if (await allowed(policy.mustRelay, ctx(reason), false)) {
                     return {ok: false, state, reason: 'policy: mustRelay'}
                 }
@@ -335,7 +335,7 @@ export function createRouteCoordinator<Z extends any[] = any[]>(deps: RouteCoord
                         setState('direct+shadowRelay', reason)
                         attachShadow()
                     } else {
-                        // direct без shadow: relay выходит из пути целиком
+                        // direct without shadow: relay exits path entirely
                         relayConn?.close()
                         relayConn = null
                         relayRemote = null
@@ -344,8 +344,8 @@ export function createRouteCoordinator<Z extends any[] = any[]>(deps: RouteCoord
                     resyncStraySubs()
                     return {ok: true, state}
                 } catch (e) {
-                    // провал/таймаут: добить возможные полу-переключения обратно на relay,
-                    // закрыть direct; данные всё это время шли по живому relay
+                    // failure/timeout: roll back any partial switches to relay,
+                    // close direct; data was flowing through live relay the whole time
                     conn.close()
                     try { await switchSubs(ensureRelay(), relayConn!.info.label) } catch {}
                     setState('fallback', e)
@@ -386,7 +386,7 @@ export function createRouteCoordinator<Z extends any[] = any[]>(deps: RouteCoord
             })
         }
 
-        // синхронный терминальный teardown: in-flight операции доработают вхолостую
+        // synchronous terminal teardown: in-flight ops finish silently
         function close() {
             if (state == 'closed') return
             closeDirect()
@@ -403,14 +403,14 @@ export function createRouteCoordinator<Z extends any[] = any[]>(deps: RouteCoord
             ref,
             state: () => state,
             reason: () => lastReason,
-            /** Метка активного data-path маршрута. */
+            /** Active data-path label of the route. */
             label: currentLabel,
-            /** Диагностика транспорта: policy/UI читают факты, не решают за координатор. */
+            /** Transport diagnostics: policy/UI reads facts, doesn't decide for coordinator. */
             metrics: () => ({
                 relay: relayConn ? {state: relayConn.state(), ...relayConn.metrics?.()} : null,
                 direct: directConn ? {state: directConn.state(), ...directConn.metrics?.()} : null,
             }),
-            /** Данные пары: replay-поток, переживающий любые смены маршрута. */
+            /** Pair data: replay stream surviving any route changes. */
             subscribe,
             promoteDirect,
             reinterposeRelay: (reason?: unknown) => demoteToRelay('relay', reason),
@@ -432,10 +432,10 @@ export function createRouteCoordinator<Z extends any[] = any[]>(deps: RouteCoord
     }
 
     // =================================================================
-    // api — наружу
+    // api — outward-facing
     // =================================================================
     return {
-        /** Получить/создать link пары (симметричный ключ: pair(a,b) == pair(b,a)). */
+        /** Get/create pair link (symmetric key: pair(a,b) == pair(b,a)). */
         pair(a: string, b: string) {
             const key = pairKey(a, b)
             let link = links.get(key)
@@ -454,7 +454,7 @@ export function createRouteCoordinator<Z extends any[] = any[]>(deps: RouteCoord
             resolve(pairOrKey).fallback(reason),
         block: (pairOrKey: Link | RoutePairRef | string, reason?: unknown) =>
             resolve(pairOrKey).block(reason),
-        /** События переходов маршрута всех пар — для метрик/UI/policy-оболочек. */
+        /** Route transition events for all pairs — for metrics/UI/policy wrappers. */
         onRoute: (cb: (ev: RouteChangeEvent) => void) => routeListen.on(cb),
         pairs: () => Array.from(links.values()),
         close() {

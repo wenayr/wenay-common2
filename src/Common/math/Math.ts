@@ -7,7 +7,7 @@ type tCorrBuffer = {
     pow2: number;
     mulSum: number;
     step: number;
-    // Сохраняем историю для скользящего окна прямо в буфере
+    // Save history for sliding window directly in buffer
     history1: number[];
     history2: number[];
 };
@@ -15,8 +15,8 @@ type tCorrBuffer = {
 export function CorrelationRollingByBuffer(data: tCorrelationByBuffer) {
     let setting: tCorrelationByBuffer = { ...data };
     
-    // Используем Map, но помним, что если ключи - объекты, 
-    // лучше очищать их вручную или использовать WeakMap для предотвращения утечек памяти
+    // Use Map, but remember that if keys are objects,
+    // it's better to clear them manually or use WeakMap to prevent memory leaks
     const map = new Map<any, Map<any, tCorrBuffer>>();
 
     const defBuf = (): tCorrBuffer => ({
@@ -40,20 +40,20 @@ export function CorrelationRollingByBuffer(data: tCorrelationByBuffer) {
             map.clear();
             if (data) this.init(data);
         },
-        // освобождение конкретного ключа/пары — против утечки Map с ключами-объектами (полный сброс — clear())
+        // freeing specific key/pair - against Map leak with object keys (full reset - clear())
         remove(key1: any, key2?: any) {
             if (key2 === undefined) map.delete(key1);
             else map.get(key1)?.delete(key2);
         },
         
-        // Потоковый расчет по одному значению
+        // Stream calculation for one value
         corr2(val1: number, val2: number, key1: any, key2: any) {
-            // corr2 всегда нуждается в истории окна; раньше bufferOn:false давал defBuf() на каждый вызов → corr всегда 0
+            // corr2 always needs window history; previously bufferOn:false gave defBuf() on each call -> corr always 0
             const buffer = getBuffer(key1, key2);
             
-            // Если буфер отключен, мы просто считаем "в лоб" для переданных значений
-            // Но так как corr2 принимает по одному числу, без буфера (истории) корреляцию не посчитать.
-            // Поэтому для corr2 буфер истории используется всегда.
+            // If buffer is disabled, we just calculate 'directly' for passed values
+            // But since corr2 takes one number at a time, without buffer (history) correlation can't be calculated.
+            // Therefore for corr2 history buffer is always used.
             
             buffer.history1.push(val1);
             buffer.history2.push(val2);
@@ -61,7 +61,7 @@ export function CorrelationRollingByBuffer(data: tCorrelationByBuffer) {
             let dropped1 = 0;
             let dropped2 = 0;
             
-            // Если превысили размер окна, выталкиваем старые значения
+            // If window size exceeded, push out old values
             if (buffer.history1.length > setting.max) {
                 dropped1 = buffer.history1.shift()!;
                 dropped2 = buffer.history2.shift()!;
@@ -69,7 +69,7 @@ export function CorrelationRollingByBuffer(data: tCorrelationByBuffer) {
                 buffer.step++;
             }
 
-            // Обновляем суммы (прибавляем новое, вычитаем выпавшее из окна)
+            // Update sums (add new, subtract removed from window)
             buffer.sum1 = buffer.sum1 + val1 - dropped1;
             buffer.sum2 = buffer.sum2 + val2 - dropped2;
             buffer.pow1 = buffer.pow1 + val1 ** 2 - dropped1 ** 2;
@@ -82,37 +82,37 @@ export function CorrelationRollingByBuffer(data: tCorrelationByBuffer) {
 }
 
 /**
- * Изолированная функция расчета коэффициента Пирсона на основе готовых сумм.
+ * Isolated function for calculating Pearson coefficient based on ready sums.
  */
 function calculatePearson(buffer: Omit<tCorrBuffer, 'history1' | 'history2'>, count: number): { corr: number } {
-    if (count < 2) return { corr: 0 }; // Для корреляции нужно минимум 2 точки
+    if (count < 2) return { corr: 0 }; // For correlation need at least 2 points
 
     const { sum1, sum2, pow1, pow2, mulSum } = buffer;
     const { sqrt } = Math;
 
-    // Проверка на некорректные значения (NaN или Infinity)
+    // Check for invalid values (NaN or Infinity)
     if (!Number.isFinite(sum1) || !Number.isFinite(sum2) || !Number.isFinite(mulSum)) {
         console.error("Invalid math values in correlation calculation", { sum1, sum2, mulSum });
         return { corr: 0 };
     }
 
-    // Рассчитываем знаменатель (дисперсии)
-    // Используем формулу: N * Σ(X^2) - (ΣX)^2 (эквивалентно вашему варианту, но более стабильно)
+    // Calculate denominator (variances)
+    // Use formula: N * Σ(X^2) - (ΣX)^2 (equivalent to yours, but more stable)
     const variance1 = count * pow1 - sum1 ** 2;
     const variance2 = count * pow2 - sum2 ** 2;
 
     if (variance1 <= 0 || variance2 <= 0) {
-        return { corr: 0 }; // Избегаем деления на ноль, если данные константны
+        return { corr: 0 }; // Avoid division by zero if data is constant
     }
 
     const dense = sqrt(variance1 * variance2);
     
-    // Рассчитываем числитель (ковариация)
+    // Calculate numerator (covariance)
     const numerator = count * mulSum - (sum1 * sum2);
 
     const result = numerator / dense;
     
-    // Защита от погрешностей float (когда результат может стать 1.0000000000000002)
+    // Protection from float errors (when result can become 1.0000000000000002)
     if (result > 1) return { corr: 1 };
     if (result < -1) return { corr: -1 };
 

@@ -48,8 +48,20 @@ function createArtifactHost(deps) {
     const { storage, policy, history, drain, now = Date.now } = deps;
     let nextId = 0;
     const makeId = deps.id ?? function defaultId() { return 'artifact-' + (++nextId); };
-    const store = (0, store_1.createStore)({ artifacts: {} }, drain !== undefined ? { drain } : {});
+    const store = deps.store ?? (0, store_1.createStore)({ artifacts: {} }, drain !== undefined ? { drain } : {});
     const storageKeys = new Map();
+    if (deps.store) {
+        if (!store.state.artifacts)
+            store.state.artifacts = {};
+        for (const [id, artifact] of Object.entries(store.state.artifacts)) {
+            const tail = /^artifact-(\d+)$/.exec(id);
+            if (tail)
+                nextId = Math.max(nextId, Number(tail[1]));
+            const key = storage.adoptKey?.(copyArtifact(artifact));
+            if (key !== undefined)
+                storageKeys.set(id, key);
+        }
+    }
     const views = new Set();
     let closed = false;
     function readable(account, artifact) {

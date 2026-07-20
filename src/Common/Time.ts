@@ -114,19 +114,19 @@ export type TFIndex = Nominal<number, 'TFIndex'>;
 
 
 export class TF implements IPeriod
-{	// Секунды
+{	// Seconds
 	readonly sec : number;
-	// Миллисекунды
+	// Milliseconds
 	readonly msec : number; //   get  msec() : number { return this.sec*1000; }
 	readonly name : string;
-	// единица измерения
+	// unit of measurement
 	readonly unit : TIME_UNIT;
-	// количество единиц
+	// number of units
 	readonly unitCount : number;
 
 	readonly index : TFIndex; //number;
 
-	readonly [key : number] : void;  // для запрета использования индексации
+	readonly [key : number] : void;  // to prohibit indexation usage
 
 	valueOf() { return this.msec; }
 
@@ -150,16 +150,16 @@ export class TF implements IPeriod
         return new TF(unit, unitCount, index, msec, name);
     }
 
-	// Получение таймфрейма по имени, иначе null
+	// Get timeframe by name, or null
 	static get<T extends string>(name : T) : TF|(T extends __E_TF_KEY ? never : null) {
 		let key= __E_TF[name as __E_TF_KEY];  if (key) return this.all[key];  return null as (T extends __E_TF_KEY ? never : null);
 	}
-    // гарантированное получение таймфрейма, иначе выбрасывается исключение
+    // guaranteed getting timeframe, otherwise exception is thrown
     static getAsserted(name :string) : TF { return TF.get(name) ?? (()=>{throw "Unknown timeframe: "+name;})(); }
 
 	/** @deprecated use {@link TF.get} (this is a literal duplicate of it) */
 	static fromName<T extends string>(name : T)  { return this.get(name); }
-	// Получение таймфрейма из секунд
+	// Get timeframe from seconds
 	static fromSec(value : number) : TF|null { return this._mapBySec[value]; }
 
 	static createCustomFromSec(sec : number) { return TF.constructFromSec(sec); }
@@ -231,7 +231,7 @@ export class TF implements IPeriod
 	//static func0<T extends [Iterable<TF>]|[...TF[]]>(...args : T) : ([...T][0] extends TF|Iterable<TF> ? (T extends [TF,...TF[]] ? TF : TF|null) : never);
 
 	static min() : never;
-	/** Минимальное значение таймфрейма из списка */
+	/** Minimum timeframe value from list */
 	static min(...args : [TF,...TF[]] | [[TF,...TF[]]]) : TF;
 	static min(...args : TF[] | [Iterable<TF>]) : TF|null;
 	static min(...args : TF[] | [Iterable<TF>]) : TF|null {
@@ -239,7 +239,7 @@ export class TF implements IPeriod
 		let index=999;  for(let tf of tfs) if (tf) index= Math.min(tf.index, index);  return index!=999 ? this.all[index] : null;
 	}
 	static max() : never;
-	/** Максимальное значение таймфрейма из списка */
+	/** Maximum timeframe value from list */
 	static max(...args : [TF,...TF[]] | [[TF,...TF[]]]) : TF;
 	static max(...args : TF[] | [Iterable<TF>]) : TF|null;
 	static max(...args : TF[] | [Iterable<TF>]) : TF|null {
@@ -268,7 +268,7 @@ function TimeAddMilliseconds(time : const_Date, shift : number) : Date { return 
 
 class MyDate extends Date
 {
-	ToShiftedMsTime(shiftMs : number) { return TimeAddMilliseconds(this, shiftMs); }  // Время, сдвинутое на заданное число миллисекунд
+	ToShiftedMsTime(shiftMs : number) { return TimeAddMilliseconds(this, shiftMs); }  // Time shifted by specified number of milliseconds
 }
 
 export type MyDate_const = Omit<MyDate, keyof Date> & const_Date;
@@ -474,10 +474,10 @@ function _getStructCopyWithTimeStrings(arg :any, objectsMap? :Map<object,object>
     if (!arg) return arg;
     if (arg instanceof Date) return arg.toString();
     let clone : {[key :number|string] : any};
-    if (Object.getPrototypeOf(arg)==Object.prototype)  // если структура
+    if (Object.getPrototypeOf(arg)==Object.prototype)  // if it's a structure
         clone= {};
     else
-    if (Object.getPrototypeOf(arg)==Array.prototype) { // если простой массив (ненаследуемый)
+    if (Object.getPrototypeOf(arg)==Array.prototype) { // if simple array (non-inherited)
         clone= [];
     }
     else return arg;
@@ -494,7 +494,7 @@ export function convertDatesToStrings(arg :any) { return _getStructCopyWithTimeS
 export function toPrintObject(arg :any) { return convertDatesToStrings(arg); }
 
 
-// заменяем команды печати в консоли, чтобы Date выводилось в нормальном удобном виде
+// replace console commands so Date is displayed in normal convenient format
 function replaceConsoleCommands() {
     const consoleLog= console.log;
     const consoleWarn= console.warn;
@@ -516,12 +516,12 @@ function replaceConsoleCommands() {
 
 //console.log(TF.get("H6"));
 
-// Преобразование длительности времени в стринг
+// Duration time to string conversion
 
 export function durationToStr(duration_ms :number) : string {
 	//if (duration_ms==null) return null;
-	// эвристики (намеренные): счёт <1.1 → выразить меньшей единицей ("65м", не "1ч 5м");
-	// счёт >10 → одна округлённая единица ("25ч"); иначе — две единицы ("1д 23ч").
+	// heuristics (intentional): count <1.1 → express in smaller unit ("65m" not "1h 5m");
+	// count >10 → one rounded unit ("25h"); otherwise — two units ("1d 23h").
 	let units : [number,string][] = [[D1_MS, "д"], [H1_MS, "ч"], [M1_MS, "м"], [1000, "c"], [1, "мс"]];
 	let firstUnit: [number,string]|null = null;
 	let firstCount = 0;
@@ -535,7 +535,7 @@ export function durationToStr(duration_ms :number) : string {
 			duration_ms %= unit[0];
 			continue;
 		}
-		// финальная единица — округляем; перенос при переполнении старшей ("1д 24ч" → "2д")
+		// final unit — round; carry on overflow of higher ("1d 24h" → "2d")
 		let unitCount = Math.round(unitCountFloat);
 		if (firstUnit && unitCount * unit[0] >= firstUnit[0]) { firstCount++; unitCount = 0; }
 		if (firstUnit) str += firstCount + firstUnit[1] + " ";
@@ -574,7 +574,7 @@ async function sleepAsync(msec :number) {
 }
 
 
-// Задерживатель времени
+// Time delayer
 export class CDelayer
 {
 	protected remainPause= 0;

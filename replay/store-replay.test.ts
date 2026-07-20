@@ -16,7 +16,7 @@ type World = {
     tick: number
 }
 
-// in-proc «провод»: методы становятся async с задержкой — как настоящий RPC
+// in-proc "wire": methods become async with delay — like real RPC
 function makeRemote(exposed: ReturnType<typeof exposeStoreReplay<World>>, lag = 15) {
     const counters = {since: 0, keyframe: 0}
     const remote: ReplayRemote<any> = {
@@ -84,7 +84,7 @@ async function main() {
         const mirror = createStore<World>({units: {}, tick: -1})
         const sub = syncStoreReplay(mirror, remote)
         await sub.ready
-        sub()  // «обрыв связи»
+        sub()  // "connection break"
 
         backend.state.units['a'].hp = 75
         backend.state.units['c'] = {hp: 10, x: 9}
@@ -135,7 +135,7 @@ async function main() {
         const mirror = createStore<World>({units: {}, tick: -1})
         const seqs: number[] = []
         const sub = syncStoreReplay(mirror, remote, {onSeq: s => seqs.push(s)})
-        // мутации ВО ВРЕМЯ ожидания keyframe: попадут и в снапшот, и в live-очередь
+        // mutations DURING keyframe wait: reach both snapshot and live queue
         backend.state.tick = 1
         await flushReactive(backend.state)
         backend.state.units['a'].hp = 2
@@ -153,7 +153,7 @@ async function main() {
     console.log('\n[store-replay] seq from another server life → keyframe resets the line down')
     {
         const backend = createStore<World>({units: {z: {hp: 9, x: 9}}, tick: 100})
-        const exposed = exposeStoreReplay(backend, {history: 100})  // свежий сервер: head мал
+        const exposed = exposeStoreReplay(backend, {history: 100})  // fresh server: head is small
         const {remote, counters} = makeRemote(exposed)
         const mirror = createStore<World>({units: {}, tick: -1})
         const sub = syncStoreReplay(mirror, remote, {since: 99999})

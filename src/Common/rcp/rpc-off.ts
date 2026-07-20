@@ -3,27 +3,27 @@
 
 import { rpcEndCallback } from "./rpc-walk"
 
-// Идиоматичный короткий алиас для rpcEndCallback: префикс `rpc` — шум, имя
-// импортируется из rpc-неймспейса. Вербы потока здесь — END (CB_END / *End),
-// поэтому endCallback держит единый глагол. Аддитивно: rpcEndCallback живёт.
-/** Завершить стримовый колбэк (шлёт «___STOP» клиенту). */
+// Idiomatic short alias for rpcEndCallback: prefix `rpc` — noise, name
+// is imported from rpc namespace. Stream verbs here — END (CB_END / *End),
+// so endCallback holds single verb. Additive: rpcEndCallback lives on.
+/** End streaming callback (sends "___STOP" to client). */
 export const endCallback = rpcEndCallback
 
 //
 // ============================================================
-// Утилита: «вызываемый thenable» (callable thenable) — идиома off
+// Utility: "callable thenable" (callable thenable) — off idiom
 // ============================================================
-// ЕДИНЫЙ источник истины для идиомы `off = sub; off()` во ВСЕХ слоях подписки
-// (CALL-дедуп и PIPE в rpc-client; listen-socket-слой). Подписка отдаёт
-// ОДИН handle, который одновременно:
-//   - вызывается как функция  -> off() снимает подписку (тело передаёт слой);
-//   - является thenable       -> await off резолвится ровно как исходный промис
-//                                (конец стрима / разрыв); .then/.catch/.finally
-//                                проброшены на него;
-//   - несёт back-compat поля  -> extra (напр. { unsubscribe } для rpc-client,
-//                                { removeCallback } для listen-socket).
-// Слой-нейтрально: знает только про промис + off, ничего про сокеты/Listen —
-// поэтому лежит НИЖЕ обоих слоёв подписки. off() идемпотентен (флаг done).
+// SINGLE source of truth for `off = sub; off()` idiom in ALL subscription layers
+// (CALL-dedup and PIPE in rpc-client; listen-socket layer). Subscription returns
+// ONE handle which simultaneously:
+//   - called as function  -> off() removes subscription (body passed by layer);
+//   - is thenable         -> await off resolves exactly like original promise
+//                            (stream end / break); .then/.catch/.finally
+//                            forwarded to it;
+//   - carries back-compat fields -> extra (e.g. { unsubscribe } for rpc-client,
+//                                    { removeCallback } for listen-socket).
+// Layer-agnostic: knows only promise + off, nothing about sockets/Listen —
+// so sits BELOW both subscription layers. off() is idempotent (done flag).
 
 type tThenable<V> = {
     then: Promise<V>['then']
@@ -34,14 +34,14 @@ export type Off<V = void, X extends object = {}> = (() => void) & tThenable<V> &
 
 export function makeOff<V, X extends object = {}>(promise: Promise<V>, stop: () => void, extra?: X) {
     let done = false
-    // именованная — видна в стектрейсах как off, а не <anonymous>; идемпотентна
+    // named — visible in stack traces as off, not <anonymous>; idempotent
     function off() {
         if (done) return
         done = true
         stop()
     }
     const handle = off as any
-    // .then/.catch/.finally — на исходный промис: await handle == await promise
+    // .then/.catch/.finally — forward to original promise: await handle == await promise
     handle.then = promise.then.bind(promise)
     handle.catch = promise.catch.bind(promise)
     handle.finally = promise.finally.bind(promise)

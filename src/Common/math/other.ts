@@ -4,14 +4,14 @@ type tfLeaderResult = {}
 
 function PriceTOSumPercent(price: number[]) {
     const base = price[0]
-    // price[0]===0 / пустой массив иначе отравляют все нижестоящие оценки Infinity/NaN
+    // price[0]===0 / empty array otherwise poison all downstream scores Infinity/NaN
     return base ? price.map(e=>e/base) : price.map(()=>0)
 }
 
 function strategyStepOfStepAll(symbols_: tDatum[]) {
 
     const symbols: tDatum[] = symbols_.map(e=>({price: PriceTOSumPercent(e.price), key: e.key}))
-    // минимальный процент всплеска
+    // minimum spike percent
     const minK =  0
     const percentM =  1/100;
     type tResult = {leadersKey: {key: string|object|number, score: number}[], leadersId: (number)[], id: number, key: string|object|number}
@@ -36,9 +36,9 @@ function strategyStepOfStepAll(symbols_: tDatum[]) {
 
 
 
-// t1 - суммарный процент изменения
+// t1 - total percent change
 type tStepOfStep = {t1: number[], t2: number[], minK?: number ,percentM?: number, onlyBuy?: boolean}
-// стратегия следящий step of step
+// tracking step of step strategy
 function strategyStepOfStep({t1, t2, minK: _minK, percentM: _percentM, onlyBuy: _onlyBuy}: tStepOfStep) {
     const onlyBuy = !!_onlyBuy
     const minK = _minK ?? 0
@@ -61,14 +61,14 @@ function strategyStepOfStep({t1, t2, minK: _minK, percentM: _percentM, onlyBuy: 
     let m1 = 0, m2 = 0
     //
     const result1: number[] = [0]
-    // прошлый объем
+    // previous volume
     let [lastD1, lastD2] = [0,0]
     for (let i = 1; i < length; i++) {
 
         // p2 - leader
-        // сила и направление
+        // strength and direction
         const [d1,d2] = [r1[i],r2[i]]
-        // приращение
+        // increment
         const [p1,p2] = [t1[i] - t1[i-1], t2[i] - t2[i-1]]
 
         result1.push((p1) * (d2 - d1));

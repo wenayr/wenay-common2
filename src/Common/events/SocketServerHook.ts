@@ -19,8 +19,8 @@ export function SocketServerHook(opt?:{transformer?: transformer}) {
     return r
 }
 export function WebSocketServerHook(s: ReturnType<typeof SocketServerHook>, paramsSoc?: Parameters<typeof soc>[1], disconnect?:()=>any) {
-    // одна обёртка на тег: новая на каждый доступ теряла state (last/active),
-    // и переподписка не снимала старого слушателя → дублирующиеся вызовы
+    // one wrapper per tag: new on each access lost state (last/active),
+    // and resubscription didn't remove old listener → duplicate calls
     const wrappers: {[k: string]: ReturnType<typeof soc>} = {}
     const get = new Proxy(s.obj, {
         get(target: any, p: string, receiver: any): any {

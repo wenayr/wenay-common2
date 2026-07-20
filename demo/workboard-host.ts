@@ -28,9 +28,9 @@ type WorkboardHostDeps = {
     now?: () => number
     makeId?: () => string
     /**
-     * Failover-передача: строить авторитет НАД ГОТОВЫМ store (например, зеркальным
-     * после promote) — ревизии и содержимое принимаются как есть, seed не применяется,
-     * а живые подписки каскада этого store продолжают работать без разрыва.
+     * Failover handover: build authority OVER a READY store (e.g., mirror
+     * after promote) — revisions and content are taken as-is, seed is not applied,
+     * and live subscriptions of this store's cascade continue working unbroken.
      */
     store?: Store<WorkboardState>
 }
@@ -80,8 +80,8 @@ export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
     }
 
     const store = deps.store ?? createStore<WorkboardState>(initial, {drain: 'micro'})
-    // Принятый store уже содержит item'ы — счётчик id обязан перепрыгнуть их,
-    // иначе новый лидер после promote выдаст занятый work-N.
+    // Accepted store already contains items — id counter must skip over them,
+    // or else new leader after promote will issue a taken work-N.
     if (deps.store) {
         for (const id of Object.keys(store.state)) {
             const tail = /^work-(\d+)$/.exec(id)

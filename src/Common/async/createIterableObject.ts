@@ -1,6 +1,6 @@
 type IterableObjectOptions<V> = {
     resolve: () => Map<string, V>
-    /** если передан — включает запись, вызывается при set/delete */
+    /** if provided — enables write, called on set/delete */
     onChange?: (type: "set" | "delete", key: string, value?: V) => void
 }
 
@@ -18,16 +18,16 @@ export function createIterableObject<V>(
         },
 
         set(_, key: string | symbol, value: V) {
-            // read-only режим / не-строковый ключ — тихий no-op.
-            // вернуть false здесь => TypeError в strict-режиме (весь вывод ESM/TS)
+            // read-only mode / non-string key — silent no-op.
+            // returning false here => TypeError in strict mode (all ESM/TS output)
             if (!onChange || typeof key !== "string") return true
             onChange("set", key, value)
             return true
         },
 
         deleteProperty(_, key: string | symbol) {
-            // read-only режим / не-строковый ключ — тихий no-op. MUST вернуть true:
-            // false здесь => TypeError в strict-режиме на `delete obj[k]` (та же причина, что в set).
+            // read-only mode / non-string key — silent no-op. MUST return true:
+            // false here => TypeError in strict mode on `delete obj[k]` (same reason as in set).
             if (!onChange || typeof key !== "string") return true
             onChange("delete", key)
             return true
@@ -65,7 +65,7 @@ function test2() {
         console.log(ro[k], k, v) // 1 "a" 1
     }
 
-    // ── Read-Write с onChange ──
+    // ── Read-Write with onChange ──
     const rw = createIterableObject({
         resolve: () => storage,
         onChange(type, key, value) {
@@ -80,7 +80,7 @@ function test2() {
 
     for (const [k, v] of rw) {
         console.log(k, v) // "b" 2
-        rw["c"] = 3       // safe — Map гарантирует видимость
+        rw["c"] = 3       // safe — Map guarantees visibility
     }
-    // "c" 3 — тоже выведется
+    // "c" 3 — will also be printed
 }

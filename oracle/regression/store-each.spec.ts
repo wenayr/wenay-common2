@@ -149,12 +149,12 @@ test('syncStoreReplayEach: reconnect with {since} delivers only changed keys', a
     await first.ready; await tick()
     first()
 
-    // мир живёт, пока клиент оффлайн — реконнект должен доехать ХВОСТОМ (только b)
+    // world lives while client is offline — reconnect must arrive via TAIL (only b)
     world.state.b = {hp: 22}
     await flushReactive(world.state); await tick()
 
     const calls: tCall[] = []
-    // реконнект = прежнее состояние (initial) + {since}: хвост доезжает поверх него
+    // reconnect = previous state (initial) + {since}: tail arrives over it
     const second = syncStoreReplayEach<Record<string, {hp: number}>>(exposed.api.replay, collect(calls),
         {drain: 'micro', since: lastSeq, initial: first.store.snapshot()})
     await second.ready

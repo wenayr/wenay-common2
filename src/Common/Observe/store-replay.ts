@@ -1,10 +1,10 @@
 // =====================================================================
-// store ⇄ replay — журнал патчей с seq, keyframe = root-патч
+// store ⇄ replay — patch journal with seq, keyframe = root-patch
 // =====================================================================
-// Вся механика в withReplayListen; store добавляет ровно «патч как тип события».
-// Keyframe — StorePatch с path: [] (replaceRoot): зеркало применяет ОДИН механизм
-// applyStorePatch и для снапшота, и для дельт. Реконнект перестаёт стоить полного
-// снапшота, когда хватает хвоста журнала.
+// All logic is in withReplayListen; store adds exactly "patch as event type".
+// Keyframe — StorePatch with path: [] (replaceRoot): mirror applies ONE mechanism
+// applyStorePatch for both snapshot and deltas. Reconnect stops costing a full
+// snapshot when the journal tail is enough.
 
 import {Store, StorePatch, StoreDrain, StoreEachCtx, applyStorePatch, createStore, exposeStore} from './store'
 import {replayListen, ReplayListenOptions, ReplayEvent} from '../events/replay-listen'
@@ -12,24 +12,27 @@ import {exposeReplay, replaySubscribe, ReplayRemote, ReplaySubscribeOpts} from '
 import {replayRouteSubscribe, ReplayRouteSubscribeOpts} from '../events/replay-route'
 import {openHistory, ReplayStorage} from '../events/replay-history'
 
-export type StoreReplayOpts = Pick<ReplayListenOptions<[StorePatch]>, 'history' | 'getSince' | 'onJournal' | 'now'>
+export type StoreReplayOpts = Pick<ReplayListenOptions<[StorePatch]>, 'history' | 'getSince' | 'onJournal' | 'now' | 'firstSeq'> & {
+    /** Static source descriptor served to clients as replay.describe(): schema/originId/... (JSON-able). */
+    describe?: Record<string, any>
+}
 
 /**
- * keyOf для линии патчей (conflateReplay): схлопывание по точному пути.
- * Патч абсолютен по своему пути, а порядок последних касаний = порядок по seq,
- * поэтому «последний патч каждого пути» даёт то же состояние, что вся линия —
- * включая перекрытия предок/потомок (патч предка несёт всё поддерево целиком).
- * В новом пути (frame на линии) — внутренняя деталь condensePatchTail ниже.
+ * keyOf for patch line (conflateReplay): collapse by exact path.
+ * Patch is absolute by its path, and the order of last touches = order by seq,
+ * so "last patch of each path" gives the same state as the entire line —
+ * including ancestor/descendant overlaps (ancestor patch carries the entire subtree).
+ * In the new path (frame on line) — internal detail of condensePatchTail below.
  */
 export function storePatchKey(patch: StorePatch) {
-    // symbol в JSON.stringify стал бы null → коллизии; такой патч не схлопываем
+    // symbol in JSON.stringify would become null → collisions; such patch is not collapsed
     for (const k of patch.path) if (typeof k == 'symbol') return null
     return JSON.stringify(patch.path)
 }
 
-// Уплотнитель кадра патч-линии (frame-лямбда для replayListen): последний патч
-// каждого точного пути, порядок последних касаний = порядок по seq (delete+re-insert).
-// Несхлопываемый патч (symbol в пути) → честный полный хвост, без частичной магии.
+// Compressor of patch-line frame (frame-lambda for replayListen): last patch
+// of each exact path, order of last touches = order by seq (delete+re-insert).
+// Non-collapsible patch (symbol in path) → honest full tail, without partial magic.
 function condensePatchTail(tail: ReplayEvent<[StorePatch]>[]) {
     const held = new Map<string, ReplayEvent<[StorePatch]>>()
     for (const ev of tail) {
@@ -42,39 +45,40 @@ function condensePatchTail(tail: ReplayEvent<[StorePatch]>[]) {
 }
 
 /**
- * Серверная сторона: exposeStore + пронумерованная линия патчей.
- * Подписка на стор ГОРЯЧАЯ — журнал обязан видеть каждое изменение, даже когда
- * подписчиков нет, иначе в линии дыры. Цена: один listenPaths-слушатель + кольцо.
+ * Server side: exposeStore + numbered patch line.
+ * Subscription to store is HOT — journal must see every change, even when
+ * there are no subscribers, otherwise there are holes in the line. Cost: one listenPaths-listener + ring.
  */
 export function exposeStoreReplay<T extends object>(store: Store<T>, opts: StoreReplayOpts = {}) {
     const [emitPatch, lineApi] = replayListen<[StorePatch]>({
         current: () => [{path: [], exists: true, value: store.snapshot()}],
-        // store-слой знает семантику своих событий → объявляет уплотнитель кадра сам:
-        // мини-кадрик (последний патч на путь) вместо полного keyframe, ноль конфигурации
+        // store-layer knows the semantics of its events → declares the frame compressor itself:
+        // mini-frame (last patch per path) instead of full keyframe, zero configuration
         frame: condensePatchTail,
         history: opts.getSince ? undefined : (opts.history ?? 1024),
         getSince: opts.getSince,
         onJournal: opts.onJournal,
         now: opts.now,
+        firstSeq: opts.firstSeq,
     })
-    // Store уже умеет строить push-патчи напрямую по raw state. Повторный проход через
-    // store.node.at(path) навсегда оставлял в node-cache каждый временный id ордера/задачи.
+    // Store already knows how to build push-patches directly from raw state. Another pass through
+    // store.node.at(path) would permanently leave in node-cache every temporary id of order/task.
     const {patches, changedData: _changedData, ...storeApi} = exposeStore(store, {push: true})
     const offStore = patches!.on(function journalStoreChange(patch: StorePatch) {
         emitPatch(patch)
     })
     return {
-        /** Провод-фасад: отдать RPC-серверу (object: api). Совместим с обычным exposeStore. */
-        api: {...storeApi, replay: exposeReplay(lineApi)},
-        /** Локальная replay-линия — in-proc потребители, интроспекция (head/getSince). */
+        /** Wire facade: pass to RPC server (object: api). Compatible with regular exposeStore. */
+        api: {...storeApi, replay: opts.describe ? {...exposeReplay(lineApi), describe: () => ({...opts.describe})} : exposeReplay(lineApi)},
+        /** Local replay-line — in-proc consumers, introspection (head/getSince). */
         replay: lineApi,
         close: () => { offStore() },
     }
 }
 
 /**
- * Клиентская сторона: зеркало по линии. keyframe/хвост/live — одним механизмом
- * applyStorePatch. Реконнект: syncStoreReplay(store, remote, {since: prev.seq()}).
+ * Client side: mirror over line. keyframe/tail/live — by one mechanism
+ * applyStorePatch. Reconnect: syncStoreReplay(store, remote, {since: prev.seq()}).
  */
 export function syncStoreReplay<T extends object>(store: Store<T>, remote: ReplayRemote<[StorePatch]>, opts: ReplaySubscribeOpts = {}) {
     return replaySubscribe<[StorePatch]>(remote, function applyLine(patch) { applyStorePatch(store, patch) }, opts)
@@ -90,12 +94,12 @@ export function syncStoreReplayRoute<T extends object>(store: Store<T>, remote: 
 }
 
 /**
- * Однострочный remote-fold: зеркало по линии → колбэк per ИЗМЕНЁННЫЙ топ-ключ
- * (createStore + syncStoreReplay + store.each().on одним вызовом). Keyframe на старте
- * разворачивается по ключам, удаление ключа = (key, undefined), value = store.state[key]
- * на момент flush. Все ReplaySubscribeOpts едут насквозь (since/policy/staleMs/onError...).
- * Возврат — композитный off (снимает и подписку each, и wire-подписку) с зеркалом
- * для прямых чтений (off.store.state.BTCUSDT) и ready/seq/isStale/lastTs провода.
+ * One-line remote-fold: mirror over line → callback per CHANGED top-key
+ * (createStore + syncStoreReplay + store.each().on in one call). Keyframe at start
+ * is expanded by keys, key deletion = (key, undefined), value = store.state[key]
+ * at flush time. All ReplaySubscribeOpts pass straight through (since/policy/staleMs/onError...).
+ * Return — composite off (removes both each subscription and wire subscription) with mirror
+ * for direct reads (off.store.state.BTCUSDT) and ready/seq/isStale/lastTs of wire.
  */
 export function syncStoreReplayEach<T extends object>(
     remote: ReplayRemote<[StorePatch]>,
@@ -104,12 +108,12 @@ export function syncStoreReplayEach<T extends object>(
 ) {
     const {drain, initial, ...wireOpts} = opts
     const store = createStore<T>((initial ?? {}) as T, drain !== undefined ? {drain} : {})
-    // each ДО провода: keyframe первого catch-up обязан развернуться в колбэки
+    // each BEFORE wire: first catch-up keyframe must be expanded into callbacks
     const offEach = store.each().on(cb)
     const sub = syncStoreReplay(store, remote, wireOpts)
     function off() { offEach(); sub() }
     return Object.assign(off, {
-        /** Зеркало — для прямых чтений и дополнительных подписок. */
+        /** Mirror — for direct reads and additional subscriptions. */
         store,
         ready: sub.ready,
         seq: sub.seq,
@@ -119,9 +123,9 @@ export function syncStoreReplayEach<T extends object>(
 }
 
 /**
- * Машина времени по архиву патчей (archiveReplay + ReplayStorage): снапшот
- * состояния на момент at (seq/ts; без at — последний архивированный). Keyframe
- * и дельты применяются ОДНИМ механизмом applyStorePatch. undefined = архив пуст.
+ * Time machine over patch archive (archiveReplay + ReplayStorage): snapshot
+ * of state at the moment at (seq/ts; no at — last archived). Keyframe
+ * and deltas are applied by ONE mechanism applyStorePatch. undefined = archive is empty.
  */
 export function storeReplayAt<T extends object>(storage: ReplayStorage<[StorePatch]>, at: {seq?: number, ts?: number} = {}) {
     const envelopes = openHistory(storage).at(at)

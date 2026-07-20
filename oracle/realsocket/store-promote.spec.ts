@@ -1,11 +1,11 @@
-// REAL-SOCKET failover oracle (фаза 4 плана зеркала). Жёсткая потеря лидера →
-// ручное promote фолловера: авторитет строится НАД зеркальным store (workboard
-// host с deps.store), каскадный журнал продолжает жить — подписка клиента
-// переживает смену роли БЕЗ разрыва и без повторного кейфрейма. Epoch растёт
-// на 1 (fork-choice «бОльшая эпоха побеждает»). Split-brain хвост старого
-// лидера разбирается diffKeyedState: непересекающееся перепроводится обычными
-// командами (аналог возврата транзакций осиротевшей ветки в mempool),
-// конфликтные пары сохраняются для приложения. Порты 3164/3165 (3100+).
+// REAL-SOCKET failover oracle (phase 4 of mirror plan). Hard leader loss →
+// manual follower promotion: authority is built OVER mirror store (workboard
+// host with deps.store), cascading journal continues to live — client subscription
+// survives role change WITHOUT disruption and without re-keyframe. Epoch grows
+// by 1 (fork-choice «larger epoch wins»). Split-brain tail of old
+// leader is handled by diffKeyedState: non-overlapping is re-conducted with ordinary
+// commands (analogous to returning orphaned branch transactions to mempool),
+// conflicting pairs are saved for the application. Ports 3164/3165 (3100+).
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {createWorkboardHost, WorkboardHost} from '../../demo/workboard-host'
 import {createStoreFollower, diffKeyedState} from '../../src/Common/Observe/store-follower'
@@ -43,11 +43,11 @@ async function main() {
         process.exit(3)
     }, 120000)
 
-    // ============== старый лидер (epoch 1) ==============
-    // Свой неймспейс id: после failover оба узла продолжают СВОИ счётчики, и
-    // общий префикс работ ('work-N') коллидировал бы — дифф ловил бы это как
-    // конфликт (см. проверку ниже). Продакшн-правило: id должны быть уникальны
-    // на узел; демо-хост сканирует занятые work-N при принятии store.
+    // ============== old leader (epoch 1) ==============
+    // Own namespace id: after failover both nodes continue their OWN counters, and
+    // common prefix of work ('work-N') would collide — diff would catch it as
+    // conflict (see check below). Production rule: ids must be unique
+    // per node; demo-host scans occupied work-N on store acceptance.
     let oldLeaderIds = 0
     const board = createWorkboardHost({
         initial: [{id: 'seed-1', title: 'Seed card', status: 'new'}],
@@ -73,7 +73,7 @@ async function main() {
         },
     })
 
-    // ============== фолловер: зеркало + динамический диспатч команд ==============
+    // ============== follower: mirror + dynamic command dispatch ==============
     const upstream = await startRealClient({port: LEADER_PORT})
     const follower = createStoreFollower<WorkboardState>({
         remote: upstream.api.workboard.state as ReplayRemote<[StorePatch]>,
@@ -106,7 +106,7 @@ async function main() {
     await follower.ready
     await check('follower starts at the leader epoch', () => follower.status.state.epoch, 1)
 
-    // ============== клиент фолловера с живой подпиской ==============
+    // ============== follower client with live subscription ==============
     const b = await startRealClient({port: FOLLOWER_PORT})
     const bStore = createStore<WorkboardState>({})
     let bSyncErrors = 0
@@ -115,27 +115,27 @@ async function main() {
     })
     await bSync.ready
 
-    // Сходимся до аварии: у всех есть seed + общая карточка (будущий конфликт)
+    // Converge before failure: everyone has seed + shared card (future conflict)
     const shared = await b.api.workboard.create({requestId: 'r-shared', title: 'Shared card'})
     await waitFor('everyone converged before the failure', () =>
         bStore.state[shared.id] != null && follower.store.state[shared.id] != null)
     const seqBeforeFailover = bSync.seq()
 
-    // ============== жёсткая потеря лидера (ручной disconnect — реконнекта не будет) ==============
+    // ============== hard leader loss (manual disconnect — no reconnect) ==============
     ;(upstream.hub.socket as any).disconnect()
     await waitFor('follower reports upstream offline', () => follower.status.state.upstream == 'offline')
     await check('commands fail fast before promote',
         () => rejectionText(() => Promise.resolve(b.api.workboard.create({requestId: 'r-early', title: 'Too early'}))),
         'leader offline — try again soon')
 
-    // ============== ручное повышение ==============
+    // ============== manual promotion ==============
     const handover = follower.promote()
     promotedHost = createWorkboardHost({store: handover.store as any})
     await check('promote bumps the epoch', () => handover.epoch, 2)
     await check('status is promoted', () => follower.status.state.upstream, 'promoted')
     await check('promote is idempotent', () => follower.promote().epoch, 2)
 
-    // Команды применяются ЛОКАЛЬНО; ревизии зеркального состояния сохранены
+    // Commands are applied LOCALLY; mirror state revisions are saved
     const afterPromote = await b.api.workboard.create({requestId: 'r-after', title: 'After failover'})
     await check('new leader applies commands locally', () => afterPromote.createdBy, 'person-z1')
     const renamed = await b.api.workboard.rename({
@@ -143,24 +143,24 @@ async function main() {
     })
     await check('adopted revisions survive the takeover', () => renamed.revision, shared.revision + 1)
 
-    // Живая подписка клиента ПЕРЕЖИЛА смену роли: тот же провод, seq продолжился
+    // Live client subscription SURVIVED role change: same wire, seq continued
     await waitFor('B receives post-promote items over the SAME line', () =>
         bStore.state[afterPromote.id] != null && bStore.state[shared.id]?.title == 'New view')
     await check('the client line never errored', () => bSyncErrors, 0)
     await check('cascade seq continued (no re-keyframe)', () => bSync.seq() > seqBeforeFailover, true)
 
-    // Дубль после failover: requestId, чья квитанция жила на СТАРОМ лидере, бьёт
-    // в пустые квитанции нового → второй экземпляр. Задокументированное допущение
-    // ручного failover (окно лага репликации); квитанции нового хопа уже работают
-    // (см. идемпотентность в store-mirror оракле).
+    // Duplicate after failover: requestId whose receipt lived on OLD leader, hits
+    // into empty receipts of new → second instance. Documented assumption
+    // of manual failover (replication lag window); receipts of new hop already work
+    // (see idempotency in store-mirror oracle).
     const duplicate = await b.api.workboard.create({requestId: 'r-shared', title: 'Shared card'})
     await check('documented assumption: pre-failover receipts are gone', () => duplicate.id != shared.id, true)
 
-    // ============== split-brain: старый лидер жив и пишет своё ==============
+    // ============== split-brain: old leader alive and writes its own ==============
     const divergent = board.control.create('person-a', {requestId: 'r-div', title: 'Divergent card'})
     board.control.rename('person-a', {requestId: 'r-old-rename', id: shared.id, expectedRevision: 1, title: 'Old view'})
 
-    // ============== rejoin: конфликт-журнал + перепроведение ==============
+    // ============== rejoin: conflict-log + re-conduction ==============
     const diff = diffKeyedState(board.control.store.state, follower.store.state)
     await check('divergent tail is preserved, not dropped', () => diff.localOnly.map(item => item.title), ['Divergent card'])
     await check('both-sides edit of one card is a recorded conflict',
@@ -168,14 +168,14 @@ async function main() {
             && diff.conflicts[0].local.title == 'Old view' && diff.conflicts[0].authority.title == 'New view', true)
     await check('winner items are keyframe material', () => diff.authorityOnly.length >= 2, true)
 
-    // Непересекающееся перепроводится обычными командами нового лидера (mempool-аналог)
+    // Non-overlapping is re-conducted with ordinary commands of new leader (mempool-analog)
     for (const item of diff.localOnly) {
         promotedHost.control.create('person-a', {requestId: 'replay-' + item.id, title: item.title})
     }
     await check('replayed op landed on the new leader',
         () => Object.values(follower.store.state).some(item => item.title == 'Divergent card'), true)
 
-    // Старый узел принимает роль фолловера: кейфрейм победителя поверх его состояния
+    // Old node takes on follower role: winner keyframe over its state
     const rejoin = await startRealClient({port: FOLLOWER_PORT})
     const rejoinSync = syncStoreReplay(board.control.store, rejoin.api.workboard.state as ReplayRemote<[StorePatch]>)
     await rejoinSync.ready

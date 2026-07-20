@@ -1,15 +1,15 @@
 // ============================================================
 //  replay/canvas-socket.test.ts
 //
-//  «Канвас-стрим»: настоящие БАЙТЫ (Uint8Array RGBA) кадрами через
-//  replay-линию по НАСТОЯЩЕМУ Socket.IO. Проверяет binary passthrough
-//  в rpc-walk: байты едут бинарём (socket.io native), а не {0:…,1:…}.
+//  "Canvas stream": real BYTES (Uint8Array RGBA) as frames over a
+//  replay line on REAL Socket.IO. Verifies binary passthrough
+//  in rpc-walk: bytes travel as binary (socket.io native), not {0:…,1:…}.
 //
-//  Кадр = байтовый буфер; дельта (P-frame) = dirty-rect с байтами;
-//  keyframe (I-frame) = полный буфер кадра. Память внешняя: сервер
-//  сам владеет «текущим кадром», current() отдаёт его копию.
+//  A frame = a byte buffer; a delta (P-frame) = a dirty-rect with bytes;
+//  keyframe (I-frame) = the full frame buffer. Memory is external: the server
+//  owns the "current frame" itself, current() returns a copy of it.
 //
-//  Запуск: npx ts-node replay/canvas-socket.test.ts
+//  Run: npx ts-node replay/canvas-socket.test.ts
 // ============================================================
 
 import express from 'express'
@@ -22,7 +22,7 @@ import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 import {replayListen, exposeReplay, replaySubscribe, ReplayRemote} from '../src/Common/events/replay-index'
 
-const W = 64, H = 48, BPP = 4  // 12288 байт на кадр
+const W = 64, H = 48, BPP = 4  // 12288 bytes per frame
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -31,7 +31,7 @@ const ok = (condition: any, message: string) => {
 }
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
-/** Дельта-кадр: прямоугольник пикселей с СЫРЫМИ байтами (как canvas putImageData). */
+/** Delta-frame: rectangle of pixels with RAW bytes (like canvas putImageData). */
 type Rect = {x: number, y: number, w: number, h: number, bytes: Uint8Array}
 
 function blitRect(screen: Uint8Array, r: Rect) {
@@ -50,7 +50,7 @@ function fillRect(x: number, y: number, w: number, h: number, rgba: number[]): R
 const sameBytes = (a: Uint8Array, b: Uint8Array) =>
     a.byteLength == b.byteLength && Buffer.compare(Buffer.from(a.buffer, a.byteOffset, a.byteLength), Buffer.from(b.buffer, b.byteOffset, b.byteLength)) == 0
 
-// принятый по проводу бинарь приходит как Buffer/Uint8Array — нормализуем вид
+// binary received over wire comes as Buffer/Uint8Array — normalize view
 const asBytes = (v: any): Uint8Array => v instanceof Uint8Array ? v : new Uint8Array(v.buffer ?? v)
 
 async function startRealServer(object: object) {
@@ -102,10 +102,10 @@ async function connectViewer(port: number) {
 async function main() {
     console.log('\n[canvas] raw RGBA byte stream over a real Socket.IO wire')
 
-    // ============ сервер: канвас + линия дельт ============
-    const frame = new Uint8Array(W * H * BPP)  // внешняя память: текущий кадр владеет сервер
+    // ============ server: canvas + line of deltas ============
+    const frame = new Uint8Array(W * H * BPP)  // external memory: server owns current frame
     const [emitRect, line] = replayListen<[Rect]>({
-        current: () => [{x: 0, y: 0, w: W, h: H, bytes: frame.slice()}],  // keyframe = полный кадр
+        current: () => [{x: 0, y: 0, w: W, h: H, bytes: frame.slice()}],  // keyframe = full frame
         history: 24,
     })
     function draw(r: Rect) {
@@ -116,17 +116,17 @@ async function main() {
 
     let px = 0
     function paintTick() {
-        draw(fillRect(px, 10, 4, 4, [0, 0, 0, 255]))          // стереть старый квадрат
+        draw(fillRect(px, 10, 4, 4, [0, 0, 0, 255]))          // erase old square
         px = (px + 4) % (W - 4)
-        draw(fillRect(px, 10, 4, 4, [255, 64, 0, 255]))       // нарисовать новый
+        draw(fillRect(px, 10, 4, 4, [255, 64, 0, 255]))       // draw new
     }
-    // фон + первые кадры до подключения зрителя
+    // background + first frames before viewer connects
     draw(fillRect(0, 0, W, H, [0, 0, 0, 255]))
     for (let i = 0; i < 10; i++) paintTick()
 
     const closers: (() => void)[] = []
     try {
-        // ============ зритель приходит ПОСЛЕ 21 события ============
+        // ============ viewer comes AFTER 21 events ============
         const viewer = await connectViewer(server.port)
         closers.push(viewer.close)
         const screen = new Uint8Array(W * H * BPP)
@@ -134,7 +134,7 @@ async function main() {
         let lastSeq = -1
         let binaryOnWire = true
         const sub = replaySubscribe<[Rect]>(viewer.remote, function applyRect(r) {
-            if (!ArrayBuffer.isView(r.bytes)) binaryOnWire = false  // {0:…,1:…} — провал passthrough
+            if (!ArrayBuffer.isView(r.bytes)) binaryOnWire = false  // {0:…,1:…} — passthrough failure
             blitRect(screen, {...r, bytes: asBytes(r.bytes)})
             deliveries++
         }, {onSeq: s => lastSeq = s})
@@ -143,14 +143,14 @@ async function main() {
         ok(deliveries == 1, `late viewer got 1 keyframe, not a ${line.head()}-event backlog`)
         ok(sameBytes(screen, frame), 'keyframe is byte-for-byte identical to the server canvas')
 
-        // ============ live-дельты ============
+        // ============ live-deltas ============
         for (let i = 0; i < 5; i++) paintTick()
         await delay(150)
         ok(sameBytes(screen, frame), 'live dirty-rect deltas keep the canvas pixel-perfect')
 
-        // ============ лаг → реконнект хвостом дельт ============
+        // ============ lag → reconnect via tail of deltas ============
         sub()
-        paintTick(); paintTick()  // 4 события мимо зрителя, журнал (24) их держит
+        paintTick(); paintTick()  // 4 events past viewer, journal (24) holds them
         let tailDeliveries = 0
         const sub2 = replaySubscribe<[Rect]>(viewer.remote, function applyRect(r) {
             blitRect(screen, {...r, bytes: asBytes(r.bytes)})
@@ -160,9 +160,9 @@ async function main() {
         ok(tailDeliveries == 4, `short lag → tail of 4 rect deltas, no keyframe (got ${tailDeliveries})`)
         ok(sameBytes(screen, frame), 'after catch-up the canvas is pixel-perfect again')
 
-        // ============ долгий лаг → журнал вытеснен → keyframe ============
+        // ============ long lag → journal evicted → keyframe ============
         sub2()
-        for (let i = 0; i < 30; i++) paintTick()  // 60 событий >> history 24
+        for (let i = 0; i < 30; i++) paintTick()  // 60 events >> history 24
         let resync = 0
         const sub3 = replaySubscribe<[Rect]>(viewer.remote, function applyRect(r) {
             blitRect(screen, {...r, bytes: asBytes(r.bytes)})

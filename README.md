@@ -2,6 +2,35 @@
 
 [![CI](https://github.com/wenayr/wenay-common2/actions/workflows/ci.yml/badge.svg)](https://github.com/wenayr/wenay-common2/actions/workflows/ci.yml)
 
+## Quick start
+
+```ts
+// server (node + socket.io): one facade object, one authoritative store
+import {createRpcServerAuto, listen, Observe} from 'wenay-common2'
+const board = Observe.createStore<Record<string, {title: string, done?: boolean}>>({})
+const exposed = Observe.exposeStoreReplay(board)
+io.on('connection', socket => {
+    const [disconnect, disconnectListen] = listen()
+    socket.on('disconnect', () => disconnect())
+    createRpcServerAuto({socket, socketKey: 'rpc', disconnectListen,
+        object: {hello: async (name: string) => 'hi, ' + name, board: exposed.api}})
+})
+board.state['w1'] = {title: 'ship it'}           // every write becomes a numbered patch
+
+// client (browser or node): typed proxy + live mirror of the same store
+import {io} from 'socket.io-client'
+import {createRpcClientHub, Observe} from 'wenay-common2'
+const hub = createRpcClientHub(() => io('https://example.com'), r => ({api: r('rpc')}))
+const {api} = await hub.setToken(null)
+await api.readyStrict()
+console.log(await api.func.hello('world'))       // 'hi, world'
+const mirror = Observe.createStore<Record<string, any>>({})
+Observe.syncStoreReplay(mirror, api.func.board.replay)   // keyframe + deltas + reconnect catch-up
+```
+
+Where it goes next: [`demo/`](demo/) is the full runnable stand (`npm run demo`), and every oracle in
+[`replay/`](replay/) · [`observe/`](observe/) · [`oracle/`](oracle/) is a worked example of one subsystem.
+
 ## Documentation
 
 - Brief API cheat sheet: [`doc/wenay-common2.md`](doc/wenay-common2.md)

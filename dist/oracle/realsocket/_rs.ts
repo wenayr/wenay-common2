@@ -22,12 +22,12 @@ export const delay = (ms: number) => new Promise(r => setTimeout(r, ms))
 // ===== real socket.io server =====
 type ServerOpts = {
     port: number
-    // фабрика объекта-фасада на КАЖДОЕ подключение (как в реальном сервере)
+    // facade object factory for EACH connection (as in real server)
     makeObject: () => any
-    // прокидывается в createRpcServerAuto (auth / limits / maxPerListen / throttle / debug)
+    // passed to createRpcServerAuto (auth / limits / maxPerListen / throttle / debug)
     serverOpts?: Record<string, any>
     socketKey?: string
-    // доступ к per-connection серверным api (subscriptions stats и т.п.)
+    // access to per-connection server api (subscriptions stats etc.)
     onServer?: (api: any, socket: any) => void
 }
 
@@ -79,7 +79,7 @@ export async function startRealClient<T extends object = any>(opts: ClientOpts) 
 export type Failure = {name: string, got?: any, expected?: any, error?: string}
 
 function eq(a: any, b: any) {
-    // нормализуем Date → ISO для сравнения round-trip rich-типов
+    // normalize Date → ISO for comparing round-trip rich types
     const norm = (v: any) => JSON.stringify(v, (_k, val) => val instanceof Date ? ['__date', val.toISOString()]
         : val instanceof Map ? ['__map', [...val]] : val instanceof Set ? ['__set', [...val]]
         : typeof val === 'bigint' ? ['__big', val.toString()] : val)

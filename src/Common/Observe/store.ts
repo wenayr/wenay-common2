@@ -99,8 +99,8 @@ export type Store<T extends object> = {
     on(cb: (value: T, ctx: StoreCtx<T>) => void, opts?: StoreSubOpts): () => void
     once(cb: (value: T, ctx: StoreCtx<T>) => void, opts?: StoreSubOpts): () => void
     update<M extends StoreMask<T>>(mask: M, opts?: StoreSubOpts): StoreSelection<T, M>
-    // key типизирован string (не keyof T): keyof в контравариантной позиции Listen
-    // сломал бы Store<T> -> Store<any>; symbol-ключи в рантайме проходят как есть
+    // key is typed as string (not keyof T): keyof in contravariant position in Listen
+    // would break Store<T> -> Store<any>; symbol keys pass at runtime as is
     each(opts?: StoreEachOpts): ReturnType<typeof createListen<[key: string, value: T[keyof T] | undefined, ctx: StoreEachCtx]>>
     listen(): ReturnType<typeof listenUpdate>
     listenPaths(): ReturnType<typeof listenUpdatePaths>
@@ -428,16 +428,16 @@ function createPatchesListen<T extends object>(store: Store<T>) {
     })
 }
 
-// Изменённые ТОП-ключи как обычный Listen: (key, value | undefined, {path}).
-// Тонкий слой над listenPaths: движок сам рассыпает root replace (keyframe зеркала)
-// в per-key пути, включая удаления — cold start и reconnect не спец-кейсы.
-// Ключ с НЕизменившимся примитивом при root replace не стреляет (set-трап
-// пропускает Object.is-равные записи) — потребителю и не нужно.
+// Changed TOP-level keys as a regular Listen: (key, value | undefined, {path}).
+// Thin layer over listenPaths: the engine itself breaks down root replace (mirror keyframe)
+// into per-key paths, including deletes — cold start and reconnect are not special cases.
+// A key with unchanged primitive on root replace does not fire (set trap
+// skips Object.is-equal entries) — consumer doesn't need it.
 function createEachListen<T extends object>(store: Store<T>, opts: StoreEachOpts = {}) {
     if (opts.depth != null && opts.depth != 1) throw new Error("store.each: only depth 1 is supported (reserved option)")
     return createListen<[key: string, value: T[keyof T] | undefined, ctx: StoreEachCtx]>((emit) => {
-        // ключи, о которых потребители уже знают — чтобы гипотетический root-путь []
-        // (array-root / будущий движок) мог отдать (key, undefined) за исчезнувшие
+        // keys that consumers already know — so a hypothetical root-path []
+        // (array-root / future engine) can return (key, undefined) for disappeared keys
         const known = new Set<PropertyKey>(Reflect.ownKeys(toRaw(store.state)))
         function emitKey(key: PropertyKey) {
             const raw: any = toRaw(store.state)
@@ -689,7 +689,7 @@ function getNode<T>(store: StoreInternal<any>, path: PropertyKey[]): StoreNode<T
     return entry.proxy as StoreNode<T>
 }
 
-// guardrail-варн onEach-по-корню — один раз на процесс, не спамить
+// guardrail-warn onEach on root — once per process, no spam
 let warnedRootOnEach = false
 
 function createSelection<T, M>(store: StoreInternal<any>, base: PropertyKey[], mask: M, defaults: StoreSubOpts = {}): StoreSelection<T, M> {
@@ -719,8 +719,8 @@ function createSelection<T, M>(store: StoreInternal<any>, base: PropertyKey[], m
             return off
         },
         onEach(cb, opts = {}) {
-            // частая ловушка: onEach стреляет per ВЫБРАННЫЙ путь, mask true выбирает
-            // сам корень выборки → ОДИН вызов за drain-окно с целым значением
+            // common pitfall: onEach fires per SELECTED path, mask true selects
+            // the root of the selection itself → ONE call per drain window with the whole value
             if (fullPaths.some(p => p.length == base.length) && !warnedRootOnEach) {
                 warnedRootOnEach = true
                 console.warn("store: update(true).onEach fires ONCE per drain window with the WHOLE value (per selected path, not per key). For per-changed-key delivery use store.each(); for a subset — an explicit key mask.")

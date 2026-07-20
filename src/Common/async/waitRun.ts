@@ -1,10 +1,10 @@
 import { sleepAsync } from "../core/common";
 
 /**
- * Управляет запуском асинхронных функций с throttle/debounce.
+ * Manages async function execution with throttle/debounce.
  *
- * Поведение отличается от lodash: вызовы chain'ятся (никаких перекрывающихся
- * запусков); throttle = leading-edge fire-and-forget, debounce = trailing.
+ * Behavior differs from lodash: calls are chained (no overlapping
+ * executions); throttle = leading-edge fire-and-forget, debounce = trailing.
  */
 export function createThrottle() {
     let last = 0, busy = false, pending: (() => any) | undefined;
@@ -43,7 +43,7 @@ export function createThrottle() {
 /** @deprecated use `createThrottle` */
 export const enhancedWaitRun = createThrottle;
 
-/** Асинхронная очередь задач с ограничением параллелизма. */
+/** Async task queue with parallelism limit. */
 export function createAsyncQueue(concurrency = 1) {
     if (concurrency < 1) throw new Error("createAsyncQueue: concurrency must be >= 1");
     type Task<T = any> = () => Promise<T>;
@@ -78,13 +78,13 @@ export function createAsyncQueue(concurrency = 1) {
     };
 }
 
-/** Контролирует выполнение задач в очереди с заданным параллелизмом. */
+/** Controls task execution in queue with given parallelism. */
 export function enhancedQueueRun(maxParallelTasks = 5) {
     const q = createAsyncQueue(maxParallelTasks);
     return {
         get queueSize() { return q.getQueueSize(); },
         enqueue: (task: () => Promise<any>) => { q.enqueue(task).catch(() => {}); },
-        // в отличие от enqueue (fire-and-forget) возвращает промис задачи — можно дождаться её выполнения
+        // unlike enqueue (fire-and-forget) returns task promise — can wait for its execution
         enqueueAndRun: (task: () => Promise<any>) => q.enqueue(task),
         runAll: () => q.onIdle(),
     };
@@ -105,7 +105,7 @@ export function queueRun(n = 5) {
     };
 }
 
-/** Буфер задач, который копит fn'ы и спускает их по порядку при `ready()`. */
+/** Task buffer that accumulates functions and releases them in order on `ready()`. */
 export function createReadyGate() {
     let isReadyFlag = false;
     const tasks: Array<() => any> = [];

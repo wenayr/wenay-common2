@@ -131,7 +131,7 @@ async function main() {
             socket: {emit: (key, data) => socket.emit(key, data), on: (key, cb) => socket.on(key, cb)},
             socketKey: 'app',
             object: {
-                legacyHello: (name: string) => 'hello ' + name, // старый код живёт рядом, нетронутый
+                legacyHello: (name: string) => 'hello ' + name, // legacy code coexists, untouched
                 peer: peer.fragment,
             },
             disconnectListen,
@@ -169,7 +169,7 @@ async function main() {
     const aSeenByB = b.peer('a')
     const bSeenByA = a.peer('b')
     await Promise.all([aSeenByB.ready, bSeenByA.ready])
-    // ^^^ вся клиентская сторона happy path: connect + createPeerClient + peer()
+    // ^^^ entire client-side happy path: connect + createPeerClient + peer()
 
     ok(await connA.func.legacyHello('world') == 'hello world', 'legacy rpc key works untouched on the same connection')
     await waitFor('initial mirrors', () => json(aSeenByB.store.state) == json(a.store.snapshot())
@@ -205,7 +205,7 @@ async function main() {
     const connC = await connect('c')
     const c = createPeerClient<World>({
         remote: connC.func.peer, account: 'c',
-        initial: {cursor: {x: -1, y: -1}}, drain: 'micro', // relay-only: без rtc
+        initial: {cursor: {x: -1, y: -1}}, drain: 'micro', // relay-only: no rtc
     })
     const aSeenByC = c.peer('a')
     await aSeenByC.ready

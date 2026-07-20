@@ -1,9 +1,9 @@
 // ============================================================
 //  replay/socket-replay.test.ts
 //
-//  Слой B через НАСТОЯЩИЙ Socket.IO localhost WebSocket:
-//  зеркало стора по replay-линии (keyframe + seq-дельты).
-//  Запуск:
+//  Layer B via real Socket.IO localhost WebSocket:
+//  store mirror over replay-line (keyframe + seq-deltas).
+//  Run:
 //      npx ts-node replay/socket-replay.test.ts
 // ============================================================
 
@@ -92,7 +92,7 @@ async function main() {
     const backend = createStore<World>({units: {alpha: {hp: 100, x: 0}}, tick: 0}, {drain: 'micro'})
     const exposed = exposeStoreReplay(backend, {history: 6})
 
-    // счётчики серверной цены: pull-ов быть не должно, keyframe — только по fallback
+    // server-side cost counters: no pulls, keyframe only on fallback
     const counters = {get: 0, since: 0, keyframe: 0}
     const facade = {
         ...exposed.api,
@@ -110,7 +110,7 @@ async function main() {
     let c2: Client | null = null
 
     try {
-        // ============ свежий клиент: keyframe + live ============
+        // ============ fresh client: keyframe + live ============
         c1 = await startRealClient<typeof facade>(server.port)
         const deep1 = c1.client.func as any
         const remote1: ReplayRemote<[StorePatch]> = {
@@ -132,7 +132,7 @@ async function main() {
         ok(json(mirror.state) == json(backend.snapshot()), 'live patches keep the wire mirror converged')
         ok(counters.get == 0, 'pure push: server get() was never pulled')
 
-        // ============ обрыв связи, изменения в оффлайне ============
+        // ============ connection break, changes while offline ============
         sub()
         c1.close()
         c1 = null
@@ -143,7 +143,7 @@ async function main() {
         backend.state.tick = 2
         await flushReactive(backend.state)
 
-        // ============ реконнект с since → только хвост ============
+        // ============ reconnect with since → tail only ============
         const kfBefore = counters.keyframe
         c2 = await startRealClient<typeof facade>(server.port)
         const deep2 = c2.client.func as any
@@ -162,7 +162,7 @@ async function main() {
         ok(counters.keyframe == kfBefore, 'reconnect did NOT cost a snapshot — tail of patches sufficed')
         ok(tailPatches == 2, `tail was exactly the missed patches (got ${tailPatches})`)
 
-        // ============ долгий оффлайн → журнал (history: 6) вытеснен → keyframe ============
+        // ============ long offline → log (history: 6) evicted → keyframe ============
         sub2()
         for (let i = 3; i <= 30; i++) {
             backend.state.tick = i
@@ -178,7 +178,7 @@ async function main() {
         ok(counters.keyframe == kfBefore + 1, 'fallback took exactly one fresh keyframe')
         ok(resyncDeliveries == 1, `no backlog: 28 missed patches collapsed into 1 keyframe (got ${resyncDeliveries})`)
 
-        // live после fallback продолжает идти
+        // live continues after fallback
         backend.state.tick = 31
         await flushReactive(backend.state)
         await waitFor('live after fallback', () => mirror.state.tick == 31)

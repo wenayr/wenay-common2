@@ -31,7 +31,7 @@ console.log("Copy files to",tempDir)
 if (1) {
 fs.copyFileSync("./package.json", path.join(tempDir,"package.json"))
 
-// дополнительные файлы, которые копируются при наличии
+// additional files copied when present
 for (const file of ["README.md", "LICENSE", "CHANGELOG.md", "CLAUDE.md", "rpc.md"]) {
     if (fs.existsSync(file))
         fs.copyFileSync(file, path.join(tempDir, file))

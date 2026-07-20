@@ -54,7 +54,7 @@ export const objectUnset= objectDeleteValueByPath
 /** @deprecated use {@link deepEntries} */
 export function* iterateDeepObjectEntries<TObj extends object> (obj :TObj, filter? : (key :string, value :unknown, path :ObjectKeyPath<TObj>)=>boolean, currentPath : ObjectKeyPath<TObj> = [])
  : Generator<[key :string, value :unknown, path :ObjectKeyPath<TObj>]> {
-    if (obj) // пришлось делать такую проверку, т.к. иначе почему-то выскакивает ошибка obj==undefined при рекурсии
+    if (obj) // had to do this check, otherwise somehow obj==undefined error pops up during recursion
         for(let [key,val] of Object.entries(obj)) {
             let keyPath= currentPath.concat(key);
             if (filter?.(key, val, keyPath)==false) continue;

@@ -52,36 +52,36 @@ export interface ArrayConstructor {
 }
 
 
-// заменить тип поля в структуре
+// replace field type in structure
 export type ReplaceKeyType<Struct extends object, Key extends keyof Struct, NewType> = {[key in keyof Struct] : key extends Key ? NewType : Struct[key]}; //Omit<TObj,Key> & (TObj extends {-readonly [key in Key] :any} ? { [key in Key]: TVal } : { readonly [key in Key]: TVal });
 
 
 
-// получить только ключи (поля) заданного типа (без проверки их наличия)
+// get only keys (fields) of given type (without checking their presence)
 export type KeysByTypeUnchecked<T, PickT> = {
     [key in keyof T]: T[key] extends PickT ? key : never;
 }[keyof T];
 
-// получить только ключи (поля) заданного типа (с проверкой их наличия)
+// get only keys (fields) of given type (with checking their presence)
 export type KeysByType<T, PickT extends T[keyof T]> = {
     [key in keyof T]: T[key] extends PickT ? key : never;
 }[keyof T];
 
-// получить только ключи (поля) типов, отличных от заданного
+// get only keys (fields) of types different from given
 export type KeysWithoutType<T, ExcludeT> = {
     [key in keyof T]: T[key] extends ExcludeT ? never : key
 }[keyof T];
 
-// исключить из структуры поля с заданными типами
+// exclude from structure fields with given types
 export type OmitTypes<T, ExcludeT> = Pick<T, KeysWithoutType<T, ExcludeT>>
 
-// включить в структуру только поля с заданными типами (с проверкой их наличия)
+// include in structure only fields with given types (with checking their presence)
 export type PickTypes<T, PickT extends T[keyof T]> = Pick<T, KeysByType<T, PickT>>
 
-// включить в структуру только поля с заданными типами (без проверки их наличия)
+// include in structure only fields with given types (without checking their presence)
 export type PickTypesUnchecked<T, PickT> = Pick<T, KeysByTypeUnchecked<T, PickT>>
 
-// сделать все поля Required кроме полей E
+// make all fields Required except fields E
 export type RequiredExcept<T, E extends keyof T> = Required<Omit<T,E>> & Pick<T,E>;
 
 //type III = Iterable<number>;

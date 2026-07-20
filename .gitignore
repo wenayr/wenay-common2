@@ -12,7 +12,6 @@ yarn-error.log*
 .pnp.js
 
 .vscode/*
-/srcClient/node_modules/
 
 # Local task progress files
 /doc/progress/*.md

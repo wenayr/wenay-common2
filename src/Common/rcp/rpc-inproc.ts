@@ -7,25 +7,25 @@ import type { DeepSocketListen } from './listen-deep'
 // ===================================================================
 // IN-PROC TRANSPORT (Tier 1, BACK-BACK enabler)
 // -------------------------------------------------------------------
-// Сервер и клиент в ОДНОМ процессе: пара in-memory SocketTmpl несёт ровно тот
-// же провод, что и сеть. Переиспользует ВЕСЬ код ядра (pack/unpack, дедуп,
-// MAP/STRICT/HELLO, off()-хендлы, throttle, лимиты, auth) — без новой семантики.
+// Server and client in ONE process: pair of in-memory SocketTmpl carries exactly the same
+// wire as network. Reuses ALL core code (pack/unpack, dedup, MAP/STRICT/HELLO, off()-handles,
+// throttle, limits, auth) — without new semantics.
 //
-// ЧЕСТНАЯ ГРАНИЦА: это in-PROC, НЕ zero-cost. Каждое сообщение проходит JSON-клон
-// (как реальный транспорт и как rpc.harness.spec.ts:createLoopback), поэтому
-// Date/Map/BigInt round-trip и дедуп байт-в-байт идентичны проду. Истинно
-// zero-clone (by-reference) direct-call прокси — отдельный больший шаг (Tier 1b,
-// меняет семантику аргументов: идентичность объектов, время жизни колбэков).
+// HONEST BOUNDARY: this is in-PROC, NOT zero-cost. Each message undergoes JSON clone
+// (like real transport and rpc.harness.spec.ts:createLoopback), so Date/Map/BigInt
+// round-trip and dedup are byte-for-byte identical to prod. True zero-clone (by-reference)
+// direct-call proxy — separate bigger step (Tier 1b, changes argument semantics: object
+// identity, callback lifetime).
 // ===================================================================
 
-// --- resource: пара связанных SocketTmpl (тот же loopback, что в харнесе, но как экспорт) ---
+// --- resource: pair of linked SocketTmpl (same loopback as in harness, but as export) ---
 export function createInProcSocketPair(): [SocketTmpl, SocketTmpl] {
     const A: Record<string, ((d: any) => void)[]> = {}
     const B: Record<string, ((d: any) => void)[]> = {}
     const make = (mine: typeof A, theirs: typeof A): SocketTmpl => ({
         on: (e, cb) => { (mine[e] ??= []).push(cb) },
         emit: (e, d) => {
-            // не реентрантно (queueMicrotask) + JSON-клон: семантика провода один-в-один
+            // non-reentrant (queueMicrotask) + JSON clone: wire semantics one-to-one
             const wire = d === undefined ? undefined : JSON.parse(JSON.stringify(d))
             for (const cb of (theirs[e] ?? [])) queueMicrotask(() => cb(wire))
         },
@@ -33,7 +33,7 @@ export function createInProcSocketPair(): [SocketTmpl, SocketTmpl] {
     return [make(A, B), make(B, A)] // [client, server]
 }
 
-// --- business: реальный сервер+клиент над in-proc парой ---
+// --- business: real server+client over in-proc pair ---
 export function createRpcInProc<T extends object>({
     object: target,
     socketKey = 'rpc',
@@ -49,26 +49,26 @@ export function createRpcInProc<T extends object>({
 }: {
     object: T
     socketKey?: string
-    /** true (умолч.): Listen-узлы → listenSocket, как на сети (createRpcServerAuto).
-     *  false: голый createRpcServer (без авто-обёртки Listen). */
+    /** true (default): Listen nodes → listenSocket, as on network (createRpcServerAuto).
+     *  false: bare createRpcServer (without auto-wrapper Listen). */
     listen?: boolean
     debug?: boolean
     hooks?: any
     limits?: RpcLimits
     auth?: RpcServerAuth
-    /** С auth/gate: in-proc пара НЕ эмитит 'connect' (нет hub) — вызови у возвращённого
-     *  клиента initStrict()/readyStrict(), чтобы прогнать HELLO-рукопожатие до gated-вызовов. */
+    /** With auth/gate: in-proc pair does NOT emit 'connect' (no hub) — call initStrict()/readyStrict()
+     *  on returned client to run HELLO handshake before gated calls. */
     token?: any
-    /** Пробрасывается в серверный listen-слой (throttle стримов) при listen:true. */
+    /** Passes to server listen layer (throttle streams) when listen:true. */
     throttle?: number
     maxPerListen?: number
-    /** Оптимизации провода (договорные): { compact?: false } отключает уплотнение тиков. */
+    /** Wire optimizations (contractual): { compact?: false } disables tick compaction. */
     opt?: RpcOpt
 }) {
     const [clientSocket, serverSocket] = createInProcSocketPair()
-    // Возвращаем КЛИЕНТ как SDK-хендл (то же место вызова, что и по сети). Серверный `{ api }`
-    // от createRpcServerAuto (server-side stats) намеренно не пробрасываем — клиентский
-    // api.subscriptions() даёт эквивалентный (дедуплицированный) вид; серверная сторона здесь.
+    // Return CLIENT as SDK handle (same call site as over network). Server `{ api }`
+    // from createRpcServerAuto (server-side stats) intentionally not passed — client
+    // api.subscriptions() gives equivalent (deduplicated) view; server side here.
     if (listen) {
         createRpcServerAuto({ socket: serverSocket, object: target as any, socketKey, debug, hooks, limits, auth, throttle, maxPerListen, opt })
     } else {

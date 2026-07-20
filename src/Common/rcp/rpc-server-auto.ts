@@ -7,16 +7,16 @@ import {SocketTmpl, IS_RPC_LISTEN, RPC_STOP} from "./rpc-protocol";
 
 type ListenCallbackBase<T extends any[] = any[]> = ReturnType<typeof createListen<T>>;
 
-/** Серверные пороги ворот лага для 'frame'-подписчиков (Feature B). Единицы pending()
- *  и порогов — одни и те же (байты/пакеты/кадры — что даёт транспорт). */
+/** Server backpressure gate thresholds for 'frame' subscribers (Feature B). Units of pending()
+ *  and thresholds are the same (bytes/packets/frames — from transport). */
 export type RpcReplayOpts = {
-    /** Заполненность исходящего буфера ЭТОГО соединения. Default — socket.io writeBuffer. */
+    /** Outgoing buffer fullness of THIS connection. Default — socket.io writeBuffer. */
     pending?: () => number
-    /** Вход в пропуск: pending() > highWater → конверты frameLine перестают отправляться. */
+    /** Gate enters skip: pending() > highWater → frameLine envelopes stop being sent. */
     highWater?: number
-    /** Выход (default 0): pending() <= lowWater → frame(lastSent) и дальше live. */
+    /** Exit (default 0): pending() <= lowWater → frame(lastSent) and then live. */
     lowWater?: number
-    /** Период опроса pending() в режиме пропуска, мс (default 25). */
+    /** Polling period for pending() in skip mode, ms (default 25). */
     pollMs?: number
 }
 
@@ -29,39 +29,39 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
     disconnectListen?: ListenCallbackBase<any>;
     limits?: RpcLimits;
     auth?: RpcServerAuth;
-    /** Opt-in потолок числа подписчиков на ОДИН Listen-узел этого сокета. undefined = без
-     *  лимита (поведение прежнее, байт-в-байт). Лишние подписки тихо игнорируются —
-     *  щит против багнутого/злого клиента, шлющего `*.callback(fn)` в цикле. */
+    /** Opt-in ceiling for subscriber count on ONE Listen node of this socket. undefined = no
+     *  limit (previous behavior, byte-for-byte). Extra subscriptions are silently ignored —
+     *  defense against buggy/malicious client calling `*.callback(fn)` in a loop. */
     maxPerListen?: number;
-    /** Opt-in min-interval (мс) для КАЖДОГО серверного Listen-узла этого сокета:
-     *  эмитить не чаще раза в `throttle` мс (leading + trailing-latest). undefined/0 =
-     *  без троттлинга. Серверная сторона — лучшее место для back-to-back: лишние
-     *  эмиссии гасятся ДО упаковки/отправки в провод. */
+    /** Opt-in min-interval (ms) for EACH server Listen node of this socket:
+     *  emit no more than once per `throttle` ms (leading + trailing-latest). undefined/0 =
+     *  no throttling. Server side is the best place for back-to-back: extra
+     *  emissions are suppressed BEFORE packing/sending to wire. */
     throttle?: number;
-    /** Оптимизации провода (договорные): { compact?: false } отключает уплотнение тиков. */
+    /** Wire optimizations (contractual): { compact?: false } disables tick compaction. */
     opt?: RpcOpt;
-    /** Автодетекция replay-линий в фасаде: 'auto' (default) — по бренду; 'force' — плюс
-     *  структурная (линии из чужой копии модуля без бренда); false — выключено, replay-линия
-     *  ведёт себя как обычный Listen (поведение прежнее). */
+    /** Auto-detection of replay lines in facade: 'auto' (default) — by brand; 'force' — plus
+     *  structural (lines from foreign module copy without brand); false — disabled, replay-line
+     *  behaves as normal Listen (previous behavior). */
     replay?: false | "auto" | "force";
-    /** Ворота лага для 'frame'-подписчиков replay-линий. Без highWater ворот нет:
-     *  frameLine = alias line (политика выбирается, но сервер не пропускает). */
+    /** Backpressure gates for 'frame' subscribers of replay lines. Without highWater no gates:
+     *  frameLine = alias line (policy is selected, but server doesn't skip). */
     replayOpts?: RpcReplayOpts;
 }) {
-    // Один listenSocket-wrapper на Listen ЗАТИРАЛ предыдущего подписчика при повторной
-    // подписке (его callback заменяет last/active). Мультиплексор: каждый подписчик
-    // получает собственный listenSocket; записи чистятся по завершении подписки.
-    // Кэш по ИДЕНТИЧНОСТИ Listen-узла. Важно для re-auth: фасады разных principal должны
-    // переиспользовать ОДИН и тот же Listen-объект (один listen-хендл), иначе при смене principal
-    // старая серверная подписка не снимается и продолжает слать события. Чтобы СМЕНИТЬ видимость
-    // стрима у клиента — переподключение (dispose+reconnect), а не reauth по живому сокету.
+    // One listenSocket wrapper per Listen OVERWROTE the previous subscriber on re-subscribe
+    // (its callback replaces last/active). Multiplexer: each subscriber
+    // gets its own listenSocket; records are cleaned up on subscription completion.
+    // Cache by Listen-node IDENTITY. Important for re-auth: facades of different principals should
+    // reuse ONE and the same Listen object (one listen handle), otherwise on principal change
+    // the old server subscription isn't removed and continues sending events. To CHANGE visibility
+    // of the stream on the client — reconnect (dispose+reconnect), not reauth on live socket.
     const cache = new WeakMap<object, ReturnType<typeof listenSocket>>();
-    // WeakMap нельзя обойти — держим параллельный ИТЕРИРУЕМЫЙ реестр узлов с ЖИВЫМИ
-    // подписчиками, ТОЛЬКО для статистики/потолка. Ключ — тот же узел identity, что и в cache.
-    // Реестр НАПОЛНЯЕТСЯ ЛЕНИВО в subscribe() (не в getListenSocket): resolveTransform зовёт
-    // getListenSocket ЭЙДЖЕРНО на каждый задекларированный Listen при старте и на каждом re-auth,
-    // поэтому регистрация там (а) показала бы в stats нулевые узлы и (б) пинила бы узлы старого
-    // principal на сильной Map → утечка по числу re-auth. Регистрируем только реальную подписку.
+    // WeakMap can't be iterated — we keep a parallel ITERABLE registry of nodes with ACTIVE
+    // subscribers, ONLY for stats/ceiling. Key — same node identity as in cache.
+    // Registry FILLS LAZILY in subscribe() (not in getListenSocket): resolveTransform calls
+    // getListenSocket EAGERLY for each declared Listen at startup and on every re-auth,
+    // so registration there would (a) show zero nodes in stats and (b) pin old principal
+    // nodes on a strong Map → leak per re-auth count. We register only real subscriptions.
     const registry = new Map<object, { subs: Map<Function, ReturnType<typeof listenSocket>> }>();
     function unsubscribeAllActive() {
         for (const {subs} of registry.values()) {
@@ -72,18 +72,18 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
     }
 
     function getListenSocket(parent: any, disconnectListen?: ListenCallbackBase<any>, nodeOpt?: { throttle?: number }): ReturnType<typeof listenSocket> {
-        // replay-линии троттлить нельзя: уроненный конверт = молчаливая дыра в seq,
-        // поэтому их узлы создаются с явным {throttle: undefined}
+        // replay lines can't be throttled: dropped envelope = silent gap in seq,
+        // so their nodes are created with explicit {throttle: undefined}
         const nodeThrottle = nodeOpt ? nodeOpt.throttle : throttle;
         let result = cache.get(parent);
         if (!result) {
             const subs = new Map<Function, ReturnType<typeof listenSocket>>();
             function subscribe(z: any, opts?: RpcListenSubscribeOpts) {
                 if (typeof z !== "function") return Promise.reject(new TypeError("Listen callback expects a function"));
-                // Opt-in потолок на узел: лишнего подписчика тихо игнорируем — стрим для него
-                // не стартует, серверная подписка не создаётся. Без опции ветка не берётся.
+                // Opt-in ceiling per node: extra subscriber is silently ignored — stream for it
+                // doesn't start, server subscription isn't created. Without option branch not taken.
                 if (maxPerListen != null && subs.size >= maxPerListen) return Promise.resolve();
-                // ленивая (ре-)регистрация узла при РЕАЛЬНОЙ подписке — переживает drain→re-sub
+                // lazy (re-)registration of node on REAL subscription — survives drain→re-sub
                 if (!registry.has(parent)) registry.set(parent, { subs });
                 subs.get(z)?.off();
                 const w = listenSocket(parent, { closeOn: disconnectListen, throttle: nodeThrottle });
@@ -91,11 +91,11 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                 const done = w.on(z, opts);
                 done.then(() => {
                     if (subs.get(z) == w) subs.delete(z);
-                    if (subs.size == 0) registry.delete(parent); // узел опустел — снимаем со счёта stats()
+                    if (subs.size == 0) registry.delete(parent); // node emptied — remove from stats() count
                 });
                 return done;
             }
-            // once — однократная подписка: первое событие → CB, затем RPC_STOP→CB_END и off.
+            // once — one-time subscription: first event → CB, then RPC_STOP→CB_END and off.
             function subscribeOnce(z: any, opts?: RpcListenSubscribeOpts) {
                 if (typeof z !== "function") return Promise.reject(new TypeError("Listen once expects a function"));
                 if (maxPerListen != null && subs.size >= maxPerListen) return Promise.resolve();
@@ -107,8 +107,8 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                     if (fired) return;
                     fired = true;
                     try {
-                        z(...a);        // первое событие → CB
-                        z(RPC_STOP);    // конец стрима → CB_END
+                        z(...a);        // first event → CB
+                        z(RPC_STOP);    // stream end → CB_END
                     }
                     finally {
                         w.off();
@@ -122,27 +122,27 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
             function unsubscribeAll() {
                 subs.forEach(w => w.off());
                 subs.clear();
-                registry.delete(parent); // узел снесён — убираем из реестра
+                registry.delete(parent); // node torn down — remove from registry
                 return true;
             }
-            // close — закрыть весь Listen-источник (полный teardown; влияет на ВСЕХ потребителей узла).
+            // close — close entire Listen source (full teardown; affects ALL node consumers).
             result = { on: subscribe, off: unsubscribeAll, callback: subscribe, removeCallback: unsubscribeAll, once: subscribeOnce, close: () => (parent as any).close?.() };
-            (result as any)[IS_RPC_LISTEN] = true; // сервер задекларирует адрес узла в Pkt.MAP
+            (result as any)[IS_RPC_LISTEN] = true; // server will declare node address in Pkt.MAP
             cache.set(parent, result);
         }
         return result;
     }
 
     // ===================================================================
-    // replay-transparent exposure (Feature A): replay-линия в фасаде → ОБА
-    // поверхности под ТЕМ ЖЕ ключом. Легаси-путь (plain listen) байт-в-байт,
-    // плюс провод replay: line / frameLine / since / keyframe / frame.
-    // Транспорт видит только seq — семантика событий остаётся в лямбдах линии.
+    // replay-transparent exposure (Feature A): replay line in facade → BOTH
+    // surfaces under THE SAME key. Legacy path (plain listen) byte-for-byte,
+    // plus wire replay: line / frameLine / since / keyframe / frame.
+    // Transport sees only seq — event semantics remain in line lambdas.
     // ===================================================================
     function isReplayNode(obj: any): boolean {
         if (replay == false || obj == null || typeof obj != "object") return false;
         if (Object.prototype.hasOwnProperty.call(obj, IS_REPLAY_LISTEN)) return true;
-        // 'force': структурная детекция — для линий из чужой копии модуля без бренда
+        // 'force': structural detection — for lines from foreign module copy without brand
         return replay == "force"
             && isListenCallback(obj)
             && typeof (obj as any).getSince == "function"
@@ -150,7 +150,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
             && !!(obj as any).line && typeof (obj as any).line == "object";
     }
 
-    // кадр линии с fallback для старых копий replay-listen без метода frame
+    // line frame with fallback for old replay-listen copies without frame method
     function lineFrame(parent: any, seq: number, hint?: unknown) {
         if (typeof parent.frame == "function") return parent.frame(seq, hint);
         const tail = parent.getSince(seq);
@@ -160,7 +160,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         throw new Error(`replay frame(${seq}): journal evicted and no keyframe (sacred line)`);
     }
 
-    // --- ворота лага (Feature B): content-blind, на подписчика — одно число (lastSent) ---
+    // --- backpressure gates (Feature B): content-blind, per subscriber — one number (lastSent) ---
     const gateClosers = new Set<() => void>();
     function closeAllGates() { for (const c of [...gateClosers]) c(); }
     let gatesHooked = false;
@@ -173,7 +173,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
     function gatedLineNode(parent: any) {
         const { pending: pendingOpt, highWater = Infinity, lowWater = 0, pollMs = 25 } = replayOpts ?? {};
         const pending = pendingOpt ?? (() => (socket as any)?.conn?.writeBuffer?.length ?? 0);
-        // персональная линия конвертов этого соединения за воротами
+        // personal envelope line of this connection behind the gates
         const out = createListen<any[]>(() => {});
         out.run();
         let lastSent: number = typeof parent.head == "function" ? parent.head() : 0;
@@ -193,8 +193,8 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
             offLine();
             gateClosers.delete(close);
         }
-        // громкий отказ ЭТОМУ подписчику (священная линия + вытеснение): конец стрима
-        // (RPC_STOP → CB_END у клиента), никакой молчаливой потери
+        // loud rejection to THIS subscriber (sacred line + eviction): stream end
+        // (RPC_STOP → CB_END on client), no silent loss
         function fail(e: any) {
             if (debug) console.error("[rpc replay gate] frame recovery failed:", e);
             const emitStop = !closed;
@@ -218,8 +218,8 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         const offLine = parent.line.on(function gateForward(ev: any) {
             if (closed) return;
             if (!gated && pending() > highWater) { gated = true; startPoll(); }
-            // осушилось прямо сейчас → кадр включит ЭТОТ конверт (журнал пишется до fan-out);
-            // всё ещё заперто → конверт дропается, frame(lastSent) его перекроет
+            // drained right now → frame will include THIS envelope (journal written before fan-out);
+            // still gated → envelope dropped, frame(lastSent) will cover it
             if (gated) { recoverIfDrained(); return; }
             lastSent = ev.seq;
             out.emit(ev);
@@ -229,12 +229,12 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         return getListenSocket(out, disconnectListen, { throttle: undefined });
     }
 
-    // merged-узел под тем же ключом; кэш по identity линии (как cache обычных Listen)
+    // merged node under same key; cache by line identity (like cache of regular Listen)
     const replayCache = new WeakMap<object, any>();
     function getReplayExpose(parent: any) {
         let node = replayCache.get(parent);
         if (node) return node;
-        const legacy = getListenSocket(parent, disconnectListen); // легаси-поверхность как была (включая throttle)
+        const legacy = getListenSocket(parent, disconnectListen); // legacy surface as-is (including throttle)
         const lineNode = getListenSocket(parent.line, disconnectListen, { throttle: undefined });
         const frameLineNode = replayOpts?.highWater != null ? gatedLineNode(parent) : lineNode;
         node = {
@@ -243,21 +243,21 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
             frameLine: frameLineNode,
             since: (seq: number) => parent.getSince(seq) ?? null,
             keyframe: () => parent.keyframe() ?? null,
-            // бросок (священная линия + вытеснение) уедет клиенту rejected promise — громко
+            // throw (sacred line + eviction) goes to client as rejected promise — loud
             frame: (seq: number, hint?: unknown) => lineFrame(parent, seq, hint),
         };
-        node[IS_RPC_LISTEN] = true; // сервер задекларирует адрес узла в Pkt.MAP (легаси-подписка)
+        node[IS_RPC_LISTEN] = true; // server will declare node address in Pkt.MAP (legacy subscription)
         replayCache.set(parent, node);
         return node;
     }
 
     // ===================================================================
-    // api: наблюдаемость подписок (аддитивно — раньше фабрика возвращала void)
+    // api: subscription observability (additive — previously factory returned void)
     // ===================================================================
     const api = {
-        /** Живые серверные Listen-узлы этого сокета и число их локальных потребителей. */
+        /** Active server Listen nodes of this socket and count of their local consumers. */
         subscriptions: () => Array.from(registry, ([parent, e], i) => ({
-            // ключ — стабильный токен идентичности узла (НЕ адрес провода): для дебага/метрик.
+            // key — stable identity token of node (NOT wire address): for debug/metrics.
             key: (parent as any)?.constructor?.name ? `${(parent as any).constructor.name}#${i}` : `listen#${i}`,
             consumers: e.subs.size,
         })),
@@ -269,12 +269,12 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
             ...hooks,
             onDispose: () => { closeAllGates(); unsubscribeAllActive(); hooks?.onDispose?.(); },
             resolveTransform: (obj: any) => {
-                // ВАЖНО: replay-детекция ДО isListenCallback — replay-api структурно проходит
-                // проверку plain-Listen, и без бренда его replay-поверхность была бы потеряна.
+                // IMPORTANT: replay detection BEFORE isListenCallback — replay-api passes
+                // plain-Listen check structurally, and without brand its replay surface would be lost.
                 if (isReplayNode(obj)) return getReplayExpose(obj);
                 if (isListenCallback(obj)) return getListenSocket(obj, disconnectListen);
-                // bare `on`-функция: по реестру (WeakMap) находим её api и оборачиваем — позволяет
-                // прокинуть через веб ТОЛЬКО ссылку on, а клиент получит подписку {on, once, close}.
+                // bare `on` function: find its api by registry (WeakMap) and wrap — allows
+                // passing through web ONLY the on reference, client gets subscription {on, once, close}.
                 if (isListenOn(obj)) {
                     const byOn = getListenByOn(obj);
                     return isReplayNode(byOn) ? getReplayExpose(byOn) : getListenSocket(byOn, disconnectListen);
@@ -284,5 +284,5 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         } as any,
     });
 
-    return { api }; // аддитивно: раньше void. Старые вызовы (harness x3, test.ts) игнорируют возврат.
+    return { api }; // additive: previously void. Old calls (harness x3, test.ts) ignore return.
 }

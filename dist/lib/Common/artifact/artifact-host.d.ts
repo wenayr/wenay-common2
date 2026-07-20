@@ -1,4 +1,4 @@
-import { StoreDrain } from '../Observe/store';
+import { Store, StoreDrain } from '../Observe/store';
 export type ArtifactRuntime = 'sandboxed-iframe' | 'download';
 export type ArtifactState = 'ready' | 'revoked' | 'expired';
 export type ArtifactRetention = {
@@ -42,6 +42,7 @@ export type ArtifactStoragePort = {
         storageKey: unknown;
         reason: 'revoked' | 'expired';
     }): void | Promise<void>;
+    adoptKey?(artifact: ArtifactRecord): unknown | undefined;
 };
 export type ArtifactRegisterInput = {
     owner: string;
@@ -57,6 +58,7 @@ export type ArtifactPolicy = {
 export type ArtifactHostDeps = {
     storage: ArtifactStoragePort;
     policy?: ArtifactPolicy;
+    store?: Store<ArtifactStore>;
     id?: () => string;
     now?: () => number;
     history?: number;
@@ -72,7 +74,15 @@ export declare function createArtifactHost(deps: ArtifactHostDeps): {
     reap: (at?: number) => Promise<ArtifactRecord[]>;
     connection: (account: string) => {
         fragment: {
-            state: import("../events/replay-wire").ReplayExpose<[import("../Observe/store").StorePatch]>;
+            state: import("../events/replay-wire").ReplayExpose<[import("../Observe/store").StorePatch]> | {
+                describe: () => {
+                    [x: string]: any;
+                };
+                line: import("../..").ListenApi<[import("../events/replay-listen").ReplayEvent<[import("../Observe/store").StorePatch]>]>;
+                since: (seq: number) => import("../events/replay-listen").ReplayEvent<[import("../Observe/store").StorePatch]>[] | null;
+                keyframe: () => import("../events/replay-listen").ReplayEvent<[import("../Observe/store").StorePatch]> | null;
+                frame: (sinceSeq: number, hint?: unknown) => import("../events/replay-listen").ReplayEvent<[import("../Observe/store").StorePatch]>[];
+            };
             open: (artifactId: string) => Promise<{
                 url: string;
                 expiresAt: number;
@@ -81,7 +91,7 @@ export declare function createArtifactHost(deps: ArtifactHostDeps): {
         };
         close(): void;
     };
-    store: import("../Observe/store").Store<ArtifactStore>;
+    store: Store<ArtifactStore>;
     close(): void;
 };
 export type ArtifactHost = ReturnType<typeof createArtifactHost>;

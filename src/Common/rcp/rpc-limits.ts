@@ -9,7 +9,7 @@ export type RpcLimits = {
     maxStringLen?: number;
     maxCallbacks?: number;
     maxPathLen?: number;
-    /** Потолок БАЙТ одного бинарного листа (TypedArray/ArrayBuffer/Buffer). */
+    /** Byte ceiling of single binary leaf (TypedArray/ArrayBuffer/Buffer). */
     maxBinaryLen?: number;
 };
 

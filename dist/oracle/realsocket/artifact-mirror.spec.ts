@@ -1,9 +1,9 @@
-// REAL-SOCKET artifact transfer oracle. Каталог артефактов реплицируется на
-// узел-зеркало обычным createStoreFollower (это store), байты едут лениво через
-// createArtifactByteCache: промах → open у лидера → fetch → sha256-проверка →
-// кэш. Политика применяется на каждой кромке: mirror-link видит весь каталог
-// (доверенный канал), конечные клиенты — только своё. Тексты ошибок совпадают
-// с host — клиенту неразличимо, где он. Порты 3162/3163 (диапазон 3100+).
+// REAL-SOCKET artifact transfer oracle. Artifact catalog is replicated to
+// a mirror node with a plain createStoreFollower (it is a store), bytes travel lazily through
+// createArtifactByteCache: miss → open at the leader → fetch → sha256 check →
+// cache. Policy applies at every edge: the mirror-link sees the whole catalog
+// (trusted channel), end clients see only their own. Error texts match the
+// host — the client cannot tell which one it talks to. Ports 3162/3163 (3100+ range).
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {createArtifactHost, ArtifactRecord, ArtifactStore} from '../../src/Common/artifact/artifact-host'
 import {createArtifactMirror} from '../../src/Common/artifact/artifact-mirror'
@@ -42,19 +42,19 @@ async function main() {
         process.exit(3)
     }, 120000)
 
-    // ============== лидер: авторитетный каталог + байты в Map + data:-URL ==============
+    // ============== leader: authoritative catalog + bytes in a Map + data: URL ==============
     const leaderBytes = new Map<string, string>()
     let fetches = 0
     const host = createArtifactHost({
         storage: {
             open({storageKey}) {
-                // data:-URL абсолютен и фетчится нодой — ораклу не нужен HTTP-порт раздачи
+                // the data: URL is absolute and fetched by node — the oracle needs no HTTP serving port
                 const html = leaderBytes.get(String(storageKey)) ?? ''
                 return {url: 'data:text/html;base64,' + Buffer.from(html).toString('base64'), expiresAt: Date.now() + 60_000}
             },
         },
-        // Кромка доверия: mirror-link читает весь каталог и проводит форварды;
-        // авторизацию КОНЕЧНОГО клиента уже сделало зеркало на своей кромке.
+        // Trust edge: the mirror-link reads the whole catalog and carries forwards;
+        // END-client authorization was already done by the mirror at its own edge.
         policy: {
             canRead: (account, artifact) => account == MIRROR_ACCOUNT || artifact.owner == account,
             canRevoke: (account, artifact) => account == MIRROR_ACCOUNT || artifact.owner == account,
@@ -85,8 +85,8 @@ async function main() {
         },
     })
 
-    // ============== узел-зеркало: каталог-фолловер + байт-кэш + read-edge ==============
-    const upstream = await startRealClient({port: LEADER_PORT})   // первый коннект = mirror-link
+    // ============== mirror node: catalog follower + byte cache + read-edge ==============
+    const upstream = await startRealClient({port: LEADER_PORT})   // first connection = mirror-link
     const catalog = createStoreFollower<ArtifactStore>({
         remote: upstream.api.artifacts.state as ReplayRemote<[StorePatch]>,
         initial: {artifacts: {}},
@@ -108,7 +108,7 @@ async function main() {
             return {url: 'data:text/html;base64,' + Buffer.from(String(bytes)).toString('base64'), expiresAt: Date.now() + 60_000}
         },
         async revoke(_account, artifactId) {
-            // форвард источнику истины: авторизация конечного клиента уже пройдена локально
+            // forward to the source of truth: end-client authorization already passed locally
             return await upstream.api.artifacts.revoke(artifactId)
         },
     })
@@ -125,9 +125,9 @@ async function main() {
     await catalog.ready
     await check('catalog mirrored to the follower node', () => catalog.store.state.artifacts[first.id]?.descriptor.label, 'first')
 
-    // ============== клиенты зеркала: политика на кромке + ленивые байты ==============
-    const a = await startRealClient({port: MIRROR_PORT})   // person-a (владелец)
-    const b = await startRealClient({port: MIRROR_PORT})   // person-b (чужой)
+    // ============== mirror clients: policy at the edge + lazy bytes ==============
+    const a = await startRealClient({port: MIRROR_PORT})   // person-a (owner)
+    const b = await startRealClient({port: MIRROR_PORT})   // person-b (stranger)
 
     const openedByA = await a.api.artifacts.open(first.id)
     const fetched = await fetch(openedByA.url)
@@ -140,15 +140,15 @@ async function main() {
     await check('stranger cannot open through the mirror',
         () => rejectionText(() => Promise.resolve(b.api.artifacts.open(first.id))), 'artifact open: forbidden or missing')
 
-    // ============== целостность: битые байты не проходят hash-проверку ==============
+    // ============== integrity: corrupted bytes fail the hash check ==============
     const evil = '<!doctype html><script>alert("swapped")</script>'
     const second = await registerOnLeader('person-a', '<!doctype html><p>honest</p>', 'second')
-    leaderBytes.set('bytes-second', evil)   // подмена содержимого ПОСЛЕ регистрации
+    leaderBytes.set('bytes-second', evil)   // content swapped AFTER registration
     await waitFor('tampered artifact reaches the catalog', () => catalog.store.state.artifacts[second.id] != null)
     const tampered = await rejectionText(() => Promise.resolve(a.api.artifacts.open(second.id)))
     await check('tampered bytes fail the integrity check', () => tampered?.includes('integrity check failed'), true)
 
-    // ============== revoke сквозь зеркало: форвард + реактивная инвалидация ==============
+    // ============== revoke through the mirror: forward + reactive invalidation ==============
     const revoked = await a.api.artifacts.revoke(first.id)
     await check('revoke forwarded to the leader', () => revoked.state, 'revoked')
     await waitFor('revocation mirrors back', () => catalog.store.state.artifacts[first.id]?.state == 'revoked')
@@ -157,7 +157,7 @@ async function main() {
     await check('stranger cannot revoke through the mirror',
         () => rejectionText(() => Promise.resolve(b.api.artifacts.revoke(second.id))), 'artifact revoke: forbidden or missing')
 
-    // ============== артефакт без content-hash версии не передаётся ==============
+    // ============== an artifact without a content-hash version is not transferred ==============
     leaderBytes.set('bytes-legacy', '<p>legacy</p>')
     const legacy = host.register({
         owner: 'person-a',

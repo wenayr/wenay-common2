@@ -1,13 +1,13 @@
 // ============================================================
 //  replay/coalesce.test.ts
 //
-//  Слой D: key-level coalescing в conflateReplay (opts.keyOf).
-//  Пока клиент лагает — карта «ключ → последний конверт», восстановление
-//  хвостом схлопнутых дельт вместо полного keyframe; неключуемое событие
-//  или переполнение maxKeys → деградация до keyframe recovery.
-//  Часть 1 — универсальная линия (тики по символам), часть 2 — деградации,
-//  часть 3 — зеркало стора со storePatchKey (включая вложенные пути).
-//  Запуск:
+//  Layer D: key-level coalescing in conflateReplay (opts.keyOf).
+//  While client lags — map "key → latest envelope", recovery
+//  via tail of coalesced deltas instead of full keyframe; non-keyed event
+//  or maxKeys overflow → degrade to keyframe recovery.
+//  Part 1 — generic wire (ticks by symbol), part 2 — degradations,
+//  part 3 — store mirror with storePatchKey (including nested paths).
+//  Run:
 //      npx ts-node replay/coalesce.test.ts
 // ============================================================
 
@@ -79,16 +79,16 @@ async function main() {
         const s0 = gated.stats()
         ok(s0.coalesced == 0 && s0.flushes == 0 && s0.keyframes == 0, 'gate was transparent so far')
 
-        // ============ затор: тики схлопываются по символу, клиенту — тишина ============
+        // ============ congestion: ticks coalesce by symbol, client — silence ============
         buf.v = 10
-        for (let px = 101; px <= 105; px++) tick('A', px)   // 5 тиков одного ключа
+        for (let px = 101; px <= 105; px++) tick('A', px)   // 5 ticks of same key
         tick('B', 201)
         tick('A', 106)
         ok(book['A'] == 100 && book['B'] == 200, 'over highWater: nothing reaches the client')
         ok(gated.stats().conflating, 'gate is conflating')
         ok(gated.stats().coalesced == 5, `5 ticks of A superseded in place (coalesced=${gated.stats().coalesced})`)
 
-        // ============ буфер слился в тишине → хвост последних значений, НЕ keyframe ============
+        // ============ buffer drained in silence → tail of latest values, NOT keyframe ============
         const envBefore = envelopes
         buf.v = 0
         await waitFor('poll flush', () => book['A'] == 106)
@@ -100,7 +100,7 @@ async function main() {
         tick('A', 107)
         ok(book['A'] == 107, 'live ticks resume after recovery')
 
-        // ============ восстановление ближайшим же событием, без ожидания опроса ============
+        // ============ recovery by the next event itself, no polling wait ============
         buf.v = 10
         tick('C', 1)
         ok(book['C'] == null, 'tick while conflating is held, not delivered')
@@ -111,10 +111,10 @@ async function main() {
 
         ok(ascendingUnique(seqs), `delivered seqs strictly ascending: ${seqs.join(',')}`)
 
-        // ============ неключуемое событие → эпизод деградирует до keyframe ============
+        // ============ non-keyed event → episode degrades to keyframe ============
         buf.v = 10
         tick('E', 5)
-        emit({type: 'snap', all: {...state}})   // keyOf → null: схлопнуть нельзя
+        emit({type: 'snap', all: {...state}})   // keyOf → null: cannot coalesce
         const envBeforeKf = envelopes
         buf.v = 0
         tick('F', 6)
@@ -122,7 +122,7 @@ async function main() {
         ok(envelopes - envBeforeKf == 1, `recovery cost exactly 1 envelope (got ${envelopes - envBeforeKf})`)
         ok(book['E'] == 5 && book['F'] == 6 && json(book) == json(state), 'keyframe covered both held and unkeyable events')
 
-        // ============ close: ворота мертвы навсегда ============
+        // ============ close: gate is dead forever ============
         const before = got.length
         gated.close()
         tick('G', 7)
@@ -149,7 +149,7 @@ async function main() {
             {line: gated.api.line, since: s => gated.api.since(s), keyframe: () => gated.api.keyframe()},
             m => { if (m.type == 'snap') Object.assign(book, m.all); else book[m.sym] = m.px })
         await sub.ready
-        tick('A', 1); tick('B', 2); tick('C', 3)   // третий ключ не влезает в карту
+        tick('A', 1); tick('B', 2); tick('C', 3)   // third key does not fit in map
         buf.v = 0
         await waitFor('keyframe recovery', () => book['C'] == 3)
         ok(gated.stats().keyframes == 1 && gated.stats().flushes == 0, 'over maxKeys → one keyframe, memory stays bounded by keys')
@@ -180,10 +180,10 @@ async function main() {
         tick('A', 1); tick('B', 2)
         ok(gated.stats().conflating, 'episode is holding a key map')
 
-        gated.close()   // дисконнект посреди эпизода: карта должна умереть вместе с воротами
+        gated.close()   // disconnect mid-episode: map dies with gate
         buf.v = 0
-        await delay(60)   // опрос остановлен close() — восстановления не будет
-        tick('C', 3)      // и события в ворота больше не проходят (журнал линии живёт дальше)
+        await delay(60)   // polling stopped by close() — no recovery
+        tick('C', 3)      // and events no longer pass through the gate (wire log continues)
         ok(delivered == base && book['A'] == null, 'nothing leaks after close(): no tail, no keyframe, no live')
         ok(json(gated.stats()) == json({conflating: true, dropped: 0, keyframes: 0, coalesced: 0, flushes: 0}), 'stats frozen at close time')
         sub()
@@ -210,7 +210,7 @@ async function main() {
         await sub.ready
         ok(json(mirror.state) == json(backend.snapshot()), 'fresh mirror converged via keyframe')
 
-        // ============ клиент завис: 20 патчей двух путей → 2 конверта ============
+        // ============ client stalled: 20 patches of two paths → 2 envelopes ============
         buf.v = 50
         for (let i = 1; i <= 10; i++) {
             backend.state.units['a'].hp = 100 + i
@@ -225,7 +225,7 @@ async function main() {
         ok(envelopes - envBefore == 2, `20 missed patches collapsed into 2 envelopes (got ${envelopes - envBefore})`)
         ok(gated.stats().flushes == 1 && gated.stats().keyframes == 0, 'the big store never travelled — no keyframe')
 
-        // ============ вложенные пути: лист → замена предка → лист, порядок по seq ============
+        // ============ nested paths: leaf → ancestor replacement → leaf, ordered by seq ============
         buf.v = 50
         backend.state.units['b'].hp = 55
         await flushReactive(backend.state)
@@ -238,7 +238,7 @@ async function main() {
         ok(json(mirror.state) == json(backend.snapshot()), 'ancestor/descendant interleave replayed bit-exact')
         ok(gated.stats().keyframes == 0, 'still no keyframe: tails were enough')
 
-        // ============ реконнект через since: журнал полон, дырки схлопывания не мешают ============
+        // ============ reconnect via since: log full, coalescing gaps harmless ============
         const at = sub.seq()
         sub()
         backend.state.tick = 11

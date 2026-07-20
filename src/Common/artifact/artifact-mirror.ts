@@ -1,13 +1,13 @@
 // =====================================================================
-// Артефакт-зеркало: read-edge реплицированного каталога на узле-фолловере
+// Artifact mirror: read-edge of replicated catalog on follower node
 // =====================================================================
-// Каталог артефактов доезжает до узла обычной replay-репликацией (это store),
-// а этот модуль — «кромка чтения» поверх него: та же per-account проекция и
-// тот же фрагмент {state, open, revoke}, что у createArtifactHost, только
-// авторитета здесь нет. open() после ЛОКАЛЬНОЙ авторизации делегируется deps
-// (байт-кэш + локальная выдача URL), revoke форвардится источнику истины.
-// Политика применяется НА КАЖДОЙ кромке: репликация каталога между узлами —
-// доверенный канал, но конечный клиент видит только своё.
+// The artifact catalog reaches the node via normal replay replication (it's a store),
+// and this module is the "read edge" on top of it: the same per-account projection and
+// the same fragment {state, open, revoke} as in createArtifactHost, only
+// there is no authority here. open() after LOCAL authorization is delegated to deps
+// (byte cache + local URL delivery), revoke is forwarded to the source of truth.
+// Policy is applied AT EACH EDGE: replication of the catalog between nodes is
+// a trusted channel, but the end client sees only their own.
 
 import {createStore, Store, StoreDrain} from '../Observe/store'
 import {exposeStoreReplay} from '../Observe/store-replay'
@@ -21,13 +21,13 @@ import {
 } from './artifact-host'
 
 export type ArtifactMirrorDeps = {
-    /** Зеркальный каталог (store фолловера) — источник записей, read-only. */
+    /** Mirror catalog (follower store) — source of records, read-only. */
     catalog: Store<ArtifactStore>
-    /** Та же семантика, что у host: по умолчанию видит/отзывает только владелец. */
+    /** Same semantics as host: by default only owner can read/revoke. */
     policy?: Pick<ArtifactPolicy, 'canRead' | 'canRevoke'>
-    /** Локальная выдача open-инструкции ПОСЛЕ авторизации: кэш байтов → свой URL. */
+    /** Local delivery of open-instruction AFTER authorization: byte cache → own URL. */
     open: (input: {artifact: ArtifactRecord, account: string}) => Promise<ArtifactOpenInstruction> | ArtifactOpenInstruction
-    /** Форвард revoke источнику истины; не задан — зеркало честно read-only. */
+    /** Forward revoke to source of truth; not set — mirror is honestly read-only. */
     revoke?: (account: string, artifactId: string) => Promise<ArtifactRecord> | ArtifactRecord
     history?: number
     drain?: StoreDrain
@@ -64,9 +64,9 @@ export function createArtifactMirror(deps: ArtifactMirrorDeps) {
         return artifact.retention.expiresAt != null && artifact.retention.expiresAt <= now()
     }
 
-    // Требования те же, что у host.open — тексты ошибок совпадают, клиенту
-    // неразличимо, к лидеру он подключён или к зеркалу. Инвалидация — не наша:
-    // истёкшее зеркало только отказывает, состояние меняет лидер (reap).
+    // Requirements are the same as in host.open — error texts match, it is indistinguishable
+    // to the client whether they are connected to the leader or the mirror. Invalidation is not our job:
+    // an expired mirror only refuses, the leader changes the state (reap).
     function requireReadableReady(account: string, artifactId: string) {
         const artifact = catalog.state.artifacts?.[artifactId]
         if (!artifact || !readable(account, artifact)) throw new Error('artifact open: forbidden or missing')

@@ -18,6 +18,7 @@ __exportStar(require("./replay-listen"), exports);
 __exportStar(require("./replay-wire"), exports);
 __exportStar(require("./replay-conflate"), exports);
 __exportStar(require("./replay-history"), exports);
+__exportStar(require("./replay-record"), exports);
 __exportStar(require("./replay-route"), exports);
 __exportStar(require("./route-coordinator"), exports);
 __exportStar(require("./replay-channel"), exports);

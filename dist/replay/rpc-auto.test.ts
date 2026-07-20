@@ -2,15 +2,15 @@
 //  replay/rpc-auto.test.ts
 //
 //  Feature A+B (rev 2): replay-transparent RPC exposure.
-//  - легаси-подписка на replay-ключ = байт-в-байт plain Listen
-//  - replaySubscribe против merged-узла (since:0, no gaps/dups)
-//  - оба потребителя на ОДНОМ соединении
-//  - frame: мини-кадрик == fold полного хвоста (equivalence)
-//  - current:'last' — keyframe без ручного состояния
-//  - ворота лага (policy 'frame'): пропуск + восстановление кадром
-//  - негативная детекция: похожий объект НЕ replay
-//  - священная линия: frame бросает громко (in-proc)
-//  Запуск: npx ts-node replay/rpc-auto.test.ts
+//  - legacy subscription to replay-key = byte-for-byte plain Listen
+//  - replaySubscribe against merged node (since:0, no gaps/dups)
+//  - both consumers on ONE connection
+//  - frame: mini-frame == fold of full tail (equivalence)
+//  - current:'last' — keyframe without manual state
+//  - lag gates (policy 'frame'): skip + frame recovery
+//  - negative detection: similar object is NOT replay
+//  - sacred line: frame throws loud (in-proc)
+//  Run: npx ts-node replay/rpc-auto.test.ts
 // ============================================================
 
 import express from 'express'
@@ -52,7 +52,7 @@ async function startRealServer(object: object, replayOpts?: RpcReplayOpts, captu
         createRpcServerAuto({
             socket: {
                 emit: (key, data) => {
-                    // негативная детекция проверяется по серверной декларации Pkt.MAP
+                    // negative detection is verified by server declaration Pkt.MAP
                     if (captured && Array.isArray(data) && data[0] === Pkt.MAP) captured.listenPaths = data[3]
                     socket.emit(key, data)
                 },
@@ -91,8 +91,8 @@ async function startRealClient<T extends object>(port: number) {
     }
 }
 
-// фасад: обычный Listen (baseline), одно-сущностная replay-линия, мульти-символьная
-// с уплотнителем, и обманка для негативной детекции
+// facade: plain Listen (baseline), single-entity replay-line, multi-character
+// with compactor, and fake for negative detection
 function makeFacade() {
     const [emitPlain, plain] = createListenPair<[number]>()
     const [emitTicker, ticker] = replayListen<[number]>({history: 64, current: 'last'})
@@ -117,7 +117,7 @@ const foldQuotes = (envs: ReplayEvent<[string, number]>[]) => {
 async function main() {
     console.log('\n[rpc-auto] replay-transparent exposure over a real Socket.IO wire')
 
-    // ============ in-proc: священная линия бросает громко ============
+    // ============ in-proc: sacred line throws loud ============
     {
         const [emit, sacred] = replayListen<[number]>({history: 2})
         for (let i = 1; i <= 5; i++) emit(i)
@@ -127,7 +127,7 @@ async function main() {
         ok(sacred.frame(4).length == 1 && sacred.frame(4)[0].event[0] == 5, 'sacred line + covered gap: exact tail')
     }
 
-    // ============ in-proc: конец стрима (не-конверт) — громко в onError ============
+    // ============ in-proc: stream end (non-envelope) — loud in onError ============
     {
         let err: any = null
         const remote: ReplayRemote<[number]> = {
@@ -151,7 +151,7 @@ async function main() {
     try {
         const deep = c1.client.func
 
-        // ============ декларация MAP: replay-узлы объявлены, обманка — нет ============
+        // ============ MAP declaration: replay nodes declared, fake — not ============
         const lp = captured.listenPaths ?? []
         const partsOf = (key: string) => {
             try {
@@ -171,18 +171,18 @@ async function main() {
         ok(hasPath('plain'), 'plain Listen declared as before (MAP grows additively)')
         ok(!lp.some(p => startsWithPath(p, ['fake'])), 'object with line/getSince/keyframe props is NOT misdetected (brand)')
 
-        // ============ легаси-паритет: replay-ключ ведёт себя как plain Listen ============
+        // ============ legacy parity: replay-key behaves like plain Listen ============
         const gotPlain: number[] = []
         const gotTicker: number[] = []
         deep.plain.callback((v: number) => gotPlain.push(v))
         deep.ticker.callback((v: number) => gotTicker.push(v))
-        await delay(150) // подписки долетели
+        await delay(150) // subscriptions arrived
         for (let i = 1; i <= 5; i++) { world.emitPlain(i); world.emitTicker(i) }
         await waitFor('legacy live events', () => gotPlain.length >= 5 && gotTicker.length >= 5)
         ok(json(gotTicker) == json(gotPlain), `legacy path: replay key delivers exactly what a plain Listen does (${json(gotTicker)})`)
 
-        // ============ replay-путь на ТОМ ЖЕ соединении (legacy + replay сосуществуют) ============
-        // merged-узел структурно совместим с ReplayRemote — deep.ticker уходит как есть
+        // ============ replay-path on SAME connection (legacy + replay coexist) ============
+        // merged node is structurally compatible with ReplayRemote — deep.ticker goes as-is
         const seqs: number[] = []
         const vals: number[] = []
         const sub = replaySubscribe(deep.ticker, (v: number) => vals.push(v), {since: 0, onSeq: s => seqs.push(s)})
@@ -195,11 +195,11 @@ async function main() {
         await waitFor('live after catch-up on both consumers', () => vals.includes(6) && gotTicker.includes(6))
         ok(true, 'legacy and replay subscriptions coexist live on ONE connection')
 
-        // ============ current:'last' — keyframe без ручного состояния ============
+        // ============ current:'last' — keyframe without manual state ============
         const kf = await deep.ticker.keyframe()
         ok(kf && kf.event[0] == 6 && kf.seq == 6, `current:'last' keyframe = last envelope (${json(kf)})`)
 
-        // ============ frame equivalence: мини-кадрик == fold полного хвоста ============
+        // ============ frame equivalence: mini-frame == fold of full tail ============
         world.emitQuote('AAPL', 100); world.emitQuote('AAPL', 101); world.emitQuote('MSFT', 300)
         world.emitQuote('AAPL', 102); world.emitQuote('MSFT', 301)
         const fullTail = await deep.quotes.since(0)
@@ -208,7 +208,7 @@ async function main() {
         ok(json(foldQuotes(mini)) == json(foldQuotes(fullTail)), 'apply(mini-frame) == apply(full tail) — state equivalent')
         ok(mini.every((ev, i) => i == 0 || ev.seq > mini[i - 1].seq), 'mini-frame envelopes monotonic by seq')
 
-        // ============ ворота лага (Feature B): policy 'frame' ============
+        // ============ lag gates (Feature B): policy 'frame' ============
         let fakePending = 0
         gateServer = await startRealServer(world.facade, {pending: () => fakePending, highWater: 5, lowWater: 0, pollMs: 10})
         c3 = await startRealClient<Facade>(gateServer.port)
@@ -224,7 +224,7 @@ async function main() {
         await waitFor('gated line live while drained', () => gated['AAPL'] == 110)
         ok(true, 'frame policy: live pass-through while socket is drained')
 
-        fakePending = 100 // клиент «залип»
+        fakePending = 100 // client «stuck»
         await delay(20)
         const before = gatedDeliveries
         for (let i = 0; i < 30; i++) world.emitQuote('AAPL', 200 + i)
@@ -232,7 +232,7 @@ async function main() {
         await delay(120)
         ok(gatedDeliveries == before, `lag: gate dropped everything, no queue (${gatedDeliveries - before} leaked)`)
 
-        fakePending = 0 // буфер слился
+        fakePending = 0 // buffer drained
         await waitFor('frame recovery after drain', () => gated['AAPL'] == 229 && gated['MSFT'] == 419)
         ok(gatedDeliveries - before == 2, `recovery = mini-frame: 50 missed events arrived as 2 envelopes (${gatedDeliveries - before})`)
 

@@ -37,7 +37,6 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Contract = exports.Conversation = exports.Artifact = exports.Ai = exports.Resource = exports.Peer = exports.Media = exports.Replay = exports.Observe = exports.Color = exports.Time = exports.Params = exports.Bars = exports.Math = void 0;
-__exportStar(require("./Common/node_console"), exports);
 __exportStar(require("./Common/core/Decorator"), exports);
 __exportStar(require("./Common/core/BaseTypes"), exports);
 __exportStar(require("./Common/core/type"), exports);

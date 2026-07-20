@@ -191,7 +191,15 @@ export declare function createStoreReplicaSet<T extends object>(deps: StoreRepli
         fragment: {
             descriptor: () => StoreReplicaDescriptor;
             changed: import("../events/Listen").ListenApi<[StoreReplicaDescriptor]>;
-            replay: import("../events/replay-wire").ReplayExpose<[StorePatch]>;
+            replay: import("../events/replay-wire").ReplayExpose<[StorePatch]> | {
+                describe: () => {
+                    [x: string]: any;
+                };
+                line: import("../events/Listen").ListenApi<[import("../events/replay-listen").ReplayEvent<[StorePatch]>]>;
+                since: (seq: number) => import("../events/replay-listen").ReplayEvent<[StorePatch]>[] | null;
+                keyframe: () => import("../events/replay-listen").ReplayEvent<[StorePatch]> | null;
+                frame: (sinceSeq: number, hint?: unknown) => import("../events/replay-listen").ReplayEvent<[StorePatch]>[];
+            };
             ping: () => number;
         };
         canWrite: () => boolean;

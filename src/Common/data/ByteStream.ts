@@ -75,7 +75,7 @@ export class ByteStreamW
 	get data() : Readonly<DataView> { return new DataView(this._buffer(), this._view.byteOffset, this._pos); }
 
 	noThrow() : ByteStreamW { let other= new ByteStreamW(this._view);  other._pos= this._pos;  other._isThrowable= false;  return other; }
-	// Обеспечить наличие свободных байт
+	// Ensure free bytes available
 	private _ensureAllocation(bytes :number) {
 		let minSize= this._pos + bytes;
 		if (minSize > this._view.byteLength)
@@ -85,7 +85,7 @@ export class ByteStreamW
 			}
 	}
 
-	// setInt* и setUint* пишут одинаковые байты для одного value → эвристика по знаковому биту была мёртвой
+	// setInt* and setUint* write the same bytes for one value → sign bit heuristic was dead
 	private _setInt8(pos :number, value :number) { this._view.setInt8(pos, value); }
 	private _setInt16(pos :number, value :number) { this._view.setInt16(pos, value); }
 	private _setInt32(pos :number, value :number) { this._view.setInt32(pos, value); }
@@ -102,7 +102,7 @@ export class ByteStreamW
 				case 2: this._setInt16(pos, value); break;
 				case 3: this._setInt16(pos, value); this._setInt8(pos+2, value>>16);  break; //console.log("! ",view.getInt16(pos)," ",view.getInt8(pos+2));
 				case 4: this._setInt32(pos, value);  break;
-				case 6: this._setInt32(pos, value);  this._setInt16(pos+4, Math.floor(value/0x100000000));  break;  // старшее слово начинается с бита 32 (2^32), не 2^28
+				case 6: this._setInt32(pos, value);  this._setInt16(pos+4, Math.floor(value/0x100000000));  break;  // high word starts from bit 32 (2^32), not 2^28
 				case 8: this._setInt32(pos, value);  this._setInt32(pos+4, Math.floor(value/0x100000000));  break;
 				default: throw("Wrong byte length: "+bytes);
 			}
@@ -256,9 +256,9 @@ class ByteStreamR_<throwable extends boolean>
 					switch (bytes) {
 						case 1: return view.getInt8(pos);
 						case 2: return view.getInt16(pos);
-						case 3: return view.getUint16(pos) + (view.getInt8(pos + 2) << 16);  // low беззнаково (иначе расширение знака рушит старший байт), high знаково
+						case 3: return view.getUint16(pos) + (view.getInt8(pos + 2) << 16);  // low unsigned (else sign extension ruins high byte), high signed
 						case 4: return view.getInt32(pos);
-						case 6: return view.getUint32(pos) + view.getInt16(pos + 4) * 0x100000000;  // low беззнаково, "+" (а не "|", которое режет до 32 бит), 2^32
+						case 6: return view.getUint32(pos) + view.getInt16(pos + 4) * 0x100000000;  // low unsigned, "+" (not "|", which cuts to 32 bits), 2^32
 						case 8: return view.getUint32(pos) + view.getInt32(pos + 4) * 0x100000000;
 					}
 				}
@@ -268,7 +268,7 @@ class ByteStreamR_<throwable extends boolean>
 						case 2: return view.getUint16(pos);
 						case 3: return view.getUint16(pos) | (view.getUint8(pos + 2) << 16);
 						case 4: return view.getUint32(pos);
-						case 6: return view.getUint32(pos) + view.getUint16(pos + 4) * 0x100000000;  // "+" вместо "|", 2^32 вместо 2^28
+						case 6: return view.getUint32(pos) + view.getUint16(pos + 4) * 0x100000000;  // "+" instead of "|", 2^32 instead of 2^28
 						case 8: return view.getUint32(pos) + view.getUint32(pos + 4) * 0x100000000;
 					}
 				}
@@ -334,7 +334,7 @@ class ByteStreamR_<throwable extends boolean>
 	readArray<T>(arg :any) // : (stream :ByteStreamR)=>NonNullable<T> | (NumericTypes|Nullable<NumericTypes>) | ReaderFromBytes<NonNullable<T>>)
 	{
 		if (typeof arg=="string" || arg instanceof Nullable) return this._readArrayOfNumeric(arg as NumericTypes);
-		if (0) return [(arg as ReaderFromBytes<T>).read(this as unknown as ByteStreamR)]; // Проверка наличия метода в типе
+		if (0) return [(arg as ReaderFromBytes<T>).read(this as unknown as ByteStreamR)]; // Check for method existence in type
 		if (arg instanceof Function)
 			if (arg.hasOwnProperty("read")) return this._readArrayByReader(arg);
 			else return this._readArrayByFunc(arg);

@@ -182,7 +182,15 @@ export declare function createAiRunHost(deps: AiRunHostDeps): {
                 inputSchema?: unknown;
                 acceptsResources?: boolean;
             }[];
-            state: import("../events/replay-wire").ReplayExpose<[import("../Observe/store").StorePatch]>;
+            state: import("../events/replay-wire").ReplayExpose<[import("../Observe/store").StorePatch]> | {
+                describe: () => {
+                    [x: string]: any;
+                };
+                line: import("../events/Listen").ListenApi<[import("../events/replay-listen").ReplayEvent<[import("../Observe/store").StorePatch]>]>;
+                since: (seq: number) => import("../events/replay-listen").ReplayEvent<[import("../Observe/store").StorePatch]>[] | null;
+                keyframe: () => import("../events/replay-listen").ReplayEvent<[import("../Observe/store").StorePatch]> | null;
+                frame: (sinceSeq: number, hint?: unknown) => import("../events/replay-listen").ReplayEvent<[import("../Observe/store").StorePatch]>[];
+            };
             events: import("../events/replay-wire").ReplayExpose<[AiRunEvent]>;
             createRun: (request: AiRunRequest) => AiRun;
             cancelRun: (runId: string, reason?: string) => AiRun;

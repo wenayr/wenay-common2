@@ -1,9 +1,9 @@
-// REAL-SOCKET store follower oracle. Лидер-инстанс владеет workboard-стором;
-// follower-инстанс (createStoreFollower) зеркалит его по replay-линии и раздаёт
-// СВОИМ клиентам каскадным exposeStoreReplay; команды форвардятся лидеру со
-// сквозным (account, requestId) — квитанции остаются только у лидера.
-// Обрыв апстрима — честный Engine.IO close (авто-reconnect того же Socket).
-// Порты 3160 (лидер) / 3161 (фолловер) — правило проекта: диапазон 3100+.
+// REAL-SOCKET store follower oracle. Leader instance owns the workboard-store;
+// follower instance (createStoreFollower) mirrors it over replay-line and distributes
+// it to its OWN clients via cascading exposeStoreReplay; commands are forwarded to leader with
+// through (account, requestId) — receipts stay only with leader.
+// Upstream disruption — honest Engine.IO close (auto-reconnect of same Socket).
+// Ports 3160 (leader) / 3161 (follower) — project rule: range 3100+.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {createWorkboardHost} from '../../demo/workboard-host'
 import {createStoreFollower} from '../../src/Common/Observe/store-follower'
@@ -48,8 +48,8 @@ async function rejectionText(work: () => Promise<any>) {
     }
 }
 
-// Транзиентный сетевой обрыв: Engine.IO close → Socket.IO обязан переподключить
-// ТОТ ЖЕ Socket сам (Socket#disconnect() был бы ручным и reconnect не запустил бы).
+// Transient network disruption: Engine.IO close → Socket.IO must reconnect
+// the SAME Socket itself (Socket#disconnect() would be manual and reconnect wouldn't start).
 async function breakTransport(cli: tClient, label: string) {
     const socket = cli.hub.socket as any
     if (!socket?.connected) throw new Error(label + ': socket is not connected')
@@ -68,7 +68,7 @@ async function main() {
         process.exit(3)
     }, 120000)
 
-    // ============== лидер: авторитетный workboard + mirror-команды ==============
+    // ============== leader: authoritative workboard + mirror-commands ==============
     const board = createWorkboardHost({initial: [{id: 'seed-1', title: 'Seed card', status: 'new'}]})
     let leaderConn = 0
     const leaderSrv = await startRealServer({
@@ -79,8 +79,8 @@ async function main() {
             return {
                 whoami: () => account,
                 workboard: connection.fragment,
-                // Доверенный вход для зеркала: команды с ЯВНЫМ account конечного клиента.
-                // Квитанции (account, requestId) продолжают работать сквозь хоп.
+                // Trusted entry for mirror: commands with EXPLICIT account of end client.
+                // Receipts (account, requestId) continue to work through the hop.
                 mirror: {
                     workboard: {
                         create: (who: string, input: any) => board.control.create(String(who), input),
@@ -94,7 +94,7 @@ async function main() {
         },
     })
 
-    // ============== follower-инстанс: клиент лидера + сервер для своих ==============
+    // ============== follower instance: leader client + server for its own ==============
     const upstream = await startRealClient({port: LEADER_PORT})
     const follower = createStoreFollower<WorkboardState>({
         remote: upstream.api.workboard.state as ReplayRemote<[StorePatch]>,
@@ -129,7 +129,7 @@ async function main() {
     await check('follower keyframe converges', () => follower.store.snapshot(), board.control.store.snapshot())
     await check('follower upstream is live', () => follower.status.state.upstream, 'live')
 
-    // ============== клиенты на разных инстансах ==============
+    // ============== clients on different instances ==============
     const a = await startRealClient({port: LEADER_PORT})
     const b = await startRealClient({port: FOLLOWER_PORT})
     const bStore = createStore<WorkboardState>({})
@@ -137,24 +137,24 @@ async function main() {
     await bSync.ready
     await check('B (follower client) sees the seed via cascade', () => bStore.snapshot(), board.control.store.snapshot())
 
-    // A (клиент лидера) пишет → реактивно доезжает клиенту B через зеркало
+    // A (leader client) writes → reactively reaches client B through mirror
     const fromLeader = await a.api.workboard.create({requestId: 'r-a1', title: 'From leader'})
     await waitFor('follower mirrors the leader write', () => follower.store.state[fromLeader.id] != null)
     await waitFor('B receives it via cascade', () => bStore.state[fromLeader.id] != null)
     await check('mirrored item equals the leader item', () => bStore.state[fromLeader.id], board.control.store.state[fromLeader.id])
 
-    // B (клиент зеркала) пишет → форвард лидеру → реактивно возвращается всем
+    // B (mirror client) writes → forward to leader → reactively returns to all
     const fromFollower = await b.api.workboard.create({requestId: 'r-b1', title: 'From follower'})
     await check('forwarded command keeps the end-client account', () => fromFollower.createdBy, 'person-z1')
     await waitFor('leader applied the forwarded write', () => board.control.store.state[fromFollower.id] != null)
     await waitFor('B sees its own write round-tripped', () => bStore.state[fromFollower.id] != null)
 
-    // Идемпотентность сквозь хоп: тот же requestId → та же квитанция, не второй item
+    // Idempotency through the hop: same requestId → same receipt, not second item
     const duplicate = await b.api.workboard.create({requestId: 'r-b1', title: 'From follower'})
     await check('double-submit through the mirror returns the receipt', () => duplicate.id, fromFollower.id)
     await check('no duplicate item on the leader', () => Object.keys(board.control.store.state).length, 3)
 
-    // Конфликт ревизии сквозь хоп — тот же текст, что и напрямую у лидера
+    // Revision conflict through the hop — same text as direct at leader
     const directConflict = await rejectionText(() => Promise.resolve(a.api.workboard.rename({
         requestId: 'r-a2', id: fromFollower.id, expectedRevision: 99, title: 'Direct rename',
     })))
@@ -163,7 +163,7 @@ async function main() {
     })))
     await check('revision conflict text passes the hop unchanged', () => forwardedConflict, directConflict)
 
-    // ============== потеря лидера: stale-чтение + быстрый отказ + догон ==============
+    // ============== leader loss: stale-read + fast denial + catch-up ==============
     const broken = await breakTransport(upstream, 'upstream')
     await waitFor('follower reports upstream offline', () => follower.status.state.upstream == 'offline')
     await check('stale reads still serve on the follower', () => follower.store.state[fromLeader.id]?.title, 'From leader')
@@ -171,12 +171,12 @@ async function main() {
         () => rejectionText(() => Promise.resolve(b.api.workboard.create({requestId: 'r-b3', title: 'Too early'}))),
         'leader offline — try again soon')
 
-    // Пока зеркало офлайн — лидер живёт дальше (пишет клиент A)
+    // While mirror is offline — leader lives on (client A writes)
     const whileAway = await a.api.workboard.create({requestId: 'r-a3', title: 'While away'})
     await delay(150)
     await check('follower does NOT see the write yet', () => follower.store.state[whileAway.id] == null, true)
 
-    // Реконнект того же Socket → catch-up хвоста → сходимость без потерь и дублей
+    // Reconnect of same Socket → catch-up of tail → convergence without loss and duplicates
     await waitFor('upstream reconnected', () => broken.socket.connected && upstream.hub.connectCount() == broken.count + 1)
     await waitFor('follower caught up after reconnect', () => follower.store.state[whileAway.id] != null)
     await waitFor('follower upstream is live again', () => follower.status.state.upstream == 'live')

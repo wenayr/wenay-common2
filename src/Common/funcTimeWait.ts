@@ -20,7 +20,7 @@ export function funcTimeW() {
         dStatic,
         data,
 
-        // Записывает время в массив
+        // Writes time to array
         add(item: tFunc) {
             if (!dStatic[item.type]) {
                 dStatic[item.type] = [];
@@ -35,10 +35,10 @@ export function funcTimeW() {
             sortByTime(arr);
 
             const timeStamp = Date.now();
-            // то чистить нечего:
+            // nothing to clean:
             if (arr[0][0] > timeStamp - ms) return;
 
-            // Или, если хотим "вручную" почистить:
+            // Or, if we want to manually clean:
             let cutIndex = 0;
             while (cutIndex < arr.length && arr[cutIndex][0] < timeStamp - ms) {
                 cutIndex++;
@@ -48,7 +48,7 @@ export function funcTimeW() {
             }
         },
 
-        // Возвращает сумму веса за период времени (ms)
+        // Returns sum of weight for period of time (ms)
         weight(type: tType, ms = 60 * 1000) {
             const arr = dStatic[type];
             if (!arr || arr.length === 0) return 0;
@@ -58,22 +58,22 @@ export function funcTimeW() {
             let sum = 0;
             let i = arr.length - 1;
 
-            // Считаем вес "с конца", пока не встретим более старое время
+            // Calculate weight from the end until we find older time
             for (; i >= 0; i--) {
                 const [_time, _weight] = arr[i];
                 if (_time < timeStamp - ms) break;
                 sum += _weight;
             }
 
-            // Очищаем "хвост", который уже гарантированно старее (timeStamp - ms)
-            // чтобы массив не рос бесконтрольно
+            // Clean the tail which is already guaranteed to be older (timeStamp - ms)
+            // so the array doesn't grow uncontrollably
             if (i >= 0) {
                 arr.splice(0, i + 1);
             }
             return sum;
         },
 
-        // Возвращает timestamp, когда сумма весов превысила weight
+        // Returns timestamp when sum of weights exceeded weight
         byWeight(type: tType, weight = 50000) {
             const arr = dStatic[type];
             if (!arr || arr.length === 0) return 0;
@@ -86,20 +86,20 @@ export function funcTimeW() {
             for (; i >= 0; i--) {
                 sum += arr[i][1];
                 if (sum > weight) {
-                    // arr[i+1] — корректно (учитывает добавляемый новый запрос); НО если переполнил
-                    // самый свежий элемент (i=конец, arr[i+1] нет) — ждать его ts, а НЕ 0 (иначе LoadBase не подождёт → бан)
+                    // arr[i+1] — correct (accounts for new request being added); BUT if overflow
+                    // most recent element (i=end, arr[i+1] missing) — wait for its ts, NOT 0 (else LoadBase won't wait → ban)
                     result = arr[i + 1]?.[0] ?? arr[i][0];
                     break;
                 }
             }
-            // Чтобы массив не разрастался слишком сильно, можно «подчищать»
+            // To prevent array from growing too much, can clean it
             if (i > 800) {
                 arr.splice(0, i - 800);
             }
             return result;
         },
 
-        // То же самое, только с «промежуточным» timeNow
+        // Same thing, but with intermediate timeNow
         byWeightTimeNow(type: tType, timeNow = Date.now(), weight = 50000) {
             const arr = dStatic[type];
             if (!arr || arr.length === 0) return 0;
@@ -108,7 +108,7 @@ export function funcTimeW() {
             let sum = 0;
             let i = arr.length - 1;
 
-            // Сначала «отматываем» массив до timeNow
+            // First unwind the array to timeNow
             for (; i >= 0; i--) {
                 if (arr[i][0] <= timeNow) break;
             }
@@ -118,7 +118,7 @@ export function funcTimeW() {
             for (; i >= 0; i--) {
                 sum += arr[i][1];
                 if (sum > weight) {
-                    result = arr[i + 1]?.[0] ?? arr[i][0];   // фолбэк в ts текущего элемента, не 0 (см. byWeight)
+                    result = arr[i + 1]?.[0] ?? arr[i][0];   // fallback to ts of current element, not 0 (see byWeight)
                     break;
                 }
             }
@@ -131,7 +131,7 @@ export function funcTimeW() {
 }
 
 
-// Массив для хранения времени ожидания у асинхронных функций
+// Array for storing wait time for async functions
 /** @deprecated use {@link rateWindow} */
 export const FuncTimeWait = funcTimeW()
 

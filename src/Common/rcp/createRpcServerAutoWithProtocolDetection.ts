@@ -3,23 +3,23 @@ import { listenSocket } from "./listen-socket";
 import { createRpcServer, type PromiseServerHooks, type RpcLimits } from "./rpc-server";
 import { DeepSocketListen } from "./listen-deep";
 import { Pkt, type SocketTmpl } from "./rpc-protocol";
-import { promiseServer } from "./oldСommonsServerMini";
+import { promiseServer } from "./oldCommonsServerMini";
 import { isNoStrict } from "./rpc-dynamic";
 import { isSafeKey } from "./rpc-limits";
 
 type ListenCallbackBase<T extends any[] = any[]> = ReturnType<typeof createListen<T>>;
 
-// ── Новая версия с совместимостью ───────────────────────────────────
+// ── New version with compatibility ───────────────────────────────────
 //
-// Определение протокола:
-//   Legacy клиент первым сообщением шлёт "___STRICTLY" (строка) или { mapId, data } (объект)
-//   V2 клиент первым сообщением шлёт Pkt.STRICT (число 4) или [Pkt.CALL, ...] (массив)
+// Protocol detection:
+//   Legacy client sends "___STRICTLY" (string) or { mapId, data } (object) first
+//   V2 client sends Pkt.STRICT (number 4) or [Pkt.CALL, ...] (array) first
 //
-// Форматы НЕ пересекаются:
-//   "___STRICTLY" — строка (только legacy)
-//   { mapId, data } — plain object (только legacy)
-//   4              — число (только v2)
-//   [0, ...]       — массив (только v2)
+// Formats do NOT overlap:
+//   "___STRICTLY" — string (legacy only)
+//   { mapId, data } — plain object (legacy only)
+//   4              — number (v2 only)
+//   [0, ...]       — array (v2 only)
 //
 
 type ClientProtocol = 'v2' | 'legacy' | null;
@@ -43,7 +43,7 @@ export function createRpcServerAutoDetect<T extends object>({
     limits?: RpcLimits;
     onProtocolDetect?: (protocol: 'v2' | 'legacy') => void;
 }) {
-    // ── Общий кэш Listen-мультиплексоров для обоих протоколов ─────────────
+    // ── Common cache of Listen multiplexers for both protocols ─────────────
     const cache = new WeakMap<object, ReturnType<typeof listenSocket>>();
     const listenSockets = new Set<ReturnType<typeof listenSocket>>();
     function unsubscribeAllActive() {
@@ -85,18 +85,18 @@ export function createRpcServerAutoDetect<T extends object>({
         return result;
     }
 
-    /** Общий трансформер: Listen → listenSocket({ callback, removeCallback }) */
+    /** Common transformer: Listen → listenSocket({ callback, removeCallback }) */
     function resolveTransform(obj: any): any {
         if (isListenCallback(obj)) return getListenSocket(obj);
-        if (isListenOn(obj)) return getListenSocket(getListenByOn(obj)); // bare `on` → Listen-обёртка по реестру
+        if (isListenOn(obj)) return getListenSocket(getListenByOn(obj)); // bare `on` → Listen wrapper from registry
         return obj;
     }
 
-    // ── Трансформация дерева объекта (Listen → listenSocket) ─────
-    // Повторяет логику transformTree из rpc-server.ts:
-    // - isNoStrict объекты пропускаются как есть
-    // - isSafeKey фильтрует ключи
-    // - resolveTransform применяется к каждому узлу
+    // ── Object tree transformation (Listen → listenSocket) ─────
+    // Mirrors transformTree logic from rpc-server.ts:
+    // - isNoStrict objects pass through as-is
+    // - isSafeKey filters keys
+    // - resolveTransform applied to each node
     function transformTree(obj: any): any {
         let current = obj;
         if (!isNoStrict(current)) {
@@ -113,7 +113,7 @@ export function createRpcServerAutoDetect<T extends object>({
         return out;
     }
 
-    // ── Сериализация схемы (повторяет логику serialize из rpc-server.ts) ──
+    // ── Schema serialization (mirrors serialize logic from rpc-server.ts) ──
     function serialize(obj: any): any {
         const out: any = {};
         for (const k of Object.keys(obj)) {
@@ -130,24 +130,24 @@ export function createRpcServerAutoDetect<T extends object>({
         return out;
     }
 
-    // resolved — дерево с Listen заменёнными на { callback, removeCallback }
+    // resolved — tree with Listen replaced by { callback, removeCallback }
     const resolved = transformTree(target);
-    // legacySchema — сериализованная схема для legacy клиента
+    // legacySchema — serialized schema for legacy client
     const legacySchema = serialize(resolved);
 
-    // ── Определение протокола ───────────────────────────────────
+    // ── Protocol detection ───────────────────────────────────
     let protocol: ClientProtocol = null;
     let v2Handler: ((msg: any) => void) | null = null;
     let legacyHandler: ((msg: any) => void) | null = null;
     let disposed = false;
-    let activeHandler: ((msg: any) => void) | null = null; // делегат стабильного роутера; null = инертен
+    let activeHandler: ((msg: any) => void) | null = null; // stable router delegate; null = inert
 
-    /** Legacy клиент запрашивает схему строкой "___STRICTLY" */
+    /** Legacy client requests schema with string "___STRICTLY" */
     function isLegacyStrictRequest(msg: any): boolean {
         return msg === '___STRICTLY';
     }
 
-    /** Legacy сообщение: plain object с { mapId: number } */
+    /** Legacy message: plain object with { mapId: number } */
     function isLegacyMessage(msg: any): boolean {
         return (
             typeof msg === 'object' &&
@@ -157,16 +157,16 @@ export function createRpcServerAutoDetect<T extends object>({
         );
     }
 
-    /** V2 сообщение: Pkt.STRICT (число 4) или массив [Pkt.CALL|PIPE|HELLO, ...].
-     *  HELLO — токен-клиент шлёт его ПЕРВЫМ (in-band auth); без него детектор ронял бы HELLO,
-     *  и auth() клиента висел бы. Внутренний createRpcServer обрабатывает HELLO сам. */
+    /** V2 message: Pkt.STRICT (number 4) or array [Pkt.CALL|PIPE|HELLO, ...].
+     *  HELLO — token client sends it FIRST (in-band auth); without it detector would drop HELLO,
+     *  and client auth() would hang. Inner createRpcServer handles HELLO itself. */
     function isV2Message(msg: any): boolean {
         if (msg === Pkt.STRICT) return true;
         if (Array.isArray(msg) && (msg[0] === Pkt.CALL || msg[0] === Pkt.PIPE || msg[0] === Pkt.HELLO)) return true;
         return false;
     }
 
-    // ── Инициализация Legacy сервера (лениво) ───────────────────
+    // ── Legacy server initialization (lazy) ───────────────────
     function initLegacy() {
         if (legacyHandler) return;
 
@@ -186,7 +186,7 @@ export function createRpcServerAutoDetect<T extends object>({
         };
     }
 
-    // ── Инициализация V2 сервера (лениво) ───────────────────────
+    // ── V2 server initialization (lazy) ───────────────────────
     function initV2() {
         if (v2Handler) return;
 
@@ -215,15 +215,15 @@ export function createRpcServerAutoDetect<T extends object>({
         };
     }
 
-    // ── Главный обработчик сообщений ────────────────────────────
-    // SocketTmpl не умеет off → регистрируем ОДИН стабильный роутер, делегирующий в activeHandler;
-    // dispose() обнуляет activeHandler → роутер становится инертным (идиома rpc-server.ts:26-29).
+    // ── Main message handler ────────────────────────────
+    // SocketTmpl doesn't support off → register ONE stable router delegating to activeHandler;
+    // dispose() nullifies activeHandler → router becomes inert (idiom from rpc-server.ts:26-29).
     function handleMessage(msg: any) {
         if (debug) {
             console.log('[RPC-AUTO-DETECT IN]', typeof msg === 'object' ? JSON.stringify(msg) : msg);
         }
 
-        // ── Быстрый путь: протокол уже определён ───────────────
+        // ── Fast path: protocol already detected ───────────────
         if (protocol === 'legacy') {
             if (isLegacyStrictRequest(msg)) {
                 socket.emit(key, { STRICTLY: legacySchema });
@@ -237,7 +237,7 @@ export function createRpcServerAutoDetect<T extends object>({
             return;
         }
 
-        // ── Рукопожатие: определяем протокол по первому сообщению ──
+        // ── Handshake: detect protocol from first message ──
 
         if (isLegacyStrictRequest(msg)) {
             protocol = 'legacy';
@@ -266,16 +266,16 @@ export function createRpcServerAutoDetect<T extends object>({
             return;
         }
 
-        // Неизвестный формат
+        // Unknown format
         if (debug) console.warn('[RPC-AUTO-DETECT] Unknown message format, ignoring:', msg);
     }
     activeHandler = handleMessage;
     socket.on(key, (msg: any) => activeHandler?.(msg));
 
-    // reset() — сбросить латч детекции (reconnect: новый пир может говорить иным протоколом, и
-    // прежнее значение protocol латчилось бы навсегда, мисроутя). dispose() — отцепить (роутер
-    // инертен) + сброс. SocketTmpl без off, поэтому обнуляем делегата; ленивые внутренние серверы
-    // отдельного teardown не имеют, но остановка входящей диспетчеризации — та утечка, что важна.
+    // reset() — clear detection latch (reconnect: new peer may speak different protocol, old
+    // protocol value would latch forever, misrouting). dispose() — detach (router
+    // inert) + reset. SocketTmpl no off, so null delegate; lazy inner servers
+    // have no separate teardown, but stopping incoming dispatch — that's the leak that matters.
     function reset() { unsubscribeAllActive(); protocol = null; legacyHandler = null; v2Handler = null; }
     function dispose(reason?: string) {
         if (disposed) return;

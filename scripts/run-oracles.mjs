@@ -1,8 +1,8 @@
-﻿// run-oracles.mjs — прогнать ВСЕ оракулы одной командой (npm run test:all).
-// Конвенция oracle/README.md: ts-node --transpile-only, PASS/FAIL в лог,
-// ненулевой exit при провале. Запуск последовательный: socket-оракулы держат порты.
-// В publish-гейт НЕ входит (там остаётся быстрый npm run test) — это команда
-// «проверить всё», когда трогаешь ядро (events / Observe / replay / rpc).
+﻿// run-oracles.mjs — run ALL oracles with one command (npm run test:all).
+// Convention oracle/README.md: ts-node --transpile-only, PASS/FAIL to log,
+// nonzero exit on failure. Sequential run: socket-oracles hold ports.
+// NOT in the publish gate (fast npm run test stays there) — this is the
+// command to 'verify everything' when touching core (events / Observe / replay / rpc).
 import {readdirSync} from 'node:fs'
 import {spawnSync} from 'node:child_process'
 import {fileURLToPath} from 'node:url'

@@ -1,15 +1,15 @@
 // =====================================================================
 // WebRTC signaling adapter over the existing socket/RPC control channel
 // =====================================================================
-// Шаг 9 route-координатора: сигналинг (offer/answer/ICE/session/revoke) едет
-// по УЖЕ СУЩЕСТВУЮЩЕМУ relay-каналу — порт хаба это {send, signals}, т.е.
-// функция + Listen, ровно то, что createRpcServerAuto экспонирует без доработок.
-// Сам RTCPeerConnection в библиотеку НЕ входит: коннектор берёт фабрику
-// `rtc: () => RtcPeerConnection` (структурный тип, без lib.dom) — браузер
-// подставляет `() => new RTCPeerConnection(cfg)`, Node — werift/node-datachannel,
-// тесты — in-proc фейк. Приватность: endpoint/session-материал раскрывается
-// только через authorize-хук ХАБА (серверная точка canExposeEndpoint) — клиентская
-// policy координатора остаётся advisory-слоем, сервер решает окончательно.
+// Step 9 of route-coordinator: signaling (offer/answer/ICE/session/revoke) flows
+// over the ALREADY-EXISTING relay channel — hub port is {send, signals}, i.e.
+// function + Listen, exactly what createRpcServerAuto exposes without modification.
+// RTCPeerConnection itself is NOT in the library: connector takes a factory
+// `rtc: () => RtcPeerConnection` (structural type, no lib.dom) — browser supplies
+// `() => new RTCPeerConnection(cfg)`, Node uses werift/node-datachannel,
+// tests use in-proc fake. Privacy: endpoint/session material is exposed
+// only via authorize hook of HUB (server-side canExposeEndpoint point) — client-side
+// coordinator policy remains advisory layer; server decides finally.
 
 import {listen} from './Listen'
 import {ReplayRemote} from './replay-wire'
@@ -20,38 +20,38 @@ import {channelReplayRemote, ReplayMessageChannel, serveReplayChannel} from './r
 // Signaling protocol
 // =====================================================================
 
-// call-типы едут по ТОМУ ЖЕ хабу (peer-call): маршрутизация по `to` их не различает,
-// webrtc-коннекторы фильтруют по pair+типу — интерференции нет; серверный authorize
-// видит и их (единая точка серверной политики: endpoint-материал И звонки)
+// call types travel over the SAME hub (peer-call): routing by `to` does not distinguish them,
+// webrtc connectors filter by pair+type — no interference; server-side authorize
+// sees them too (single point of server policy: endpoint material AND calls)
 export type tSignalType = 'offer' | 'answer' | 'ice' | 'revoke' | 'close'
     | 'ring' | 'accept' | 'decline' | 'hangup'
 
 export type SignalEnvelope = {
     type: tSignalType
-    /** Симметричный ключ пары (RoutePairRef.key). */
+    /** Symmetric pair key (RoutePairRef.key). */
     pair: string
     from: string
     to: string
     sdp?: string
     candidate?: unknown
-    /** Opaque auth/session-материал: провод не заглядывает, валидирует policy/accept. */
+    /** Opaque auth/session material: wire doesn't inspect, validates policy/accept. */
     session?: unknown
     reason?: string
 }
 
-/** Клиентский вид сигнального порта — то, что доезжает через rpc-проекцию. */
+/** Client view of signal port — what comes through rpc-projection. */
 export type SignalPort = {
-    /** false = сервер отказал (authorize/нет адресата) — direct даже не пытаемся. */
+    /** false = server rejected (authorize/no peer) — direct doesn't even try. */
     send: (env: SignalEnvelope) => Promise<boolean | void> | boolean | void
     signals: {on: (cb: (env: SignalEnvelope) => void) => any}
 }
 
 /**
- * Серверный сигнальный хаб: маршрутизирует конверты между аккаунтами.
- * register(account) -> порт этого аккаунта; его форма {send, signals} готова
- * к экспорту через createRpcServerAuto (send = функция, signals = Listen).
- * authorize — единственная точка, где endpoint/session-материал разрешается
- * к раскрытию (canExposeEndpoint серверной policy); подмена from невозможна.
+ * Server-side signal hub: routes envelopes between accounts.
+ * register(account) -> port for this account; its {send, signals} form ready
+ * for export via createRpcServerAuto (send = function, signals = Listen).
+ * authorize — only point where endpoint/session material is allowed
+ * to be exposed (canExposeEndpoint of server policy); from spoofing impossible.
  */
 export function createSignalHub(deps: {authorize?: (env: SignalEnvelope) => boolean | Promise<boolean>} = {}) {
     const {authorize} = deps
@@ -66,7 +66,7 @@ export function createSignalHub(deps: {authorize?: (env: SignalEnvelope) => bool
         ports.set(account, accountPorts)
 
         async function send(env: SignalEnvelope) {
-            if (env == null || env.from != account) return false // spoofing отрезан на входе
+            if (env == null || env.from != account) return false // spoofing cut off at entry
             if (authorize && !(await authorize(env))) return false
             const targets = ports.get(env.to)
             const target = targets?.[targets.length - 1]
@@ -88,7 +88,7 @@ export function createSignalHub(deps: {authorize?: (env: SignalEnvelope) => bool
         return {account, send, signals, close}
     }
 
-    /** Серверный отзыв маршрута (policy сменилась): revoke обеим сторонам пары. */
+    /** Server-side route revoke (policy changed): revoke to both sides of pair. */
     function revoke(pair: string, accounts: string[], reason?: string) {
         for (const account of accounts) {
             const accountPorts = ports.get(account)
@@ -109,8 +109,8 @@ export function createSignalHub(deps: {authorize?: (env: SignalEnvelope) => bool
 export type SignalHub = ReturnType<typeof createSignalHub>
 
 // =====================================================================
-// Structural WebRTC types — ровно та часть браузерного API, которую мы
-// трогаем; без lib.dom, чтобы Node-сборка и фейки жили без каста.
+// Structural WebRTC types — exactly the browser API part we
+// touch; no lib.dom, so Node build and fakes work without casting.
 // =====================================================================
 
 export type RtcSessionDescription = {type: string, sdp?: string}
@@ -136,7 +136,7 @@ export type RtcPeerConnection = {
     ondatachannel?: ((ev: {channel: RtcDataChannel}) => void) | null
 }
 
-/** ReplayMessageChannel поверх datachannel: единственный владелец его хендлеров. */
+/** ReplayMessageChannel over datachannel: sole owner of its handlers. */
 export function channelFromDataChannel(dc: RtcDataChannel): ReplayMessageChannel {
     const msgCbs = new Set<(data: string) => void>()
     const closeCbs = new Set<() => void>()
@@ -151,7 +151,7 @@ export function channelFromDataChannel(dc: RtcDataChannel): ReplayMessageChannel
         for (const cb of Array.from(msgCbs)) cb(data)
     }
     dc.onclose = fireClose
-    dc.onerror = fireClose // для replay-провода ошибка канала == конец линии, шумно через onClose
+    dc.onerror = fireClose // for replay-wire, channel error == line end, loud via onClose
     return {
         send: data => dc.send(data),
         onMessage: cb => { msgCbs.add(cb); return () => msgCbs.delete(cb) },
@@ -161,29 +161,29 @@ export function channelFromDataChannel(dc: RtcDataChannel): ReplayMessageChannel
 }
 
 // =====================================================================
-// Initiator: RouteConnector, ведущий offer/answer/ICE через сигнальный порт
+// Initiator: RouteConnector conducting offer/answer/ICE over signal port
 // =====================================================================
 
 export type WebRtcConnectorDeps = {
     port: SignalPort
-    /** Рантайм-фабрика: браузер `() => new RTCPeerConnection(cfg)`, Node — werift и т.п. */
+    /** Runtime factory: browser `() => new RTCPeerConnection(cfg)`, Node werift etc. */
     rtc: () => RtcPeerConnection
     self: string
     peer: string
-    /** Ключ пары (RoutePairRef.key) — им фильтруются конверты. */
+    /** Pair key (RoutePairRef.key) — filters envelopes by it. */
     pair: string
-    /** Opaque session-материал в offer — валидируется authorize-хуком хаба и accept-хуком пира. */
+    /** Opaque session material in offer — validated by hub authorize hook and peer accept hook. */
     session?: unknown
     label?: string
-    /** Сколько ждать открытия datachannel, мс. */
+    /** How long to wait for datachannel opening, ms. */
     openTimeoutMs?: number
 }
 
 /**
- * Direct-коннектор для координатора: чистый транспорт, никакой route-логики.
- * open() гоняет offer/answer/ICE по сигнальному порту, ждёт datachannel и
- * возвращает replay-провод поверх него. revoke/close по сигналингу и смерть
- * канала = onFail (координатор сам откатится на relay).
+ * Direct-connector for coordinator: pure transport, no route logic.
+ * open() runs offer/answer/ICE over signal port, waits for datachannel and
+ * returns replay-wire over it. revoke/close over signaling and channel death
+ * = onFail (coordinator itself falls back to relay).
  */
 export function createWebRtcConnector<Z extends any[] = any[]>(deps: WebRtcConnectorDeps): RouteConnector<Z> {
     const {port, rtc, self, peer, pair, session, label = 'direct', openTimeoutMs = 10_000} = deps
@@ -211,8 +211,8 @@ export function createWebRtcConnector<Z extends any[] = any[]>(deps: WebRtcConne
 
     function fail(reason: unknown) {
         if (state == 'closed' || state == 'failed') return
-        // revoke/смерть канала ВО ВРЕМЯ open обязаны прервать ожидание громко и сразу,
-        // а не оставлять инициатора ждать openTimeoutMs
+        // revoke/channel death DURING open must abort the wait loudly and immediately,
+        // not leave the initiator waiting out openTimeoutMs
         const abort = abortOpen
         abortOpen = null
         teardown('failed')
@@ -233,7 +233,7 @@ export function createWebRtcConnector<Z extends any[] = any[]>(deps: WebRtcConne
                 reject(new Error('webrtc direct open timeout: ' + pair))
             }, openTimeoutMs)
         })
-        opened.catch(() => {}) // провал ДО await opened не должен дать unhandled rejection от таймера
+        opened.catch(() => {}) // failure BEFORE await opened shouldn't give unhandled rejection from timer
 
         function sendLocalIce(candidate: unknown) {
             void port.send({type: 'ice', pair, from: self, to: peer, candidate})
@@ -274,8 +274,8 @@ export function createWebRtcConnector<Z extends any[] = any[]>(deps: WebRtcConne
 
         me.onicecandidate = function onIce(ev) {
             if (ev?.candidate != null) {
-                // RTCIceCandidate — класс-инстанс: по проводу едет его JSON-инит,
-                // иначе сериализация транспорта может отдать пустой объект
+                // RTCIceCandidate — class instance: wire carries its JSON init,
+                // else transport serialization might return empty object
                 const c: any = ev.candidate
                 const candidate = c?.toJSON ? c.toJSON() : c
                 if (offerSent) sendLocalIce(candidate)
@@ -287,7 +287,7 @@ export function createWebRtcConnector<Z extends any[] = any[]>(deps: WebRtcConne
             const offer = await me.createOffer()
             await me.setLocalDescription(offer)
             const accepted = await port.send({type: 'offer', pair, from: self, to: peer, sdp: offer.sdp, session})
-            // сервер не раскрыл endpoint (authorize) или пира нет — direct не состоится
+            // server didn't expose endpoint (authorize) or peer doesn't exist — direct fails
             if (accepted == false) throw new Error('signaling rejected offer (endpoint not exposed): ' + pair)
             offerSent = true
             while (pendingLocalIce.length) sendLocalIce(pendingLocalIce.shift())
@@ -321,23 +321,23 @@ export function createWebRtcConnector<Z extends any[] = any[]>(deps: WebRtcConne
 }
 
 // =====================================================================
-// Responder: принимает offer'ы и отдаёт replay-линию во входящий datachannel
+// Responder: accepts offers and provides replay-line to incoming datachannel
 // =====================================================================
 
 export type WebRtcAcceptDeps<Z extends any[]> = {
     port: SignalPort
     rtc: () => RtcPeerConnection
     self: string
-    /** Что отдавать этой паре: replay-провод (exposeReplay(...) подходит как есть). null = отказ. */
+    /** What to serve this pair: replay-wire (exposeReplay(...) fits as-is). null = rejection. */
     serve: (env: SignalEnvelope) => ReplayRemote<Z> | null | Promise<ReplayRemote<Z> | null>
-    /** Валидация session-материала на приёмной стороне (поверх серверного authorize). */
+    /** Validate session material on receive side (atop server authorize). */
     accept?: (env: SignalEnvelope) => boolean | Promise<boolean>
 }
 
 /**
- * Приёмная сторона direct-маршрута: на offer поднимает peer connection,
- * отвечает answer/ICE через тот же сигнальный порт и обслуживает replay-провод
- * во входящем datachannel. Возвращает close() — снять всё и перестать принимать.
+ * Receive side of direct route: on offer creates peer connection,
+ * answers with answer/ICE via same signal port and serves replay-wire
+ * to incoming datachannel. Returns close() — tear down and stop accepting.
  */
 export function acceptWebRtcDirect<Z extends any[] = any[]>(deps: WebRtcAcceptDeps<Z>) {
     const {port, rtc, self, serve, accept} = deps
@@ -347,7 +347,7 @@ export function acceptWebRtcDirect<Z extends any[] = any[]>(deps: WebRtcAcceptDe
         remoteDescriptionReady: boolean
         pendingIce: unknown[]
     }
-    const sessions = new Map<string, Session>() // `${pair}|${from}` — по сессии на инициатора
+    const sessions = new Map<string, Session>() // `${pair}|${from}` — per session to initiator
     const pendingOffers = new Map<string, unknown[]>()
     let closed = false
 

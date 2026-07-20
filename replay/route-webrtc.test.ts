@@ -82,7 +82,7 @@ function createFakeRtcNet(opts: {
         initiator.linked = responder.linked = true
         for (const dc of initiator.pendingDcs) {
             const [a, b] = makeDcPair()
-            // связываем заранее созданный локальный конец с новорождённым твином
+            // attach pre-created local endpoint to the newborn twin
             dc.attach(a)
             stats.channels++
             setTimeout(function announceChannel() {
@@ -98,7 +98,7 @@ function createFakeRtcNet(opts: {
         const me: any = {id, local: null, remote: null, pendingDcs: [], linked: false, ice: 0}
         const api: RtcPeerConnection = {
             createDataChannel() {
-                // локальный конец создаётся ДО соединения: методы делегируются после attach
+                // local endpoint created BEFORE connection: methods delegated after attach
                 let real: any = null
                 const shell: any = {onopen: null, onmessage: null, onclose: null, onerror: null}
                 shell.send = (data: string) => real?.send(data)
@@ -148,7 +148,7 @@ function createFakeRtcNet(opts: {
     return {pc, stats}
 }
 
-// простой relay-коннектор: прямой доступ к журналу с лагом (как в route-coordinator оракуле)
+// simple relay-connector: direct log access with lag (like in route-coordinator oracle)
 function makeRelayConnector<Z extends any[]>(replay: any, lag = 5): RouteConnector<Z> {
     let state: tConnectorState = 'idle'
     return {
@@ -225,26 +225,26 @@ async function main() {
         ok(decodedFrame?.kind == 'video-frame' && json([...decodedFrame.payload]) == json([77, 101, 100, 105, 97]),
             'direct replay preserves an encoded Media Uint8Array frame byte-for-byte')
 
-        // server-side revoke: policy изменилась — direct закрывается, relay продолжает с seq
+        // server-side revoke: policy changed — direct closes, relay continues from seq
         hub.revoke(link.ref.key, ['a', 'b'], 'policy change')
         await waitFor('revoke fallback', () => link.state() == 'fallback')
         state = 4; emit(state)
         await waitFor('relay after revoke', () => got.includes(4))
         ok(json(got.filter(v => typeof v == 'number')) == json([0, 1, 2, 3, 4]), 'server revoke: relay resumes from seq, no gap')
 
-        // сервер не раскрывает endpoint: offer отклонён ДО транспорта
+        // server does not expose endpoint: offer rejected BEFORE transport
         allowDirect = false
         const denied = await link.promoteDirect()
         ok(!denied.ok && String(denied.reason).includes('endpoint'), 'hub authorize=false: offer rejected, direct not established')
         ok(link.state() == 'fallback', 'denied endpoint leaves the pair on relay (fallback)')
 
-        // приёмная сторона бракует session-материал: revoke вместо таймаута
+        // receiving side rejects session material: revoke instead of timeout
         allowDirect = true
         sess.token = 'bad'
         const badSession = await link.promoteDirect()
         ok(!badSession.ok && String(badSession.reason).includes('revoke'), `bad session material is rejected loudly by the peer (${String(badSession.reason)})`)
 
-        // и после всех отказов пара всё ещё может подняться в direct
+        // and after all rejections the pair can still establish direct
         sess.token = 'good'
         const retry = await link.promoteDirect()
         state = 5; emit(state)
@@ -308,7 +308,7 @@ async function main() {
         const hub = createSignalHub()
         const rtcNet = createFakeRtcNet()
 
-        // сервер: обычный createRpcServerAuto; сигнальный порт = {send, signals} на соединение
+        // server: standard createRpcServerAuto; signaling port = {send, signals} per connection
         const app = express()
         const httpServer = createServer(app)
         const ioServer = new SocketIOServer(httpServer)

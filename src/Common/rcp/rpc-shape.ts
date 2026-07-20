@@ -1,19 +1,19 @@
 // rpc-shape.ts
 //
 // ============================================================
-// Адаптивное уплотнение ТИКОВ ПОДПИСКИ (динамическое, не статичное)
+// Adaptive compression of SUBSCRIPTION TICKS (dynamic, not static)
 // ============================================================
-// Подписка отдаёт объекты ДИНАМИЧЕСКОЙ формы. Сервер считает частоту форм per-cbId;
-// форма, повторившаяся THRESHOLD раз, получает shapeId — дальше тик шлётся компактно
-// (только значения, ключи — один раз в Pkt.SHAPE). Держим до MAX_SHAPES форм одновременно
-// (может быть 2-3 «стандарта»); счётчики НЕ обнуляются. Жмём ТОЛЬКО объекты и ТОЛЬКО частые —
-// редкие/полиморфные/не-объекты идут полным Pkt.CB. Сравнения форм попарно нет: сигнатура
-// строится из ключей, дальше поиск по ней (дёшево относительно самой сериализации).
+// Subscription emits objects of DYNAMIC shape. Server counts shape frequency per-cbId;
+// shape repeated THRESHOLD times gets shapeId — then tick sent compactly
+// (values only, keys once in Pkt.SHAPE). Keep up to MAX_SHAPES shapes simultaneously
+// (may be 2-3 standards); counters NOT reset. Compress ONLY objects and ONLY frequent —
+// rare/polymorphic/non-objects sent as full Pkt.CB. No pairwise shape comparison: signature
+// built from keys, then lookup by it (cheap relative to serialization itself).
 
-const THRESHOLD = 5  // сколько раз форма должна встретиться, прежде чем её стандартизируем
-const MAX_SHAPES = 5 // максимум одновременно отслеживаемых форм на один cbId
+const THRESHOLD = 5  // how many times shape must appear before we standardize it
+const MAX_SHAPES = 5 // max shapes tracked simultaneously per cbId
 
-// только «голый» объект-запись: массив/Date/Map/Set/RegExp/класс — не уплотняем
+// only plain object-record: array/Date/Map/Set/RegExp/class — don't compress
 export function isPlainObject(v: any) {
     if (v == null || typeof v != "object") return false
     if (Array.isArray(v) || v instanceof Date || v instanceof Map || v instanceof Set || v instanceof RegExp) return false
@@ -26,13 +26,13 @@ type tShape = { sig: string; keys: string[]; count: number; shapeId: number }
 export function createCbShapeServer(threshold = THRESHOLD, maxShapes = MAX_SHAPES) {
     const byCb = new Map<number, { shapes: tShape[]; nextId: number }>()
 
-    // offer возвращает РЕШЕНИЕ (ключи отдаём наружу, значения пакует вызывающий):
-    //   full     — слать обычным Pkt.CB
-    //   register — впервые стандартизируем: сначала Pkt.SHAPE(keys), затем Pkt.CBV(values)
-    //   compact  — уже стандартизирована: только Pkt.CBV(values)
+    // offer returns DECISION (we expose keys, caller packs values):
+    //   full     — send as usual Pkt.CB
+    //   register — standardize first time: Pkt.SHAPE(keys) first, then Pkt.CBV(values)
+    //   compact  — already standardized: Pkt.CBV(values) only
     function offer(cbId: number, obj: any) {
         const keys = Object.keys(obj)
-        const sig = keys.slice().sort().join("\x00") // порядок-независимая сигнатура формы
+        const sig = keys.slice().sort().join("\x00") // order-independent shape signature
         let st = byCb.get(cbId)
         if (!st) { st = { shapes: [], nextId: 0 }; byCb.set(cbId, st) }
         const sh = st.shapes.find(s => s.sig == sig)
@@ -42,7 +42,7 @@ export function createCbShapeServer(threshold = THRESHOLD, maxShapes = MAX_SHAPE
             if (sh.count >= threshold) { sh.shapeId = st.nextId++; return { mode: "register" as const, shapeId: sh.shapeId, keys: sh.keys } }
             return { mode: "full" as const }
         }
-        // новую форму берём кандидатом, пока есть слоты; сверх MAX_SHAPES — просто полный объект
+        // take new shape as candidate while slots available; beyond MAX_SHAPES — just full object
         if (st.shapes.length < maxShapes) st.shapes.push({ sig, keys, count: 1, shapeId: -1 })
         return { mode: "full" as const }
     }

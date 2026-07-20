@@ -27,9 +27,9 @@ function LoadQuoteBase(setting, data) {
     return async (info) => {
         const infoTF = mapTimeToName.get(info.tf.sec);
         if (!_fetch)
-            throw "_fetch - не определен";
+            throw "_fetch - not defined";
         if (!infoTF)
-            throw "нет такого таймфрейма";
+            throw "no such timeframe";
         let lastTime;
         const nameForMap = info.exchangeName + info.symbol + infoTF.name;
         let leftTime = startMap.get(nameForMap);

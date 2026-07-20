@@ -37,9 +37,9 @@ class CTick
 class CBarsInternal extends CBarsMutableBase
 {
 	override set data(bars : CBar[]) { this._data= bars;  console.assert(bars!=null); }
-	override get data() : CBar[] 	{ return this._data as CBar[]; }  // не убирать парный метод, иначе будет баг (get метод будет возвращать null)!
+	override get data() : CBar[] 	{ return this._data as CBar[]; }  // don't remove paired method, otherwise there will be a bug (get method will return null)!
 	override set tickSize(value : number) { this._ticksize= value; }
-	override get tickSize() : number { return this._ticksize ?? 0; }  // не убирать парный метод, иначе будет баг (get метод будет возвращать null)!
+	override get tickSize() : number { return this._ticksize ?? 0; }  // don't remove paired method, otherwise there will be a bug (get method will return null)!
 	Mutable : boolean = true; // private _isMutable : boolean; //get isMutable()         { return this._isMutable; } set isMutable(val : boolean) { this._isMutable= val; }
 	//referred : boolean = false;
 	constructor(tf :TF,  bars? : readonly CBar[],  tickSize : number =0) { super(tf, bars, tickSize); }
@@ -90,9 +90,9 @@ export class CQuotesHistory
 
 	//readonly id :symbol = Symbol();
 
-	get stateID() { return this._modifyCounter; }  // Идентификатор состояния (счётчик модификаций объекта)
+	get stateID() { return this._modifyCounter; }  // State identifier (object modification counter)
 
-	get minTf() : TF|null { if (!this._minTf) this._minTf= TF.min(...this.mainDatas.map(bars=>bars.Tf));  return this._minTf; }//return this._minTf; };  // Минимальный таймфрейм
+	get minTf() : TF|null { if (!this._minTf) this._minTf= TF.min(...this.mainDatas.map(bars=>bars.Tf));  return this._minTf; }//return this._minTf; };  // Minimum timeframe
 
 	get minTfBars() : IBarsImmutable|null { return this.minTf ? this.Bars(this.minTf) : null; }
 
@@ -100,9 +100,9 @@ export class CQuotesHistory
 
 	minTfBarsForTime(time :const_Date) : IBars|null { let tf= this.minTfForTime(time);  return tf ? this._Bars(tf) : null; }
 
-	get tickSize()  { if (! this._ticksize) this._ticksize= this._GetTickSize();  return this._ticksize; }  // Размер тика
+	get tickSize()  { if (! this._ticksize) this._ticksize= this._GetTickSize();  return this._ticksize; }  // Tick size
 
-	get mainDatas()  :readonly IBars[]  { return this.barsMainMap.Values; }  // Главные баровые таймсерии (создаваемые пользователем)
+	get mainDatas()  :readonly IBars[]  { return this.barsMainMap.Values; }  // Main bar timeseries (created by user)
 
 	get isMutable() { return false; }
 
@@ -111,7 +111,7 @@ export class CQuotesHistory
 	{
 		//console.log(Datas.length);
 		let datas : readonly IBars[] = (Datas instanceof IBars ? [Datas] : Datas) ;
-		let datasMy= [];  // Заполняем иммутабельными элементами
+		let datasMy= [];  // Fill with immutable elements
 		for(let bars of datas) if (bars) datasMy.push( bars.Mutable ? CBarsInternal.newFrom(bars) : bars );
 		for(let bars of datasMy) { this.barsInfoMap[bars.Tf.index]= {bars : bars};  this.barsMainMap[bars.Tf.index]= bars; } //this.barsMap[bars.Tf.index]= bars;   //if (this._minTf==null || bars.Tf<this._minTf) this._minTf= bars.Tf;
 		//console.log("!!! ",this.barsInfoMap.Count()); //this.mainDatas);
@@ -124,17 +124,17 @@ export class CQuotesHistory
 		let infos= this.barsInfoMap.Values;
 		this._modifyCounter++;
 		let modifyCount= this._modifyCounter;
-		// Перебираем старшие таймфреймы и записываем инфу об изменениях, а также удаляем младшие таймфреймы
+		// Iterate over higher timeframes and record change info, also remove lower timeframes
 		for(let i= infos.length-1;  i>=0;  i--)  {
 			let info= infos[i];
 			let barsTf= info.bars.Tf;
-			if (barsTf > tf) // записываем инфу об изменениях в старший таймфрейм
+			if (barsTf > tf) // record change info to higher timeframe
 				info.modifyInfo= {
-					time : MinTime(startTime, info.modifyInfo?.time), // ((a, b?) => (!b || a < b  ? a  : b)) (startTime, info.modifyInfo?.time),  // Меньшее время
+					time : MinTime(startTime, info.modifyInfo?.time), // ((a, b?) => (!b || a < b  ? a  : b)) (startTime, info.modifyInfo?.time),  // lesser time
 					srcTf : tf,
 					id : modifyCount
 				};
-			else if (barsTf<tf && info.bars.count>0) { // удаляем бары с младших таймфреймов
+			else if (barsTf<tf && info.bars.count>0) { // remove bars from lower timeframes
 				//console.log(startTime, endTime); //barsTf.name);
 				let [barsStartTime, barsEndTime] = toEnd ? [null,  new Period(tf).span(startTime).prev().endTime] : [new Period(tf).span(endTime).next().startTime,  null];
 				if (!barsStartTime || barsStartTime<=info.bars.time(0))
@@ -177,12 +177,12 @@ export class CQuotesHistory
 		} //let ibarEnd= myBars.IndexOf(newbars[newbars.length-1].time, E_MATCH.LESS_OR_EQUAL);
 		let resultBars : CBarsInternal; // //lib.dynamic_cast<CBarsInternal>(myBars);
 		if (myBars instanceof CBarsInternal && myBars.Mutable)
-			(resultBars= myBars).data.splice(ibar);  // удаляем конечные бары, начиная с ibar
+			(resultBars= myBars).data.splice(ibar);  // remove end bars starting from ibar
 		else
-			resultBars= new CBarsInternal(myBars.Tf, myBars.data.slice(0, ibar), myBars.tickSize);  // копируем начальные бары
+			resultBars= new CBarsInternal(myBars.Tf, myBars.data.slice(0, ibar), myBars.tickSize);  // copy initial bars
 		//console.log(newbars.length, lastBars.length);
 		//console.log(startTime, ibar);
-		//resultBars.data.push(...newbars, ...lastBars); // приводит к переполнению стека
+		//resultBars.data.push(...newbars, ...lastBars); // causes stack overflow
 		resultBars.data= resultBars.data.concat(newBars, lastBars);
 		return resultBars;
 	}
@@ -195,7 +195,7 @@ export class CQuotesHistory
 		let addedBarsArrConverted= new CBars(updatedBars.Tf, addedBarsArr ??[]).toBarsArray(myBars.Tf);
 		return this._CombineBars(myBars, addedBarsArrConverted, startTime);
 	}
-	// Индекс ближайшего меньшего таймфрейма
+	// Index of nearest lower timeframe
 	private _getLessTf(tf :TF) : TF|null {
 		//console.log("tfIndex="+tf?.index,  "indexes="+this.barsInfoMap.sortedKeys.join());
 		let i= BSearch(this.barsInfoMap.sortedKeys, tf.index-1, E_MATCH.LESS_OR_EQUAL);
@@ -204,7 +204,7 @@ export class CQuotesHistory
 
 
 	protected _BuildNewBars(tf :TF) : CBarsInternal|null {
-		// Находим ближайший меньший таймфрейм для построения    //, .findIndex((key)=> key > tf.index) - 1;
+		// Find nearest lower timeframe for building    //, .findIndex((key)=> key > tf.index) - 1;
 		let lessTf= this._getLessTf(tf);
 		//console.log("!!! ",lib.BSearchDefault(this._barsInfoMap.sortedKeys, TF.H6.index-1, E_MATCH.LESS_OR_EQUAL);
 		if (lessTf==null) return null;
@@ -255,7 +255,7 @@ export class CQuotesHistory
 			//this.OnModify(tf, Info.modifyInfo.time, Info.modifyInfo.id);
 		}
 		if (updated) {
-			// Меняем у всех старших таймсерий модифицирующий таймфрейм на текущий (будем строить из него)
+			// Change modifying timeframe to current for all higher timeseries (will build from it)
 			for (let i = this.barsInfoMap.Values.length-1; i>=0; i--) {
 				let info = this.barsInfoMap.Values[i];
 				if (info.bars.Tf <= tf) break;
@@ -272,7 +272,7 @@ export class CQuotesHistory
 	{
 		let bars= this._GetBars(tf);
 		if (bars instanceof CBarsInternal)
-			bars.Mutable= false;  // Получена ссылка на объект
+			bars.Mutable= false;  // Got reference to object
 		return bars as IBarsImmutable|null;
 	}
 
@@ -285,10 +285,10 @@ export class CQuotesHistory
 
 		let maxId= 0;
 		let foundInfo : TBarsInfo;
-		for(let info of this._barsInfoMap.Values)  // перебираем инфу по младшим таймфреймам и находим самую позднюю модификацию
+		for(let info of this._barsInfoMap.Values)  // iterate through info on lower timeframes and find the latest modification
 			if (info.bars.Tf<tf) {
 				if (foundInfo)
-					if (info.modifyId< foundInfo.modifyId)  // более ранняя модификация для старшего таймфрейма уже неактуальна
+					if (info.modifyId< foundInfo.modifyId)  // earlier modification for higher timeframe is already irrelevant
 						this._barsInfoMap.Remove(info.bars.Tf.index);
 					else
 				maxId= Math.max(info.modifyId, maxId);
@@ -299,7 +299,7 @@ export class CQuotesHistory
 	*/
 	/*
 	protected SetBarsMutable(tf :TF) : CBarsMutable {
-		if (! this._outDatas[tf.index]) { // Если ещё не были запрошены эти бары  //return this.barsDatas[tf.index];
+		if (! this._outDatas[tf.index]) { // If these bars haven't been requested yet  //return this.barsDatas[tf.index];
 			let bars= this.barsDatasMap[tf.index];
 			if (bars)
 				if (bars.isMutable) return bars as CBarsMutable;
@@ -320,13 +320,13 @@ export class CQuotesHistoryMutable extends CQuotesHistory
 	constructor(name?: string) {
 		super([], name);
 	}
-	// Добавить бары в конец
+	// Add bars at the end
 	/** @deprecated use {@link append} */
 	public AddEndBars(bars: IBars) : boolean;
-	// Добавить бары в конец
+	// Add bars at the end
 	/** @deprecated use {@link append} */
 	public AddEndBars(bars: readonly CBar[]|CBar, tf: TF) : boolean;
-	// Добавить бары в конец
+	// Add bars at the end
 	public AddEndBars(bars: readonly CBar[]|CBar|IBars, tf?: TF) : boolean { return this._AddBarsExt(bars, tf, true); }
 
 	// append bars to the end
@@ -335,13 +335,13 @@ export class CQuotesHistoryMutable extends CQuotesHistory
 	public append(bars: readonly CBar[]|CBar, tf: TF) : boolean;
 	public append(bars: readonly CBar[]|CBar|IBars, tf?: TF) { return this._AddBarsExt(bars, tf, true); }
 
-	// Добавить бары в начало
+	// Add bars at the start
 	/** @deprecated use {@link prepend} */
 	public AddStartBars(bars: IBars) : boolean;
-	// Добавить бары в начало
+	// Add bars at the start
 	/** @deprecated use {@link prepend} */
 	public AddStartBars(bars: readonly CBar[]|CBar,  tf: TF) : boolean;
-	// Добавить бары в начало
+	// Add bars at the start
 	public AddStartBars(bars: readonly CBar[]|CBar|IBars,  tf?: TF) : boolean { return this._AddBarsExt(bars, tf, false); }
 
 	// prepend bars to the start
@@ -353,10 +353,10 @@ export class CQuotesHistoryMutable extends CQuotesHistory
 	private checkBars(bars :readonly CBar[], tf :TF)  {
 		let period= new Period(tf);
 		for (let i=1; i<bars.length; i++)
-			if (! bars[i]) { console.log("Отсутствует бар №"+i);  return false; }
+			if (! bars[i]) { console.log("Missing bar #"+i);  return false; }
 			else
 			if (bars[i].time.valueOf() - bars[i-1].time.valueOf() < tf.msec  &&  period.span(bars[i].time).index <= period.span(bars[i-1].time).index) {
-				console.log("Некорректное время бара №"+i+":",bars[i].time,"  Предыдущее время:",bars[i-1].time);
+				console.log("Incorrect bar time #"+i+":",bars[i].time,"  Previous time:",bars[i-1].time);
 				return false;
 			}
 		return true;
@@ -402,7 +402,7 @@ export class CQuotesHistoryMutable extends CQuotesHistory
 		return true;
 	}
 
-	// Добавить тики в конец, с возможностью замены предыдущих  баров
+	// Add ticks at end, with possibility of replacing previous bars
 	/** @deprecated use {@link addTicks} */
 	public AddTicks(ticks : readonly ITick[]) : boolean
 	{
@@ -439,10 +439,10 @@ export class CQuotesHistoryMutable extends CQuotesHistory
 	}
 
 
-	// Добавить новые тики в конец, БЕЗ возможности замены предыдущих баров! (выдаст ошибку)
+	// Add new ticks at end, WITHOUT possibility of replacing previous bars! (will give error)
 	public AddNewTicks(ticks : readonly ITick[]) {
 		if (ticks.length==0) return;
-		if (this._endTickTime && ticks[0].time < this._endTickTime) throw "Время тика меньше предыдущего!";
+		if (this._endTickTime && ticks[0].time < this._endTickTime) throw "Tick time is less than previous!";
 		let tfIndexes= this.barsInfoMap.sortedKeys;
 		if (tfIndexes[0] > TF.S1.index) tfIndexes= [TF.S1.index, ...tfIndexes];
 		for(let tfVal of tfIndexes) {
@@ -463,7 +463,7 @@ export class CQuotesHistoryMutable extends CQuotesHistory
 		// 		if (bars.firstTime! <=time && time<=bars.lastCloseTime!) {
 		// 			let i= bars.indexOf(time,"greatOrEqual");
 		// 			console.assert(i!=-1, "i==-1 for time "+time.toString());
-		// 			console.log("Задаём начальный бар",bars.Tf.name,bars[i]);
+		// 			console.log("Set initial bar",bars.Tf.name,bars[i]);
 		// 			this.AddStartBars(bars[i], bars.Tf);
 		// 			break;
 		// 		}
@@ -506,12 +506,12 @@ export class CQuotesHistoryMutable2 extends CQuotesHistory
 	protected _CreateNewBars(tf : TF) {
 		let srcBars= this._source?.Bars(tf);  if (!srcBars) return null;
 		let istop= this._time ? srcBars.indexOf(this._time, E_MATCH.GREAT_OR_EQUAL) : srcBars.length;
-		let slicedBars :CBar[] = srcBars.data.slice(0, istop);  // Выбираем istop начальных баров
+		let slicedBars :CBar[] = srcBars.data.slice(0, istop);  // Select istop initial bars
 		return new CBarsInternal(tf, slicedBars);
 	}
 
 
-	// Присвоить бары с другого объекта
+	// Assign bars from another object
 	public Update(other :CQuotesHistory, endTime? : const_Date)
 	{
 		let isUpdate = other==this._source && other.stateID==this._sourceCounter; // endTime>=this._time;

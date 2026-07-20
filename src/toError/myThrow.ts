@@ -1,6 +1,6 @@
 
-// Ошибка с машинным кодом и произвольной нагрузкой; сериализуема для RPC.
-// Небольшой тестовый комментарий: логика ниже намеренно не менялась.
+// Error with machine code and arbitrary payload; serializable for RPC.
+// Small test comment: logic below was intentionally not changed.
 export class MyError<D = unknown> extends Error {
     override name = 'MyError'
 
@@ -14,7 +14,7 @@ export class MyError<D = unknown> extends Error {
         return {name, message, code, data, stack}
     }
 
-    // привести любое значение к Error, не бросая (не-Error уходит в data.value)
+    // convert any value to Error without throwing (non-Error goes to data.value)
     static wrap(e: unknown) {
         return e instanceof Error ? e : new MyError(typeof e == 'string' ? e : JSON.stringify(e), 'ERR', {value: e})
     }
@@ -24,12 +24,12 @@ export class MyError<D = unknown> extends Error {
     }
 }
 
-// проводной тип выводим из реализации, а не дублируем руками
+// wire type derived from implementation, not duplicated manually
 export type tWire<D = unknown> = ReturnType<MyError<D>['toJSON']>
 
 // ===========================================================================
-// toError — публичный легаси-экспорт: поведение и сигнатуры менять нельзя,
-// поэтому оставлено как было, awkward-члены лишь помечены @deprecated.
+// toError — public legacy export: behavior and signatures must not change,
+// so left as-is, awkward members only marked @deprecated.
 // ===========================================================================
 
 const legacyThrow = (e: any): never => {
@@ -38,9 +38,9 @@ const legacyThrow = (e: any): never => {
 }
 
 export const toError = {
-    /** @deprecated сеттер-бросок неинтуитивен; используй {@link toError.throw} или {@link MyError.wrap} */
+    /** @deprecated setter-throw is counterintuitive; use {@link toError.throw} or {@link MyError.wrap} */
     set convert(e: any){ legacyThrow(e) },
     throw(e: any){ legacyThrow(e) },
-    /** @deprecated по сути identity; используй {@link MyError.wrap} */
+    /** @deprecated essentially identity; use {@link MyError.wrap} */
     convertToMsg(e: any){ return e },
 }

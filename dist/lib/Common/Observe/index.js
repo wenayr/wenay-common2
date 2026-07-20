@@ -21,3 +21,6 @@ __exportStar(require("./store-follower"), exports);
 __exportStar(require("./store-replica-set"), exports);
 __exportStar(require("./store-offline"), exports);
 __exportStar(require("./store-manager"), exports);
+__exportStar(require("./store-durable"), exports);
+__exportStar(require("./store-playback"), exports);
+__exportStar(require("./node-health"), exports);

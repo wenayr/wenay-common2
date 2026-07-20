@@ -1,6 +1,6 @@
 /**
  * @deprecated Legacy screener RPC compat layer. New code should use the hardened twin
- *   `./oldСommonsServerMini` (promiseServer / wsWrapper / createClientProxy /
+ *   `./oldCommonsServerMini` (promiseServer / wsWrapper / createClientProxy /
  *   createAPIFacadeServer / createAPIFacadeClient), or the v2 RPC core in rpc-index
  *   (createRpcServerAuto / createRpcClientHub).
  *
@@ -16,7 +16,7 @@ import {
     wsWrapper as miniWsWrapper,
     createClientProxy as miniCreateClientProxy,
     createAPIFacadeServer as miniCreateAPIFacadeServer,
-} from "./oldСommonsServerMini"
+} from "./oldCommonsServerMini"
 
 
 type tSocket = {emit: (marker: string, object: any) => any, on: (marker: string, callback: (a: any) => any) => any}
@@ -31,13 +31,13 @@ export type tRequestScreenerT<T> = {
 // }
 type tt = {[k: string]: any}
 /**
- *  для серверной части, во входящих параметров надо отправить ссылки не WebSocket и object который будем наблюдать
- *  можно подключить последовательно к разным классам по факту если по Map объекта не находится данный ключ то он и не включиться
- *  Есть риск одноименных методов в разных объектах
- *  пока не думал как решить =)
+ *  For the server part, in incoming parameters you need to send references instead of WebSocket and the object to observe
+ *  You can connect sequentially to different classes, in fact if the given key is not found in the Map of the object, it will not be included
+ *  There is a risk of identically named methods in different objects
+ *  haven't thought about how to solve it yet =)
  * */
 /**
- * @deprecated forwards to `promiseServer` from `./oldСommonsServerMini` (adds payload
+ * @deprecated forwards to `promiseServer` from `./oldCommonsServerMini` (adds payload
  *   validation + error serialization). Same wire format, same signature.
  */
 export function funcPromiseServer<T extends tt>(data: screenerSoc<tSocketData<tRequestScreenerT<T>>>, obj: T) {
@@ -99,7 +99,7 @@ function funcPromiseServerOld<T extends tt>(data: screenerSoc<tSocketData<tReque
                         console.error({error: e, key: key, arguments: request})
                         // myCatch?.({data: e, key: key, arguments: request})
                     })
-                // если ожидание отключено, то ждать не надо, не путать с функцией callback
+                // if waiting is disabled, don't wait, don't confuse with callback function
             } else {
                 data.sendMessage({
                     mapId: datum.mapId,
@@ -113,7 +113,7 @@ function funcPromiseServerOld<T extends tt>(data: screenerSoc<tSocketData<tReque
 
 /**
  * @deprecated legacy stripped single-key variant (flat `obj[key]`, no path walk). No exact
- *   twin in `./oldСommonsServerMini` (its `promiseServer` is nested-only). Kept as-is.
+ *   twin in `./oldCommonsServerMini` (its `promiseServer` is nested-only). Kept as-is.
  */
 export function funcPromiseServer2<T extends object>(sendMessage: screenerSoc222<tSocketData<tRequestScreenerT<T>>>, obj: T) {
     return async(datum: any) => {
@@ -130,10 +130,10 @@ export function funcPromiseServer2<T extends object>(sendMessage: screenerSoc222
 
 // export function funcPromiseServer3(data: {send: (data: object) => void, onMess: (func: (data: object) => void)}){}
 /**
- *  для серверной части, во входящих параметров надо отправить ссылки на Post/Get и object который будем наблюдать
- *  можно подключить последовательно к разным классам по факту если по Map объекта не находится данный ключ то он и не включиться
- *  Есть риск одноименных методов в разных объектах
- *  пока не думал как решить =)
+ *  For the server part, in incoming parameters you need to send references to Post/Get and the object to observe
+ *  You can connect sequentially to different classes, in fact if the given key is not found in the Map of the object, it will not be included
+ *  There is a risk of identically named methods in different objects
+ *  haven't thought about how to solve it yet =)
  * */
 // export function funcPromiseServerPost<T extends object>(data: screenerPost<tRequestScreenerT<T>>, obj: T) {
 //     // data: screenerPost<tSocketData <tRequestScreenerT<T>>>, obj: T
@@ -168,8 +168,8 @@ type screenerPost<T> = {
 }
 
 /**
- * для обертки над WebSocket чтобы получать callback по id
- * @deprecated forwards to `wsWrapper` from `./oldСommonsServerMini` (adds abortAll;
+ * Wrapper over WebSocket to get callbacks by id
+ * @deprecated forwards to `wsWrapper` from `./oldCommonsServerMini` (adds abortAll;
  *   the returned api method set is identical). Same wire format, same signature.
  * */
 export function funcForWebSocket<T>(data: screenerSoc<tSocketData<tRequestScreenerT<T>>> & {limit?: number}): screenerSoc2<T> {
@@ -198,12 +198,12 @@ function funcForWebSocketOld<T>(data: screenerSoc<tSocketData<tRequestScreenerT<
     const map = new Map<number, {resolve: tFunc, reject: tFunc}>()//new Map<number, (data: tRequestScreenerT<T>|undefined)=> void >()
     const callbackMany = new Map<number, tFunc>()// new Map<number, (data: tRequestScreenerT<T>|undefined)=> void >()
     // const long = async (send: tSocketData<tRequestScreenerT<T>>, time: Date) => {
-    //     // подозрительно долгий ответ на запрос
+    //     // suspiciously long response to request
     //     await sleepAsync(5000);
     //     if (map.has(send.mapId)) {
-    //         console.warn("подозрительно долгий ответ на запрос ", send.data)
+    //         console.warn("suspiciously long response to request ", send.data)
     //         if (Date.now() - time.valueOf()> 1000 * 60 * 5) {
-    //             console.error("прошло 5 минут, наверное пора упасть", send.data);
+    //             console.error("5 minutes passed, time to crash", send.data);
     //             map.get(send.mapId)?.(undefined)
     //             map.delete(send.mapId);
     //             return;
@@ -223,7 +223,7 @@ function funcForWebSocketOld<T>(data: screenerSoc<tSocketData<tRequestScreenerT<
             } else if (callbackMany.has(mapId)) {
                 const buf = callbackMany.get(mapId)
                 // @ts-ignore
-                // надо придумать команду стоп
+                // need to come up with a stop command
                 if (data.data == "___STOP") {
                     callbackMany.delete(mapId);
                     free.numsSet(mapId);
@@ -231,7 +231,7 @@ function funcForWebSocketOld<T>(data: screenerSoc<tSocketData<tRequestScreenerT<
                 }
                 buf?.(data.data)
             } else {
-                // пришел ответ которого не ждали
+                // received unexpected response
                 console.error("пришел ответ которого не ждали ", data)
             }
         }
@@ -293,7 +293,7 @@ function funcForWebSocketOld<T>(data: screenerSoc<tSocketData<tRequestScreenerT<
 }
 
 /**
- * Отправка сообщений для клиента, через авто создание апи, по методу пост запроса, с настраиваемым header
+ * Sending messages to the client, via auto API creation, via POST request method, with configurable header
  * */
 
 
@@ -328,12 +328,12 @@ function funcForWebSocketOld<T>(data: screenerSoc<tSocketData<tRequestScreenerT<
 // }
 
 type tFunc = (a: any) => any
-/** @deprecated use `ScreenerSoc2<T>` from `./oldСommonsServerMini` (adds `abortAll`) */
+/** @deprecated use `ScreenerSoc2<T>` from `./oldCommonsServerMini` (adds `abortAll`) */
 export type screenerSoc2<T> = {
     send: (data: tRequestScreenerT<T>, wait?: boolean, callbacksId?: tFunc[]) => Promise<any>,
     api: screenerSocApi<T>,
 }
-/** @deprecated use `ScreenerSocApi<T>` from `./oldСommonsServerMini` */
+/** @deprecated use `ScreenerSocApi<T>` from `./oldCommonsServerMini` */
 export type screenerSocApi<T> = {
     log: (status: boolean) => void,
     promiseTotal: () => number,
@@ -342,21 +342,21 @@ export type screenerSocApi<T> = {
     callbackDeleteAll: () => void,
     callbackDelete: (func: tFunc) => void,
 }
-/** @deprecated use `MethodToPromise<T>` from `./oldСommonsServerMini` */
+/** @deprecated use `MethodToPromise<T>` from `./oldCommonsServerMini` */
 export type tMethodToPromise2<T extends object> = { [P in keyof T]: T[P] extends ((...args: infer Z) => infer X) ? X extends Promise<any> ? T[P] : (...args: Z) => Promise<X> : T[P] extends object ? tMethodToPromise2<T[P]> : never }
-/** @deprecated use `MethodToPromiseStrict<T>` from `./oldСommonsServerMini` */
+/** @deprecated use `MethodToPromiseStrict<T>` from `./oldCommonsServerMini` */
 export type tMethodToPromise4<T extends object> = { [P in keyof T]: T[P] extends ((...args: infer Z) => infer X) ? X extends Promise<any> ? T[P] : (...args: Z) => Promise<X> : T[P] extends object ? tMethodToPromise4<T[P]> : T[P]}
 type tt5<T extends any> = T extends Promise<infer R> ? R : T
-/** @deprecated use `MethodToPromise<T>` from `./oldСommonsServerMini` */
+/** @deprecated use `MethodToPromise<T>` from `./oldCommonsServerMini` */
 export type tMethodToPromise5<T extends object> = { [P in keyof T]: T[P] extends ((...args: infer Z) => infer X) ? (...args: Z) => Promise<tt5<X>> : T[P] extends object ? tMethodToPromise5<T[P]> : never }
-/** @deprecated use `MethodToPromiseStrict<T>` from `./oldСommonsServerMini` */
+/** @deprecated use `MethodToPromiseStrict<T>` from `./oldCommonsServerMini` */
 export type tMethodToPromise6<T extends object> = { [P in keyof T]: T[P] extends ((...args: infer Z) => infer X) ? (...args: Z) => Promise<tt5<X>> : T[P] extends object ? tMethodToPromise6<T[P]> : T[P]}
 
 // export type tMethodToPromise2<T extends object> = { [P in keyof T]: T[P] extends ((...args: infer Z) => infer X) ? (...args: Z) => (X extends Promise<any> ? X : Promise<X>) : T[P] extends object ? tMethodToPromise2<T[P]> : never }
 
 // export type tMethodToPromise4<T extends object> = {[P in keyof T] : T[P] extends ((...args: any)=> any X <T[P]> extends }// T[P] extends ((...args: infer Z)=> infer X)? (...args: Z)=>(X extends Promise<any>? X : Promise<X>) : Promise<T[P]>}
 /**
- * обертка для класса - переводит класс в Promise<method> класс, также перехватывает все функции и желает свою обработку типа WebSocket или другое
+ * Wrapper for a class — converts class to Promise<method> class, also intercepts all functions and handles WebSocket or other type
  * */
 
 
@@ -377,15 +377,15 @@ export type tMethodToPromise6<T extends object> = { [P in keyof T]: T[P] extends
 //                 return data.send({key, request: argArray}, wait, callback2)
 //             }
 //             // .catch((e)=>{
-//             //     console.error("упали при отправке сообщения");
-//             //     throw "упали при отправке сообщения"
+//             //     console.error("crashed while sending message");
+//             //     throw "crashed while sending message"
 //             // })
 //         }
 //     })
 // }
 
 /**
- * @deprecated forwards to `createClientProxy` from `./oldСommonsServerMini`
+ * @deprecated forwards to `createClientProxy` from `./oldCommonsServerMini`
  *   (behaviorally equivalent proxy). Same wire format, same signature.
  */
 export function funcScreenerClient2<T extends object>(data: screenerSoc2<T>, wait?: boolean) {
@@ -489,16 +489,16 @@ function funcScreenerClient3<T extends object>(data: screenerSoc2<T>, obj: ()=>a
     return tr2() as unknown as tMethodToPromise5<T>
 }
 
-// метод void отменяет callback, т.е. фактически мгновенно исполняет Promise resolve
+// void method cancels callback, i.e. immediately executes Promise resolve
 type tAndB<T> = {data: T, void: () => void}
 export type screenerSoc3<T> = {send: (data: tRequestScreenerT<T>) => tAndB<Promise<any>>}
 export type tMethodToPromise3<T extends object> = { [P in keyof T]: T[P] extends ((...args: infer Z) => infer X) ? (...args: Z) => (X extends Promise<any> ? tAndB<X> : tAndB<Promise<X>>) : tAndB<Promise<T[P]>> }
 
 /**
  *
- * обертка для класса - переводит класс в Promise<method> класс
- * завернутый в определенный класс, чтобы можно было отделить методы с возвращением void и не создавать на них callback,
- * также перехватывает все функции и желает свою обработку типа WebSocket или другое
+ * Wrapper for a class — converts class to Promise<method> class
+ * wrapped in a specific class so you can separate methods returning void and not create callbacks on them,
+ * also intercepts all functions and handles WebSocket or other type
  * */
 // export function funcScreenerClient3<T extends object>(data: screenerSoc3<T>) {
 //     return new Proxy({} as unknown as tMethodToPromise3<T>, {
@@ -543,7 +543,7 @@ export type tElArr<T extends any[]> = UnArray<T>
 
 // OmitTypes
 /**
- * @deprecated prefer `createAPIFacadeClient` from `./oldСommonsServerMini`. NOT forwarded
+ * @deprecated prefer `createAPIFacadeClient` from `./oldCommonsServerMini`. NOT forwarded
  *   here because the Mini facade renames the returned members (strict/infoStrict/strictInit
  *   vs this file's strictly/infoStrictly/strictlyInit); kept as-is to preserve the old
  *   return shape for existing callers.
@@ -571,18 +571,18 @@ export function CreatAPIFacadeClientOld<T extends object>({socketKey, socket, li
 
     const strictly = funcScreenerClient3(tr,()=>strictlyObj) as tMethodToPromise6<T>
 
-    //Не ждет ответа
+    // Does not wait for response
     const space = funcScreenerClient2<typeNoVoid2<T>>(tr, false)
     // const roles =
     return {
         api: tr.api,
-        // типизацией убраны некоторые методы
+        // some methods removed by typing
         func,
-        // типизацией убраны некоторые методы
+        // some methods removed by typing
         space,
-        // все методы
+        // all methods
         all: func as tMethodToPromise5<T>,
-        // возможность добавлять не обязательные методы
+        // ability to add optional methods
         strictly,
         infoStrictly(){return strictlyObj},
         async strictlyInit(obj?: object) {
@@ -598,7 +598,7 @@ export function CreatAPIFacadeClientOld<T extends object>({socketKey, socket, li
 }
 
 /**
- * @deprecated forwards to `createAPIFacadeServer` from `./oldСommonsServerMini` (same
+ * @deprecated forwards to `createAPIFacadeServer` from `./oldCommonsServerMini` (same
  *   input shape, same wire format; the Mini impl adds payload validation). Same signature.
  */
 export function CreatAPIFacadeServerOld<T extends object>(params: {
@@ -625,7 +625,7 @@ function CreatAPIFacadeServerOldImpl<T extends object>({object, socket, socketKe
         ))
     }
     const t = ff(object)
-    // серверная часть (она же клиенская, для выполнения статичных подписок)
+    // server part (also client for executing static subscriptions)
     funcPromiseServer({
             sendMessage: (data) => socket.emit(socketKey, data),
             api: (api) => {

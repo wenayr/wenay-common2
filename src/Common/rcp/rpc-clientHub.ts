@@ -55,7 +55,7 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
     // }
 
     let socket: RpcHubSocket | null = null;
-    let currentToken: string | null = null; // удерживаем для мягкого reauth по живому сокету
+    let currentToken: string | null = null; // keep for soft reauth on live socket
     let connectCount = 0;
     let onConnectCb: ((count: number) => void) | null = null;
     let onDisconnectCb: ((reason: string) => void) | null = null;
@@ -127,7 +127,7 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
 
     function setToken(token: string | null) {
         if (activeContext) closeContext(activeContext, 'token rotated')
-        // прошлый promise уже мог резолвиться — ожидающим НОВОГО подключения нужен свежий
+        // previous promise may have resolved — awaiters of NEW connection need fresh
         if (!resolveFunc) promise = new Promise<FacadeClients>((resolve) => { resolveFunc = resolve; });
         currentToken = token;
         const nextSocket = createSocket(token)
@@ -136,7 +136,7 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
 
         for (const key in schema) {
             const targetSocketKey = schema[key].socketKey || key;
-            // token → клиент предъявит его через Pkt.HELLO в initStrict() на connect.
+            // token → client will present it via Pkt.HELLO in initStrict() on connect.
             const client = createRpcClient<any>({ socketKey: targetSocketKey, socket: nextSocket, token, opt: hubOpts?.opt });
             const transportClient = client as TransportClient
             // A direct client is online by default for back-compat. Hub ownership is different:
@@ -180,8 +180,8 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
         return promise
     }
 
-    // Мягкий re-auth по ЖИВОМУ сокету (БЕЗ дисконнекта/ротации — это работа setToken):
-    // каждому клиенту фасада предъявляем новый токен через Pkt.HELLO; подписки сохраняются.
+    // Soft re-auth on LIVE socket (NO disconnect/rotation — that's setToken job):
+    // present new token to each facade client via Pkt.HELLO; subscriptions preserved.
     function reauth(token: string | null) {
         currentToken = token;
         const ps: Promise<any>[] = [];
@@ -205,13 +205,13 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
     const result = {
         get promise() { return promise; },
         facade,
-        /** @deprecated используй {@link connect} — то же жёсткое (пере)подключение по токену. */
+        /** @deprecated Use {@link connect} — same hard (re)connection by token. */
         setToken,
-        /** Жёсткое (пере)подключение по токену: рвёт прежний сокет, дренирует фасад, поднимает
-         *  новый сокет и переинициализирует клиентов. connect(null) — анонимно. Парный к onConnect
-         *  (мягкая смена принципала — {@link reauth}). Делегирует в setToken. */
+        /** Hard (re)connection by token: breaks former socket, drains facade, raises
+         *  new socket and reinitializes clients. connect(null) — anonymous. Paired with onConnect
+         *  (soft principal change — {@link reauth}). Delegates to setToken. */
         connect: setToken,
-        /** Мягкий re-auth: меняет принципала по живому сокету, не рвёт подписки (vs жёсткий setToken). */
+        /** Soft re-auth: changes principal on live socket, doesn't break subscriptions (vs hard setToken). */
         reauth,
         get socket() { return socket as T2; },
         onConnect: (func?: ((count: number) => void) | null) => { onConnectCb = func ?? null; },

@@ -1,14 +1,14 @@
 // ============================================================
 //  observe/hot-write.test.ts
 //
-//  Hot-write масштабирование reactive: тикающая карта котировок
-//  (state[symbol] = quote, тысячи разных ключей за drain-окно) при
-//  подключённом changedPaths-потребителе (pathLive > 0).
-//  Оракул: дедуп dirty-путей keyed-структурой (не линейным сканом) →
-//  окно из 4x ключей стоит ~4x времени, НЕ ~16x. Плюс корректность:
-//  дедуп в окне, symbol-идентичность ключей, отсутствие склейки
-//  строковых сегментов.
-//  Запуск:
+//  Hot-write scaling of reactive: ticking quotes map
+//  (state[symbol] = quote, thousands of different keys per drain window) with
+//  connected changedPaths consumer (pathLive > 0).
+//  Oracle: dedup dirty-paths via keyed structure (not linear scan) →
+//  window of 4x keys costs ~4x time, NOT ~16x. Plus correctness:
+//  dedup in window, symbol-identity of keys, no string segment concatenation
+//  string segments.
+//  Run:
 //      npx ts-node observe/hot-write.test.ts
 // ============================================================
 
@@ -22,7 +22,7 @@ const ok = (condition: any, message: string) => {
 
 async function benchWindow(n: number, rounds: number) {
     const state = reactive<any>({quotes: {}}, {drain: 'micro'})
-    for (let i = 0; i < n; i++) state.quotes['s' + i] = 0    // ключи заранее: меряем чистые записи
+    for (let i = 0; i < n; i++) state.quotes['s' + i] = 0    // keys pre-created: measure pure writes
     const off = onUpdatePaths(state, () => {})
     await flushReactive(state)
     let best = Infinity
@@ -43,7 +43,7 @@ async function main() {
         const windows: PropertyKey[][][] = []
         const off = onUpdatePaths(state, ch => windows.push(ch.paths))
         for (let i = 0; i < 5; i++) state.quotes['s' + i] = i
-        for (let i = 0; i < 5; i++) state.quotes['s' + i] = i + 100   // повторное касание тех же ключей
+        for (let i = 0; i < 5; i++) state.quotes['s' + i] = i + 100   // repeated touch of the same keys
         await flushReactive(state)
         ok(windows.length == 1, 'one settled batch')
         ok(windows[0].length == 5, `same key touched twice dedups to one path (got ${windows[0].length})`)
@@ -53,13 +53,13 @@ async function main() {
 
     console.log('\n[hot-write] symbol keys stay identity-safe in the dedup')
     {
-        const s1 = Symbol('k'), s2 = Symbol('k')                      // одинаковое описание, разная идентичность
+        const s1 = Symbol('k'), s2 = Symbol('k')                      // same description, different identity
         const state = reactive<any>({}, {drain: 'micro'})
         const windows: PropertyKey[][][] = []
         const off = onUpdatePaths(state, ch => windows.push(ch.paths))
         state[s1] = 1
         state[s2] = 2
-        state[s1] = 3                                                 // повтор первого символа
+        state[s1] = 3                                                 // repeat of the first symbol
         await flushReactive(state)
         ok(windows[0].length == 2, `two same-description symbols = two paths, repeat dedups (got ${windows[0].length})`)
         off()
@@ -79,7 +79,7 @@ async function main() {
 
     console.log('\n[hot-write] near-linear scaling with a changedPaths subscriber')
     {
-        await benchWindow(200, 2)                                     // прогрев (JIT)
+        await benchWindow(200, 2)                                     // warmup (JIT)
         const n = 500, m = 2000, rounds = 5
         const tN = await benchWindow(n, rounds)
         const tM = await benchWindow(m, rounds)

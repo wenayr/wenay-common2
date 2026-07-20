@@ -17,15 +17,15 @@ let _enabled = false;
 export function enable(flag=true) { _enabled= flag; }
 export function disable()         { _enabled= false; }
 
-// Раньше тут был приватный setupLogs2 на source-map-support (никогда не вызывался,
-// поэтому его wrapCallSite всегда был undefined). Удалён: актуальный setupLogs ниже
-// опирается на source maps рантайма (tsx / node --enable-source-maps).
+// Before there was a private setupLogs2 for source-map-support (never called,
+// so its wrapCallSite was always undefined). Deleted: current setupLogs below
+// relies on source maps runtime (tsx / node --enable-source-maps).
 function setupLogs(){
-    if (typeof self != 'object' && typeof window!="object") { // если запущено на node.js
+    if (typeof self != 'object' && typeof window!="object") { // if running on node.js
 
         function moduleName(name :string) { return name; }
         let inspector= require(/* webpackIgnore: true */ moduleName('inspector')) as typeof import('inspector');
-        if (inspector.url()!=undefined) return;  // запущено в дебаггере
+        if (inspector.url()!=undefined) return;  // running in debugger
 
         _enabled= true;
         const origLogMethod= console.log;
@@ -42,7 +42,7 @@ function setupLogs(){
             console[methodName] = ((...args :any[]) => {
                 if (!_enabled) return origMethod(...args);
 
-                // Используем обычный Error.stack - tsx уже применяет source maps
+                // We use regular Error.stack - tsx already applies source maps
                 const stack = new Error().stack;
                 if (!stack) return origMethod(...args);
 
@@ -51,7 +51,7 @@ function setupLogs(){
 
                 if (!callerLine) return origMethod(...args);
 
-                // Парсим строку: "at functionName (file:line:col)" или "at file:line:col"
+                // Parse the string: "at functionName (file:line:col)" or "at file:line:col"
                 const match = callerLine.match(/at\s+(?:(.+?)\s+\()?(.+?):(\d+):(\d+)\)?/);
                 if (!match) return origMethod(...args);
 
@@ -67,7 +67,7 @@ function setupLogs(){
                     if (!fileAndLine.toLowerCase().startsWith("file:///"))
                         fileAndLine = "file:///" + fileAndLine;
 
-                // Для некоторых методов нужна особая обработка
+                // Some methods need special handling
                 if (!methodName.match(/debug|info|log|warn|error|dirxml/)) {
                     _callee ??= fileAndLine;
                     return origMethod(...args);
@@ -98,7 +98,7 @@ export function __LineFile(lvl = 0){
 
     if (!targetLine) return "";
 
-    // Парсим строку: "at functionName (file:line:col)" или "at file:line:col"
+    // Parse the string: "at functionName (file:line:col)" or "at file:line:col"
     const match = targetLine.match(/at\s+(?:(.+?)\s+\()?(.+?):(\d+):(\d+)\)?/);
     if (match) {
         const [, functionName, fileName, lineNumber, columnNumber] = match;
@@ -109,8 +109,8 @@ export function __LineFile(lvl = 0){
     return targetLine.trim();
 }
 
-// возвращает файл, строчку и позицию где был вызван, либо выше вызванная функция по номеру уровня.
-// Позиции — как их видит V8: source maps применяются рантаймом (tsx / --enable-source-maps), не нами.
+// returns file, line and position where called, or above called function by level number.
+// Positions — as V8 sees them: source maps are applied by runtime (tsx / --enable-source-maps), not by us.
 /** @deprecated use {@link callerLine} */
 export function __LineFile2(lvl = 0){
     const originalPrepareStackTrace = Error.prepareStackTrace;
@@ -121,7 +121,7 @@ export function __LineFile2(lvl = 0){
     return `${e.getFileName()}:${e.getLineNumber()}:${e.getColumnNumber()}  ` + e.getFunctionName()
 }
 
-// стек диапазоном уровней, формат как у __LineFile2
+// stack by range of levels, format like __LineFile2
 /** @deprecated use {@link callerLines} */
 export function __LineFiles(lvlStart = 0, lvlEnd: number|undefined = 5){
     const originalPrepareStackTrace = Error.prepareStackTrace;

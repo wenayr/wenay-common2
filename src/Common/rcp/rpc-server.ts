@@ -16,22 +16,22 @@ type PromiseServerHooks<T> = {
     onDispose?: () => void;
 };
 
-// In-band авторизация (P3 «подтверждение»): клиент шлёт Pkt.HELLO с токеном, сервер его
-// проверяет и (опц.) подменяет обслуживаемый объект на фасад этого principal, затем шлёт
-// Pkt.MAP с authAck. Без auth поведение прежнее. Источник токена и admission — вне ядра.
+// In-band authorization (P3 "confirmation"): client sends Pkt.HELLO with token, server
+// validates it and (opt.) replaces served object with facade of this principal, then sends
+// Pkt.MAP with authAck. Without auth previous behavior. Token source and admission — outside core.
 type RpcServerAuth = {
-    /** token → { object?: фасад principal, ack?: что отдать клиенту в authAck }. throw/ack.ok===false = отказ. */
+    /** token → { object?: principal facade, ack?: what to send to client in authAck }. throw/ack.ok===false = rejection. */
     resolveAuth: (token: any) => { object?: any; ack?: any } | Promise<{ object?: any; ack?: any }>;
-    /** true → до успешного HELLO CALL/PIPE отклоняются ("Unauthorized").
-     *  ОБЯЗАТЕЛЕН для контроля доступа: без gate начальный `object` вызывается ДО HELLO,
-     *  а его схема раскрывается в ответ на STRICT — поэтому начальный `object` держи ПУСТЫМ,
-     *  а защищённую поверхность отдавай фасадом из resolveAuth(principal). */
+    /** true → CALL/PIPE before successful HELLO are rejected ("Unauthorized").
+     *  MANDATORY for access control: without gate initial `object` is called BEFORE HELLO,
+     *  and its schema is exposed in response to STRICT — so keep initial `object` EMPTY,
+     *  and serve protected surface as facade from resolveAuth(principal). */
     gate?: boolean;
 };
 
-// Повторный createRpcServer на том же сокете+ключе раньше ДОБАВЛЯЛ второй socket.on
-// (каждый запрос исполнялся дважды). SocketTmpl не умеет off → последний выигрывает,
-// предыдущий обработчик становится инертным.
+// Repeated createRpcServer on same socket+key ADDED a second socket.on
+// (each request executed twice). SocketTmpl can't off → last one wins,
+// previous handler becomes inert.
 const SERVERS = new WeakMap<object, Map<string, () => void>>();
 
 function createServer<T extends object>(
@@ -55,13 +55,13 @@ function createServer<T extends object>(
         }
         if (current == null || typeof current != "object" || isNoStrict(current)) return current;
         const out: any = {};
-        if (hasRpcListen(current)) out[IS_RPC_LISTEN] = true; // пометка — Symbol, Object.keys её не копирует
+        if (hasRpcListen(current)) out[IS_RPC_LISTEN] = true; // mark — Symbol, Object.keys doesn't copy it
         for (const k of Object.keys(current)) {
             if (!isSafeKey(k)) continue;
             const v = current[k];
             if (isNoStrict(v)) { out[k] = v; continue; }
-            // функции тоже прогоняем через resolveTransform: bare `on`-функция (в реестре по WeakMap)
-            // превращается в Listen-обёртку; обычная функция возвращается как есть → поведение прежнее.
+            // functions also pass through resolveTransform: bare `on` function (registered by WeakMap)
+            // becomes Listen wrapper; normal function returned as-is → previous behavior.
             out[k] = typeof v == "function" ? (hooks?.resolveTransform ? hooks.resolveTransform(v) : v)
                 : v != null && typeof v == "object" ? transformTree(v) : v;
         }
@@ -84,14 +84,14 @@ function createServer<T extends object>(
         return out;
     }
 
-    // Таблицы диспетчеризации перестраиваются при смене principal (re-auth) → держим в let.
+    // Dispatch tables are rebuilt on principal change (re-auth) → keep in let.
     let methods: Function[] = [];
     let contexts: any[] = [];
     let methodPaths: string[][] = [];
     let routeMap: Record<string, number> = {};
-    let listenPaths: string[] = []; // адреса Listen-узлов — декларируются клиенту в Pkt.MAP (4-й элемент)
+    let listenPaths: string[] = []; // Listen node addresses — declared to client in Pkt.MAP (4th element)
     let strictSchema: any = {};
-    let currentTarget: any = target; // активный объект (фасад текущего principal)
+    let currentTarget: any = target; // active object (facade of current principal)
 
     function buildDispatch(t: any) {
         const m: Function[] = [], cx: any[] = [], paths: string[][] = [], rm: Record<string, number> = {}, lp: string[] = [];
@@ -114,9 +114,9 @@ function createServer<T extends object>(
 
     const send = (d: any) => socket.emit(key, d);
 
-    // Адаптивное уплотнение тиков подписки. Договорное: эффективно, ТОЛЬКО если оба пира
-    // объявили Caps.COMPACT (serverCaps из opt, peerCaps из клиентского Pkt.CAPS).
-    // sendCb: частый объект одной формы → Pkt.SHAPE(один раз) + Pkt.CBV(значения); иначе обычный Pkt.CB.
+    // Adaptive subscription tick compaction. Contractual: efficient, ONLY if both peers
+    // announced Caps.COMPACT (serverCaps from opt, peerCaps from client Pkt.CAPS).
+    // sendCb: frequent object of one shape → Pkt.SHAPE(once) + Pkt.CBV(values); else normal Pkt.CB.
     const serverCaps = optToCaps(opt);
     let peerCaps: tCaps = 0;
     const compactOn = () => hasCap(serverCaps & peerCaps, Caps.COMPACT);
@@ -132,21 +132,21 @@ function createServer<T extends object>(
     };
     const sendCbEnd = (cbId: number) => { cbShapes.drop(cbId); send([Pkt.CB_END, cbId]); };
 
-    // gate=true → до успешного HELLO вызовы отклоняются; без auth — открыто, как раньше.
+    // gate=true → calls rejected before successful HELLO; without auth — open, as before.
     let authed = !auth?.gate;
     let authAck: any = undefined;
     // Socket.IO preserves packet order, but EventEmitter does not await an async
     // HELLO handler. STRICT/CALL therefore wait on the matching principal build.
     let helloInFlight: Promise<void> | null = null;
-    // 5-й элемент MAP появляется ТОЛЬКО когда есть authAck — иначе провод байт-в-байт как раньше.
+    // 5th element of MAP appears ONLY when authAck exists — else wire byte-for-byte as before.
     const sendMap = () => send(authAck !== undefined
         ? [Pkt.MAP, routeMap, strictSchema, listenPaths, authAck]
         : [Pkt.MAP, routeMap, strictSchema, listenPaths]);
     // Do not race HELLO with a pre-auth MAP: hub could treat it as a completed handshake.
     // No-auth servers keep the eager push; auth clients obtain their MAP from HELLO/STRICT.
     if (!auth?.resolveAuth) sendMap()
-    // Объявляем СВОИ договорные фичи один раз (половина «ask» рукопожатия): новый клиент
-    // запомнит (peerServerCaps), старый — незнакомый Pkt.CAPS просто игнорирует.
+    // Announce OUR contractual features once (half of "ask" handshake): new client
+    // will remember (peerServerCaps), old one ignores unfamiliar Pkt.CAPS.
     if (serverCaps) send([Pkt.CAPS, serverCaps]);
 
     let detached = false;
@@ -155,7 +155,7 @@ function createServer<T extends object>(
     const detachPrev = byKey.get(key);
     if (detachPrev) {
         detachPrev();
-        console.warn(`[RPC] createRpcServer: повторная инициализация на socket+key "${key}" — предыдущий сервер отцеплен`);
+        console.warn(`[RPC] createRpcServer: repeated initialization on socket+key "${key}" — previous server detached`);
     }
     byKey.set(key, () => { detached = true; hooks?.onDispose?.(); });
 
@@ -171,24 +171,24 @@ function createServer<T extends object>(
             sendMap();
             return;
         }
-        // CAPS: клиент объявил свой битсет фич. Легаси-клиент шлёт [CAPS,1]=COMPACT. Старый
-        // сервер игнорировал значение; теперь читаем его и пересекаем с serverCaps (compactOn()).
+        // CAPS: client announced its feature bitset. Legacy client sends [CAPS,1]=COMPACT. Old
+        // server ignored the value; now we read it and intersect with serverCaps (compactOn()).
         if (Array.isArray(msg) && msg[0] === Pkt.CAPS) { peerCaps = typeof msg[1] === "number" ? msg[1] : Caps.COMPACT; return; }
-        // HELLO: in-band авторизация. Без стратегии auth — игнор (старый клиент против сервера без auth).
+        // HELLO: in-band authorization. Without auth strategy — ignore (old client vs server without auth).
         if (Array.isArray(msg) && msg[0] === Pkt.HELLO) {
-            // Сервер без auth: ответ на HELLO всё равно 5-элементный (authAck=null) — чтобы клиент
-            // отличил «ответ на HELLO» от 4-элементного STRICT и не висел/не путал их.
+            // Server without auth: reply to HELLO is still 5-element (authAck=null) — so client
+            // can distinguish "HELLO reply" from 4-element STRICT and not hang/confuse them.
             if (!auth?.resolveAuth) { send([Pkt.MAP, routeMap, strictSchema, listenPaths, null]); return; }
             async function resolveHello() {
                 try {
                     const r: any = await auth!.resolveAuth!(msg[1]);
-                    if (r && r.object !== undefined) buildDispatch(r.object); // фасад нового principal
+                    if (r && r.object !== undefined) buildDispatch(r.object); // new principal facade
                     authAck = r && r.ack !== undefined ? r.ack : { ok: true };
                     authed = authAck?.ok !== false;
                     sendMap(); // principal-specific routeMap + authAck
                 } catch (e: any) {
-                    // Отказ reauth НЕ роняет уже живую сессию: principal/authed/routeMap не трогаем,
-                    // лишь сообщаем клиенту ok:false локальным ack (его reauth() так и резолвится).
+                    // Reauth rejection DOES NOT drop live session: don't touch principal/authed/routeMap,
+                    // just report ok:false to client via local ack (their reauth() resolves as-is).
                     send([Pkt.MAP, routeMap, strictSchema, listenPaths, { ok: false, reason: e?.message ?? String(e) }]);
                 }
             }
@@ -213,7 +213,7 @@ function createServer<T extends object>(
             hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "reqId is not a valid number" });
             return;
         }
-        if (!authed) { // gate: вызовы до успешного HELLO
+        if (!authed) { // gate: calls before successful HELLO
             if (wait) send([Pkt.RESP, reqId, null, errToObj(new MyError("Unauthorized", "E_UNAUTHORIZED"))]);
             return;
         }
@@ -280,7 +280,7 @@ function createServer<T extends object>(
             }
 
             if (isPipe) {
-                // --- ЛОГИКА PIPE (КОНВЕЙЕР) ---
+                // --- PIPE LOGIC (PIPELINE) ---
                 const steps = rawArgsOrSteps as any[];
                 let current: any = fn.bind(ctx);
 
@@ -302,7 +302,7 @@ function createServer<T extends object>(
                         current = current[step.prop];
                     } else if (step.type === 'call') {
                         if (typeof current !== "function") throw new Error("Attempted to call a non-function in pipe");
-                        // как в CALL: иначе Date/Map/BigInt в аргументах колбэка гибнут на JSON-транспорте
+                        // like in CALL: else Date/Map/BigInt in callback args perish on JSON transport
                         const stepArgs = unpack(step.args, sendCb, sendCbEnd, lim);
                         current = current(...stepArgs);
                     }
@@ -314,7 +314,7 @@ function createServer<T extends object>(
                 if (wait) send([Pkt.RESP, reqId, packResult(current)]);
 
             } else {
-                // --- СТАНДАРТНАЯ ЛОГИКА CALL ---
+                // --- STANDARD CALL LOGIC ---
                 const args = unpack(rawArgsOrSteps, sendCb, sendCbEnd, lim);
                 const res = await fn.apply(ctx, args);
                 if (wait) send([Pkt.RESP, reqId, packResult(res)]);

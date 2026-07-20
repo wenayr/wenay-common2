@@ -1,21 +1,21 @@
 // =====================================================================
-// withReplayListen — keyframe (snapshot) + нумерованная линия дельт
+// withReplayListen — keyframe (snapshot) + numbered delta line
 // =====================================================================
-// Декоратор над ListenApi по форме withStoreListen. Один паттерн для
-// всего: keyframe + события S+1…K = точное состояние на K (I/P-кадры, WAL,
-// market data). Дизайн: REPLAY-PLAN.md; оракулы: replay/ (песочница).
+// Decorator over ListenApi in the form of withStoreListen. One pattern for
+// everything: keyframe + events S+1…K = exact state at K (I/P-frames, WAL,
+// market data). Design: REPLAY-PLAN.md; oracles: replay/ (sandbox).
 //
-// Инварианты:
-// - seq — координата, время — атрибут: каждое событие журнала = {seq, ts, event}.
-// - Отстающий подписчик НИКОГДА не получает бэклог-очередь: журнал вытеснен →
-//   свежий keyframe + live от него. Это и catch-up, и backpressure.
-// - Память внешняя по желанию: журнал либо внутреннее кольцо (history: N),
-//   либо внешние лямбды (getSince + onJournal) — декоратор данными не владеет.
-// - Keyframe — событие ТОГО ЖЕ типа (полное состояние как одно событие) —
-//   поэтому current-провайдер store-слоя переиспользуется как есть.
+// Invariants:
+// - seq — coordinate, time — attribute: each journal event = {seq, ts, event}.
+// - Lagging subscriber NEVER receives backlog queue: journal evicted →
+//   fresh keyframe + live from it. This is both catch-up and backpressure.
+// - Memory external by choice: journal is either internal ring (history: N),
+//   or external lambdas (getSince + onJournal) — decorator does not own the data.
+// - Keyframe — event of THE SAME type (complete state as one event) —
+//   therefore current-provider of the store-layer is reused as-is.
 //
-// ВАЖНО: в журнал попадают только события, эмитированные через ДЕКОРИРОВАННЫЙ
-// emit (он нумерует). replayListen отдаёт правильный emit сам.
+// IMPORTANT: only events emitted through the DECORATED
+// emit (it numbers them). replayListen provides the correct emit itself.
 
 import {
     createListen, registerListenOn,
@@ -25,56 +25,63 @@ import {
 type key = string | symbol
 type cbClose = () => void
 
-// Бренд replay-линии (Symbol.for — переживает дубли модуля src/dist). Нужен проводу:
-// replay-api структурно проходит isListenCallback, поэтому автодетекция в rpc-server-auto
-// обязана проверять бренд, а не форму. Читать через hasOwnProperty (конвенция rpc-гуарда).
+// Brand of replay-line (Symbol.for — survives module duplicates src/dist). Needed for the wire:
+// replay-api structurally passes isListenCallback, therefore auto-detection in rpc-server-auto
+// must check the brand, not the shape. Read via hasOwnProperty (rpc-guard convention).
 export const IS_REPLAY_LISTEN = Symbol.for('isReplayListen')
-/** Является ли значение replay-линией (бренд, не структурный снифф). */
+/** Whether the value is a replay-line (brand, not structural sniff). */
 export function isReplayListen(obj: any): obj is ListenReplayApi<any> {
     return !!obj && typeof obj == 'object' && Object.prototype.hasOwnProperty.call(obj, IS_REPLAY_LISTEN)
 }
 
-/** Единица журнала: seq — монотонная координата, ts — атрибут для людей. */
+/** Journal unit: seq — monotonic coordinate, ts — attribute for humans. */
 export type ReplayEvent<Z extends any[] = any[]> = { seq: number, ts: number, event: Z }
 
-/** Отчёт вотчдога тухлости: stale — новое состояние (edge), lastTs — ts последнего события, age — его возраст. */
+/** Staleness watchdog report: stale — new state (edge), lastTs — ts of last event, age — its age. */
 export type StaleInfo = {stale: boolean, lastTs: number, age: number}
 
 export type ReplayListenOptions<Z extends any[]> = {
     /**
-     * Поставщик keyframe (полное состояние как событие того же типа). Нужен для fallback и {current}.
-     * `'last'` — сахар для одно-сущностных линий: keyframe = последнее журнальное событие
-     * (последний тик и есть полное состояние); продьюсер не хранит его руками.
+     * Keyframe provider (complete state as event of the same type). Needed for fallback and {current}.
+     * `'last'` — sugar for single-entity lines: keyframe = last journal event
+     * (last tick is the complete state); producer does not store it manually.
      */
     current?: ListenCurrentProvider<Z> | 'last'
     /**
-     * Уплотнитель кадра (accumulation mini-frame): получает точный хвост журнала после seq,
-     * возвращает состояние-эквивалентный компакт (последнее-на-сущность, агрегат дыры и т.п.).
-     * Семантику события знает только продьюсер — транспорт этих лямбд не видит.
-     * hint — сквозной opaque от подписчика (произвольные правила скипа), провод не заглядывает.
+     * Frame compactor (accumulation mini-frame): receives exact journal tail after seq,
+     * returns state-equivalent compact (last-per-entity, aggregate holes, etc.).
+     * Only the producer knows event semantics — transport doesn't see these lambdas.
+     * hint — end-to-end opaque from subscriber (arbitrary skip rules), wire doesn't look inside.
      */
     frame?: (tail: ReplayEvent<Z>[], hint?: unknown) => ReplayEvent<Z>[]
-    /** Внутренний журнал: кольцо на N последних событий. */
+    /** Internal journal: ring of last N events. */
     history?: number
     /**
-     * Внешний журнал (память снаружи — предпочтительно): события с seq > указанного,
-     * по порядку. undefined = вытеснено (слишком старый seq) → fallback на keyframe.
-     * Имеет приоритет над history.
+     * External journal (memory outside — preferred): events with seq > specified,
+     * in order. undefined = evicted (seq too old) → fallback to keyframe.
+     * Takes priority over history.
      */
     getSince?: (seq: number) => ReplayEvent<Z>[] | undefined
-    /** Хук записи во внешний журнал: вызывается на каждый пронумерованный emit. */
+    /** Hook for writing to external journal: called on each numbered emit. */
     onJournal?: (ev: ReplayEvent<Z>) => void
-    /** Часы для ts (по умолчанию Date.now) — подменяемы в тестах/на внешнем клоке. */
+    /** Clock for ts (default Date.now) — substitutable in tests/on external clock. */
     now?: () => number
     /**
-     * Порог тухлости: нет журнального события дольше staleMs → линия stale.
-     * Сам по себе таймера НЕ создаёт — isStale() считается лениво.
+     * Initial head: seq of the last event of a PREVIOUS lifetime (restored durable line).
+     * Numbering continues from firstSeq+1; catch-up at/below firstSeq is served by
+     * getSince (external journal) or falls back to keyframe — the internal ring never
+     * pretends to know pre-firstSeq history.
+     */
+    firstSeq?: number
+    /**
+     * Staleness threshold: no journal event longer than staleMs → line is stale.
+     * Does not create a timer by itself — isStale() is computed lazily.
      */
     staleMs?: number
     /**
-     * Вотчдог тухлости: edge-triggered в ОБЕ стороны (fresh→stale и stale→fresh),
-     * не повторяющийся будильник. Таймер существует только при заданном onStale
-     * и взводится после первого события — холодная линия свободна. Требует staleMs.
+     * Staleness watchdog: edge-triggered in BOTH directions (fresh→stale and stale→fresh),
+     * non-repeating alarm. Timer exists only when onStale is set
+     * and is armed after the first event — cold line is free. Requires staleMs.
      */
     onStale?: (info: StaleInfo) => void
 }
@@ -82,11 +89,11 @@ export type ReplayListenOptions<Z extends any[]> = {
 type ReplayOnOptions<Z extends any[]> = {
     cbClose?: cbClose
     key?: key
-    /** Store-слой как был: keyframe + live. */
+    /** Store-layer as it was: keyframe + live. */
     current?: ListenCurrent<Z>
-    /** Catch-up: «у меня seq K» → replay журнала с K+1, бесшовный переход на live. */
+    /** Catch-up: "I have seq K" → replay journal from K+1, seamless transition to live. */
     since?: number
-    /** Репорт seq каждого доставленного события — чтобы потребитель мог переподключаться через since. */
+    /** Report seq of each delivered event — so consumer can reconnect via since. */
     onSeq?: (seq: number) => void
 }
 
@@ -95,30 +102,30 @@ export type ListenOnReplay<Z extends any[] = any[]> =
 
 export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOptions<NormalizeTuple<T>> = {}) {
     type Z = NormalizeTuple<T>
-    const {current: currentOpt, frame: condense, history = 0, getSince, onJournal, now = Date.now, staleMs, onStale} = options
-    // 'last' — keyframe из последнего журнального события: одно-сущностная линия,
-    // последний тик = полное состояние. lastEv пишется в нумерующем emit ниже.
+    const {current: currentOpt, frame: condense, history = 0, getSince, onJournal, now = Date.now, staleMs, onStale, firstSeq = 0} = options
+    // 'last' — keyframe from last journal event: single-entity line,
+    // last tick = complete state. lastEv is written in the numbering emit below.
     let lastEv: ReplayEvent<Z> | undefined
     const current: ListenCurrentProvider<Z> | undefined =
         currentOpt == 'last' ? () => lastEv?.event : currentOpt
 
-    // === журнал ===
-    let head = 0
-    // кольцо фиксированного размера: слот события seq = (seq-1) % history
+    // === journal ===
+    let head = firstSeq
+    // fixed-size ring: event slot seq = (seq-1) % history
     const ring: ReplayEvent<Z>[] = []
-    // событие текущего синхронного fan-out: liveTap подписчика узнаёт seq без
-    // envelope-протокола. save/restore → переживает re-entrant emit.
+    // current sync fan-out event: subscriber's liveTap learns seq without
+    // envelope-protocol. save/restore → survives re-entrant emit.
     let emitting: ReplayEvent<Z> | null = null
-    // линия конвертов {seq, ts, event} — обычный Listen: провод проксирует его как есть
+    // line of envelopes {seq, ts, event} — normal Listen: wire proxies it as-is
     const line = createListen<[ReplayEvent<Z>]>(() => {})
     line.run()
 
     function journalSince(seq: number) {
         if (getSince) return getSince(seq)
-        // seq из будущего (другая жизнь сервера) — журналу не верить, только keyframe
+        // seq from the future (another server lifetime) — don't trust journal, keyframe only
         if (seq > head) return undefined
         if (seq == head) return [] as ReplayEvent<Z>[]
-        const oldest = Math.max(1, head - history + 1)
+        const oldest = Math.max(firstSeq + 1, head - history + 1)
         if (seq + 1 < oldest) return undefined
         const out: ReplayEvent<Z>[] = []
         for (let s = seq + 1; s <= head; s++) out.push(ring[(s - 1) % history])
@@ -131,9 +138,9 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
     }
 
     // === staleness watchdog ===
-    // isStale()/lastTs() — ленивые, таймера не создают. Таймер существует ТОЛЬКО
-    // при onStale (иначе edge некому отдать) и взводится после первого события —
-    // холодная линия не держит ни таймера, ни процесса (unref).
+    // isStale()/lastTs() — lazy, don't create a timer. Timer exists ONLY
+    // when onStale is set (otherwise no one gets the edge) and is armed after the first event —
+    // cold line holds neither timer nor process (unref).
     let lastTs = 0
     let staleFlag = false
     let staleTimer: any = null
@@ -145,12 +152,12 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
         try { onStale!({stale, lastTs, age: now() - lastTs}) }
         catch (e) { setTimeout(function rethrowOnStale() { throw e }, 0) }
     }
-    // одноразовый таймер, перевзводится на остаток: событие лишь пишет lastTs,
-    // таймер не трогает — высокочастотная линия не платит за перевзвод
+    // one-shot timer, re-armed for remainder: event only writes lastTs,
+    // timer untouched — high-frequency line doesn't pay for re-arm
     function checkStale() {
         staleTimer = null
         const age = now() - lastTs
-        if (age >= staleMs!) reportStale(true)   // stale-грань; fresh-грань даст следующий emit
+        if (age >= staleMs!) reportStale(true)   // stale-edge; fresh-edge given by next emit
         else armStaleTimer(staleMs! - age)
     }
     function armStaleTimer(delay: number) {
@@ -160,51 +167,51 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
     }
     function touchStale(ts: number) {
         lastTs = ts
-        if (staleFlag) reportStale(false)        // stale→fresh: линия ожила
-        armStaleTimer(staleMs!)                  // no-op без onStale/staleMs или при живом таймере
+        if (staleFlag) reportStale(false)        // stale→fresh: line came alive
+        armStaleTimer(staleMs!)                  // no-op without onStale/staleMs or with live timer
     }
 
     const api = {
         ...base,
-        /** Нумерующий emit: seq++, запись в журнал, fan-out. Единственная дверь в журнал. */
+        /** Numbering emit: seq++, write to journal, fan-out. Only door to journal. */
         emit: function emitJournaled(...e: Z) {
             const ev: ReplayEvent<Z> = {seq: ++head, ts: now(), event: e}
             if (history > 0) ring[(ev.seq - 1) % history] = ev
             if (currentOpt == 'last') lastEv = ev
             onJournal?.(ev)
-            touchStale(ev.ts)  // fresh-грань ПЕРЕД fan-out: подписчик видит «линия ожила», потом событие
-            // линия ПЕРЕД локальным fan-out: бросок локального cb не оставит провод без события
+            touchStale(ev.ts)  // fresh-edge BEFORE fan-out: subscriber sees "line came alive", then event
+            // line BEFORE local fan-out: local cb throw won't leave wire without event
             line.emit(ev)
             const prev = emitting
             emitting = ev
             try { base.emit(...e) } finally { emitting = prev }
         } as Listener<Z>,
-        /** Текущая голова линии (seq последнего события; 0 = ещё не было). */
+        /** Current line head (seq of last event; 0 = not yet). */
         head: () => head,
-        /** Ленивая тухлость: staleMs задан, было хотя бы одно событие и оно старше staleMs. Таймера не требует. */
+        /** Lazy staleness: staleMs is set, there was at least one event and it's older than staleMs. Does not require a timer. */
         isStale: () => staleMs != null && head > 0 && now() - lastTs >= staleMs,
-        /** ts последнего журнального события (0 = ещё не было). */
+        /** ts of last journal event (0 = not yet). */
         lastTs: () => lastTs,
-        /** close базы + снятие таймера вотчдога (если был). */
+        /** Close base + remove staleness watchdog timer (if any). */
         close: function closeReplay() { stopStaleTimer(); base.close() },
-        /** Хвост журнала после seq (или undefined = вытеснено). Для store-слоя / интроспекции. */
+        /** Journal tail after seq (or undefined = evicted). For store-layer / introspection. */
         getSince: journalSince,
-        /** Линия конвертов {seq, ts, event} — для провода (exposeReplay) и внешних журналов. */
+        /** Line of envelopes {seq, ts, event} — for wire (exposeReplay) and external journals. */
         line,
-        /** Задан ли current-провайдер — возможно ли восстановление свежим keyframe (fallback, conflation). */
+        /** Is current-provider set — can recovery with fresh keyframe occur (fallback, conflation). */
         hasKeyframe: current != null,
-        /** Свежий keyframe с его координатой: состояние на момент head. */
+        /** Fresh keyframe with its coordinate: state at the moment of head. */
         keyframe: () => {
             const m = current?.()
             return m ? {seq: head, ts: now(), event: m} as ReplayEvent<Z> : undefined
         },
         /**
-         * Кадр: конверты, доводящие потребителя с sinceSeq до head, настолько компактно,
-         * насколько линия умеет. Единственный метод для трёх триггеров: reconnect (since),
-         * клиентский pull (свой темп) и осушение серверных ворот после лага.
-         * Дефолт: точный хвост журнала (через уплотнитель, если объявлен) ?? keyframe.
-         * Священная линия (ни frame, ни current) с вытесненным журналом — ГРОМКИЙ отказ:
-         * молча выдумывать нечего, потеря событий на такой линии запрещена.
+         * Frame: envelopes bringing the consumer from sinceSeq to head as compactly as
+         * the line can. Only method for three triggers: reconnect (since),
+         * client pull (its own pace) and draining server gates after lag.
+         * Default: exact journal tail (through compactor, if declared) ?? keyframe.
+         * Sacred line (neither frame nor current) with evicted journal — LOUD failure:
+         * nothing to invent silently, event loss on such line is forbidden.
          */
         frame: function frameSince(sinceSeq: number, hint?: unknown) {
             const tail = journalSince(sinceSeq)
@@ -215,7 +222,7 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
         },
         on: ((cb: Listener<Z>, {cbClose, key, current: cur, since, onSeq}: ReplayOnOptions<Z> = {}) => {
             if (since == null) {
-                // режимы без replay-журнала — как в store-слое
+                // modes without replay-journal — as in store-layer
                 const off = base.on(cb, {cbClose, key})
                 if (cur) {
                     const m = currentValue(cur)
@@ -223,10 +230,10 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
                 }
                 return off
             }
-            // === catch-up: единственное тонкое место — handover replay→live ===
-            // Порядок: подписка на live СНАЧАЛА (события во время replay копятся в
-            // очередь по seq), потом replay хвоста, потом слив очереди. Дедуп —
-            // строгим сравнением seq, поэтому ни дыры, ни дубля.
+            // === catch-up: only delicate place — handover replay→live ===
+            // Order: subscribe to live FIRST (events during replay accumulate in
+            // queue by seq), then replay tail, then drain queue. Dedup —
+            // strict seq comparison, so neither holes nor duplicates.
             let lastDelivered = since
             let replaying = true
             const queue: ReplayEvent<Z>[] = []
@@ -238,7 +245,7 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
             }
             const off = base.on(function liveTap(...e: Z) {
                 const ev = emitting
-                if (ev == null) { cb(...e); return }  // событие мимо журнала — отдаём как есть, без seq
+                if (ev == null) { cb(...e); return }  // event bypassing journal — return as-is, without seq
                 if (replaying) queue.push(ev)
                 else deliver(ev)
             }, {cbClose, key})
@@ -246,9 +253,9 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
             if (tail) {
                 for (const ev of tail) deliver(ev)
             } else {
-                // журнал вытеснен → свежий keyframe + линия от него (killer property:
-                // никакого бэклога — новая точка отсчёта). Сброс возможен и ВНИЗ:
-                // seq «из другой жизни» сервера не должен глушить живые события.
+                // journal evicted → fresh keyframe + line from it (killer property:
+                // no backlog — new starting point). Reset possible even DOWN:
+                // seq "from another server lifetime" must not suppress live events.
                 const m = current?.()
                 lastDelivered = head
                 if (m) {
@@ -256,13 +263,13 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
                     onSeq?.(head)
                 }
             }
-            // re-entrant emit'ы во время replay — доводим той же дедуп-логикой
+            // re-entrant emits during replay — deliver with the same dedup logic
             while (queue.length) deliver(queue.shift()!)
             replaying = false
             return off
         }) as ListenOnReplay<Z>,
         once: (cb: Listener<Z>, opts: {key?: key, current?: ListenCurrent<Z>} = {}) => {
-            // паритет со store-слоем: current при once — replay текущего значения и есть событие
+            // parity with store-layer: current on once — replay of current value is the event
             if (opts.current) {
                 const m = currentValue(opts.current)
                 if (m) { cb(...m); return () => {} }
@@ -272,7 +279,7 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
             return off
         },
     }
-    // бренд для провода: автодетекция в rpc-server-auto — по нему, не по форме
+    // brand for wire: auto-detection in rpc-server-auto — by it, not by shape
     Object.defineProperty(api, IS_REPLAY_LISTEN, {value: true})
     registerListenOn(api.on, api)
     return api
@@ -281,13 +288,13 @@ export type ListenReplayApi<T> = ReturnType<typeof withReplayListen<T>>
 
 export type ReplayListenUseOptions<T> = ListenOptions<T> & ReplayListenOptions<NormalizeTuple<T>>
 
-/** [emit, listen]: emit нумерует и журналирует (идёт через декоратор, не мимо). */
+/** [emit, listen]: emit numbers and journals (goes through decorator, not bypassing it). */
 export function replayListen<T>(options: ReplayListenUseOptions<T> = {}) {
-    const {current, frame, history, getSince, onJournal, now, staleMs, onStale, ...listenOptions} = options
+    const {current, frame, history, getSince, onJournal, now, staleMs, onStale, firstSeq, ...listenOptions} = options
     let t: ((...a: NormalizeTuple<T>) => void)
     const base = createListen<T>((e) => { t = e }, {fast: true, ...listenOptions})
-    const listen = withReplayListen<T>(base, {current, frame, history, getSince, onJournal, now, staleMs, onStale})
+    const listen = withReplayListen<T>(base, {current, frame, history, getSince, onJournal, now, staleMs, onStale, firstSeq})
     base.run()
-    t = listen.emit  // ВАЖНО: сквозь декоратор — иначе события мимо журнала
+    t = listen.emit  // IMPORTANT: through decorator — otherwise events bypass journal
     return [t!, listen] as const
 }

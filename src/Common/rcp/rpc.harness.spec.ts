@@ -1,28 +1,28 @@
 // ===========================================================================
-// RPC HARNESS — реальная тест-среда для ядра rcp (это GATE из PLAN / II-1).
+// RPC HARNESS — real test environment for rcp core (this is GATE from PLAN / II-1).
 //
-// Поднимает НАСТОЯЩИЙ клиент + НАСТОЯЩИЙ сервер в одном процессе через
-// in-memory loopback-транспорт (emit одного конца → on другого) и гоняет ОБА канала:
-//   • CALL  — запрос/ответ (client.func.method(args) → Promise результата);
-//   • CB    — server→client колбэки/стримы (функция в аргументах = второй канал);
-//   • PIPE  — серверные цепочки (client.pipe.method().chain.value).
-// Плюс round-trip богатых типов (Date / Map / BigInt) в ОБЕ стороны и проброс ошибок.
+// Runs a real client + real server in one process via in-memory loopback transport
+// (emit from one end → on the other) and tests both channels:
+//   • CALL  — request/response (client.func.method(args) → Promise result);
+//   • CB    — server→client callbacks/streams (function in args = second channel);
+//   • PIPE  — server-side chains (client.pipe.method().chain.value).
+// Plus round-trip rich types (Date / Map / BigInt) in both directions and error propagation.
 //
-// Зачем: ядро rcp нельзя проверить чтением — баги живут в round-trip клиент↔сервер.
-// С этим харнесом правки rcp (pack-in-pipe, client-limits, walk:47, errToObj/MyError,
-// auto/hub) можно вносить смело: добавляешь сюда падающий кейс → чинишь → зелёный.
+// Why: rcp core cannot be tested by reading — bugs live in round-trip client↔server.
+// With this harness, rcp fixes (pack-in-pipe, client-limits, walk:47, errToObj/MyError,
+// auto/hub) can be applied confidently: add a failing case here → fix → green.
 //
-// ТИПИЗАЦИЯ — ТОЖЕ ПОД ТЕСТОМ. Клиент типизируем РЕАЛЬНОЙ формой сервера
-// (`createRpcClient<typeof serverObj>`), а не `<any>`: тогда КОМПИЛЯТОР проверяет,
-// что по проводу доезжают и сигнатуры вызовов (аргументы/возврат CALL/PIPE), и типы
-// аргументов колбэков, и подписочная поверхность Listen-узлов. `check<T>` связывает
-// фактический результат с ожидаемым (`exp: NoInfer<T>`) — расхождение типа не
-// скомпилируется. Точечный `as any` оставлен ТОЛЬКО там, где тест НАМЕРЕННО бьёт
-// мимо схемы (off-schema путь для maxPathLen). Где значение по контракту `any`
-// (echo, authAck) — это тип библиотеки, а не спрятанная типизация.
+// TYPING — ALSO UNDER TEST. Client is typed with the real server form
+// (`createRpcClient<typeof serverObj>`), not `<any>`: then the COMPILER checks
+// that both call signatures (args/return CALL/PIPE) and callback argument types
+// and Listen-node subscription surface reach the wire. `check<T>` binds
+// actual result to expected (`exp: NoInfer<T>`) — type mismatch fails to compile.
+// Spot `as any` is retained ONLY where the test INTENTIONALLY bypasses
+// the schema (off-schema path for maxPathLen). Where a value is `any` by contract
+// (echo, authAck) — that is the library type, not hidden typing.
 //
-// Запуск:   node node_modules/ts-node/dist/bin.js --transpile-only src/Common/rcp/rpc.harness.spec.ts
-// Из сборки исключён (*.spec.ts в tsconfig.exclude) — в опубликованную либу НЕ попадает.
+// Run:   node node_modules/ts-node/dist/bin.js --transpile-only src/Common/rcp/rpc.harness.spec.ts
+// Excluded from build (*.spec.ts in tsconfig.exclude) — does NOT reach published lib.
 // ===========================================================================
 
 import { createRpcServer } from "./rpc-server"
@@ -42,9 +42,9 @@ import type { DeepSocketListen } from "./listen-deep"
 import { MyError } from "../../toError/myThrow"
 import { createStore, createStoreMirror, exposeStore, exposeStoreReplay, flushReactive, syncStoreReplay } from "../Observe"
 
-// --- loopback: emit одного конца доставляется в on другого (асинхронно, как реальный сокет) ---
-// Каждое сообщение проходит JSON-клон: реальный транспорт сериализует, и сырые Date/Map/BigInt
-// в payload ломаются ровно как в проде. Loopback по ссылке маскировал бы такие баги.
+// --- loopback: emit from one end delivers to on of the other (async, like real socket) ---
+// Each message goes through JSON clone: real transport serializes, and raw Date/Map/BigInt
+// in payload break exactly as in production. Loopback by reference would mask such bugs.
 function createLoopback(): [SocketTmpl, SocketTmpl] {
     const A: Record<string, ((d: any) => void)[]> = {}
     const B: Record<string, ((d: any) => void)[]> = {}
@@ -58,18 +58,18 @@ function createLoopback(): [SocketTmpl, SocketTmpl] {
     return [make(A, B), make(B, A)] // [client, server]
 }
 
-// --- Подписочная проекция клиентского proxy на сервер с Listen-узлами ---
-// В runtime клиент проецирует Listen-узлы сервера в подписочную поверхность
-// (`.callback`/`.on`/`.once` с типами значений + вызываемый off()-хендл) — ровно как
-// listen-deep / createRpcClientAuto. Статически это НЕ выводится из ClientAPIAll
-// (там callback стал бы Promise<never>: DeepDataOnly<Function> = never), поэтому
-// объявляем боевой контракт явно. T берём из самого клиента → типы значений едут
-// из РЕАЛЬНОЙ формы сервера (тест передачи типизации callback-канала).
+// --- Subscription projection of client proxy to server with Listen-nodes ---
+// At runtime, the client projects server Listen-nodes into a subscription surface
+// (`.callback`/`.on`/`.once` with value types + callable off()-handle) — exactly like
+// (listen-deep / createRpcClientAuto. Statically this CANNOT be inferred from ClientAPIAll
+// ((callback would become Promise<never>: DeepDataOnly<Function> = never), so
+// declare the live contract explicitly. T is taken from the client itself → value types come
+// from the REAL server form (test of callback-channel typing propagation).
 function webListen<T extends object>(c: RpcClientReturn<T>) {
     return c.func as unknown as DeepSocketListen<T>
 }
 
-// --- сравнение с учётом Date/Map/BigInt ---
+// --- comparison with Date/Map/BigInt support ---
 function eq(a: any, b: any): boolean {
     if (a === b) return true
     if (typeof a === "bigint" || typeof b === "bigint") return a === b
@@ -105,9 +105,9 @@ function proxyRejectingSymbolGet<T extends object>(target: T, stats = { symbolGe
 export async function runHarness() {
     let fails = 0
     const fmt = (v: any) => v instanceof Date ? `Date(${v.valueOf()})` : v instanceof Map ? `Map(${[...v]})` : typeof v === "bigint" ? `${v}n` : JSON.stringify(v)
-    // check<T>: тип ожидаемого ПРИВЯЗАН к фактическому результату run() (exp: NoInfer<T>) —
-    // если по проводу доедет не тот тип, файл не скомпилируется. Где run() возвращает any
-    // (echo/auth) ограничения нет — это контракт библиотеки.
+    // check<T>: expected type is BOUND to actual run() result (exp: NoInfer<T>) —
+    // if the wrong type reaches the wire, file won't compile. Where run() returns any
+    // (echo/auth) there are no restrictions — this is the library contract.
     async function check<T>(name: string, run: () => T | Promise<T>, exp: NoInfer<T>) {
         try {
             const got = await run()
@@ -121,7 +121,7 @@ export async function runHarness() {
     }
 
     const streamed: number[] = []
-    type tBox = { value: number; add: (m: number) => tBox } // рекурсивный тип для PIPE-цепочки
+    type tBox = { value: number; add: (m: number) => tBox } // recursive type for PIPE chain
     const serverObj = {
         add: (a: number, b: number) => a + b,
         echo: (x: any) => x,
@@ -134,11 +134,11 @@ export async function runHarness() {
     }
 
     const [clientSocket, serverSocket] = createLoopback()
-    // Клиент типизирован формой сервера → F.add(2,3): Promise<number>, F.streamRich(cb)
-    // знает (d: Date, m: Map<...>), P.makeBox(n).add(m).value продолжает цепочку — всё под tsc.
+    // Client typed with server form → F.add(2,3): Promise<number>, F.streamRich(cb)
+    // knows (d: Date, m: Map<...>), P.makeBox(n).add(m).value continues the chain — all under tsc.
     const c = createRpcClient<typeof serverObj>({ socket: clientSocket, socketKey: "rpc" })
     createRpcServer({ socket: serverSocket, object: serverObj, socketKey: "rpc" })
-    await delay(0) // дать MAP-хендшейку дойти
+    await delay(0) // wait for MAP handshake to arrive
     const F = c.func
     const P = c.pipe
 
@@ -155,8 +155,8 @@ export async function runHarness() {
     await check("echo nested {date,map}", () => F.echo({ when: d, tags: m, n: 7 }), { when: d, tags: m, n: 7 })
 
     console.log("--- маркер-коллизия: объект с ключом-маркером не должен ломаться ---")
-    // объект, чей ПЕРВЫЙ ключ совпадает с маркером упаковки ($_d/$_f/...), но это обычные данные:
-    // раньше walk считал его упакованным листом по первому ключу и терял остальные ключи.
+    // object whose FIRST key matches packing marker ($_d/$_f/...), but this is regular data:
+    // previously walk treated it as a packed leaf by first key and lost other keys.
     await check("multi-key $_d preserved", () => F.echo({ $_d: 5, name: "x" }), { $_d: 5, name: "x" })
     await check("multi-key $_f preserved", () => F.echo({ $_f: 7, label: "y" }), { $_f: 7, label: "y" })
     await check("marker-key + nested Date", () => F.echo({ $_d: 5, when: new Date(123) }), { $_d: 5, when: new Date(123) })
@@ -169,15 +169,15 @@ export async function runHarness() {
     await check("stream(3,cb) returns", () => F.stream(3, (i) => streamed.push(i)), "done")
     await delay(0)
     await check("stream collected [0,1,2]", async () => streamed, [0, 1, 2])
-    // (d: Date, m: Map<string,number>) выведены ИЗ сигнатуры serverObj.streamRich — без аннотаций.
+    // (d: Date, m: Map<string,number>) inferred FROM serverObj.streamRich signature — no annotations.
     const richCall: (Date | Map<string, number>)[] = []
     await check("CALL cb rich args returns", () => F.streamRich((d, m) => richCall.push(d, m)), "ok")
     await delay(0)
     await check("CALL cb got Date+Map", async () => richCall, [new Date(777), new Map([["k", 1]])])
 
     console.log("--- PIPE (серверные цепочки) ---")
-    // .makeBox(n)/.add(m) типизированы (PipeAPI хранит цепочку методов); чтение листа-примитива
-    // .value PipeAPI НЕ моделирует (в цепочке остаются только функции/объекты) — точечный as any.
+    // .makeBox(n)/.add(m) are typed (PipeAPI stores method chain); reading a primitive leaf
+    // .value is NOT modeled by PipeAPI (only functions/objects remain in chain) — spot as any.
     await check("pipe makeBox(10).value", () => (P.makeBox(10) as any).value, 10)
     await check("pipe makeBox(10).add(5).value", () => (P.makeBox(10).add(5) as any).value, 15)
     const richPipe: (Date | Map<string, number>)[] = []
@@ -186,7 +186,7 @@ export async function runHarness() {
     await check("PIPE cb got Date+Map", async () => richPipe, [new Date(777), new Map([["k", 1]])])
 
     console.log("--- лимиты: сервер (maxArgs/maxPathLen), клиент (opt-in limits) ---")
-    // отдельная пара: сервер с жёсткими лимитами, клиент с opt-in limits на ответы
+    // separate pair: server with strict limits, client with opt-in limits on responses
     const [cs2, ss2] = createLoopback()
     const limServerObj = {
         echo: (x: any) => x,
@@ -201,8 +201,8 @@ export async function runHarness() {
 
     await check("maxArgs: many(1,2) ok", () => F2.many(1, 2), 2)
     await check("maxArgs: many(1,2,3) rejected", () => verdict(F2.many(1, 2, 3), /too many args/), "rejected")
-    // путь мимо routeMap (числовой ref лимит не обходит — он валидируется при рукопожатии).
-    // НАМЕРЕННО off-schema путь → один точечный `as any` (схемы такого метода нет, и не должно быть).
+    // path bypassing routeMap (numeric ref limit is not bypassed — it's validated at handshake).
+    // INTENTIONALLY off-schema path → one spot `as any` (no schema for such method, shouldn't be).
     await check("maxPathLen: 5-сегментный путь", () => verdict((F2 as any).q.w.e.r.t(), /path too long/), "rejected")
     await check("client lim: глубокий ответ отбит", () => verdict(F2.echo({ a: { b: { c: { d: { e: 1 } } } } }), /max depth/), "rejected")
     await check("client lim: мелкий ответ ok", () => F2.echo({ a: 1 }), { a: 1 })
@@ -210,20 +210,20 @@ export async function runHarness() {
     console.log("--- teardown: id-reuse / double-init / dispose ---")
     const slowObj = { slow: (v: string, ms: number) => new Promise<string>(r => setTimeout(() => r(v), ms)), add: (a: number, b: number) => a + b }
 
-    { // id-reuse: id отменённого запроса не возвращается в пул, пока не придёт его поздний RESP
+    { // id-reuse: cancelled request id is not returned to pool until its late RESP arrives
         const [cs, ss] = createLoopback()
         const c = createRpcClient<typeof slowObj>({ socket: cs, socketKey: "rpc" })
         createRpcServer({ socket: ss, object: slowObj, socketKey: "rpc" })
         await delay(0)
         const F = c.func
         const pOld = F.slow("old", 40).then(() => "resolved", () => "aborted")
-        await delay(10) // запрос ушёл, сервер ещё думает
+        await delay(10) // request sent, server still thinking
         c.abortAll("test")
-        const pNew = F.slow("new", 120) // при баге берёт тот же id → старый RESP резолвит его как "old"
+        const pNew = F.slow("new", 120) // if bug: takes same id → old RESP resolves as "old"
         await check("id-reuse: отменённый отбит", () => pOld, "aborted")
         await check("id-reuse: поздний RESP не угоняет новый", () => pNew, "new")
     }
-    { // double-init сервера: последний выигрывает, сайд-эффекты не задваиваются
+    { // double-init server: last wins, side effects not duplicated
         const [cs, ss] = createLoopback()
         let hits = 0
         const obj = { hit: () => ++hits }
@@ -234,18 +234,18 @@ export async function runHarness() {
         await c.func.hit()
         await check("double-init server: вызов один", async () => hits, 1)
     }
-    { // double-init клиента: общий пул id на socket+key — конкурентные запросы двух клиентов не коллизируют
+    { // double-init client: shared id pool on socket+key — concurrent requests from two clients don't collide
         const [cs, ss] = createLoopback()
         createRpcServer({ socket: ss, object: slowObj, socketKey: "rpc" })
         const cA = createRpcClient<typeof slowObj>({ socket: cs, socketKey: "rpc" })
         await delay(0)
         const pa = cA.func.slow("A", 20)
         const cB = createRpcClient<typeof slowObj>({ socket: cs, socketKey: "rpc" })
-        const pb = cB.func.slow("B", 40) // при баге берёт id первого → RESP "A" резолвит оба
+        const pb = cB.func.slow("B", 40) // if bug: takes id of first → RESP "A" resolves both
         await check("double-init client: первый получает своё", () => pa, "A")
         await check("double-init client: второй получает своё", () => pb, "B")
     }
-    { // proxy-regression: createRpcServer не читает symbol через Proxy.get на root-фасаде
+    { // proxy-regression: createRpcServer does not read symbol via Proxy.get on root facade
         const [cs, ss] = createLoopback()
         const stats = { symbolGets: 0, stringGets: 0 }
         const api = proxyRejectingSymbolGet({ ping: () => "pong", nested: { add: (a: number, b: number) => a + b } }, stats)
@@ -256,7 +256,7 @@ export async function runHarness() {
         await check("proxy/root: nested метод жив", () => c.func.nested.add(2, 4), 6)
         await check("proxy/root: symbol-get не было", async () => stats.symbolGets, 0)
     }
-    { // proxy-regression: createRpcServerAuto не читает symbol через Proxy.get на root-фасаде
+    { // proxy-regression: createRpcServerAuto does not read symbol via Proxy.get on root facade
         const [cs, ss] = createLoopback()
         const stats = { symbolGets: 0, stringGets: 0 }
         const api = proxyRejectingSymbolGet({ ping: () => "pong", nested: { add: (a: number, b: number) => a + b } }, stats)
@@ -267,7 +267,7 @@ export async function runHarness() {
         await check("proxy/root-auto: nested метод жив", () => c.func.nested.add(3, 4), 7)
         await check("proxy/root-auto: symbol-get не было", async () => stats.symbolGets, 0)
     }
-    { // proxy-regression: nested Proxy рядом с Listen не ломает MAP и подписки
+    { // proxy-regression: nested Proxy next to Listen doesn't break MAP and subscriptions
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<number>()
         const stats = { symbolGets: 0, stringGets: 0 }
@@ -285,7 +285,7 @@ export async function runHarness() {
         await check("proxy/nested-auto: Listen работает", async () => got, [11])
         await check("proxy/nested-auto: symbol-get не было", async () => stats.symbolGets, 0)
     }
-    { // proxy-regression: proxied own-marker IS_RPC_LISTEN определяется без Proxy.get(symbol)
+    { // proxy-regression: proxied own-marker IS_RPC_LISTEN is determined without Proxy.get(symbol)
         const [, ss] = createLoopback()
         const stats = { symbolGets: 0, stringGets: 0 }
         const marked: any = { callback: () => true }
@@ -299,7 +299,7 @@ export async function runHarness() {
         await check("proxy/marker: listen path объявлен", async () => listenPaths, [rpcPathKey(["stream"])])
         await check("proxy/marker: symbol-get не было", async () => stats.symbolGets, 0)
     }
-    { // rpc-server-auto: вторая подписка на тот же Listen не затирает первую
+    { // rpc-server-auto: second subscription to same Listen doesn't overwrite first
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<number>()
         const obj = { stream: listen }
@@ -317,7 +317,7 @@ export async function runHarness() {
         await check("server-auto: первый подписчик жив", async () => got1, [7])
         await check("server-auto: второй подписчик жив", async () => got2, [7])
     }
-    { // rpc-server-auto: callback() без функции не создаёт битую подписку
+    { // rpc-server-auto: callback() without function doesn't create broken subscription
         const [cs, ss] = createLoopback()
         let wireSubs = 0
         const [emit, listen] = createListenPair<number>({ event: (_t, count) => { wireSubs = count } })
@@ -337,7 +337,7 @@ export async function runHarness() {
         await delay(10)
         await check("server-auto: emit после bad безопасен", async () => wireSubs, 0)
     }
-    { // rpc-server-auto: пользовательский Proxy может не поддерживать symbol-ключи в get()
+    { // rpc-server-auto: custom Proxy may not support symbol keys in get()
         const [cs, ss] = createLoopback()
         const target = { ping: () => "pong" }
         const proxied = new Proxy(target, {
@@ -352,12 +352,12 @@ export async function runHarness() {
         await delay(0)
         await check("server-auto: Proxy без symbol-get", () => c.func.proxied.ping(), "pong")
     }
-    { // дедуп подписок: 1 сетевое соединение на клиента на Listen; отписка — функцией; stats
+    { // dedup subscriptions: 1 network connection per client per Listen; unsubscribe via function; stats
         const [cs, ss] = createLoopback()
         let wireSubs = 0
         const [emit, listen] = createListenPair<number>({ event: (_t, count) => { wireSubs = count } })
         const obj = { stream: listen }
-        const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "rpc" }) // клиент слушает ДО MAP сервера
+        const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "rpc" }) // client listens BEFORE server MAP
         createRpcServerAuto({ socket: ss, object: obj, socketKey: "rpc" })
         await delay(0)
         const L = webListen(c)
@@ -381,17 +381,17 @@ export async function runHarness() {
         await check("последний ушёл: сетевая подписка снята", async () => wireSubs, 0)
         await check("stats пуст", async () => c.api.subscriptions().length, 0)
     }
-    { // НЕ-Listen метод по имени `callback` дедупиться не должен (сервер декларирует Listen-адреса в MAP)
+    { // NOT-Listen method named `callback` should not be deduped (server declares Listen addresses in MAP)
         const [cs, ss] = createLoopback()
         let calls = 0
         const obj = { thing: { callback: (cb: (x: number) => void) => { calls++; cb(calls); return calls } } }
-        const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "rpc" }) // клиент слушает ДО MAP сервера
+        const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "rpc" }) // client listens BEFORE server MAP
         createRpcServerAuto({ socket: ss, object: obj, socketKey: "rpc" })
         await delay(0)
         const r1: number[] = [], r2: number[] = []
-        // это ОБЫЧНЫЙ CALL с колбэк-аргументом (не подписка) — идём через c.func, типы доезжают:
-        // thing.callback(cb): Promise<number>, cb знает (x: number). Конкурентно, без await —
-        // окно, в котором эвристика ошибочно расшарила бы вызов.
+        // this is ORDINARY CALL with callback arg (not subscription) — go via c.func, types reach wire:
+        // thing.callback(cb): Promise<number>, cb knows (x: number). Concurrent, no await —
+        // window where heuristic would wrongly share the call.
         const p1 = c.func.thing.callback((x) => r1.push(x))
         const p2 = c.func.thing.callback((x) => r2.push(x))
         await Promise.all([p1, p2])
@@ -399,16 +399,16 @@ export async function runHarness() {
         await check("не-Listen callback: два реальных вызова", async () => calls, 2)
         await check("не-Listen callback: каждому — своё", async () => [r1, r2], [[1], [2]])
     }
-    { // numeric-ref vs string-path: оба пути резолвят один индексированный метод одинаково и делят состояние.
-      // string-путь идёт до прихода MAP (routeCache пуст), numeric — после.
+    { // numeric-ref vs string-path: both paths resolve one indexed method identically and share state.
+      // string-path goes before MAP arrives (routeCache empty), numeric — after.
         const [cs, ss] = createLoopback()
         const stateful = { _n: 0, bump() { return ++this._n }, read() { return this._n } }
         const c = createRpcClient<typeof stateful>({ socket: cs, socketKey: "rpc" })
         createRpcServer({ socket: ss, object: stateful, socketKey: "rpc" })
         const F = c.func
-        const pStr = F.bump()       // routeCache пуст → строковый ref ["bump"]
-        await delay(0)              // MAP дошёл → routeCache заполнен
-        const pNum = F.bump()       // числовой ref
+        const pStr = F.bump()       // routeCache empty → string ref ["bump"]
+        await delay(0)              // MAP arrived → routeCache populated
+        const pNum = F.bump()       // numeric ref
         await check("ref: string-path bump", () => pStr, 1)
         await check("ref: numeric-ref bump", () => pNum, 2)
         await check("ref: общее состояние (read)", () => F.read(), 2)
@@ -435,7 +435,7 @@ export async function runHarness() {
             rejection.includes('RPC transport disconnected: intentional test disconnect'), true)
         await check('disconnect: ignored ordinary call is not unhandled', async () => unhandled.length, 0)
     }
-    { // client wire: dotted dynamic segment уходит как один элемент path array
+    { // client wire: dotted dynamic segment goes as one path array element
         const emitted: any[] = []
         const socket: SocketTmpl = {
             on: () => {},
@@ -450,7 +450,7 @@ export async function runHarness() {
         }, ["map", "mystrategy.2020", "start"])
         c.close("wire test done", { socketAlive: false })
     }
-    { // dotted path keys: обычный object не смешивает сегмент "a.b" с путём a.b
+    { // dotted path keys: ordinary object doesn't mix segment "a.b" with path a.b
         const [cs, ss] = createLoopback()
         const seenKeys: string[][] = []
         const api = {
@@ -469,7 +469,7 @@ export async function runHarness() {
         await check("path-key: nested segment call", () => c.func.a.b.c(), "nested")
         await check("path-key: hook key exact", async () => seenKeys, [["a.b", "c"], ["a", "b", "c"]])
     }
-    { // dotted path keys: pipe поддерживает dotted сегмент как стартовый серверный метод
+    { // dotted path keys: pipe supports dotted segment as initial server method
         const [cs, ss] = createLoopback()
         const api = {
             "a.b": () => ({ c: () => "dotted" }),
@@ -481,7 +481,7 @@ export async function runHarness() {
         await check("path-key: pipe dotted segment", () => (c.pipe["a.b"]() as any).c(), "dotted")
         await check("path-key: pipe nested branch", () => (c.pipe.a() as any).b.c(), "nested")
     }
-    { // dotted path keys: listen dedupe не смешивает "a.b".events и a.b.events
+    { // dotted path keys: listen dedup doesn't mix "a.b".events and a.b.events
         const [cs, ss] = createLoopback()
         const [emitDotted, listenDotted] = createListenPair<string>()
         const [emitNested, listenNested] = createListenPair<string>()
@@ -505,7 +505,7 @@ export async function runHarness() {
         await check("path-key: listen events isolated", async () => [dotted, nested], [["dotted"], ["nested"]])
         offDotted(); offNested()
     }
-    { // dotted path keys: dynamic proxy получает "mystrategy.2020" одним prop, start следующим
+    { // dotted path keys: dynamic proxy receives "mystrategy.2020" as one prop, start next
         const [cs, ss] = createLoopback()
         const seen: string[] = []
         const strategy = new Proxy({}, {
@@ -525,7 +525,7 @@ export async function runHarness() {
         await delay(0)
         await check("path-key: dynamic dotted prop", () => c.func.map["mystrategy.2020"].start(), ["mystrategy.2020", "start"])
     }
-    { // strict proxy: schema refresh меняет тип path, но не identity
+    { // strict proxy: schema refresh changes path type, but not identity
         const [cs, ss] = createLoopback()
         const api: { node: any } = { node: { child: () => "before" } }
         const c = createRpcClient<any>({ socket: cs, socketKey: "rpc" })
@@ -580,9 +580,9 @@ export async function runHarness() {
         })
         sub()
     }
-    { // mixed-version (P4): клиент игнорирует ЛИШНИЕ (будущие) элементы Pkt.MAP — forward-compat.
-      // Старый сервер шлёт MAP из 4 элементов (так во всех остальных кейсах); здесь дописываем
-      // 5-й/6-й (будущие authAck/version), новый клиент должен работать как ни в чём не бывало.
+    { // mixed-version (P4): client ignores EXTRA (future) Pkt.MAP elements — forward-compat.
+      // Old server sends MAP with 4 elements (as in all other cases); here we add
+      // 5th/6th (future authAck/version), new client should work as if nothing happened.
         const [cs, ss] = createLoopback()
         const origEmit = ss.emit.bind(ss)
         ss.emit = (e, d) => origEmit(e, Array.isArray(d) && d[0] === Pkt.MAP ? [...d, { ok: true }, { v: 2 }] : d)
@@ -592,7 +592,7 @@ export async function runHarness() {
         await delay(0)
         await check("mixed-version: лишние MAP-элементы игнорятся", () => c.func.add(2, 3), 5)
     }
-    { // clientHub: ротация токена отцепляет старых клиентов и обновляет promise
+    { // clientHub: token rotation disconnects old clients and updates promise
         const [csA, ssA] = createLoopback()
         const [csB, ssB] = createLoopback()
         createRpcServer({ socket: ssA, object: slowObj, socketKey: "main" })
@@ -611,7 +611,7 @@ export async function runHarness() {
         await check("hub: promise свежий после ротации", async () => hub.promise !== firstPromise, true)
         await check("hub: новый клиент работает", () => hub.facade.main.func.add(1, 2), 3)
     }
-    { // dispose: висящие отклонены, новые вызовы отбиты
+    { // dispose: pending rejected, new calls rejected
         const [cs, ss] = createLoopback()
         const c = createRpcClient<typeof slowObj>({ socket: cs, socketKey: "rpc" })
         createRpcServer({ socket: ss, object: slowObj, socketKey: "rpc" })
@@ -625,13 +625,13 @@ export async function runHarness() {
     }
 
     console.log("--- Stage 1: in-band auth (HELLO / authAck / gate / reauth) ---")
-    { // verify→facade: principal-specific routeMap, gate, отказ по плохому токену
+    { // verify→facade: principal-specific routeMap, gate, rejection for bad token
         const [cs, ss] = createLoopback()
-        // клиент видит superset-фасад (admin): read + write — оба под tsc.
+        // client sees superset facade (admin): read + write — both under tsc.
         type Admin = { read: () => string; write: (x: number) => number }
         const facades: Record<string, Partial<Admin>> = {
             "tok-admin": { read: () => "r", write: (x: number) => x * 2 },
-            "tok-user":  { read: () => "r" }, // нет write
+            "tok-user":  { read: () => "r" }, // no write
         }
         const resolveAuth = (token: string) => {
             const object = facades[token]
@@ -644,7 +644,7 @@ export async function runHarness() {
         await check("auth: admin authAck ok+who", async () => { const a = await c.auth(); return [a?.ok, a?.who] }, [true, "tok-admin"])
         await check("auth: admin видит write", () => c.func.write(21), 42)
     }
-    { // gate: плохой токен → authAck.ok=false, вызовы отклонены
+    { // gate: bad token → authAck.ok=false, calls rejected
         const [cs, ss] = createLoopback()
         const resolveAuth = (t: string) => { if (t !== "good") throw new Error("nope"); return { object: { ping: () => "pong" }, ack: { ok: true } } }
         createRpcServer({ socket: ss, object: {} as any, socketKey: "rpc", auth: { resolveAuth, gate: true } })
@@ -653,13 +653,13 @@ export async function runHarness() {
         await check("gate: плохой токен ok=false", async () => (await c.auth())?.ok, false)
         await check("gate: вызов до auth отклонён", () => c.func.ping().then(() => "ok", () => "rejected"), "rejected")
     }
-    { // reauth: смена principal по ЖИВОМУ сокету — подписка выживает, появляется новый метод
+    { // reauth: principal change on LIVE socket — subscription survives, new method appears
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<number>()
         const mk = (who: string) => who === "admin" ? { stream: listen, write: (x: number) => x } : { stream: listen }
         const resolveAuth = (t: string) => ({ object: mk(t), ack: { ok: true, who: t } })
         createRpcServerAuto({ socket: ss, object: mk("user"), socketKey: "rpc", auth: { resolveAuth } })
-        // клиент типизирован superset-фасадом (admin): stream-подписка + write.
+        // client typed with superset facade (admin): stream-subscription + write.
         type Princ = { stream: typeof listen; write: (x: number) => number }
         const c = createRpcClient<Princ>({ socket: cs, socketKey: "rpc", token: "user" })
         await c.initStrict()
@@ -675,7 +675,7 @@ export async function runHarness() {
         await check("reauth: подписка пережила reauth", async () => got, [1, 2])
         await check("reauth: новый principal видит write", () => c.func.write(7), 7)
     }
-    { // proxy-regression: reauth перестраивает dispatch на Proxy-фасаде без symbol-get
+    { // proxy-regression: reauth rebuilds dispatch on Proxy facade without symbol-get
         const [cs, ss] = createLoopback()
         const statsByWho: Record<string, { symbolGets: number; stringGets: number }> = {}
         const mk = (who: string) => {
@@ -693,7 +693,7 @@ export async function runHarness() {
         await check("proxy/reauth: новый facade", () => c.func.write(5), "admin:5")
         await check("proxy/reauth: symbol-get не было", async () => Object.values(statsByWho).reduce((n, s) => n + s.symbolGets, 0), 0)
     }
-    { // backward-compat: клиент С токеном против сервера БЕЗ auth — работает, authAck нет
+    { // backward-compat: client WITH token vs server WITHOUT auth — works, no authAck
         const [cs, ss] = createLoopback()
         createRpcServer({ socket: ss, object: { add: (a: number, b: number) => a + b }, socketKey: "rpc" })
         const c = createRpcClient<{ add: (a: number, b: number) => number }>({ socket: cs, socketKey: "rpc", token: "ignored" })
@@ -701,7 +701,7 @@ export async function runHarness() {
         await check("no-auth server: вызов работает", () => c.func.add(2, 3), 5)
     }
     const raced = (p: Promise<any>) => Promise.race([p.then(() => "settled", () => "settled"), delay(60).then(() => "hung")])
-    { // no-auth/старый сервер: auth() и reauth() РЕЗОЛВЯТСЯ (не висят) — дренаж на 4-элементном MAP
+    { // no-auth/old server: auth() and reauth() RESOLVE (don't hang) — drain on 4-element MAP
         const [cs, ss] = createLoopback()
         createRpcServer({ socket: ss, object: { ping: () => "p" }, socketKey: "rpc" })
         const c = createRpcClient<{ ping: () => string }>({ socket: cs, socketKey: "rpc", token: "x" })
@@ -709,17 +709,17 @@ export async function runHarness() {
         await check("no-auth: auth() резолвится (null)", async () => [await raced(c.auth()), await c.auth()], ["settled", null])
         await check("no-auth: reauth() резолвится", () => raced(c.reauth("y")), "settled")
     }
-    { // dispose: висящий reauth снят с {ok:false,reason}, и вызовы ПОСЛЕ dispose не висят
+    { // dispose: pending reauth rejected with {ok:false,reason}, calls AFTER dispose don't hang
         const [cs] = createLoopback()
         const c = createRpcClient<{}>({ socket: cs, socketKey: "rpc", token: "x" })
-        const p = c.reauth("x") // нет сервера → MAP не придёт; снять должен dispose
+        const p = c.reauth("x") // no server → MAP won't arrive; dispose must clean up
         c.dispose("bye")
         const r = await Promise.race([p, delay(60).then(() => ({} as any))])
         await check("dispose: reauth снят с ok:false", async () => [r?.ok, r?.reason], [false, "bye"])
         await check("dispose: reauth после dispose отбит", () => Promise.race([c.reauth("y"), delay(60).then(() => "hung")]).then((x: any) => x?.ok), false)
         await check("dispose: auth после dispose отбит", () => Promise.race([c.auth(), delay(60).then(() => "hung")]).then((x: any) => x?.ok), false)
     }
-    { // reauth-throw НЕ роняет живую сессию: прежний principal вызываем, подписка жива, ok:false
+    { // reauth-throw does NOT drop live session: call old principal, subscription alive, ok:false
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<number>()
         const mk = (who: string) => ({ stream: listen, write: (x: number) => x, who: () => who })
@@ -731,28 +731,28 @@ export async function runHarness() {
         const got: number[] = []
         webListen(c).stream.callback((v) => got.push(v))
         await delay(10); emit(1); await delay(10)
-        const ack = await c.reauth("boom") // resolveAuth бросает на сервере
+        const ack = await c.reauth("boom") // resolveAuth throws on server
         await check("reauth-throw: ok=false", async () => ack?.ok, false)
         emit(2); await delay(10)
         await check("reauth-throw: подписка жива", async () => got, [1, 2])
         await check("reauth-throw: прежний principal вызываем", () => c.func.write(9), 9)
     }
-    { // gate-reject несёт машиночитаемый код E_UNAUTHORIZED
+    { // gate-reject carries machine-readable code E_UNAUTHORIZED
         const [cs, ss] = createLoopback()
         createRpcServer({ socket: ss, object: {} as any, socketKey: "rpc", auth: { resolveAuth: () => { throw new Error("no") }, gate: true } })
-        // фиктивный метод `any` в типе клиента: сервер его не маршрутизирует (gate бьёт раньше),
-        // но так вызов остаётся типизированным (без россыпи as any) — тест именно кода отказа.
+        // dummy method `any` in client type: server doesn't route it (gate strikes first),
+        // but call remains typed (no sprinkling of as any) — test of rejection code itself.
         const c = createRpcClient<{ any: () => void }>({ socket: cs, socketKey: "rpc", token: "x" })
         await c.initStrict()
         await check("gate: код ошибки E_UNAUTHORIZED", () => c.func.any().catch((e: any) => e?.code), "E_UNAUTHORIZED")
     }
-    { // hub: токен доходит до клиента (HELLO на connect) + мягкий hub.reauth по живому сокету
+    { // hub: token reaches client (HELLO on connect) + soft hub.reauth on live socket
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<number>()
         const mk = (who: string) => who === "admin" ? { stream: listen, write: (x: number) => x } : { stream: listen }
         const resolveAuth = (t: string) => ({ object: mk(t), ack: { ok: true, who: t } })
         createRpcServerAuto({ socket: ss, object: mk("user"), socketKey: "main", auth: { resolveAuth } })
-        // схема хаба типизирована superset-фасадом → facade.main.func.stream / .write под tsc.
+        // hub schema typed with superset facade → facade.main.func.stream / .write under tsc.
         type Princ = { stream: typeof listen; write: (x: number) => number }
         const hub = createRpcClientHub(() => Object.assign(cs, { disconnect: () => {} }), r => ({ main: r<Princ>() }))
         const p = hub.setToken("user")
@@ -770,7 +770,7 @@ export async function runHarness() {
     }
 
     console.log("--- S0.3: protocol-detection lifecycle (auto-detect dispose/reset) ---")
-    { // v2-детекция, reset (повторная детекция), dispose (роутер инертен), идемпотентность
+    { // v2-detection, reset (re-detection), dispose (router inert), idempotency
         const [cs, ss] = createLoopback()
         const auto = createRpcServerAutoDetect({ socket: ss, object: { add: (a: number, b: number) => a + b }, socketKey: "rpc" })
         const cA = createRpcClient<{ add: (a: number, b: number) => number }>({ socket: cs, socketKey: "rpc" })
@@ -782,7 +782,7 @@ export async function runHarness() {
         const cB = createRpcClient<{ add: (a: number, b: number) => number }>({ socket: cs, socketKey: "rpc" })
         await delay(0)
         await check("auto-detect: после reset снова v2", () => cB.func.add(4, 5), 9)
-        // dispose: роутер инертен — входящие сообщения не порождают ответа
+        // dispose: router inert — incoming messages don't generate response
         let out = 0
         const origEmit = ss.emit.bind(ss)
         ss.emit = (e, d) => { out++; origEmit(e, d) }
@@ -794,7 +794,7 @@ export async function runHarness() {
         auto.dispose()
         await check("auto-detect: повторный dispose без эффекта", async () => out, 0)
     }
-    { // auto-detect + token: первый HELLO распознаётся как v2 (иначе auth() клиента висел бы)
+    { // auto-detect + token: first HELLO recognized as v2 (else client auth() would hang)
         const [cs, ss] = createLoopback()
         createRpcServerAutoDetect({ socket: ss, object: { add: (a: number, b: number) => a + b }, socketKey: "rpc" })
         const c = createRpcClient<{ add: (a: number, b: number) => number }>({ socket: cs, socketKey: "rpc", token: "tok" })
@@ -802,7 +802,7 @@ export async function runHarness() {
         await check("auto-detect+token: auth() резолвится (null)", () => Promise.race([c.auth(), delay(60).then(() => "hung")]), null)
         await check("auto-detect+token: вызов работает", () => c.func.add(2, 3), 5)
     }
-    { // auto-detect делегирует .once в базовый listenSocket.once: первое событие должно прислать CB_END
+    { // auto-detect delegates .once to base listenSocket.once: first event should send CB_END
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<number>()
         const obj = { stream: listen }
@@ -818,7 +818,7 @@ export async function runHarness() {
     }
 
     console.log("--- adaptive подписочное уплотнение (Pkt.SHAPE/CBV: частая форма → компакт) ---")
-    { // частый объект одной формы стандартизируется после порога; значения (вкл. Date) целы
+    { // frequent object of single form gets standardized after threshold; values (incl. Date) intact
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<{ a: number; when: Date; tag: string }>()
         const obj = { stream: listen }
@@ -837,7 +837,7 @@ export async function runHarness() {
         await check("уплотнение: значения верны (8-й тик)", async () => [got[7].a, got[7].tag, got[7].when], [7, "x", new Date(7)])
         await check("уплотнение: перешли на компакт (CBV>0)", async () => cbv > 0, true)
     }
-    { // полиморфная/редкая форма НЕ уплотняется — порог не достигнут, всё полным CB (нет CBV)
+    { // polymorphic/rare form NOT compacted — threshold not reached, all full CB (no CBV)
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<Record<string, number>>()
         const obj = { stream: listen }
@@ -855,9 +855,9 @@ export async function runHarness() {
         await check("полиморф: все тики целы", async () => [got[0]["a"], got[1]["b"], got[2]["c"]], [1, 2, 3])
         await check("полиморф: без уплотнения (CBV==0)", async () => cbv, 0)
     }
-    { // back-compat: СТАРЫЙ клиент (без Pkt.CAPS) ↔ НОВЫЙ сервер с уплотнением.
-      // Эмулируем старый клиент — транспорт глотает CAPS, сервер его не видит → compactOk=false
-      // → сервер ОБЯЗАН слать обычный Pkt.CB, а не SHAPE/CBV. Фиксируем инвариант P4 тестом.
+    { // back-compat: OLD client (without Pkt.CAPS) ↔ NEW server with compaction.
+      // Emulate old client — transport swallows CAPS, server doesn't see it → compactOk=false
+      // → server MUST send plain Pkt.CB, not SHAPE/CBV. Fix P4 invariant with test.
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<{ a: number; when: Date; tag: string }>()
         const obj = { stream: listen }
@@ -881,7 +881,7 @@ export async function runHarness() {
     }
 
     console.log("--- negotiation: opt.compact (договорное уплотнение через рукопожатие caps) ---")
-    { // клиент opt:{compact:false} → НЕ объявляет COMPACT (молчит) → сервер на обычном Pkt.CB
+    { // client opt:{compact:false} → does NOT declare COMPACT (silent) → server on plain Pkt.CB
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<{ a: number; when: Date; tag: string }>()
         const obj = { stream: listen }
@@ -901,7 +901,7 @@ export async function runHarness() {
         await check("opt client-off: НЕ уплотняли (CBV==0)", async () => cbv, 0)
         await check("opt client-off: сервер слал обычный CB (CB>0)", async () => cb > 0, true)
     }
-    { // сервер opt:{compact:false} → не объявляет COMPACT → нет уплотнения, даже если клиент умеет
+    { // server opt:{compact:false} → doesn't declare COMPACT → no compaction, even if client can
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<{ a: number; when: Date; tag: string }>()
         const obj = { stream: listen }
@@ -922,7 +922,7 @@ export async function runHarness() {
     }
 
     console.log("--- .on(cb) через веб — идиоматичный алиас .callback(cb) ---")
-    { // подписка по самому факту установки колбэка через client.func.stream.on(cb)
+    { // subscription by mere fact of callback setup via client.func.stream.on(cb)
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<number>()
         const obj = { stream: listen }
@@ -942,8 +942,8 @@ export async function runHarness() {
         emit(99); await delay(5)
         await check("on-web: off() отписал", async () => got.length, before)
     }
-    { // genuine: при dedupe:false `.on(fn)` идёт ПРЯМЫМ wire-вызовом stream.on (без subscribe-магии
-      // клиента) → доказывает, что серверный маршрут `on` реально работает по сети.
+    { // genuine: with dedupe:false `.on(fn)` goes DIRECT wire call to stream.on (no subscribe-magic
+      // of client) → proves server route `on` actually works over network.
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<number>()
         const obj = { stream: listen }
@@ -957,7 +957,7 @@ export async function runHarness() {
         await delay(10)
         await check("on-web: genuine .on (dedupe off) стримит", async () => got, [0, 1, 2, 3])
     }
-    { // .on и .callback на ОДИН узел делят одну сетевую подписку (дедуп по адресу узла)
+    { // .on and .callback on ONE node share one network subscription (dedup by node address)
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<number>()
         const obj = { stream: listen }
@@ -975,13 +975,13 @@ export async function runHarness() {
     }
 
     console.log("--- реестр идентичности on→api (WeakMap) + once + bare-on exposure ---")
-    { // реестр: isListenOn / getListenByOn
+    { // registry: isListenOn / getListenByOn
         const [, listen] = createListenPair<number>()
         await check("isListenOn(listen.on) === true", async () => isListenOn(listen.on), true)
         await check("getListenByOn(listen.on) === api", async () => getListenByOn(listen.on) === listen, true)
         await check("isListenOn(чужая fn) === false", async () => isListenOn(() => {}), false)
     }
-    { // .once(cb) доставляет РОВНО одно событие через веб, затем стрим закрыт
+    { // .once(cb) delivers EXACTLY one event over web, then stream closed
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<number>()
         const obj = { stream: listen }
@@ -994,8 +994,8 @@ export async function runHarness() {
         emit(1); await delay(3); emit(2); await delay(3); emit(3); await delay(5)
         await check("once: ровно одно событие через веб", async () => got, [1])
     }
-    { // bare-on: в объекте лежит ТОЛЬКО listen.on (брендированная функция) — сервер по реестру
-      // разворачивает подписку, а DeepSocketListen по бренду ListenOn проецирует {on, once, close}.
+    { // bare-on: object contains ONLY listen.on (branded function) — server by registry
+      // unfolds subscription, and DeepSocketListen by ListenOn brand projects {on, once, close}.
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<number>()
         const obj = { stream: listen.on }
@@ -1016,8 +1016,8 @@ export async function runHarness() {
             return one
         }, [42])
     }
-    { // bare-on ПО СТРОКЕ: в noStrict-поддереве routeMap нет → резолв по строковому пути
-      // (fallback-обход currentTarget). resolveTransform применяется на лету → isListenOn ловит on.
+    { // bare-on BY STRING: noStrict subtree has no routeMap → resolve by string path
+      // (fallback bypass of currentTarget). resolveTransform applied on-the-fly → isListenOn catches on.
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<number>()
         const obj = { dyn: noStrict({ stream: listen.on }) }
@@ -1031,7 +1031,7 @@ export async function runHarness() {
         await delay(10)
         await check("bare-on ПО СТРОКЕ (noStrict): стримит", async () => got, [0, 1, 2])
     }
-    { // и Listen-ОБЪЕКТ по строке (noStrict) — оба способа поддержаны и по ссылке, и по строке
+    { // and Listen-OBJECT by string (noStrict) — both ways supported, by reference and string
         const [cs, ss] = createLoopback()
         const [emit, listen] = createListenPair<number>()
         const obj = { dyn: noStrict({ stream: listen }) }
@@ -1047,15 +1047,15 @@ export async function runHarness() {
     }
 
     // ===========================================================================
-    // wenay-common2 СЕТЕВОЙ СЛОЙ: events + Observe.
+    // wenay-common2 NETWORK LAYER: events + Observe.
     //
-    // Контракт для RPC тот же: серверный узел отдаёт настоящий Listen, клиент
-    // получает типизированную подписочную поверхность через listen-deep/webListen,
-    // off() снимает серверную подписку. Проверяем текущие публичные поверхности пакета.
+    // Contract for RPC is same: server node returns real Listen, client
+    // gets typed subscription surface via listen-deep/webListen,
+    // off() removes server subscription. Test current public package surfaces.
     // ===========================================================================
     console.log("--- wenay-common2 сеть: events + Observe через боевой сокет ---")
 
-    { // events.listen — поток значения по сети + teardown (0↔1 подписки)
+    { // events.listen — value stream over network + teardown (0↔1 subscriptions)
         const [cs, ss] = createLoopback()
         const [emit, stream] = createListenPair<number>()
         const obj = {stream}
@@ -1077,7 +1077,7 @@ export async function runHarness() {
         await check("listen: после отписки источник холодный (0)", async () => stream.count(), 0)
         await check("listen: после отписки тиков нет", async () => got.length, n)
     }
-    { // Observe.store.each — поток [key,value] изменённых верхних ключей по сети
+    { // Observe.store.each — stream of [key,value] changed top keys over network
         const [cs, ss] = createLoopback()
         const rows = createStore<Record<string, number>>({a: 1, b: 2}, {drain: "micro"})
         const obj = {rows: rows.each()}
@@ -1094,7 +1094,7 @@ export async function runHarness() {
         await check("store.each: [key,value] дельты по сети", async () => got, [["a", 10], ["c", 3], ["b", null]])
         await check("store.each: одна сетевая подписка", async () => obj.rows.count(), 1)
     }
-    { // events.mapListen — map+filter (null пропускает событие) по сети
+    { // events.mapListen — map+filter (null skips event) over network
         const [cs, ss] = createLoopback()
         const [emit, src] = createListenPair<number>()
         const [, evenDoubled] = mapListen<[number], [number]>(src, (n) => n % 2 == 0 ? [n * 2] : null)
@@ -1105,15 +1105,15 @@ export async function runHarness() {
         const got: number[] = []
         webListen(c).stream.callback((v) => got.push(v))
         await delay(10)
-        for (let i = 0; i < 5; i++) { emit(i); await delay(2) } // чётные ×2: 0,4,8; нечётные — отфильтрованы
+        for (let i = 0; i < 5; i++) { emit(i); await delay(2) } // evens ×2: 0,4,8; odds — filtered out
         await delay(10)
         await check("mapListen: map+filter по сети", async () => got, [0, 4, 8])
     }
-    { // events.joinListens — zip по ключу: группа стримит ТОЛЬКО когда собраны все порты
+    { // events.joinListens — zip by key: group streams ONLY when all ports gathered
         const [cs, ss] = createLoopback()
-        // кортежная форма listen<[X]> → порт совпадает с ListenMap (T[K] extends any[]).
-        // T задаём явно: через mapped-type параметр (ListenMap<T>) вывод не проходит, и без
-        // подсказки joinListens свалился бы на массивную перегрузку.
+        // tuple form listen<[X]> → port matches ListenMap (T[K] extends any[]).
+        // T set explicitly: via mapped-type param (ListenMap<T>) inference doesn't work, and without
+        // hint joinListens would fall to array overload.
         const [emitA, portA] = createListenPair<[{ id: string, a: number }]>()
         const [emitB, portB] = createListenPair<[{ id: string, b: number }]>()
         const joined = joinListens<{ A: [{ id: string, a: number }], B: [{ id: string, b: number }] }>(
@@ -1122,7 +1122,7 @@ export async function runHarness() {
         const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "rpc" })
         createRpcServerAuto({ socket: ss, object: obj, socketKey: "rpc" })
         await delay(0)
-        // (res, tid) выводятся из listen<[R, string]> — res: собранная группа, tid: string.
+        // (res, tid) inferred from listen<[R, string]> — res: gathered group, tid: string.
         const got: [string, unknown][] = []
         webListen(c).zip.callback((res, tid) => got.push([tid, res]))
         await delay(10)
@@ -1136,9 +1136,9 @@ export async function runHarness() {
     }
 
     // ===========================================================================
-    // COOKBOOK — эффективные паттерны «как в жизни». Каждый — рабочий check (значит,
-    // одновременно живой пример И регрессионный тест). Типизация боевая: клиент знает
-    // форму сервера, подписки через webListen. Домен — трейдинг (для наглядности).
+    // COOKBOOK — effective patterns "as in life". Each is working check (meaning,
+    // simultaneously live example AND regression test). Typing is real: client knows
+    // server form, subscriptions via webListen. Domain — trading (for clarity).
     // ===========================================================================
     console.log("--- COOKBOOK: реальные паттерны использования ---")
 
@@ -1175,8 +1175,8 @@ export async function runHarness() {
         }), {a: true, hasB: false, meta: "warn"})
     }
 
-    { // Replay-линия стора по RPC: keyframe + seq-дельты; reconnect по since = хвост патчей, НЕ снапшот.
-      //   Провод НЕ менялся: line — обычный Listen, since/keyframe — обычные методы (exposeStoreReplay).
+    { // Replay-line of store over RPC: keyframe + seq-deltas; reconnect by since = patch tail, NOT snapshot.
+      //   Wire NOT changed: line — plain Listen, since/keyframe — plain methods (exposeStoreReplay).
         const [cs, ss] = createLoopback()
         const world = createStore<any>({units: {a: {hp: 100}}, tick: 0}, {drain: "micro"})
         const exposed = exposeStoreReplay(world, {history: 64})
@@ -1200,7 +1200,7 @@ export async function runHarness() {
         await flushReactive(world.state); await delay(10)
         const liveOk = eq(mirror.snapshot(), world.snapshot())
 
-        // обрыв: зеркало оффлайн, мир живёт дальше — реконнект доезжает ХВОСТОМ
+        // break: mirror offline, world continues — reconnect reaches by TAIL
         sub()
         world.state.units.a.hp = 50
         await flushReactive(world.state)
@@ -1221,10 +1221,10 @@ export async function runHarness() {
         }), {live: true, converged: true, tailOnly: true, tail: 2})
     }
 
-    { // Replay-тухлость по проводу: доставка КОНСИСТЕНТНА, но молчит о свежести — arrival gap
-      //   (локальные часы клиента) ловит умершего продьюсера через настоящий сокет: конвертов
-      //   нет → stale-грань один раз. Реконнект через {since} доезжает хвостом — и линия fresh.
-      //   Механизм — опция replaySubscribe, а не ручной вотчдог потребителя.
+    { // Replay staleness over wire: delivery CONSISTENT, but silent on freshness — arrival gap
+      //   (client local clock) catches dead producer via real socket: no envelopes
+      //   → stale-edge once. Reconnect via {since} reaches tail — and line fresh.
+      //   Mechanism — replaySubscribe option, not manual consumer watchdog.
         const [cs, ss] = createLoopback()
         const [tick, replayLine] = replayListen<[number]>({history: 64})
         const exposedReplay = exposeReplay(replayLine)
@@ -1247,9 +1247,9 @@ export async function runHarness() {
         tick(1); tick(2)
         await delay(20)
         const freshAfterLive = !sub.isStale()
-        await delay(150)                          // продьюсер молчит → arrival gap срабатывает
+        await delay(150)                          // producer silent → arrival gap triggers
         const staleAfterSilence = sub.isStale()
-        sub()                                     // «обрыв»: клиент оффлайн, мир живёт дальше
+        sub()                                     // "break": client offline, world continues
         tick(3); tick(4)
         const edges2: boolean[] = []
         const seen2: number[] = []
@@ -1266,10 +1266,10 @@ export async function runHarness() {
         }), {data: "1,2", edges: "true", freshAfterLive: true, staleAfterSilence: true, tail: "3,4,5", edges2: "", fresh2: true})
     }
 
-    { // 1) ОБЫЧНЫЙ ЗАПРОС-ОТВЕТ (замена REST/fetch-ручек, но типизированно и без URL).
-      //    Делаем: зовём функцию сервера как локальную — c.func.setLimit("BTC",100), а выполняется
-      //    она НА СЕРВЕРЕ и возвращает результат. Нужно когда: сохранить настройку, спросить
-      //    значение, дёрнуть действие. Самый частый случай «просто передать/получить данные».
+    { // 1) ORDINARY REQUEST-RESPONSE (REST/fetch-endpoint replacement, but typed and no URL).
+      //    Do: call server function as local — c.func.setLimit("BTC",100), but it executes
+      //    ON SERVER and returns result. Use when: save setting, ask
+      //    value, trigger action. Most common case "just pass/get data".
         const [cs, ss] = createLoopback()
         const m = new Map<string, number>()
         const limits = {
@@ -1282,10 +1282,10 @@ export async function runHarness() {
         await c.func.setLimit("BTC", 100)
         await check("cookbook: stateful-сервис по сети", () => c.func.getLimit("BTC"), 100)
     }
-    { // 2) СЛЕДИТЬ ЗА МЕНЯЮЩИМСЯ ЗНАЧЕНИЕМ в реальном времени (push, не поллинг).
-      //    Делаем: сервер держит обычный listen-поток, а клиент .on(cb) получает
-      //    каждое новое значение. off() — перестать следить (серверная подписка снимется).
-      //    Нужно когда: тикер цены, статус задачи, прогресс, онлайн-счётчик.
+    { // 2) WATCH CHANGING VALUE in real time (push, not polling).
+      //    Do: server holds plain listen stream, client .on(cb) receives
+      //    each new value. off() — stop watching (server subscription drops).
+      //    Use when: price ticker, task status, progress, online counter.
         const [cs, ss] = createLoopback()
         const [emitPrice, price] = createListenPair<number>()
         const obj = { price }
@@ -1297,16 +1297,16 @@ export async function runHarness() {
         await delay(5)
         emitPrice(101); emitPrice(102)
         await delay(10)
-        off() // отписка — серверная подписка снимается, фид останавливается
+        off() // unsubscribe — server subscription drops, feed stops
         const after = ticks.length
         emitPrice(103); await delay(10)
         await check("cookbook: live-фид + off()", async () => [ticks, ticks.length == after], [[101, 102], true])
     }
-    { // 3) ДЕРЖАТЬ У КЛИЕНТА АКТУАЛЬНУЮ КОПИЮ серверной коллекции (свободно добавляем/меняем/удаляем).
-      //    Делаем: на сервере Observe store; меняем его как обычный объект
-      //    (`book.state.BTC = 2`, `delete book.state.BTC`) — а клиенту прилетают только
-      //    дельты изменённых ключей. delete приезжает как null после JSON-провода.
-      //    store.each() — поток per-key дельт коллекции. Нужно когда: таблица/список живёт на сервере.
+    { // 3) KEEP UP-TO-DATE COPY of server collection on client (freely add/change/delete).
+      //    Do: Observe store on server; modify as plain object
+      //    (`book.state.BTC = 2`, `delete book.state.BTC`) — but only deltas reach client
+      //    of changed keys. delete arrives as null after JSON-wire.
+      //    store.each() — stream of per-key deltas. Use when: table/list lives on server.
         const [cs, ss] = createLoopback()
         const book = createStore<Record<string, number>>({}, {drain: "micro"})
         const obj = { positions: book.each() }
@@ -1320,10 +1320,10 @@ export async function runHarness() {
         await flushReactive(book.state); await delay(10)
         await check("cookbook: зеркало коллекции по сети", async () => [...mirror], [["ETH", 5]])
     }
-    { // 4) СЧИТАТЬ ПРОИЗВОДНОЕ НА СЕРВЕРЕ, слать клиенту уже готовый результат.
-      //    Делаем: notional = price*qty считается на сервере при изменении входов,
-      //    а клиент получает только итог. Нужно когда: не хочешь тянуть сырьё и считать
-      //    на клиенте (агрегаты, суммы, PnL) — логика и пересчёт живут в одном месте.
+    { // 4) COMPUTE DERIVED on SERVER, send ready result to client.
+      //    Do: notional = price*qty computed on server on input change,
+      //    client gets only result. Use when: don't want to pull raw data and compute
+      //    on client (aggregates, sums, PnL) — logic and recalc live in one place.
         const [cs, ss] = createLoopback()
         const [emitNotional, notional] = createListenPair<number>()
         let price = 10
@@ -1340,10 +1340,10 @@ export async function runHarness() {
         await delay(10)
         await check("cookbook: derived-метрика по сети", async () => got, [60, 80])
     }
-    { // 5) ЗА ОДИН ПОХОД НА СЕРВЕР достать объект и сразу применить к нему метод/взять поле (pipe).
-      //    Делаем: вместо двух обращений (получить order → потом addFee) — одна цепочка
-      //    c.pipe.order(id).addFee(5), всё выполнится на сервере, по сети уедет только финал.
-      //    Нужно когда: промежуточный результат не нужен, важен итог — экономия сетевых ходов.
+    { // 5) IN ONE SERVER CALL fetch object and immediately apply method/get field (pipe).
+      //    Do: instead of two calls (fetch order → then addFee) — one chain
+      //    c.pipe.order(id).addFee(5), all executes on server, only final goes over network.
+      //    Use when: intermediate result unneeded, final matters — save network round-trips.
         const [cs, ss] = createLoopback()
         const api = { order: (id: string) => ({ id, addFee: (f: number) => ({ id, total: 70 + f }) }) }
         createRpcServer({ socket: ss, object: api, socketKey: "ord" })
@@ -1351,10 +1351,10 @@ export async function runHarness() {
         await delay(0)
         await check("cookbook: pipe — серверная цепочка", () => c.pipe.order("x").addFee(5), { id: "x", total: 75 })
     }
-    { // 6) РАЗНЫЕ ПРАВА — один эндпоинт отдаёт РАЗНЫЙ набор методов в зависимости от того, кто залогинен.
-      //    Делаем: предъявляем токен (init с token) → сервер отдаёт фасад под роль. viewer видит только
-      //    quote, trader — ещё и cancel. reauth("trader") меняет права ПРЯМО по живому соединению, без
-      //    переподключения и без потери подписок. Нужно когда: роли/доступы, повышение прав на лету.
+    { // 6) DIFFERENT RIGHTS — one endpoint serves DIFFERENT method set depending on who's logged in.
+      //    Do: present token (init with token) → server returns facade for role. viewer sees only
+      //    quote, trader — also cancel. reauth("trader") changes rights DIRECTLY on live connection, no
+      //    reconnection, no subscription loss. Use when: roles/access, privilege escalation on-the-fly.
         const [cs, ss] = createLoopback()
         const facades: Record<string, { quote: () => number; cancel?: () => string }> = {
             viewer: { quote: () => 42 },
@@ -1362,7 +1362,7 @@ export async function runHarness() {
         }
         const resolveAuth = (t: string) => { const o = facades[t]; if (!o) throw new Error("bad token"); return { object: o, ack: { ok: true, who: t } } }
         createRpcServer({ socket: ss, object: {} as any, socketKey: "sess", auth: { resolveAuth, gate: true } })
-        type Trader = { quote: () => number; cancel: () => string } // клиент знает superset-фасад
+        type Trader = { quote: () => number; cancel: () => string } // client knows superset facade
         const c = createRpcClient<Trader>({ socket: cs, socketKey: "sess", token: "viewer" })
         await c.init()
         await check("cookbook: логин — кто я", async () => (await c.auth())?.who, "viewer")
@@ -1370,10 +1370,10 @@ export async function runHarness() {
         await c.reauth("trader")
         await check("cookbook: reauth — появился cancel", () => c.func.cancel(), "ok")
     }
-    { // 7) ФИЛЬТРОВАТЬ/ПРЕОБРАЗОВЫВАТЬ ПОТОК ДО отправки клиенту (mapListen).
-      //    Делаем: из всех ордеров наружу уходят только BUY и только их qty (SELL отсечены на сервере,
-      //    null = пропустить событие). Нужно когда: не хочешь гнать по сети лишнее и фильтровать на
-      //    клиенте — режешь объём и отдаёшь уже готовую форму.
+    { // 7) FILTER/TRANSFORM STREAM BEFORE sending to client (mapListen).
+      //    Do: from all orders only BUY go out and only their qty (SELL cut on server,
+      //    null = skip event). Use when: don't want to send extra over network and filter on
+      //    client — reduce volume and serve ready form.
         const [cs, ss] = createLoopback()
         type tOrder = { side: "BUY" | "SELL"; qty: number }
         const [emit, orders] = createListenPair<tOrder>()
@@ -1389,9 +1389,9 @@ export async function runHarness() {
         await delay(10)
         await check("cookbook: серверный фильтр (только BUY)", async () => got, [1, 2])
     }
-    { // 8) ДОЖДАТЬСЯ РОВНО ОДНОГО следующего события и сразу отписаться (once).
-      //    Делаем: «дай ближайший fill и всё» — колбэк сработает один раз, дальше стрим закрыт.
-      //    Нужно когда: одноразовое ожидание — подтверждение операции, первый тик, сигнал готовности.
+    { // 8) WAIT FOR EXACTLY ONE next event and immediately unsubscribe (once).
+      //    Do: "give next fill and done" — callback fires once, then stream closed.
+      //    Use when: one-time wait — operation confirmation, first tick, readiness signal.
         const [cs, ss] = createLoopback()
         const [emit, fills] = createListenPair<number>()
         const obj = { fills }
@@ -1404,10 +1404,10 @@ export async function runHarness() {
         emit(11); await delay(3); emit(12); await delay(5)
         await check("cookbook: once() — только следующий fill", async () => got, [11])
     }
-    { // 9) ОШИБКА С МАШИННЫМ КОДОМ, а не просто текстом (MyError долетает целиком: code + data).
-      //    Делаем: сервер кидает MyError("...", "E_LIMIT", {max:100}); клиент ловит и ветвится по
-      //    e.code / e.data — надёжно, без парсинга строк. Нужно когда: предсказуемая обработка ошибок
-      //    (показать нужное сообщение, повторить, подсветить поле) — это контракт ошибок API.
+    { // 9) ERROR WITH MACHINE CODE, not just text (MyError arrives intact: code + data).
+      //    Do: server throws MyError("...", "E_LIMIT", {max:100}); client catches and branches by
+      //    e.code / e.data — reliable, no string parsing. Use when: predictable error handling
+      //    (show right message, retry, highlight field) — this is error contract of API.
         const [cs, ss] = createLoopback()
         const api = {
             withdraw: (amount: number) => {
@@ -1421,10 +1421,10 @@ export async function runHarness() {
         await check("cookbook: ok-путь", () => c.func.withdraw(50), 50)
         await check("cookbook: ошибка по коду + data", () => c.func.withdraw(500).catch((e: any) => [e?.code, e?.data?.max]), ["E_LIMIT", 100])
     }
-    { // 10) ПРОРЕДИТЬ СЛИШКОМ ЧАСТЫЙ ПОТОК на сервере (throttle) — не топить сеть и клиент.
-      //    Делаем: источник тикает часто, а сервер отдаёт первое значение сразу (leading) и последнее
-      //    в окне (trailing), промежуточные схлопывает. Нужно когда: шумные фиды — цены, телеметрия,
-      //    события мыши — где важны «первое и последнее», а не каждый промежуточный тик.
+    { // 10) THROTTLE TOO-FREQUENT STREAM on server — don't drown network and client.
+      //    Do: source ticks often, server returns first value immediately (leading) and last
+      //    in window (trailing), collapses intermediate. Use when: noisy feeds — prices, telemetry,
+      //    mouse events — where "first and last" matter, not every intermediate tick.
         const [cs, ss] = createLoopback()
         const [emit, ticks] = createListenPair<number>()
         const obj = { ticks }
@@ -1434,9 +1434,9 @@ export async function runHarness() {
         const got: number[] = []
         webListen(c).ticks.on((v) => got.push(v))
         await delay(5)
-        for (let i = 1; i <= 5; i++) { emit(i); await delay(2) } // 5 эмиссий в одном окне
-        await delay(50) // дождаться trailing
-        // first (leading=1) доезжает сразу, последнее (5) — на границе окна; промежуточные схлопнуты
+        for (let i = 1; i <= 5; i++) { emit(i); await delay(2) } // 5 emissions in one window
+        await delay(50) // wait for trailing
+        // first (leading=1) arrives immediately, last (5) — at window edge; intermediate collapsed
         await check("cookbook: throttle — leading+trailing, не все тики", async () => [got[0], got[got.length - 1], got.length < 5], [1, 5, true])
     }
 
@@ -1444,7 +1444,7 @@ export async function runHarness() {
     return fails
 }
 
-// авто-запуск только при прямом вызове файла (никаких сайд-эффектов при импорте)
+// auto-run only on direct file call (no side effects on import)
 if (require.main === module) {
     runHarness().then(f => process.exit(f === 0 ? 0 : 1))
 }

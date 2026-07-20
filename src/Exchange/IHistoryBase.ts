@@ -3,7 +3,7 @@ import {CBar, IBars} from "./Bars";
 import {CQuotesHistory, CQuotesHistoryMutable} from "./MarketData";
 import {iListNodeMini} from "../Common/data/ListNodeAnd";
 import {tInfoForLoadHistory, tSetHistoryData, tSymbolLoadInfo} from "./LoadBase";
-// это очень старая версия - нужна больше для обратной совместимости
+// this is a very old version - more needed for backward compatibility
 export type tPrice = number;
 export type tTick = Readonly<{ time: const_Date, price: tPrice, volume: number }>;
 
@@ -69,7 +69,7 @@ export type tSymbolInfo = tSymbolInfoBase & Readonly<{
     open24?: number,  // rolling
     low24?: number,  // rolling
     close24?: number,  // rolling
-    volumeBase24?: number, // base это левая сторона   // rolling
+    volumeBase24?: number, // base is the left side   // rolling
     volume24?: number,  // rolling
 }>;
 
@@ -110,11 +110,11 @@ export interface iLinkMini {
     getAddress(): tAddressSymbol;
 }
 
-// type - тип загрузки с лево или с право
+// type - type of loading from left or right
 export type tLoadBar = "left" | "right"|"Nan"
 
 interface iTypeHistory2<K, V> extends iLinkMini {
-    //загрузка котировок, надо предать ключ класа откуда спрашиваем эти новые котировки, чтобы повторные одинаковые ключи не порождали новые обратные связи
+    // loading quotes, need to pass key of class from where we ask for these new quotes, so repeated identical keys don't create new feedback
     loadHistory(  tf: TF, time1: Date | number, time2?: Date, right?:boolean): Promise<{ link: iLinkMini, type: tLoadBar } | undefined>;
 
     socket(callback: tCallbackSocket, node: iListNodeMini | undefined): iListNodeMini
@@ -125,18 +125,18 @@ interface iTypeHistory2<K, V> extends iLinkMini {
 
     Address(): tAddressSymbol | null;
 
-    //установить функцию потоковых котировок
+    // set function for streaming quotes
     setFunkSocket(socket: tSocket): void;
 
-    //утсновить функцию загрузки котироыок
+    // set function for loading quotes
     setFunkLoadHistory(load: tLoad): void;
 
     setFunkNames(all:tGetAll): void;
 
-    //ссылка хранения самой истории
-    history?: CQuotesHistoryMutable; //сама история
+    // reference to storage of the history itself
+    history?: CQuotesHistoryMutable; // the history itself
 
-    //есть ли сокет по которым приходжят котировки на данный момент по этому символу
+    // is there a socket through which quotes come at this moment for this symbol
     _socketStatus:boolean;
 
     add(key: K): iMega<K, V>

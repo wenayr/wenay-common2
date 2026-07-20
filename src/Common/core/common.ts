@@ -53,10 +53,10 @@ export function isDate<T> (value :T & (Extract<T,const_Date> extends never ? nev
 {
     return value instanceof Date;
 }
-// проверка
+// check
 {
     let aaa! : number;//|const_Date;
-    //is_const_Date(aaa);  // ошибка
+    //is_const_Date(aaa);  // error
 
     let bbb! : number|const_Date;
     if (isDate(bbb))
@@ -78,7 +78,7 @@ Object.prototype.valueOf= function(this) {
 
 //delete Object.valueOf;
 
-// Проверка ошибки:
+// Error checking:
 
 // class A { val; private valueOfs() { return this.val; }  constructor(value) { this.val= value; } }
 // console.log(new A(1) > new A(0));
@@ -97,7 +97,7 @@ export function shallowClone<T>(val :T) : Mutable<T> {
 	: typeof val=="object" && val ? {...val} : val;
 }
 
-// Глубокое клонирование любого типа
+// Deep cloning of any type
 
 export function _deepClone<T>(src :T, map? :Map<object,object>) {
 	if (!src || typeof src!="object") return src;
@@ -152,7 +152,7 @@ export function deepCloneMutable<T>(value :T) { return deepClone(value) as Mutab
 // let bbb= deepClone(aaa);
 // console.log(bbb);
 
-// Глубокое клонирование объекта
+// Deep cloning of objects
 
 export function deepCloneObject<T extends object>(object :T) {
 	if (object==undefined) throw new Error("object is undefined!"); //return {};
@@ -173,7 +173,7 @@ export function readonlyFull<T>(arg :T) { return arg as ReadonlyFull<T>; }
 
 
 
-// глубокое сравнение структур
+// deep structure comparison
 /** @deprecated use {@link isEqual} */
 export function deepEqual(object1: any, object2: any) {//}, equalityComparer? :(a :any, b :any)=>boolean|undefined) {
     if (object1==object2) return true;
@@ -213,7 +213,7 @@ export function deepEqual(object1: any, object2: any) {//}, equalityComparer? :(
 /** Deep structural equality of plain object/array trees (no Map/Set/Date/NaN special-casing). */
 export const isEqual = deepEqual
 
-// сравнение структур неглубокое
+// shallow structure comparison
 export function shallowEqual<T extends { [key: string]: unknown }|undefined>(object1: T, object2: T) {
 	if (!object1 || !object2) return object1==object2;
 	const keys1 = Object.keys(object1);
@@ -231,7 +231,7 @@ export function shallowEqual<T extends { [key: string]: unknown }|undefined>(obj
 	return true;
 }
 
-// сравнение массивов неглубокое
+// shallow array comparison
 export function arrayShallowEqual<T extends unknown>(arr1 :readonly T[], arr2 :readonly T[]) : boolean
 {
     if (arr1.length != arr2.length) return false;
@@ -258,17 +258,17 @@ export type SearchMatchMode = E_MATCH | "lessOrEqual"|"equal"|"greatOrEqual";
 export type SortMode = E_SORTMODE|"ascend"|"descend";
 
 
-// Бинарный поиск  BSearch(array, value, match, sortMode)
+// Binary search  BSearch(array, value, match, sortMode)
 export function BSearch<T extends {valueOf():number}> (array :ArrayLike<T>,  value :T,  match? :SearchMatchMode,  mode? :SortMode) : number;
 
-// Бинарный поиск  BSearch(array, value, comparer, match, sortMode)
+// Binary search  BSearch(array, value, comparer, match, sortMode)
 export function BSearch<T,T2>(array :ArrayLike<T>,  value :T2,  comparer : (a:T, b:T2)=>number,  match? :SearchMatchMode,  mode? :SortMode) : number;
 
-// Бинарный поиск  BSearch(array, itemComparer, match, sortMode)
+// Binary search  BSearch(array, itemComparer, match, sortMode)
 export function BSearch<T>(array :ArrayLike<T>, compareElement : (item:T)=>number,  match? :SearchMatchMode,  mode? :SortMode) : number;
 /**
- * Бинарный поиск: <br>
- * BSearch(array, value, match, sortMode)  или <br>
+ * Binary search: <br>
+ * BSearch(array, value, match, sortMode)  or <br>
  * BSearch(array, value, comparer, match, sortMode)
  */
 export function BSearch<T>(array :ArrayLike<T>,  arg2 :any,  arg3? :any, ...args : any) : number {
@@ -278,25 +278,25 @@ export function BSearch<T>(array :ArrayLike<T>,  arg2 :any,  arg3? :any, ...args
 }
 
 
-// Бинарный поиск по внешнему упорядоченному массиву BSearchAsync(length: number,  compareIndexToValue : (index: number)=>Promise<number>,  matchMode? :SearchMatchMode,  sortMode? :SortMode)
+// Binary search on external ordered array BSearchAsync(length: number,  compareIndexToValue : (index: number)=>Promise<number>,  matchMode? :SearchMatchMode,  sortMode? :SortMode)
 export const BSearchAsync: typeof ___BSearchAsync = (...a) => ___BSearchAsync(...a)
 
 
-// Бинарный поиск  BSearchDefault(array, value, match, mode)
+// Binary search  BSearchDefault(array, value, match, mode)
 //
 export function BSearchDefault<T extends {valueOf():number}> (array :ArrayLike<T>,  value :T,  match? :SearchMatchMode,  mode? :SortMode) : number
 {
 	return __BSearch(array, value, (a, b)=> Math.sign(a.valueOf()-b.valueOf()),  match, mode);
 }
 
-// Бинарный поиск  BSearch(array, comparer1, match, mode)
+// Binary search  BSearch(array, comparer1, match, mode)
 
 function __BSearch<T,T2>(array :ArrayLike<T>,  value :T2,  comparer : (a:T, b:T2)=>number,  matchMode? :SearchMatchMode,  sortMode? :SortMode) : number
 {
 	return ___BSearch(array, (item)=>comparer(item, value), matchMode, sortMode);
 }
 
-// Бинарный асинхронный поиск по внешнему массиву данных  BSearch(array, value, comparer2, match, mode)
+// Binary asynchronous search on external data array  BSearch(array, value, comparer2, match, mode)
 //
 async function ___BSearchAsync(length: number,  compareIndexToValue : (index: number)=>Promise<number>,  matchMode? :SearchMatchMode,  sortMode? :SortMode) : Promise<number>
 {
@@ -323,7 +323,7 @@ async function ___BSearchAsync(length: number,  compareIndexToValue : (index: nu
 	return i;
 }
 
-// Бинарный синхронный поиск по внешнему массиву данных: BSearchIndex(length, comparer, match, sortMode)
+// Binary synchronous search on external data array: BSearchIndex(length, comparer, match, sortMode)
 //
 export function BSearchIndex(length: number,  compareIndex : (index: number)=>number, matchMode? :SearchMatchMode, sortMode? :SortMode) : number
 {
@@ -362,7 +362,7 @@ export function BSearchValueInRange(from: number, to: number, precision : number
     //if (from > 0) throw new Error(`BSearchVal: from > to : ${from} > ${to}`);
     if (precision==0) throw new Error("precision=0");
     let count= Math.round((to - from)/precision)+1;
-    // знак шага задаёт направление поиска: precision<0 => убывающий диапазон (поддержка обратных диапазонов)
+    // step sign determines search direction: precision<0 => descending range (reverse range support)
     const sortMode= precision>0 ? E_SORTMODE.ASCEND : E_SORTMODE.DESCEND;
     count= Math.abs(count);
     let i= BSearchIndex(count, (index)=>compare(from + precision * index),  matchMode, sortMode);
@@ -375,17 +375,17 @@ BSearch.LESS_OR_EQUAL= E_MATCH.LESS_OR_EQUAL;
 BSearch.GREAT_OR_EQUAL= E_MATCH.GREAT_OR_EQUAL;
 
 
-/** найти элемент с ближайшим значением*/
+/** find element with nearest value */
 export function BSearchNearest(array :ArrayLike<number>, searchValue :number, maxDelta? :number) : number;
-/** найти элемент с ближайшим значением*/
+/** find element with nearest value */
 export function BSearchNearest<T>(array :ArrayLike<T>, searchValue :number, arrayGetValue :(element :T)=>number, maxDelta? :number) : number;
-/** найти элемент с ближайшим значением*/
+/** find element with nearest value */
 export function BSearchNearest<T>(array :ArrayLike<T>, searchValue :number, getterOrDelta? : ((element :T)=>number)|number, maxDeltaOrNull? :number) {
     let [getter, maxDelta] = typeof getterOrDelta=="function" ? [getterOrDelta,maxDeltaOrNull] : [(elem :any)=>elem as number, getterOrDelta];
     return _BSearchNearest(array, searchValue, getter, maxDelta);
 }
 
-// найти элемент с ближайшим значением
+// find element with nearest value
 export function _BSearchNearest<T>(array :ArrayLike<T>, searchValue :number, arrayGetValue :(element :T)=>number, maxDelta? :number) {
     if (array.length==0) return -1;
     let i= BSearch(array, (element) => arrayGetValue(element) - searchValue, "greatOrEqual");
@@ -406,7 +406,7 @@ export function _BSearchNearest<T>(array :ArrayLike<T>, searchValue :number, arr
 
 //export function MathMin<T extends { valueOf() : number}> (a :T,  b :T)  { let x= a.valueOf(), y= b.valueOf();  return x }
 
-/** Нормализация точности числа
+/** Normalize number precision
  * @deprecated use {@link round}
 */
 export function NormalizeDouble(value :number, digits :number) { let factor= 10**digits;  return Math.round(value * factor)/factor; }
@@ -436,7 +436,7 @@ function __GetMaxCommonDivisorInteger(a :number, b :number)    // a > b !!!
 	while(true) { if (b<1) return a;  a= a%b;  if (a<1) return b;  b= b%a; }
 }
 
-/** Наибольший общий делитель двух чисел
+/** Greatest common divisor of two numbers
  * @deprecated use {@link gcd}
  */
 export function MaxCommonDivisor(a :number,  b :number,  digits :number=8)
@@ -454,7 +454,7 @@ export function MaxCommonDivisor(a :number,  b :number,  digits :number=8)
 
 //console.log(MaxCommonDivisor(0, 301.84, 1));
 
-/** Наибольший общий делитель массива чисел
+/** Greatest common divisor of array of numbers
  * @deprecated use {@link gcd}
  */
 export function MaxCommonDivisorOnArray(values : Iterable<number>,  precisDigits : number =8)
@@ -478,10 +478,10 @@ export function gcd(a :number|Iterable<number>, b? :number, digits? :number) {
 
 
 
-/** Определение точности числа (число цифр после запятой)
+/** Determine number precision (number of digits after decimal point)
  * @param value
- * @param mindigits - Минимальная точность
- * @param maxdigits - Максимальная точность
+ * @param mindigits - Minimum precision
+ * @param maxdigits - Maximum precision
  * @deprecated use {@link decimals}
  */
 export function GetDblPrecision2(value :number, mindigits :number, maxdigits :number)
@@ -500,9 +500,9 @@ export function GetDblPrecision2(value :number, mindigits :number, maxdigits :nu
 };
 
 
-/** Определение точности числа (число цифр после запятой)
+/** Determine number precision (number of digits after decimal point)
  * @param value
- * @param maxdigits - Максимальная точность
+ * @param maxdigits - Maximum precision
  * @deprecated use {@link decimals}
  */
 export function GetDblPrecision(value :number, maxdigits :number =8) { return GetDblPrecision2(value, 0, maxdigits); }
@@ -512,16 +512,16 @@ export function decimals(value :number, maxDigits :number =8, minDigits :number 
 
 
 //-------------------------------------------------------
-/** Преобразование числа в стринг с автоматической точностью
+/** Convert number to string with auto precision
  * @param value
- * @param minprecis - Минимальная точность (число цифр после запятой)
- * @param maxprecis - Максимальная точность (число цифр после запятой)
+ * @param minprecis - Minimum precision (number of digits after decimal point)
+ * @param maxprecis - Maximum precision (number of digits after decimal point)
  */
 function DblToStrAuto2(value :number,  minprecis :number,  maxprecis :number)  { return value?.toFixed( GetDblPrecision2(value, minprecis, maxprecis) ); }
 
-/** Преобразование числа в стринг с автоматической точностью
+/** Convert number to string with auto precision
  * @param value
- * @param maxprecis - Максимальная точность (число цифр после запятой).  Если отрицательное число, то это минимально число значащих цифр
+ * @param maxprecis - Maximum precision (number of digits after decimal point). If negative, minimum significant digits
  * @deprecated use {@link formatAuto}
  */
 export function DblToStrAuto(value :number, maxprecis :number=8) {
@@ -532,10 +532,10 @@ export function DblToStrAuto(value :number, maxprecis :number=8) {
 
 /** Shortest decimal string at auto-detected precision (negative maxDigits = significant digits). */
 export const formatAuto = DblToStrAuto
-/** Нормализация точности числа
+/** Normalize number precision
  * * @param value
- *  * @param digitsPoint - Максимальная точность (число цифр после первой значимой цифры, только для дробной части).
- *  * @param digitsR - Максимальная точность (число цифр после первой значимой цифры и для целых тоже, пример: 12340000).
+ *  * @param digitsPoint - Maximum precision (number of digits after first significant digit, fractional part only).
+ *  * @param digitsR - Maximum precision (number of digits after first significant digit, for integers too, example: 12340000).
  *  @deprecated use {@link roundSig}
  *  */
 export function NormalizeDoubleAnd(a: number, options?: {digitsPoint?: number, digitsR?: number, type?: "max" | "min"}) {
@@ -553,10 +553,10 @@ export function NormalizeDoubleAnd(a: number, options?: {digitsPoint?: number, d
 
 /** Round to N significant digits, returning a number (significant-digit pair with {@link formatSig}). */
 export const roundSig = NormalizeDoubleAnd
-/** Преобразование числа в стринг с автоматической точностью
+/** Convert number to string with auto precision
  * @param value
- * @param digitsPoint - Максимальная точность (число цифр после первой значимой цифры, только для дробной части).
- * @param digitsR - Максимальная точность (число цифр после первой значимой цифры и для целых тоже, пример: 12340000).
+ * @param digitsPoint - Maximum precision (number of digits after first significant digit, fractional part only).
+ * @param digitsR - Maximum precision (number of digits after first significant digit, for integers too, example: 12340000).
  * @deprecated use {@link formatSig}
  */
 export function DblToStrAnd(a: number, options?: {digitsPoint?: number, digitsR?: number, type?: "max" | "min"}) {
@@ -597,7 +597,7 @@ export function ArrayItemHandler<T extends {[key:number]:any}> (getter : (target
 				return target[prop];
 			}
 			//let num= Number.parseInt(prop);
-			//if (num!=undefined && !isNaN(prop)) return getter(target, prop);  // значение по индексу
+			//if (num!=undefined && !isNaN(prop)) return getter(target, prop);  // value by index
 			let num= typeof prop=="number" ? prop : typeof(prop)=="string" ? Number.parseInt(prop) : undefined;
 			if (num!=undefined && !isNaN(num)) return getter(target, prop);
 			//if (Number.isSafeInteger(prop)) return getter(target, prop);
@@ -614,7 +614,7 @@ export function ArrayItemHandler<T extends {[key:number]:any}> (getter : (target
 				let num= typeof(prop)=="number" ? prop : typeof(prop)=="string" ? Number.parseInt(prop) : undefined;
 				//console.log(prop);
 				//let num= Number.parseInt(prop);
-				if (num!=undefined && !isNaN(num)) { setter(target, prop, value); return true; }//  if (ok==undefined) ok=true;  return ok as boolean; } // значение по индексу
+				if (num!=undefined && !isNaN(num)) { setter(target, prop, value); return true; }//  if (ok==undefined) ok=true;  return ok as boolean; } // value by index
 				//if (Number.isSafeInteger(prop)) { let ok= setter(target, prop, value);  if (ok==undefined) ok=true;  return ok as boolean; }
 				//let z : T;
 				//console.error(`!! ArrayItemHandler:  unknown property for set: `, prop);
@@ -624,7 +624,7 @@ export function ArrayItemHandler<T extends {[key:number]:any}> (getter : (target
 	};
 }
 
-/** Создать прокси для доступа к массиву
+/** Create proxy for array access
 */
 export function CreateArrayProxy<T extends {[key:number]:any}> (
     target :T,
@@ -632,14 +632,14 @@ export function CreateArrayProxy<T extends {[key:number]:any}> (
     setter? : (i :number, value :T[number])=> void
 ) : T;
 
-/** Создать прокси для доступа к массиву
+/** Create proxy for array access
 */
 export function CreateArrayProxy<T extends {[key:number]:any}, T2 extends {[key:number]:T[number]}> (
     target : T,
     srcArray : T2
 ) : T;
 
-/** Создать прокси для доступа к массиву
+/** Create proxy for array access
 */
 export function CreateArrayProxy<T extends {[key:number]:any}, T2 extends {[key:number]:any}> (
     target :T,
@@ -916,7 +916,7 @@ a[10]= undefined;
 console.log("len=",Object.keys(a).length,"  values: ", Object.keys(a));
 */
 
-//function *Generator()  { for (let i=100; i<105; i++) yield i; }  // Итератор времени
+//function *Generator()  { for (let i=100; i<105; i++) yield i; }  // Time iterator
 
 //for (let val of Generator()) console.log(val);
 //console.log(Generator[2]);
@@ -1058,7 +1058,7 @@ export class CancelablePromise<T> extends Promise<T> {
 
 
 
-// Таймер с проверкой условия (если OnTimer возвращает ложь, то таймер останавливается (промис завершается с реджектом!)
+// Timer with condition checking (if OnTimer returns false, timer stops (promise rejects))
 export function createCancellableTimer(interval_ms :number,  onTimer :()=>boolean|void,  onStop? :()=>void) {
 	let timer : ReturnType<typeof setInterval>; // number;
 	function stop() { clearInterval(timer);  onStop?.(); }
@@ -1073,7 +1073,7 @@ export function createCancellableTimer(interval_ms :number,  onTimer :()=>boolea
 export async function createCancellableTaskWrapper<T>(task :Promise<T>, isStopped :()=>boolean, interval_ms=50) {
 	let stopCheckingTask= createCancellableTimer(interval_ms, ()=> ! isStopped?.());
 	try {
-		return await Promise.race([task, stopCheckingTask]);  // завершается при любом событии
+		return await Promise.race([task, stopCheckingTask]);  // completes on any event
 	}
 	catch(e) {
 		if (isStopped?.()) return "stopped";
@@ -1130,7 +1130,7 @@ export class Mutex {
 // declare var window : any;
 // declare var document : any;
 
-/** Копирование в буфер обмена
+/** Copy to clipboard
 */
 export async function copyToClipboard(textToCopy: string)
 {
@@ -1201,7 +1201,7 @@ export class CObjectID<TObject, TOwner> implements ObjectID<TObject, TOwner> {
 	static getObjectByOwner<TObject, TOwner>(id :ObjectID<TObject, TOwner>, owner :TOwner) { let data= CObjectID.getInfo(id);  return data.owner==owner ? data.object : undefined; }
 }
 
-// заменяем stringify, т.к. иначе может быть рекурсивная обработка id в других объектах
+// replace stringify, otherwise there could be recursive id processing in other objects
 const stringifyDefault= JSON.stringify;
 
 JSON.stringify= (value, replacer, space)=>{
@@ -1240,7 +1240,7 @@ export class WeakMapExt<K extends object, V> extends WeakMap<K,V> {
 }
 
 
-//кэшируемое значение по ключу в виде кортежа
+// cached value by key as tuple
 export class CCachedValueT<TKey extends [any, ...any], TVal> {
     private key?: TKey;
     private val? :TVal;
@@ -1258,7 +1258,7 @@ export class CCachedValueT<TKey extends [any, ...any], TVal> {
 export class CCachedValue2<TKey extends [any, any], TVal> extends CCachedValueT<TKey, TVal> { constructor() { super(2); } }
 
 
-// проверяет, может ли объект приводиться к объекту типа T, проверяя наличие полей в массиве members
+// checks if an object can be cast to type T by checking for fields in members array
 
 export function isObjectCastableTo<T extends object>(object :{}, members :readonly (keyof T)[]) : object is T {
     let keys= Object.keys(object);

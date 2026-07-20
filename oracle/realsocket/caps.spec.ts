@@ -87,7 +87,7 @@ async function main() {
         const srv = await startRealServer({port: PORT + 3, makeObject: () => { const [e, l] = createListenPair<any>(); emit = e; return {stream: l} }})
         const cli = await startRealClient({port: PORT + 3})
         const got: any[] = []
-        const off = (cli.api.stream as any).on((v: any) => got.push(v))   // .on вместо .callback — «факт установки колбэка»
+        const off = (cli.api.stream as any).on((v: any) => got.push(v))   // .on instead of .callback — «fact of callback setup»
         await delay(60)
         for (let i = 0; i < 5; i++) { emit!({n: i}); await delay(8) }
         await delay(100)
@@ -104,7 +104,7 @@ async function main() {
         const srv = await startRealServer({port: PORT + 4, makeObject: () => { const [e, l] = createListenPair<any>(); emit = e; return {stream: (l as any).on} }})
         const cli = await startRealClient({port: PORT + 4})
         const got: any[] = []
-        ;(cli.api.stream as any).on((v: any) => got.push(v))   // exposed ТОЛЬКО listen.on → клиент получил подписку
+        ;(cli.api.stream as any).on((v: any) => got.push(v))   // exposed ONLY listen.on → client got subscription
         await delay(60)
         for (let i = 0; i < 4; i++) { emit!({n: i}); await delay(8) }
         await delay(100)

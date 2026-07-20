@@ -1,6 +1,6 @@
 /**
- * Извлекатель ключа потока из данных.
- * Вернул string — группируем по нему. Вернул undefined — общий бакет "_".
+ * Stream key extractor from data.
+ * Returns string — group by it. Returns undefined — common bucket "_".
  */
 import {listen as createListenPair} from "./Listen";
 
@@ -19,33 +19,33 @@ type JoinResult<R> = {
     listen: ListenPair<[R, string]>[1],
     pending: Map<string, Map<string, any>>,
     clear: (tid?: string) => void,
-    // снести весь join: снять все подписки на порты + очистить бакеты.
-    // (раньше отсутствовал в типе — метод был в реализации, но невидим потребителю/типам)
+    // tear down the entire join: remove all port subscriptions + clear buckets.
+    // (previously was not in the type — method was in implementation, but invisible to consumer/types)
     destroy: () => void,
-    // Подключить порт-источник (идиома `add`). Объект — нужен ключ, массив — ключ генерируется сам.
+    // Connect port-source (idiom `add`). Object — needs key, array — key is generated automatically.
     add: (port: ListenPair<any>[1], key?: string) => void
 }
 
-// --- Перегрузка: объект (именованные порты) ---
+// --- Overload: object (named ports) ---
 export function joinListens<T extends Record<string, any[]>>(
     listens: ListenMap<T>,
     keyExtractor?: KeyExtractor<any>
 ): JoinResult<CollectedResult<T>>
 
-// --- Перегрузка: массив listen'ов ---
+// --- Overload: array of listens ---
 export function joinListens<D extends any[] = any[]>(
     listens: ListenPair<D>[1][],
     keyExtractor?: KeyExtractor<any>
 ): JoinResult<D[][]>
 
-// --- Реализация ---
+// --- Implementation ---
 export function joinListens(
     listens: Record<string, any> | any[],
     keyExtractor?: KeyExtractor<any>
 ) {
     const isArray = Array.isArray(listens)
 
-    // Нормализуем: массив → объект с индексами как ключами
+    // Normalize: array → object with indices as keys
     const map: Record<string, any> = isArray
         ? Object.fromEntries(listens.map((l, i) => [String(i), l]))
         : listens
@@ -61,14 +61,14 @@ export function joinListens(
         if (bucket.size < keys.length) return
 
         const result = isArray
-            ? keys.map(k => bucket.get(k))        // массив → массив данных
-            : Object.fromEntries(bucket)           // объект → объект данных
+            ? keys.map(k => bucket.get(k))        // array → array of data
+            : Object.fromEntries(bucket)           // object → object of data
 
-        buckets.delete(tid)   // группа собрана и отправлена → удаляем бакет целиком
-        set(result, tid)      // (был bucket.clear() — пустой Map оставался в buckets навсегда → утечка по tid)
+        buckets.delete(tid)   // group collected and sent → remove bucket entirely
+        set(result, tid)      // (was bucket.clear() — empty Map remained in buckets forever → leak by tid)
     }
 
-    // храним отписки, чтобы destroy() реально снимал подписки (раньше это была пустая заглушка → утечка)
+    // store unsubscribes so destroy() actually removes subscriptions (previously was empty stub → leak)
     const unsubs: Array<() => void> = []
     const bindPort = (portId: string, listener: any) => {
         const cb = (...data: any[]) => {
@@ -77,7 +77,7 @@ export function joinListens(
             buckets.get(tid)!.set(portId, data.length <= 1 ? data[0] : data)
             tryFire(tid)
         }
-        // off() из on() — единственный путь точечной отписки.
+        // off() from on() — only way for selective unsubscribe.
         unsubs.push(listener.on(cb))
     }
 
@@ -85,14 +85,14 @@ export function joinListens(
         bindPort(portId, map[portId])
     }
 
-    // Подключить порт-источник: режим массива → индекс генерируется сам, объект → ключ.
+    // Connect port-source: array mode → index is generated automatically, object → key.
     function add(listener: any, key?: string) {
         const portId = isArray ? String(keys.length) : (key ?? String(keys.length))
 
-        if (map[portId]) return // Защита от дублирования ключей или более верно очистить старый???
+        if (map[portId]) return // Guard against duplicate keys or better to clear old???
 
         map[portId] = listener
-        keys.push(portId) // Расширяем размер ожидаемой группы
+        keys.push(portId) // Expand the size of expected group
         bindPort(portId, listener)
     }
 

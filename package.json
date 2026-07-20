@@ -1,8 +1,18 @@
 {
   "name": "wenay-common2",
-  "version": "1.0.90",
-  "description": "Common library",
-  "strict": true,
+  "version": "1.0.91",
+  "description": "Typed RPC over sockets, replayable Listen wires, reactive stores with replication and failover, peer packet mesh, media/artifact/AI/conversation runtimes",
+  "keywords": [
+    "rpc",
+    "socket.io",
+    "replay",
+    "reactive-store",
+    "replication",
+    "failover",
+    "webrtc",
+    "peer-mesh",
+    "typescript"
+  ],
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "private": true,

@@ -20,6 +20,7 @@ export type ReplayListenOptions<Z extends any[]> = {
     getSince?: (seq: number) => ReplayEvent<Z>[] | undefined;
     onJournal?: (ev: ReplayEvent<Z>) => void;
     now?: () => number;
+    firstSeq?: number;
     staleMs?: number;
     onStale?: (info: StaleInfo) => void;
 };

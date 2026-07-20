@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.createIdPool = void 0;
+exports.createNodeIdMinter = exports.createIdPool = void 0;
 const createIdPool = () => {
     const s = [];
     const free = new Set();
@@ -20,3 +20,28 @@ const createIdPool = () => {
     };
 };
 exports.createIdPool = createIdPool;
+const createNodeIdMinter = (opts) => {
+    const { node } = opts;
+    if (node.includes('-'))
+        throw new Error('createNodeIdMinter: node must not contain "-"');
+    let n = opts.start ?? 0;
+    return {
+        node,
+        next: (kind = 'id') => `${kind}-${node}-${++n}`,
+        adopt(ids) {
+            let seen = 0;
+            for (const id of ids) {
+                const m = /^(.+)-([^-]+)-(\d+)$/.exec(id);
+                if (!m || m[2] != node)
+                    continue;
+                seen++;
+                const num = Number(m[3]);
+                if (num > n)
+                    n = num;
+            }
+            return seen;
+        },
+        current: () => n,
+    };
+};
+exports.createNodeIdMinter = createNodeIdMinter;

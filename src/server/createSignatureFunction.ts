@@ -17,10 +17,10 @@ type HmacCreator = (algorithm: string, key: string) => {
 
 export function createSignatureFunction<T extends HmacCreator>(hmacCreator: T) {
     /**
-     * Подписывает params как query-строку В ПОРЯДКЕ ВСТАВКИ ключей (Object.keys).
-     * КОНТРАКТ: байты реального запроса должен строить вызывающий ТЕМ ЖЕ способом —
-     * тот же порядок ключей и encodeURIComponent, иначе подпись не совпадёт.
-     * Порядок здесь менять нельзя: сортировка сломала бы подписи существующих потребителей.
+     * Signs params as query string IN KEY INSERTION ORDER (Object.keys).
+     * CONTRACT: the calling code must build real request bytes THE SAME WAY —
+     * same key order and encodeURIComponent, otherwise signature won't match.
+     * Order here cannot be changed: sorting would break signatures of existing consumers.
      */
     return function signRequest(params: tSignatureData, apiSecret: string) {
         const query = Object.keys(params)

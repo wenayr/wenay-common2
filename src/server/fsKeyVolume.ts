@@ -31,7 +31,7 @@ export function saveKeyValue({ dirDef = "", key: _key = "" }: { dirDef: string; 
     let _tmpSeq = 0;
     async function set({ key = _key, obj, path = "" }: { key?: string; obj: string; path?: string }) {
         const filePath = await resolvePath(path, key);
-        // атомарно: пишем во временный файл и переименовываем (rename атомарен в пределах ФС) — крах посреди записи не портит хранилище
+        // atomically: write to temp file and rename (rename is atomic within FS) — crash mid-write doesn't corrupt storage
         const tmp = `${filePath}.${++_tmpSeq}.tmp`;
         await fs.promises.writeFile(tmp, obj);
         await fs.promises.rename(tmp, filePath);
@@ -39,7 +39,7 @@ export function saveKeyValue({ dirDef = "", key: _key = "" }: { dirDef: string; 
 
     async function setElMap({ key = _key, keyEl, valueEl, path = "" }: { key?: string; keyEl: string; valueEl: any; path?: string }) {
         const exists = await has({ key, path });
-        // повреждённый/пустой файл не должен валить запись — откатываемся к {}
+        // corrupted/empty file should not fail write — fallback to {}
         let data: any = {};
         if (exists) {
             try { data = JSON.parse(await get({ key, path })); }
@@ -51,7 +51,7 @@ export function saveKeyValue({ dirDef = "", key: _key = "" }: { dirDef: string; 
 
     async function delEl({ key = _key, keyEl, path = "" }: { key?: string; keyEl: string; path?: string }) {
         if (!(await has({ key, path }))) throw new Error(`Файл не найден: ${path}${key}`);
-        // повреждённый/пустой файл не должен валить удаление — откатываемся к {} (как в setElMap:38)
+        // corrupted/empty file should not fail delete — fallback to {} (as in setElMap:38)
         let data: any = {};
         try { data = JSON.parse(await get({ key, path })); }
         catch { data = {}; }

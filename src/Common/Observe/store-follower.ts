@@ -1,14 +1,14 @@
 // =====================================================================
-// store follower — серверное зеркало авторитетного стора (leader → follower)
+// store follower — server mirror of the authoritative store (leader → follower)
 // =====================================================================
-// Follower — обычный replay-клиент лидера, который сам является сервером:
-// syncStoreReplay втягивает кейфрейм и дельты в локальный store, а каскадный
-// exposeStoreReplay раздаёт ТО ЖЕ состояние собственным подписчикам — один
-// механизм на обоих хопах (leader → follower → браузер). Команды follower
-// НЕ применяет локально: их форвардит лидеру владелец соединения (уровень
-// приложения) — единственная точка порядка остаётся у лидера.
-// Статус апстрима — маленький отдельный реактивный store: в зеркальный store
-// не пишется ничего локального, иначе он разойдётся с лидером.
+// Follower is a regular replay-client of the leader, which is itself a server:
+// syncStoreReplay pulls keyframe and deltas into the local store, and the cascading
+// exposeStoreReplay distributes the SAME state to its own subscribers — one
+// mechanism on both hops (leader → follower → browser). Follower commands
+// are NOT applied locally: they are forwarded to the leader by the connection owner
+// (application layer) — the only order point remains at the leader.
+// Upstream status is a small separate reactive store: nothing local is written to the mirror store,
+// otherwise it will diverge from the leader.
 
 import {createStore, StorePatch} from './store'
 import {exposeStoreReplay, syncStoreReplay, StoreReplayOpts} from './store-replay'
@@ -20,24 +20,24 @@ export type tFollowerUpstream = 'catching-up' | 'live' | 'offline' | 'promoted' 
 
 export type FollowerStatus = {
     upstream: tFollowerUpstream
-    /** Последний применённый seq лидера — точка реконнекта и мера лага. */
+    /** Last applied seq of the leader — reconnect point and measure of lag. */
     seq: number
-    /** Эпоха линии: у фолловера — эпоха его лидера, после promote — своя (+1). */
+    /** Epoch of the line: for a follower — epoch of its leader, after promote — own (+1). */
     epoch: number
-    /** Текст терминальной ошибки подписки (когда upstream == 'closed'). */
+    /** Text of terminal subscription error (when upstream == 'closed'). */
     error: string | null
 }
 
 export type StoreFollowerDeps<T extends object> = {
-    /** Replay-провод лидера — RPC-проекция exposeStoreReplay(...).api.replay. */
+    /** Replay wire of the leader — RPC projection of exposeStoreReplay(...).api.replay. */
     remote: ReplayRemote<[StorePatch]>
-    /** Состояние до первого кейфрейма (обычно {}). */
+    /** State before the first keyframe (usually {}). */
     initial?: T
-    /** Опции каскадного журнала для СВОИХ подписчиков (history/getSince/...). */
+    /** Cascade journal options for OWN subscribers (history/getSince/...). */
     expose?: StoreReplayOpts
-    /** Порог тухлости апстрима, мс — едет в replay-подписку как staleMs. */
+    /** Upstream staleness threshold, ms — passed to replay subscription as staleMs. */
     staleMs?: number
-    /** Эпоха лидера-апстрима (fork-choice при failover): promote() выдаст epoch + 1. */
+    /** Epoch of the upstream leader (fork-choice on failover): promote() returns epoch + 1. */
     epoch?: number
 }
 
@@ -51,12 +51,12 @@ export function createStoreFollower<T extends object>(deps: StoreFollowerDeps<T>
     const status = createStore<FollowerStatus>({upstream: 'catching-up', seq: -1, epoch: deps.epoch ?? 0, error: null})
 
     function setUpstream(next: tFollowerUpstream) {
-        // promoted и closed — терминальные роли: поздние события транспорта их не сбивают
+        // promoted and closed — terminal roles: late transport events do not change them
         if (status.state.upstream == 'closed' || status.state.upstream == 'promoted') return
         if (status.state.upstream != next) status.state.upstream = next
     }
 
-    // ============== зеркалирование: leader → локальный store ==============
+    // ============== mirroring: leader → local store ==============
     const sub = syncStoreReplay(store, deps.remote, {
         onSeq: function trackUpstreamSeq(seq) { status.state.seq = seq },
         onLive: function upstreamLive() { setUpstream('live') },
@@ -67,7 +67,7 @@ export function createStoreFollower<T extends object>(deps: StoreFollowerDeps<T>
         ...(deps.staleMs != null ? {staleMs: deps.staleMs} : {}),
     })
 
-    // ============== статус линка: транспортный lifecycle RPC-прокси ==============
+    // ============== link status: transport lifecycle of RPC proxy ==============
     const lifecycle = getRpcTransportLifecycle(deps.remote)
     const offDisconnect = lifecycle?.onDisconnect(function upstreamGone() {
         setUpstream('offline')
@@ -76,15 +76,15 @@ export function createStoreFollower<T extends object>(deps: StoreFollowerDeps<T>
         setUpstream('catching-up')
     }) ?? function noConnectListener() {}
 
-    // ============== каскад: тот же store — replay-источник для своих ==============
+    // ============== cascade: the same store — replay source for own clients ==============
     const exposed = exposeStoreReplay(store, deps.expose)
 
-    // ============== ручное повышение (failover, фаза 4 плана) ==============
-    // Зеркалирование останавливается, состояние остаётся как есть, а КАСКАДНЫЙ
-    // журнал продолжает жить — подписчики этого узла не замечают смены роли:
-    // их линия и seq непрерывны. Дальше приложение строит авторитет НАД ЭТИМ ЖЕ
-    // store (команды пишут в него → каскад разносит). Epoch растёт на 1 —
-    // простое fork-choice правило «бОльшая эпоха побеждает», без выборов.
+    // ============== manual promotion (failover, phase 4 of plan) ==============
+    // Mirroring stops, state remains as is, and the CASCADE
+    // journal continues to live — subscribers of this node do not notice the role change:
+    // their line and seq are continuous. Next, the application builds authority OVER THIS SAME
+    // store (commands write to it → cascade distributes). Epoch grows by 1 —
+    // simple fork-choice rule "larger epoch wins", no choices.
     let promoted = false
     function promote() {
         if (status.state.upstream == 'closed') throw new Error('store follower is closed')
@@ -100,19 +100,19 @@ export function createStoreFollower<T extends object>(deps: StoreFollowerDeps<T>
     }
 
     return {
-        /** Зеркальный store — локальные чтения/подписки на инстансе-фолловере. */
+        /** Mirror store — local reads/subscriptions on the follower instance. */
         store,
-        /** Реактивный статус апстрима: {upstream, seq, error} — обычный store. */
+        /** Reactive upstream status: {upstream, seq, error} — regular store. */
         status,
-        /** Тухлость апстрима сейчас (требует staleMs в deps). */
+        /** Upstream staleness now (requires staleMs in deps). */
         isStale: sub.isStale,
-        /** Провод-фасад каскада для СВОИХ клиентов — кладётся в объект RPC-сервера. */
+        /** Cascade wire facade for OWN clients — placed in RPC server object. */
         api: exposed.api,
-        /** Локальная replay-линия каскада — интроспекция, in-proc потребители. */
+        /** Local replay line of cascade — introspection, in-proc consumers. */
         replay: exposed.replay,
-        /** Конец первого catch-up от лидера (или terminal error/teardown). */
+        /** End of first catch-up from leader (or terminal error/teardown). */
         ready: sub.ready,
-        /** Ручное повышение до лидера: стоп зеркалирования, epoch+1, каскад живёт дальше. */
+        /** Manual promotion to leader: stop mirroring, epoch+1, cascade continues. */
         promote,
         close() {
             offConnect()
@@ -127,14 +127,14 @@ export function createStoreFollower<T extends object>(deps: StoreFollowerDeps<T>
 export type StoreFollower<T extends object> = ReturnType<typeof createStoreFollower<T>>
 
 // =====================================================================
-// Конфликт-журнал split-brain: дифф двух keyed-состояний после failover
+// Split-brain conflict log: diff of two keyed-states after failover
 // =====================================================================
-// Когда старый лидер возвращается после повышения зеркала, его расходящийся
-// хвост НЕ выбрасывается: localOnly — записи, которых у победителя нет
-// (кандидаты на перепроведение обычными командами — аналог возврата транзакций
-// осиротевшей ветки в mempool), conflicts — обе стороны меняли одну запись
-// по-разному (победителя уже выбрала эпоха; пара сохраняется для приложения),
-// authorityOnly — приедет с кейфреймом при принятии роли фолловера.
+// When the old leader returns after mirror promotion, its diverging
+// tail is NOT discarded: localOnly — entries that the winner does not have
+// (candidates for re-execution with regular commands — analog of returning transactions
+// of orphaned branch to mempool), conflicts — both sides changed one entry
+// differently (winner already chosen by epoch; pair is saved for the application),
+// authorityOnly — arrives with keyframe upon accepting the follower role.
 
 export type KeyedConflict<T> = {key: string, local: T, authority: T}
 

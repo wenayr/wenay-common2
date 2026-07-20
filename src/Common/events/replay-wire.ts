@@ -1,26 +1,25 @@
 // =====================================================================
-// Wire-пара replay-линии: exposeReplay (сервер) ⇄ replaySubscribe (клиент)
+// Wire-pair of replay-line: exposeReplay (server) ⇄ replaySubscribe (client)
 // =====================================================================
-// RPC-ядро не трогаем ВООБЩЕ: line — обычный Listen (rpc-server-auto проксирует
-// его как есть), since/keyframe — обычные методы. Handover replay→live на
-// клиенте асинхронный (между запросом хвоста и ответом живут события) —
-// та же очередь + дедуп по seq, что и в синхронном on({since}).
-// Требование к транспорту: упорядоченность (socket.io/TCP, in-proc) — подписка
-// на line устанавливается на сервере РАНЬШЕ, чем исполнится since() → дыры нет.
+// RPC core untouched AT ALL: line — ordinary Listen (rpc-server-auto proxies
+// it as-is), since/keyframe — ordinary methods. Handover replay→live on
+// client is async (events live between tail request and response) —
+// same queue + dedup by seq as in synchronous on({since}).
+// Transport requirement: ordering (socket.io/TCP, in-proc) — subscription
+// to line set up on server BEFORE since() executes → no gaps.
 //
-// Тухлость (staleMs/onStale): доставка КОНСИСТЕНТНА, но молчит о свежести — два
-// режима отказа, которые провод сам по себе прячет: молчащая линия (продьюсер
-// умер, конвертов нет) и тухлый keyframe (пришёл сейчас, а ts старый). Оба
-// закрывает клиентский вотчдог: arrival gap — единственный таймер (локальные
-// часы, расхождение клоков не важно), возраст ts конверта — предикат в момент
-// доставки (часы продьюсера; допуск skewMs на расхождение).
+// Staleness (staleMs/onStale): delivery CONSISTENT, but silent about freshness — two
+// failure modes the wire hides itself: silent line (producer died, no envelopes)
+// and stale keyframe (arrived now, ts old). Both handled by client watchdog:
+// arrival gap — only timer (local time, clock skew doesn't matter), envelope ts age —
+// predicate at delivery time (producer time; skewMs tolerance for skew).
 
 import {Listener, NormalizeTuple} from './Listen'
 import {ListenReplayApi, ReplayEvent, StaleInfo} from './replay-listen'
 import {conflateReplay, ConflateOpts} from './replay-conflate'
 import {getRpcMemberState, getRpcTransportLifecycle} from './transport-lifecycle'
 
-/** Форма провода replay-линии — то, что спредится в объект RPC-сервера. */
+/** Wire-pair form of replay-line — what spreads into RPC server object. */
 export type ReplayExpose<T> = {
     line: ListenReplayApi<T>['line']
     since: (seq: number) => ReplayEvent<NormalizeTuple<T>>[] | null
@@ -31,27 +30,27 @@ export type ReplayExpose<T> = {
 function exposeReplayPlain<T>(replay: ListenReplayApi<T>): ReplayExpose<T> {
     return {
         line: replay.line,
-        /** Хвост журнала после seq. null = вытеснено → клиент возьмёт keyframe. */
+        /** Log tail after seq. null = evicted → client gets keyframe. */
         since: (seq: number) => replay.getSince(seq) ?? null,
-        /** Свежий keyframe + его seq. null = current-провайдер не задан. */
+        /** Fresh keyframe + its seq. null = current-provider not set. */
         keyframe: () => replay.keyframe() ?? null,
-        /** Кадр (см. replay-listen): компактный catch-up одним вызовом. Бросок (священная
-         *  линия + вытеснение) едет клиенту rejected promise — громко by design. */
+        /** Frame (see replay-listen): compact catch-up in one call. Throw (holy
+         *  line + eviction) goes to client as rejected promise — loud by design. */
         frame: (seq: number, hint?: unknown) => replay.frame(seq, hint),
     }
 }
 
 /**
- * Провод-фасад replay-линии: спредится в объект RPC-сервера.
+ * Wire-facade of replay-line: spreads into RPC server object.
  *
- * С опцией conflate — то же самое, но line идёт через персональные ворота
- * conflateReplay (per-connection: pending() — буфер ЭТОГО клиента). close/stats —
- * для владельца соединения, В ОБЪЕКТ RPC НЕ КЛАСТЬ (станут удалённо вызываемыми):
+ * With conflate option — same thing, but line goes through personal gates
+ * conflateReplay (per-connection: pending() — buffer for THIS client). close/stats —
+ * for connection owner, DO NOT PUT IN RPC OBJECT (become remotely callable):
  *     const {close, stats, ...api} = exposeReplay(replay, {conflate: {pending, highWater}})
- *     object = {...rest, replay: api}        // провод
- *     disconnect → close()                   // одна строка
- * Несколько каналов на одном соединении — по воротам на канал; pending обычно
- * общий (один socket-буфер).
+ *     object = {...rest, replay: api}        // wire
+ *     disconnect → close()                   // one line
+ * Multiple channels on one connection — per-channel gates; pending usually
+ * shared (one socket buffer).
  */
 export function exposeReplay<T>(replay: ListenReplayApi<T>): ReplayExpose<T>
 export function exposeReplay<T>(replay: ListenReplayApi<T>, opts: {conflate: ConflateOpts<NormalizeTuple<T>>}):
@@ -62,59 +61,68 @@ export function exposeReplay<T>(replay: ListenReplayApi<T>, opts?: {conflate?: C
     return {...gated.api, close: gated.close, stats: gated.stats}
 }
 
-/** Что клиент видит после RPC-проекции exposeReplay (методы стали async). */
+/** What client sees after RPC-projection of exposeReplay (methods became async). */
 export type ReplayRemote<Z extends any[] = any[]> = {
     line: {on: (cb: (ev: ReplayEvent<Z>) => void) => any}
     since: (seq: number) => Promise<ReplayEvent<Z>[] | null | undefined> | ReplayEvent<Z>[] | null | undefined
     keyframe: () => Promise<ReplayEvent<Z> | null | undefined> | ReplayEvent<Z> | null | undefined
-    /** (additive) Кадр: catch-up одним вызовом; предпочитается перед since/keyframe, когда сервер его даёт. */
+    /** (additive) Frame: catch-up in one call; preferred over since/keyframe when server provides it. */
     frame?: (seq: number, hint?: unknown) => Promise<ReplayEvent<Z>[] | null | undefined> | ReplayEvent<Z>[] | null | undefined
-    /** (additive) Push-линия политики 'frame': на лаге сервер может пропускать, восстанавливая кадром. */
+    /** (additive) Push-line of 'frame' policy: server may skip on lag, recovering with frame. */
     frameLine?: {on: (cb: (ev: ReplayEvent<Z>) => void) => any}
+    /** (additive) Static source descriptor (schema/originId/... hints). Absent on older servers. */
+    describe?: () => Promise<Record<string, any> | null | undefined> | Record<string, any> | null | undefined
 }
 
 export type ReplaySubscribeOpts = {
-    /** «У меня seq K». Меньше 0 / не задано = ничего нет → keyframe + live. */
+    /** "I have seq K". Less than 0 / not given = nothing → keyframe + live. */
     since?: number
-    /** Репорт seq каждой доставки — хранить для переподключения. */
+    /** Report seq of each delivery — store for reconnect. */
     onSeq?: (seq: number) => void
     onError?: (e: any) => void
-    /** Конец КАЖДОГО успешного catch-up (initial и reconnect): линия снова live.
-     *  Дополняет ready (только первый handover) — для статусов вида live/catching-up. */
+    /** End of EACH successful catch-up (initial and reconnect): line live again.
+     *  Complements ready (only first handover) — for live/catching-up status. */
     onLive?: () => void
-    /** Порог тухлости, мс: и для arrival gap (молчание провода), и для возраста ts конверта. */
+    /** Staleness threshold, ms: for both arrival gap (wire silence) and envelope ts age. */
     staleMs?: number
     /**
-     * Вотчдог тухлости: edge-triggered в ОБЕ стороны. Таймер (arrival gap) существует
-     * только при заданном onStale; isStale()/lastTs() работают и без него. Требует staleMs.
+     * Staleness watchdog: edge-triggered on BOTH sides. Timer (arrival gap) exists
+     * only with onStale given; isStale()/lastTs() work without it. Requires staleMs.
      */
     onStale?: (info: StaleInfo) => void
-    /** Допуск на расхождение часов продьюсер/клиент для ts-предиката (default 0). */
+    /** Tolerance for producer/client clock skew for ts predicate (default 0). */
     skewMs?: number
-    /** Локальные часы (по умолчанию Date.now) — подменяемы в тестах. */
+    /** Local clock (default Date.now) — replaceable in tests. */
     now?: () => number
     /**
-     * Политика лага — выбор ПОТРЕБИТЕЛЯ: 'queue' (default: подключённый live-провод
-     * не гейтится; catch-up всё равно может вернуть producer frame/keyframe) | 'frame'
-     * (сервер вправе пропустить и восстановить кадром через frameLine, если она доступна).
+     * Lag policy — CONSUMER choice: 'queue' (default: connected live-wire
+     * not gated; catch-up can still return producer frame/keyframe) | 'frame'
+     * (server may skip and recover with frame via frameLine, if available).
      */
     policy?: 'queue' | 'frame'
-    /** Opaque-подсказка frame-лямбде продьюсера (произвольные правила скипа). Провод не заглядывает. */
+    /** Opaque hint to producer frame-lambda (arbitrary skip rules). Wire doesn't inspect. */
     hint?: unknown
 }
 
-// хендл отписки бывает функцией (Listen) или объектом (SubscriptionHandle провода)
+// unsubscribe handle is either a function (Listen) or object (wire SubscriptionHandle)
 function unsubscribeHandle(handle: any) {
     if (typeof handle == 'function') { handle(); return }
     if (typeof handle?.off == 'function') handle.off()
     else if (typeof handle?.unsubscribe == 'function') handle.unsubscribe()
 }
 
+/** Read the line's static source descriptor (schema/originId/...); null when the server has none. */
+export async function readReplayDescriptor(remote: Pick<ReplayRemote, 'describe'>) {
+    const state = getRpcMemberState(remote, 'describe')
+    if (state == false || !remote.describe) return null
+    return (await remote.describe()) ?? null
+}
+
 /**
- * Клиентский catch-up над ReplayRemote: подписка на line СНАЧАЛА (живые события
- * копятся в очередь), потом хвост since(K) — или keyframe, если вытеснено/нечего, —
- * потом слив очереди и live. Возвращает off() c .ready (конец catch-up),
- * .seq() (последний доставленный — для реконнекта), .isStale() и .lastTs().
+ * Client catch-up over ReplayRemote: subscribe to line FIRST (live events
+ * accumulate in queue), then tail since(K) — or keyframe if evicted/nothing, —
+ * then drain queue and live. Returns off() with .ready (end of catch-up),
+ * .seq() (last delivered — for reconnect), .isStale() and .lastTs().
  */
 export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Listener<Z>, opts: ReplaySubscribeOpts = {}) {
     const {since = -1, onSeq, onError, onLive, staleMs, onStale, skewMs = 0, now = Date.now, policy = 'queue', hint} = opts
@@ -333,13 +341,13 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
         closeSubscription()
     }
     return Object.assign(off, {
-        /** Дождаться конца первого успешного handover либо terminal error/teardown. */
+        /** Wait for end of first successful handover or terminal error/teardown. */
         ready,
-        /** Последний честно доставленный seq — reconnect никогда не продвигает его после gap-error. */
+        /** Last honestly delivered seq — reconnect never advances it after gap-error. */
         seq: () => lastDelivered,
-        /** Тухлость сейчас: ts-предикат последней доставки ИЛИ ленивый arrival gap. */
+        /** Staleness now: ts predicate of last delivery OR lazy arrival gap. */
         isStale: () => staleFlag || (staleMs != null && now() - lastArrival >= staleMs),
-        /** ts последнего доставленного конверта (0 = ещё не было). */
+        /** ts of last delivered envelope (0 = hasn't happened yet). */
         lastTs: () => lastTs,
     })
 }

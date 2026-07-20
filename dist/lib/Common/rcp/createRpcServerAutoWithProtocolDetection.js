@@ -5,7 +5,7 @@ const Listen_1 = require("../events/Listen");
 const listen_socket_1 = require("./listen-socket");
 const rpc_server_1 = require("./rpc-server");
 const rpc_protocol_1 = require("./rpc-protocol");
-const old_ommonsServerMini_1 = require("./old\u0421ommonsServerMini");
+const oldCommonsServerMini_1 = require("./oldCommonsServerMini");
 const rpc_dynamic_1 = require("./rpc-dynamic");
 const rpc_limits_1 = require("./rpc-limits");
 function createRpcServerAutoDetect({ socket, object: target, socketKey: key, debug = false, hooks, disconnectListen, limits, onProtocolDetect, }) {
@@ -134,7 +134,7 @@ function createRpcServerAutoDetect({ socket, object: target, socketKey: key, deb
         if (legacyHandler)
             return;
         let onMessageCb = null;
-        (0, old_ommonsServerMini_1.promiseServer)({
+        (0, oldCommonsServerMini_1.promiseServer)({
             sendMessage: (msg) => socket.emit(key, msg),
             api: ({ onMessage }) => { onMessageCb = onMessage; },
         }, resolved);

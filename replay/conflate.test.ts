@@ -1,10 +1,10 @@
 // ============================================================
 //  replay/conflate.test.ts
 //
-//  Слой D.1: per-client conflation + snapshot recovery.
-//  Часть 1 — универсальная линия (счётчик), часть 2 — независимость
-//  per-client, часть 3 — зеркало стора через async-провод с лагом.
-//  Запуск:
+//  Layer D.1: per-client conflation + snapshot recovery.
+//  Part 1 — generic wire (counter), part 2 — independence
+//  per-client, part 3 — store mirror over async wire with lag.
+//  Run:
 //      npx ts-node replay/conflate.test.ts
 // ============================================================
 
@@ -42,7 +42,7 @@ async function main() {
         let value = 0
         const [emit, replay] = replayListen<[number]>({current: () => [value], history: 100})
         const push = (n: number) => { value = n; emit(n) }
-        const buf = {v: 0}  // симулированный исходящий буфер клиента
+        const buf = {v: 0}  // simulated client outgoing buffer
         const gated = conflateReplay(replay, {pending: () => buf.v, highWater: 5, pollMs: 10})
         const remote: ReplayRemote<[number]> = {
             line: gated.api.line,
@@ -60,13 +60,13 @@ async function main() {
         ok(json(got) == json([0, 1, 2]), 'below highWater deltas pass through untouched')
         ok(gated.stats().dropped == 0 && gated.stats().keyframes == 0, 'gate was transparent so far')
 
-        // ============ переполнение: дельты перестают отправляться ============
+        // ============ overflow: deltas stop being sent ============
         buf.v = 10
         for (let n = 3; n <= 7; n++) push(n)
         ok(got[got.length - 1] == 2, 'over highWater: deltas stop reaching the client')
         ok(gated.stats().conflating && gated.stats().dropped == 5, `all 5 deltas dropped, not queued (dropped=${gated.stats().dropped})`)
 
-        // ============ буфер слился в тишине → восстановление по опросу ============
+        // ============ buffer drained in silence → recovery by polling ============
         buf.v = 0
         await waitFor('poll recovery', () => got[got.length - 1] == 7)
         ok(got[got.length - 1] == 7 && !got.includes(3), '5 missed deltas collapsed into ONE fresh keyframe')
@@ -75,7 +75,7 @@ async function main() {
         push(8)
         ok(got[got.length - 1] == 8, 'live deltas resume after recovery')
 
-        // ============ восстановление ближайшим же событием, без ожидания опроса ============
+        // ============ recovery by the next event itself, no polling wait ============
         buf.v = 10
         push(9)
         ok(got[got.length - 1] == 8, 'delta while conflating is dropped')
@@ -87,7 +87,7 @@ async function main() {
 
         ok(ascendingUnique(seqs), `delivered seqs strictly ascending: ${seqs.join(',')}`)
 
-        // ============ close: ворота мертвы навсегда ============
+        // ============ close: gate is dead forever ============
         const before = got.length
         gated.close()
         push(11)
@@ -112,19 +112,19 @@ async function main() {
         push(1)
         ok(gated.stats().conflating, 'over highWater → conflating')
 
-        // ============ серая зона (lowWater < pending <= highWater): ворота НЕ открываются ============
+        // ============ gray zone (lowWater < pending <= highWater): gate does NOT open ============
         buf.v = 4
-        push(2)          // событийный путь восстановления не должен сработать
-        await delay(50)  // и опрос тоже
+        push(2)          // event-based recovery path should not fire
+        await delay(50)  // nor polling
         ok(got.length == 1 && gated.stats().keyframes == 0, 'between lowWater and highWater the gate stays shut (hysteresis)')
         ok(gated.stats().dropped == 2, 'deltas in the gray zone are still dropped, not queued')
 
-        // ============ настоящий слив: pending <= lowWater ============
+        // ============ real drain: pending <= lowWater ============
         buf.v = 2
         await waitFor('hysteresis recovery', () => got[got.length - 1] == 2)
         ok(gated.stats().keyframes == 1 && !gated.stats().conflating, 'recovery fired only at lowWater')
 
-        // обратный вход в conflation — только НАД highWater
+        // re-entry into conflation — only ABOVE highWater
         buf.v = 4
         push(3)
         ok(got[got.length - 1] == 3 && !gated.stats().conflating, 'below highWater the gate does not re-enter conflation')
@@ -190,7 +190,7 @@ async function main() {
         await flushReactive(backend.state)
         ok(json(mirror.state) == json(backend.snapshot()), 'live patches flow through the transparent gate')
 
-        // ============ клиент «завис»: патчи копятся только у бэкенда ============
+        // ============ client "stalled": patches accumulate only at backend ============
         buf.v = 50
         for (let i = 2; i <= 12; i++) {
             backend.state.units['a'].hp = i
@@ -200,7 +200,7 @@ async function main() {
         ok(mirror.state.tick == 1, 'stalled client got NO deltas (no queue growing for it)')
         const envBefore = envelopes
 
-        // ============ слился → один keyframe вместо 22 патчей ============
+        // ============ drained → one keyframe instead of 22 patches ============
         buf.v = 0
         await waitFor('mirror recovery', () => mirror.state.tick == 12)
         ok(json(mirror.state) == json(backend.snapshot()), 'recovered mirror equals backend')

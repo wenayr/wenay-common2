@@ -4,7 +4,7 @@ export type ListNode<T> = {
     readonly [Symbol.species] : CListNode<T>;
 }
 
-// неэкспортируемый класс!
+// Non-exported class!
 class CListNode<T> implements ListNode<T> {
     value :T;
     list : CList<T>|undefined;
@@ -128,7 +128,7 @@ export class CList<T, TNode extends ListNode<T> = ListNode<T>> implements Iterab
         let newNode = this.newNode(value);
         newNode.next= node.next;
         newNode.prev= node.prev;
-        // перелинковываем соседей и голову/хвост на новый узел, иначе он осиротеет
+        // Relink neighbors and head/tail to new node, else it becomes orphaned
         if (node.prev) node.prev.next= newNode; else this._first= newNode;
         if (node.next) node.next.prev= newNode; else this._last= newNode;
         node.list= undefined;
@@ -173,8 +173,8 @@ export class CList<T, TNode extends ListNode<T> = ListNode<T>> implements Iterab
     shift() { let value= this._first?.value;  this.deleteFirst();  return value; }
 
     clear() {
-        // только зануляем node.list (это guard в deleteNode), затем сбрасываем голову/хвост —
-        // раньше шли через delete() и читали node.next у уже удалённого узла (работало «по удаче»)
+        // Only set node.list to null (this is guard in deleteNode), then reset head/tail —
+        // before we went through delete() and read node.next from already deleted node (worked by luck)
         for (let node=this._first; node!=null; node=node.next) node.list= undefined;
         this._first= this._last= undefined;
         this._count= 0;

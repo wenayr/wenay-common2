@@ -21,7 +21,7 @@ export function CompareKeys2<T extends Obj>(obj1: T, keys: string[]): boolean {
     return k1.length === keys.length && new Set([...k1, ...keys]).size === keys.length;
 }
 
-// ── Deep-обход с преобразованием по совпадению ключей ────────────
+// ── Deep traversal with transformation on key match ────────────
 
 export function DeepCompareKeys2<T, T3>(
     obj1: T,
@@ -30,7 +30,7 @@ export function DeepCompareKeys2<T, T3>(
 ): T | T3 | null {
     if (isLeafValue(obj1)) return obj1 as any;
     if (CompareKeys2(obj1 as Obj, keys)) return func(obj1);
-    // массив остаётся массивом — fromEntries превратил бы его в {0:..,1:..}
+    // array remains array — fromEntries would turn it into {0:..,1:..}
     if (Array.isArray(obj1)) return obj1.map((v) => DeepCompareKeys2(v, keys, func)) as any;
     return Object.fromEntries(
         Object.entries(obj1 as Obj).map(([k, v]) => [k, DeepCompareKeys2(v, keys, func)] as const),
@@ -44,11 +44,11 @@ export function DeepCompareKeys<T, T2 extends Obj, T3>(
     if (isLeafValue(obj1)) return obj1 as any;
     const keys = Object.keys(obj2);
     if (CompareKeys2(obj1 as Obj, keys)) return func(obj1 as unknown as T2);
-    // массив остаётся массивом — fromEntries превратил бы его в {0:..,1:..}
+    // array remains array — fromEntries would turn it into {0:..,1:..}
     if (Array.isArray(obj1)) return obj1.map((v) => DeepCompareKeys2(v, keys, func)) as any;
     return Object.fromEntries(
         Object.entries(obj1 as Obj).map(([k, v]) => [k, DeepCompareKeys2(v, keys, func)] as const),
     ) as any;
 }
 
-// ── Deep-модификаторы для socket-подписок ────────────────────────
+// ── Deep modifiers for socket subscriptions ────────────────────────

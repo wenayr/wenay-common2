@@ -3,7 +3,7 @@ type tDatumL = {price: number[], key: string|object|number}
 type tfLeaderResultL = {}
 
 export function strategyStepOfStepAllL(symbols: tDatumL[]) {
-    // минимальный процент всплеска
+    // minimum spike percent
     const minK =  0
     const percentM =  1/100;
     type tResult = {leadersKey: {key: string|object|number, score: number}[], leadersId: (number)[], id: number, key: string|object|number}
@@ -24,19 +24,19 @@ export function strategyStepOfStepAllL(symbols: tDatumL[]) {
     return result
 }
 
-// t1 - суммарный процент изменения
+// t1 - total percent change
 type tStepOfStepL = {
     // symPercent
     t1: number[],
     // symPercent - leader
     t2: number[],
     minK?: number ,percentM?: number, onlyBuy?: boolean}
-// стратегия лана
+// lana strategy
 
 
 function PriceTOSumPercentL(price: number[]) {
     const base = price[0]
-    // price[0]===0 / пустой массив иначе отравляют все нижестоящие оценки Infinity/NaN
+    // price[0]===0 / empty array otherwise poison all downstream scores Infinity/NaN
     return base ? price.map(e=>e/base) : price.map(()=>0)
 }
 
@@ -46,7 +46,7 @@ export function strategyStepOfStepL({t1, t2, minK: _minK, percentM: _percentM, o
     const percentM = _percentM ?? 1/100;
 
 
-    // процент изменения цены которые привязывается к нулю со скоростью percentM
+    // percent change of price tied to zero at speed percentM
     const conArr = (arr: number[]) => {
         let last = arr[0], result = 0;
         return arr.map(e=>{
@@ -64,12 +64,12 @@ export function strategyStepOfStepL({t1, t2, minK: _minK, percentM: _percentM, o
     let m1 = 0, m2 = 0
     //
     const result1: number[] = [0]
-    // прошлый объем
+    // previous volume
     let [lastD1, lastD2] = [0,0]
     for (let i = 1; i < length; i++) {
-        // сила и направление
+        // strength and direction
         const [d1,d2] = [r1[i],r2[i]]
-        // приращение
+        // increment
         const [p1,p2] = [t1[i] - t1[i-1], t2[i] - t2[i-1]]
 
         const pLana = p1-p2
@@ -92,6 +92,6 @@ export function strategyStepOfStepL({t1, t2, minK: _minK, percentM: _percentM, o
         }
     }
     const k1 = day.profitDays / result1.length
-    const k2 = day.profit / ((day.profit + Math.abs(day.loss)) || 1)   // day.loss отрицателен => без abs знаменатель схлопывается/меняет знак (ср. other.ts:89)
+    const k2 = day.profit / ((day.profit + Math.abs(day.loss)) || 1)   // day.loss is negative => without abs denominator collapses/changes sign (cf. other.ts:89)
     return k1 * k2
 }

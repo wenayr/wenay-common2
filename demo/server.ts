@@ -34,8 +34,8 @@ const mirrorOf = process.env.DEMO_MIRROR_OF?.trim() || null
 // Mirror participants get their own letter namespace (person-za, person-zb, ...)
 // so the shared board never shows two different people as the same "Participant A".
 const accountPrefix = (process.env.DEMO_ACCOUNT_PREFIX ?? (mirrorOf ? 'z' : '')).trim().toLowerCase()
-// Эпоха линии (fork-choice при failover): у самостоятельного лидера — из конфига
-// запуска; зеркало узнаёт эпоху лидера при подключении, promote даёт epoch + 1.
+// Epoch line (fork-choice during failover): standalone leader takes it from config
+// startup; mirror learns leader epoch on connect, promote yields epoch + 1.
 const demoEpoch = Number(process.env.DEMO_EPOCH ?? 1)
 
 type DemoIceServer = {
@@ -248,14 +248,14 @@ const ai = createAiRunHost({
             const html = artifactPage(prompt)
             const descriptor = {
                 kind: 'demo-counter', label: 'Interactive demo counter', runtime: 'sandboxed-iframe' as const, mime: 'text/html',
-                // Контент-адресация: версия артефакта = hash его байтов; при передаче между узлами она сверяется.
+                // Content addressing: artifact version = hash of its bytes; verified when transferred between nodes.
                 version: await sha256Hex(html),
             }
             const retention = {class: 'ephemeral' as const, expiresAt: Date.now() + 10 * 60_000}
             let registered: ArtifactRecord
             if (upstreamLink) {
-                // Зеркальный инстанс не хранит байты сам: регистрация форвардится источнику истины,
-                // а каталог вернётся сюда обычной репликацией.
+                // Mirror instance doesn't store bytes itself: registration is forwarded to source of truth,
+                // and the catalog is returned here via normal replication.
                 registered = await upstreamLink.artifacts.register(run.owner, {descriptor, retention, html})
             } else {
                 const storageKey = 'demo-artifact-' + (++nextArtifactKey)
@@ -597,7 +597,7 @@ function mirrorFragment() {
         return function forwardedCommand(who: unknown, input: unknown) {
             const account = mirrorAccount(who)
             return limited(account, function applyForwarded(value: any) {
-                // после promote авторитет доски — повышенный хост, не изначальный
+                // after promote, board authority is the promoted host, not the original
                 const authority = upstreamLink?.promotedWorkboard() ?? workboard
                 return (authority.control as any)[name](account, value)
             })(input)
@@ -634,7 +634,7 @@ function mirrorArtifactsFragment(link: {open: (artifactId: string) => Promise<{u
                     mime: base.mime == null ? undefined : String(base.mime),
                     version: String(base.version ?? ''),
                 }
-                // Приёмная сверка контент-хэша: зеркалу не верим на слово.
+                // Receiving-end content-hash check: we don't trust the mirror's word.
                 if (descriptor.version != await sha256Hex(html)) throw new Error('artifact register: content hash mismatch')
                 const retention = (value as any)?.retention?.class == 'persistent'
                     ? {class: 'persistent' as const}
@@ -667,7 +667,7 @@ async function connectUpstream(target: string) {
     const clients = await hub.setToken(null)
     await clients.app.readyStrict()
     const leader = clients.app.func as any
-    // Эпоха лидера — точка отсчёта fork-choice: наш promote выдаст leaderEpoch + 1
+    // Leader epoch is the fork-choice reference point: our promote will yield leaderEpoch + 1
     const leaderEpoch = Number(await leader.epoch().catch(() => 1) ?? 1)
     const follower = createStoreFollower<WorkboardState>({remote: leader.workboard.state, epoch: leaderEpoch})
     follower.status.on(function logLeaderLinkEdge() {
@@ -675,10 +675,10 @@ async function connectUpstream(target: string) {
         console.log(`[demo] leader link: ${upstream} (seq ${seq}, epoch ${epoch})`)
     })
 
-    // ============== failover: ручное повышение этого узла до лидера ==============
-    // Каскадный журнал продолжает жить над ТЕМ ЖЕ store — подписки клиентов этого
-    // узла переживают смену роли без разрыва; авторитет команд (ревизии, квитанции,
-    // лимит доски) строится workboard-хостом НАД зеркальным store как есть.
+    // ============== failover: manual promotion of this node to leader ==============
+    // Cascading log continues to live over the SAME store — subscriptions of clients on this
+    // node survive role change unbroken; authority of commands (revisions, receipts,
+    // board limit) is built by workboard-host OVER the mirror store as-is.
     let promotedHost: WorkboardHost | null = null
     function promoteToLeader() {
         if (promotedHost) return {epoch: follower.status.state.epoch, already: true}
@@ -690,7 +690,7 @@ async function connectUpstream(target: string) {
 
     function forwardCommand(name: tWorkboardCommand, account: string) {
         return function forwardToLeader(input: unknown) {
-            // после promote команды применяются локально — этот узел и есть лидер
+            // after promote commands are applied locally — this node is the leader
             if (promotedHost) return (promotedHost.control as any)[name](account, input)
             if (!(hub.socket as any)?.connected) throw new Error('leader offline — try again soon')
             return leader.mirror.workboard[name](account, input)
@@ -702,7 +702,7 @@ async function connectUpstream(target: string) {
         return fragment
     }
 
-    // ============== артефакты: каталог-фолловер + ленивые байты по hash ==============
+    // ============== artifacts: catalog-follower + lazy bytes by hash ==============
     const artifactCatalog = createStoreFollower<ArtifactStore>({remote: leader.artifacts.state, initial: {artifacts: {}}})
     const artifactCache = createArtifactByteCache({
         fetch: function fetchArtifactBytes(artifact: ArtifactRecord) { return leader.mirror.artifacts.bytes(artifact.id) },
@@ -712,7 +712,7 @@ async function connectUpstream(target: string) {
         catalog: artifactCatalog.store,
         policy: {canRead: () => true},
         async open({artifact}) {
-            // промах → байты у лидера (RPC) → sha256-сверка в кэше → раздача СВОИМ тикетом
+            // miss → bytes from leader (RPC) → sha256-check in cache → delivery by own ticket
             const {hash, bytes} = await artifactCache.get(artifact)
             const key = 'hash:' + hash
             if (!artifactBytes.has(key)) artifactBytes.set(key, String(bytes))
@@ -743,8 +743,8 @@ async function connectUpstream(target: string) {
 }
 
 // Which node this connection landed on — the client shows it as a badge.
-// В зеркальном режиме сюда же входит ручной failover: promote() повышает этот
-// узел до лидера (доска продолжает жить локально, epoch растёт на 1).
+// In mirror mode, manual failover also enters here: promote() raises this
+// node to leader (board continues to live locally, epoch grows by 1).
 function instanceFragment() {
     if (!upstreamLink) return {role: () => 'leader', epoch: () => demoEpoch, upstream: () => null}
     const link = upstreamLink
@@ -768,8 +768,8 @@ ioServer.on('connection', function onDemoConnection(socket) {
     // account — only the replay line and the trusted forwarded-command entry.
     if (socket.handshake.auth?.role == 'mirror') {
         const expectedToken = process.env.DEMO_MIRROR_TOKEN ?? ''
-        // Зеркала обслуживает ЛИДЕР — изначальный или повышенный: после failover
-        // этот узел принимает вернувшиеся узлы уже как их новый лидер (epoch выше).
+        // Mirrors are served by the LEADER — original or promoted: after failover
+        // this node accepts returning nodes as their new leader (higher epoch).
         const canServeMirrors = !mirrorOf || Boolean(upstreamLink?.isPromoted())
         if (!canServeMirrors || (expectedToken && socket.handshake.auth?.token != expectedToken)) {
             socket.disconnect(true)
@@ -786,7 +786,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
             socket: {emit: (key, data) => socket.emit(key, data), on: (key, cb) => socket.on(key, cb)},
             socketKey: 'app',
             object: {
-                // Повышенный узел раздаёт СВОЮ эпоху и СВОЙ каскад (та же линия, что у его клиентов)
+                // Promoted node distributes its own epoch and its own cascade (same line as its clients)
                 epoch: () => upstreamLink ? upstreamLink.follower.status.state.epoch : demoEpoch,
                 workboard: {state: upstreamLink ? upstreamLink.follower.api.replay : workboard.connection('mirror-link').fragment.state},
                 artifacts: mirrorArtifacts.fragment,
@@ -801,7 +801,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
     const peer = host.connection(account)
     const resource = files.connection(account)
     const aiRun = ai.connection(account)
-    // На зеркале каталог артефактов — реплика: та же форма фрагмента, read-edge
+    // On mirror, artifact catalog is a replica: same fragment form, read-edge
     const artifact = upstreamLink ? upstreamLink.artifacts.mirror.connection(account) : artifacts.connection(account)
     const conversation = conversations.connection(account)
     const workboardConnection = upstreamLink ? null : workboard.connection(account)

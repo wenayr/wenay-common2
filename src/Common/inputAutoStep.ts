@@ -11,7 +11,7 @@ declare type HTMLInputElement = {
 import {NormalizeDouble, MaxCommonDivisor,GetDblPrecision, GetDblPrecision2} from "./core/common";
 //import * as lib from "./common"
 
-// задать автоматическое управление шагом для элемента input
+// set automatic step management for input element
 export function SetAutoStepForElement(element :HTMLInputElement, params :{minStep? :number|undefined, maxStep? :number} = { maxStep: 1})
 {
 	function parse(valueStr :string) { let val= parseFloat(valueStr);  return isNaN(val) ? null : val; }
@@ -29,7 +29,7 @@ export function SetAutoStepForElement(element :HTMLInputElement, params :{minSte
 		//function NormalizeDouble(value :number, digits :number) { let factor=Math.pow(10, digits); return Math.round(value * factor)/factor;  }
 		//if (dotPos===valueStr.length-1) dotPos--;
 		//let digits= GetDblPrecision2(parseFloat(valueStr), minDigits, 10);
-        let dotPos= valueStr.search(/\.|,/);  // Находим точку или запятую
+        let dotPos= valueStr.search(/\.|,/);  // Find dot or comma
 		let digits = (dotPos>=0) ?  valueStr.length - dotPos - 1  : 0;
         digits= Math.max(digits, minDigits);
         if (digits>10) digits= GetDblPrecision2(parseFloat(valueStr), minDigits, 10);
@@ -43,7 +43,7 @@ export function SetAutoStepForElement(element :HTMLInputElement, params :{minSte
 		_step= step;
 		//if (Math.abs(min) < step) min= Math.floor(Math.abs(min)/step)*step * Math.sign(min);
 		if (_min!=null) {
-			if (Math.abs(_min) % step > 1e-9 && step - Math.abs(_min) % step > 1e-9)  // != 0 ложно срабатывал из-за FP-погрешности
+			if (Math.abs(_min) % step > 1e-9 && step - Math.abs(_min) % step > 1e-9)  // != 0 false positive due to FP error
 				_min= Math.floor(Math.abs(_min)/step) * step * Math.sign(minDefault!);
 			element.min= _min+"";
 		}
@@ -53,7 +53,7 @@ export function SetAutoStepForElement(element :HTMLInputElement, params :{minSte
 		//console.log("dotPos:",dotPos," _digits:",_digits, "minDigits:",minDigits);
 		return step;  ////lib.GetDblPrecision($fee[0].value)); }
 	}
-	let modeAuto = !_step || (_step<1 && Math.abs(Math.log10(_step)-Math.round(Math.log10(_step)))<1e-9);  // является степенью 0.1
+	let modeAuto = !_step || (_step<1 && Math.abs(Math.log10(_step)-Math.round(Math.log10(_step)))<1e-9);  // is a power of 0.1
 	const modeAuto0= modeAuto;
 	if (modeAuto) {
 		calculateStep((_step ? (Math.round(parseFloat(element.value)/_step) *_step) : element.value)+"");

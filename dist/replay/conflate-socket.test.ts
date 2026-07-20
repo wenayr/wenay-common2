@@ -1,15 +1,15 @@
 // ============================================================
 //  replay/conflate-socket.test.ts
 //
-//  Слой D.1 через НАСТОЯЩИЙ Socket.IO: per-connection conflation
-//  + snapshot recovery. Ворота строятся на каждое соединение;
-//  заполненность буфера симулируется (управляется тестом через
-//  debug-метод) — в проде это socket.conn.writeBuffer.length.
-//  Сценарии: keyframe recovery; keyOf-хвост и maxKeys-деградация
-//  по проводу; два клиента на одной линии (медленный + быстрый);
-//  реконнект ПОСРЕДИ conflation-эпизода через since (журнал полон,
-//  дропы ворот его не дырявят).
-//  Запуск:
+//  Layer D.1 via REAL Socket.IO: per-connection conflation
+//  + snapshot recovery. Gates are built for each connection;
+//  buffer fullness is simulated (managed by test via
+//  debug-method) — in prod it's socket.conn.writeBuffer.length.
+//  Scenarios: keyframe recovery; keyOf-tail and maxKeys-degradation
+//  over wire; two clients on one line (slow + fast);
+//  reconnect in MIDDLE of conflation-episode via since (journal full,
+//  drops from gates don't leak it).
+//  Run:
 //      npx ts-node replay/conflate-socket.test.ts
 // ============================================================
 
@@ -56,15 +56,15 @@ async function main() {
     const backend = createStore<World>({units: {alpha: {hp: 100, x: 0}, beta: {hp: 100, x: 0}, gamma: {hp: 100, x: 0}}, tick: 0}, {drain: 'micro'})
     const exposed = exposeStoreReplay(backend, {history: 1000})
 
-    // ============ сервер: ворота на КАЖДОЕ соединение ============
+    // ============ server: gates per EACH connection ============
     const app = express()
     const httpServer = createServer(app)
     const ioServer = new SocketIOServer(httpServer, {maxHttpBufferSize: 1e8})
     ioServer.on('connection', socket => {
-        const buf = {v: 0}   // симулированный исходящий буфер ЭТОГО клиента
-        const bufK = {v: 0}  // отдельный буфер линии с keyOf-схлопыванием
-        // однострочная форма ворот (паритет с ручным conflateReplay — gatedK ниже):
-        // close/stats деструктурируются В СТОРОНУ и в rpc-объект не попадают
+        const buf = {v: 0}   // simulated outgoing buffer of THIS client
+        const bufK = {v: 0}  // separate buffer of line with keyOf-collapse
+        // one-line gate form (parity with manual conflateReplay — gatedK below):
+        // close/stats are destructured AWAY and don't enter rpc-object
         const {close: gatedClose, stats: gatedStats, ...gatedApi} =
             exposeReplay(exposed.replay, {conflate: {pending: () => buf.v, highWater: 5, pollMs: 10}})
         const gatedK = conflateReplay(exposed.replay, {
@@ -100,7 +100,7 @@ async function main() {
     const port = (httpServer.address() as AddressInfo).port
     console.log(`  [server] listening on 127.0.0.1:${port}`)
 
-    // ============ клиент ============
+    // ============ client ============
     const hub = createRpcClientHub(
         () => io(`http://127.0.0.1:${port}`, {transports: ['websocket'], forceNew: true}),
         r => ({api: r<any>('conflate-store')}) as const,
@@ -108,8 +108,8 @@ async function main() {
     const clients = await hub.setToken(null)
     await clients.api.readyStrict()
     const deep = clients.api.func as any
-    let hubB: any = null   // второй клиент (быстрый сосед медленного)
-    let hub2: any = null   // реконнект первого клиента
+    let hubB: any = null   // second client (fast neighbor of slow)
+    let hub2: any = null   // reconnect of first client
 
     try {
         let envelopes = 0
@@ -129,7 +129,7 @@ async function main() {
         await waitFor('live patch over wire', () => mirror.state.tick == 1)
         ok(json(mirror.state) == json(backend.snapshot()), 'live patches flow through the transparent gate')
 
-        // ============ буфер клиента «переполнен»: дельты в провод не уходят ============
+        // ============ buffer client «overflowed»: deltas don't go over wire ============
         await deep.debug.setPending(100)
         for (let i = 2; i <= 12; i++) {
             backend.state.units['alpha'].hp = 100 - i
@@ -142,7 +142,7 @@ async function main() {
         ok(stats1.conflating && stats1.dropped >= 11, `deltas were dropped server-side, not queued (dropped=${stats1.dropped})`)
         const envBefore = envelopes
 
-        // ============ буфер слился → ОДИН keyframe вместо 22 патчей ============
+        // ============ buffer drained → ONE keyframe instead of 22 patches ============
         await deep.debug.setPending(0)
         await waitFor('recovery over wire', () => mirror.state.tick == 12)
         ok(json(mirror.state) == json(backend.snapshot()), 'recovered mirror equals backend')
@@ -150,13 +150,13 @@ async function main() {
         const stats2: ConflateStats = await deep.debug.stats()
         ok(stats2.keyframes == 1 && !stats2.conflating, 'recovery cost exactly one keyframe')
 
-        // ============ live после восстановления ============
+        // ============ live after recovery ============
         backend.state.tick = 13
         await flushReactive(backend.state)
         await waitFor('live after recovery', () => mirror.state.tick == 13)
         ok(json(mirror.state) == json(backend.snapshot()), 'live stream continues after recovery')
 
-        // ============ keyOf-ворота: затор схлопывается в хвост последних значений, НЕ в keyframe ============
+        // ============ keyOf-gates: congestion collapses into tail of latest values, NOT keyframe ============
         let envelopesK = 0
         const remoteK: ReplayRemote<[StorePatch]> = {
             line: {on: (cb: any) => deep.replayK.line.on((ev: any) => { envelopesK++; cb(ev) })},
@@ -184,7 +184,7 @@ async function main() {
         const statsK1: ConflateStats = await deep.debug.statsK()
         ok(statsK1.flushes == 1 && statsK1.keyframes == 0, 'recovery was a coalesced tail — the big store never travelled')
 
-        // ============ maxKeys: пять путей в заторе → деградация до keyframe, память ограничена ключами ============
+        // ============ maxKeys: five paths in congestion → degradation to keyframe, memory limited by keys ============
         await deep.debug.setPendingK(100)
         backend.state.units['alpha'].hp = 1
         backend.state.units['alpha'].x = 2
@@ -199,7 +199,7 @@ async function main() {
         ok(statsK2.keyframes == 1 && statsK2.flushes == 1, 'over maxKeys the episode degraded to exactly one keyframe')
         subK()
 
-        // ============ два клиента на одной линии: медленный конфлюирует, быстрый стримит ============
+        // ============ two clients on one line: slow conflates, fast streams ============
         hubB = createRpcClientHub(
             () => io(`http://127.0.0.1:${port}`, {transports: ['websocket'], forceNew: true}),
             r => ({api: r<any>('conflate-store')}) as const,
@@ -236,7 +236,7 @@ async function main() {
         ok(json(mirrorB.state) == json(backend.snapshot()), 'fast client unaffected by neighbour recovery')
         subB()
 
-        // ============ реконнект ПОСРЕДИ conflation-эпизода: журнал полон, since добирает дропнутое ============
+        // ============ reconnect in MIDDLE of conflation-episode: journal full, since catches dropped ============
         await deep.debug.setPending(100)
         for (let i = 36; i <= 42; i++) {
             backend.state.units['alpha'].hp = i
