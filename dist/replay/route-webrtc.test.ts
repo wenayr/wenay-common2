@@ -1,4 +1,4 @@
-// Acceptance oracle for step 9 (webrtc-route-coordinator-tasks): signaling
+// Acceptance oracle for WebRTC signaling over the existing route coordinator:
 // adapter (offer/answer/ICE/session/revoke) over the existing control channel +
 // WebRTC direct connector under createRouteCoordinator. RTCPeerConnection is
 // faked in-process (the runtime factory is injected by design); the second

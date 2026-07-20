@@ -6,6 +6,9 @@ export type SubscriptionHandle = Off<void, {
     unsubscribe: () => void;
     removeCallback: () => void;
 }>;
+export type RpcListenSubscribeOpts = {
+    current?: boolean;
+};
 export declare function listenSocket<Z extends any[] = any[]>(e: ListenCallbackResult<Z>, d?: {
     readonly status?: () => boolean;
     readonly closeOn?: ListenCallbackResult<any>;
@@ -13,34 +16,34 @@ export declare function listenSocket<Z extends any[] = any[]>(e: ListenCallbackR
     readonly paramsModify?: (...e: Z) => any[];
     readonly throttle?: number;
 }): {
-    on: (z: Listener<Z>) => Promise<void>;
+    on: (z: Listener<Z>, opts?: RpcListenSubscribeOpts) => Promise<void>;
     off: () => boolean;
-    callback: (z: Listener<Z>) => Promise<void>;
+    callback: (z: Listener<Z>, opts?: RpcListenSubscribeOpts) => Promise<void>;
     removeCallback: () => boolean;
-    once: (z: Listener<Z>) => Promise<void>;
+    once: (z: Listener<Z>, opts?: RpcListenSubscribeOpts) => Promise<void>;
     close: () => void;
 };
 export declare function listenSocketFirst<Z extends any[] = any[]>(e: ListenCallbackResult<Z>, options?: Omit<Parameters<typeof listenSocket>[1], "paramsModify">): {
-    callback: (z: (a: Z[0]) => void) => SubscriptionHandle;
-    on: (z: (a: Z[0]) => void) => SubscriptionHandle;
-    once: (z: (a: Z[0]) => void) => SubscriptionHandle;
+    callback: (z: (a: Z[0]) => void, opts?: RpcListenSubscribeOpts) => SubscriptionHandle;
+    on: (z: (a: Z[0]) => void, opts?: RpcListenSubscribeOpts) => SubscriptionHandle;
+    once: (z: (a: Z[0]) => void, opts?: RpcListenSubscribeOpts) => SubscriptionHandle;
     close: () => void;
     off: () => boolean;
     removeCallback: () => boolean;
 };
 export declare function listenSocketAll<Z extends any[] = any[]>(e: ListenCallbackResult<Z>, options?: Omit<Parameters<typeof listenSocket>[1], "paramsModify">): {
-    callback: (z: (...args: Z) => void) => SubscriptionHandle;
-    on: (z: (...args: Z) => void) => SubscriptionHandle;
-    once: (z: (...args: Z) => void) => SubscriptionHandle;
+    callback: (z: (...args: Z) => void, opts?: RpcListenSubscribeOpts) => SubscriptionHandle;
+    on: (z: (...args: Z) => void, opts?: RpcListenSubscribeOpts) => SubscriptionHandle;
+    once: (z: (...args: Z) => void, opts?: RpcListenSubscribeOpts) => SubscriptionHandle;
     close: () => void;
     off: () => boolean;
     removeCallback: () => boolean;
 };
 type SmartCallback<Z extends any[]> = Z extends [infer Single] ? (a: Single) => void : (...args: Z) => void;
 export declare function listenSocketSmart<Z extends any[] = any[]>(e: ListenCallbackResult<Z>, options?: Omit<Parameters<typeof listenSocket>[1], "paramsModify">): {
-    callback: (z: SmartCallback<Z>) => SubscriptionHandle;
-    on: (z: SmartCallback<Z>) => SubscriptionHandle;
-    once: (z: SmartCallback<Z>) => SubscriptionHandle;
+    callback: (z: SmartCallback<Z>, opts?: RpcListenSubscribeOpts) => SubscriptionHandle;
+    on: (z: SmartCallback<Z>, opts?: RpcListenSubscribeOpts) => SubscriptionHandle;
+    once: (z: SmartCallback<Z>, opts?: RpcListenSubscribeOpts) => SubscriptionHandle;
     close: () => void;
     off: () => boolean;
     removeCallback: () => boolean;

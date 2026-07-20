@@ -365,11 +365,73 @@ function createClient(socket, key, opts) {
     const dedupe = opts?.dedupeListen ?? true;
     const wireSubs = new Map();
     let declaredListens = null;
+    const OMIT_LISTEN_FUNCTION = Symbol('omit listen function');
+    function sanitizeListenWireValue(value) {
+        if (typeof value == 'function')
+            return OMIT_LISTEN_FUNCTION;
+        if (value == null || typeof value != 'object')
+            return value;
+        if (value instanceof Date || value instanceof RegExp || value instanceof ArrayBuffer || ArrayBuffer.isView(value))
+            return value;
+        if (value instanceof Map) {
+            const clean = new Map();
+            for (const [key, item] of value) {
+                const cleanKey = sanitizeListenWireValue(key);
+                const cleanItem = sanitizeListenWireValue(item);
+                if (cleanKey != OMIT_LISTEN_FUNCTION && cleanItem != OMIT_LISTEN_FUNCTION)
+                    clean.set(cleanKey, cleanItem);
+            }
+            return clean;
+        }
+        if (value instanceof Set) {
+            const clean = new Set();
+            for (const item of value) {
+                const cleanItem = sanitizeListenWireValue(item);
+                if (cleanItem != OMIT_LISTEN_FUNCTION)
+                    clean.add(cleanItem);
+            }
+            return clean;
+        }
+        if (Array.isArray(value)) {
+            return value.map(function sanitizeListenArrayItem(item) {
+                const clean = sanitizeListenWireValue(item);
+                return clean == OMIT_LISTEN_FUNCTION ? undefined : clean;
+            });
+        }
+        const clean = {};
+        for (const key of Object.keys(value)) {
+            const item = sanitizeListenWireValue(value[key]);
+            if (item != OMIT_LISTEN_FUNCTION)
+                clean[key] = item;
+        }
+        return clean;
+    }
+    function normalizeListenWireArgs(path, args) {
+        const method = path[path.length - 1];
+        if ((method != 'on' && method != 'callback' && method != 'once') || typeof args[0] != 'function')
+            return args;
+        const nodeKey = (0, rpc_path_1.rpcPathKey)(path.slice(0, -1));
+        if (method == 'once' && declaredListens == null)
+            return args;
+        if (declaredListens != null && !declaredListens.has(nodeKey))
+            return args;
+        const clean = [args[0]];
+        for (let i = 1; i < args.length; i++) {
+            const value = sanitizeListenWireValue(args[i]);
+            clean.push(value == OMIT_LISTEN_FUNCTION ? undefined : value);
+        }
+        return clean;
+    }
+    function clearListenEventCaches() {
+        for (const sub of wireSubs.values())
+            sub.lastEvents.clear();
+    }
     function finishLogical(sub) {
         if (sub.ended)
             return;
         sub.ended = true;
         sub.attempt = null;
+        sub.lastEvents.clear();
         if (wireSubs.get(sub.key) == sub)
             wireSubs.delete(sub.key);
         for (const consumer of sub.consumers)
@@ -397,6 +459,7 @@ function createClient(socket, key, opts) {
         if (wireSubs.get(sub.key) == sub)
             wireSubs.delete(sub.key);
         sub.ended = true;
+        sub.lastEvents.clear();
         if (socketAlive && transport.api.connected()) {
             sendCallWire([...sub.path.slice(0, -1), 'removeCallback'], [], false);
         }
@@ -419,6 +482,7 @@ function createClient(socket, key, opts) {
                 key: skey,
                 path: [...path],
                 realArgs: [],
+                lastEvents: new Map(),
                 consumers: new Set(),
                 attempt: null,
                 recoverable: declaredListens?.has(listenPathKey) == true,
@@ -430,6 +494,7 @@ function createClient(socket, key, opts) {
                     return arg;
                 const index = fnPos++;
                 return function multicastListenEvent(...event) {
+                    created.lastEvents.set(index, event);
                     let error;
                     for (const consumer of created.consumers) {
                         try {
@@ -451,6 +516,18 @@ function createClient(socket, key, opts) {
             resolve: function resolveLater() { },
         };
         sub.consumers.add(consumer);
+        if (args[1]?.current == true) {
+            const current = sub.lastEvents.get(0);
+            const currentConsumer = consumer.fns[0];
+            if (current && currentConsumer) {
+                try {
+                    currentConsumer(...current);
+                }
+                catch (error) {
+                    setTimeout(function rethrowCurrentConsumerError() { throw error; }, 0);
+                }
+            }
+        }
         const promise = new Promise(function waitForListenEnd(resolve) { consumer.resolve = resolve; });
         startAttempt(sub);
         function unsubscribe() {
@@ -464,6 +541,7 @@ function createClient(socket, key, opts) {
     }
     function abandonTransportGeneration(reason) {
         for (const sub of [...wireSubs.values()]) {
+            sub.lastEvents.clear();
             const attempt = sub.attempt;
             sub.attempt = null;
             attempt?.call.abandon(reason);
@@ -514,14 +592,15 @@ function createClient(socket, key, opts) {
     transport.api.onConnect(transportConnected);
     const sendCall = (path, args, wait) => {
         const last = path[path.length - 1];
-        if (dedupe && wait && path.length > 1 && (last == "callback" || last == "on") && args.some(a => typeof a == "function")) {
+        const wireArgs = normalizeListenWireArgs(path, args);
+        if (dedupe && wait && path.length > 1 && (last == "callback" || last == "on") && wireArgs.some(a => typeof a == "function")) {
             if (!transport.api.connected())
-                return sendCallWire(path, args, wait);
+                return sendCallWire(path, wireArgs, wait);
             const isListen = declaredListens ? declaredListens.has((0, rpc_path_1.rpcPathKey)(path.slice(0, -1))) : true;
             if (isListen)
-                return subscribeShared(path, args);
+                return subscribeShared(path, wireArgs);
         }
-        return sendCallWire(path, args, wait);
+        return sendCallWire(path, wireArgs, wait);
     };
     function lookupRpcMemberState(path, member) {
         if (!schemaKnown)
@@ -723,6 +802,7 @@ function createClient(socket, key, opts) {
             return Promise.resolve({ ok: false, reason: 'RPC transport disconnected' });
         authToken = token;
         authPending = true;
+        clearListenEventCaches();
         socket.emit(key, [rpc_protocol_1.Pkt.HELLO, token]);
         return new Promise(res => authWaiters.push(res));
     }

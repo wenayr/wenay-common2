@@ -29,7 +29,7 @@ let port = portStart
 // DEMO_MIRROR_OF=http://localhost:3100 turns this instance into a follower: the
 // workboard store is mirrored from the leader over the ordinary replay wire and
 // commands are forwarded with the end client's account — receipts and ordering
-// stay on the leader (single point of order, see doc/target/store-mirror-plan.md).
+// stay on the leader (single point of order, see doc/target/store-sync-directions.md).
 const mirrorOf = process.env.DEMO_MIRROR_OF?.trim() || null
 // Mirror participants get their own letter namespace (person-za, person-zb, ...)
 // so the shared board never shows two different people as the same "Participant A".

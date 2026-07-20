@@ -21,7 +21,7 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
         let result = cache.get(parent);
         if (!result) {
             const subs = new Map();
-            function subscribe(z) {
+            function subscribe(z, opts) {
                 if (typeof z !== "function")
                     return Promise.reject(new TypeError("Listen callback expects a function"));
                 if (maxPerListen != null && subs.size >= maxPerListen)
@@ -31,7 +31,7 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
                 subs.get(z)?.off();
                 const w = (0, listen_socket_1.listenSocket)(parent, { closeOn: disconnectListen, throttle: nodeThrottle });
                 subs.set(z, w);
-                const done = w.on(z);
+                const done = w.on(z, opts);
                 done.then(() => {
                     if (subs.get(z) == w)
                         subs.delete(z);
@@ -40,7 +40,7 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
                 });
                 return done;
             }
-            function subscribeOnce(z) {
+            function subscribeOnce(z, opts) {
                 if (typeof z !== "function")
                     return Promise.reject(new TypeError("Listen once expects a function"));
                 if (maxPerListen != null && subs.size >= maxPerListen)
@@ -63,7 +63,7 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
                     }
                 };
                 subs.set(z, w);
-                const done = w.on(oneShot);
+                const done = w.on(oneShot, opts);
                 done.then(() => { if (subs.get(z) == w)
                     subs.delete(z); if (subs.size == 0)
                     registry.delete(parent); });

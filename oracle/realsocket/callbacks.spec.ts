@@ -4,7 +4,7 @@
 //  subscriptions over a genuine WebSocket. Port 4102 (own port, no clash).
 // ============================================================
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
-import {listen as createListenPair} from '../../src/Common/events/Listen'
+import {listen as createListenPair, listenStore} from '../../src/Common/events/Listen'
 
 const PORT = 4102
 
@@ -12,6 +12,13 @@ const PORT = 4102
 // listen handles every connection — we drive them from the test below.
 const [tick, tickListen] = createListenPair<[{n: number; at: Date; tags: Set<string>}]>()
 const [multiTick, multiListen] = createListenPair<[number, string]>()
+let currentValue = 7
+const [emitCurrent, currentListen] = listenStore<number>({current: () => [currentValue]})
+
+function setCurrent(value: number) {
+    currentValue = value
+    emitCurrent(value)
+}
 
 function makeObject() {
     return {
@@ -29,6 +36,7 @@ function makeObject() {
         // ── listen stream node: client subscribes via api.stream.callback(fn) ──
         stream: tickListen,        // single rich object arg
         multi: multiListen,        // two args (number, string)
+        current: currentListen,
         // ── control surface to end the single-arg stream (→ CB_END / await off) ──
         endStream: async () => { tickListen.close(); return true },
     }
@@ -101,7 +109,74 @@ async function main() {
         await delay(20)
     }
 
-    // ===== 4. CB_END / stream end resolves the off-handle (await off) =====
+    // ===== 4. current option crosses RPC and survives local wire dedupe =====
+    {
+        const first: number[] = []
+        let hiddenOptionCalls = 0
+        const offFirst = (api as any).current.on((value: number) => first.push(value), {
+            current: true,
+            hidden: function hiddenListenOption() { hiddenOptionCalls++ },
+        })
+        await delay(40)
+        await check('current: first subscriber receives the existing value', () => first, [7])
+        await check('current: only the event callback becomes an RPC capability', () => cli.client.api.callbacks(), 1)
+        await check('current: unrelated option callbacks never cross the wire', () => hiddenOptionCalls, 0)
+
+        setCurrent(8)
+        await delay(30)
+        await check('current: first subscriber continues with live values', () => first, [7, 8])
+
+        const late: number[] = []
+        const offLate = (api as any).current.on((value: number) => late.push(value), {current: true})
+        await delay(20)
+        await check('current: late deduped subscriber receives the latest value', () => late, [8])
+        await check('current: local subscribers still share one wire subscription', () => currentListen.count(), 1)
+
+        const liveOnly: number[] = []
+        const offLiveOnly = (api as any).current.on((value: number) => liveOnly.push(value))
+        await delay(30)
+        await check('current: omitted option preserves live-only behavior', () => liveOnly, [])
+
+        setCurrent(9)
+        await delay(30)
+        await check('current: first subscriber receives the next live value', () => first, [7, 8, 9])
+        await check('current: late subscriber receives the next live value once', () => late, [8, 9])
+        await check('current: live-only subscriber starts at the next event', () => liveOnly, [9])
+
+        const once: number[] = []
+        await (api as any).current.once((value: number) => once.push(value), {current: true})
+        await check('current: once resolves from the existing value', () => once, [9])
+
+        const waitingOnce: number[] = []
+        const callbacksBeforeWaitingOnce = cli.client.api.callbacks()
+        const waiting = (api as any).current.once((value: number) => waitingOnce.push(value), {
+            hidden: function hiddenOnceOption() { hiddenOptionCalls++ },
+        })
+        await delay(20)
+        await check('current: once also strips unrelated option callbacks', () => cli.client.api.callbacks(), callbacksBeforeWaitingOnce + 1)
+        setCurrent(10)
+        await waiting
+        await check('current: live-only once still receives its one event', () => waitingOnce, [10])
+        await check('current: stripped option callbacks remain unreachable', () => hiddenOptionCalls, 0)
+
+        await cli.client.reauth('cache-scope-rotation')
+        const afterReauth: number[] = []
+        const offAfterReauth = (api as any).current.on((value: number) => afterReauth.push(value), {current: true})
+        await delay(20)
+        await check('current: reauth clears the previous generation cache', () => afterReauth, [])
+        setCurrent(11)
+        await delay(20)
+        await check('current: post-reauth consumers continue from fresh live data', () => afterReauth, [11])
+
+        offFirst()
+        offLate()
+        offLiveOnly()
+        offAfterReauth()
+        await delay(20)
+        await check('current: once and shared subscriptions leave no server listener', () => currentListen.count(), 0)
+    }
+
+    // ===== 5. CB_END / stream end resolves the off-handle (await off) =====
     {
         let resolved = false
         const off = (api as any).stream.callback(() => {})

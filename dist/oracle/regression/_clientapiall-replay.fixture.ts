@@ -51,6 +51,13 @@ export function compileCase() {
     })
     sub3()
 
+    // current subscription options stay typed on the projected RPC Listen surface
+    const current = client.func.listenMsg.on(function onCurrent(msg) {
+        const text: string = msg.text
+        void text
+    }, {current: true})
+    current()
+
     // plain functions are untouched by the replay arm
     const p: Promise<string> = client.func.hello('x')
     void p

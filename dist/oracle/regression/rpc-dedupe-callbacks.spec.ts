@@ -183,6 +183,35 @@ async function main() {
         await check("unsub one consumer: server wire consumer still alive", () => server.api.subscriptions()[0]?.consumers, 1)
     }
 
+    {
+        const [clientSocket, serverSocket] = createLoopback()
+        let businessCallbackCalls = 0
+        let receivedOptions: any = null
+        const object = {
+            legacy: {
+                once(callback: (value: string) => void, options: {current: true, label: string, business: () => void}) {
+                    receivedOptions = options
+                    options.business()
+                    callback(options.label)
+                    return options.label
+                },
+            },
+        }
+        const client = createRpcClient<typeof object>({socket: clientSocket, socketKey: 'rpc'})
+        createRpcServerAuto({socket: serverSocket, object, socketKey: 'rpc'})
+        const values: string[] = []
+        const result = await client.func.legacy.once(function receiveLegacyOnce(value) { values.push(value) }, {
+            current: true,
+            label: 'business-options-preserved',
+            business() { businessCallbackCalls++ },
+        })
+
+        await check('legacy ordinary once: return value preserved before Listen map', () => result, 'business-options-preserved')
+        await check('legacy ordinary once: callback and options are not normalized as Listen', () => values, ['business-options-preserved'])
+        await check('legacy ordinary once: nested business callback remains callable', () => businessCallbackCalls, 1)
+        await check('legacy ordinary once: server received the complete options object', () => receivedOptions?.current == true && receivedOptions?.label, 'business-options-preserved')
+    }
+
     clearTimeout(watchdog)
     const fails = done()
     console.log(fails === 0 ? "ALL GREEN" : `${fails} FAILURE(S)`)

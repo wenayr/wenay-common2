@@ -451,6 +451,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         key: string
         path: string[]
         realArgs: any[]
+        lastEvents: Map<number, any[]>
         consumers: Set<tConsumer>
         attempt: tWireAttempt | null
         recoverable: boolean
@@ -461,10 +462,66 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     // адреса Listen-узлов, задекларированные сервером в Pkt.MAP; null = старый сервер (без декларации)
     let declaredListens: Set<string> | null = null
 
+    const OMIT_LISTEN_FUNCTION = Symbol('omit listen function')
+
+    function sanitizeListenWireValue(value: any): any {
+        if (typeof value == 'function') return OMIT_LISTEN_FUNCTION
+        if (value == null || typeof value != 'object') return value
+        if (value instanceof Date || value instanceof RegExp || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return value
+        if (value instanceof Map) {
+            const clean = new Map<any, any>()
+            for (const [key, item] of value) {
+                const cleanKey = sanitizeListenWireValue(key)
+                const cleanItem = sanitizeListenWireValue(item)
+                if (cleanKey != OMIT_LISTEN_FUNCTION && cleanItem != OMIT_LISTEN_FUNCTION) clean.set(cleanKey, cleanItem)
+            }
+            return clean
+        }
+        if (value instanceof Set) {
+            const clean = new Set<any>()
+            for (const item of value) {
+                const cleanItem = sanitizeListenWireValue(item)
+                if (cleanItem != OMIT_LISTEN_FUNCTION) clean.add(cleanItem)
+            }
+            return clean
+        }
+        if (Array.isArray(value)) {
+            return value.map(function sanitizeListenArrayItem(item) {
+                const clean = sanitizeListenWireValue(item)
+                return clean == OMIT_LISTEN_FUNCTION ? undefined : clean
+            })
+        }
+        const clean: Record<string, any> = {}
+        for (const key of Object.keys(value)) {
+            const item = sanitizeListenWireValue(value[key])
+            if (item != OMIT_LISTEN_FUNCTION) clean[key] = item
+        }
+        return clean
+    }
+
+    function normalizeListenWireArgs(path: string[], args: any[]) {
+        const method = path[path.length - 1]
+        if ((method != 'on' && method != 'callback' && method != 'once') || typeof args[0] != 'function') return args
+        const nodeKey = rpcPathKey(path.slice(0, -1))
+        if (method == 'once' && declaredListens == null) return args
+        if (declaredListens != null && !declaredListens.has(nodeKey)) return args
+        const clean = [args[0]]
+        for (let i = 1; i < args.length; i++) {
+            const value = sanitizeListenWireValue(args[i])
+            clean.push(value == OMIT_LISTEN_FUNCTION ? undefined : value)
+        }
+        return clean
+    }
+
+    function clearListenEventCaches() {
+        for (const sub of wireSubs.values()) sub.lastEvents.clear()
+    }
+
     function finishLogical(sub: tSub) {
         if (sub.ended) return
         sub.ended = true
         sub.attempt = null
+        sub.lastEvents.clear()
         if (wireSubs.get(sub.key) == sub) wireSubs.delete(sub.key)
         for (const consumer of sub.consumers) consumer.resolve()
         sub.consumers.clear()
@@ -492,6 +549,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         sub.attempt = null
         if (wireSubs.get(sub.key) == sub) wireSubs.delete(sub.key)
         sub.ended = true
+        sub.lastEvents.clear()
         if (socketAlive && transport.api.connected()) {
             sendCallWire([...sub.path.slice(0, -1), 'removeCallback'], [], false)
         } else {
@@ -512,6 +570,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 key: skey,
                 path: [...path],
                 realArgs: [] as any[],
+                lastEvents: new Map<number, any[]>(),
                 consumers: new Set<tConsumer>(),
                 attempt: null,
                 recoverable: declaredListens?.has(listenPathKey) == true,
@@ -522,6 +581,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 if (typeof arg != 'function') return arg
                 const index = fnPos++
                 return function multicastListenEvent(...event: any[]) {
+                    created.lastEvents.set(index, event)
                     let error: any
                     for (const consumer of created.consumers) {
                         try { consumer.fns[index]?.(...event) }
@@ -539,6 +599,14 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             resolve: function resolveLater() {},
         }
         sub.consumers.add(consumer)
+        if (args[1]?.current == true) {
+            const current = sub.lastEvents.get(0)
+            const currentConsumer = consumer.fns[0]
+            if (current && currentConsumer) {
+                try { currentConsumer(...current) }
+                catch (error) { setTimeout(function rethrowCurrentConsumerError() { throw error }, 0) }
+            }
+        }
         const promise = new Promise<void>(function waitForListenEnd(resolve) { consumer.resolve = resolve })
         startAttempt(sub)
 
@@ -554,6 +622,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     // receive one fresh physical attempt after the next completed handshake.
     function abandonTransportGeneration(reason: string) {
         for (const sub of [...wireSubs.values()]) {
+            sub.lastEvents.clear()
             const attempt = sub.attempt
             sub.attempt = null
             attempt?.call.abandon(reason)
@@ -610,18 +679,19 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
 
     const sendCall = (path: string[], args: any[], wait: boolean): any => {
         const last = path[path.length - 1];
+        const wireArgs = normalizeListenWireArgs(path, args)
         // `.on(fn)` и `.callback(fn)` — обе «подписка по факту установки колбэка». Имя НЕ переписываем:
         // `.on` уходит проводом КАК `.on` (сервер имеет оба метода). Дедуп — по АДРЕСУ УЗЛА
         // (см. subscribeShared), поэтому on/callback на один Listen-узел делят одну сетевую подписку.
-        if (dedupe && wait && path.length > 1 && (last == "callback" || last == "on") && args.some(a => typeof a == "function")) {
+        if (dedupe && wait && path.length > 1 && (last == "callback" || last == "on") && wireArgs.some(a => typeof a == "function")) {
             // New calls made offline are never deferred into the next connection.
-            if (!transport.api.connected()) return sendCallWire(path, args, wait)
+            if (!transport.api.connected()) return sendCallWire(path, wireArgs, wait)
             // точно: сервер задекларировал адрес как Listen (Pkt.MAP[3]);
             // fallback для старого сервера — эвристика по форме маршрута `*.callback(fn)`/`*.on(fn)`
             const isListen = declaredListens ? declaredListens.has(rpcPathKey(path.slice(0, -1))) : true;
-            if (isListen) return subscribeShared(path, args);
+            if (isListen) return subscribeShared(path, wireArgs);
         }
-        return sendCallWire(path, args, wait);
+        return sendCallWire(path, wireArgs, wait);
     };
 
     function lookupRpcMemberState(path: string[], member: string) {
@@ -811,6 +881,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         if (!transport.api.connected()) return Promise.resolve({ok: false, reason: 'RPC transport disconnected'})
         authToken = token;
         authPending = true;
+        clearListenEventCaches()
         socket.emit(key, [Pkt.HELLO, token]);
         return new Promise<any>(res => authWaiters.push(res));
     }

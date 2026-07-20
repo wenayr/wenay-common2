@@ -96,6 +96,10 @@
     .audioStatus { margin-top: 7px; padding: 6px 8px; border-radius: 7px; background: #edf2f7; }
     #roomEmpty, .emptyState { margin: 0; padding: 16px 10px; color: var(--muted); text-align: center; font-size: 12px; }
     #mediaStats, #route { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    #maxVideoMode { padding: 5px 9px; border-radius: 999px; background: var(--surface-soft); color: var(--muted); font-size: 11px; font-weight: 750; }
+    #maxVideoMode[data-mode="max"] { background: var(--danger-soft); color: var(--danger); }
+    #maxVideoMetrics { margin-top: 10px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    #maxVideoMetrics[data-mode="max"] { border-color: #efb3ad; background: var(--danger-soft); color: var(--danger); }
     .statusBadge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 999px; background: var(--surface-soft); color: var(--muted); font-size: 12px; font-weight: 700; text-transform: capitalize; }
     .statusBadge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #8491a1; }
     .statusBadge[data-state="live"] { background: var(--success-soft); color: var(--success); }
@@ -169,6 +173,18 @@
     .contractRuntimeStage > em { display: block; margin-bottom: 5px; color: var(--muted); font-size: 10px; font-style: normal; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
     .contractRuntimeStage strong, .contractRuntimeStage span { display: block; overflow-wrap: anywhere; }
     .contractRuntimeStage span { margin-top: 3px; color: var(--muted); font-size: 11px; }
+    #packetMesh { grid-column: 1 / -1; }
+    .packetMeshRoute { display: flex; flex-wrap: wrap; gap: 7px; margin: 12px 0; }
+    .packetMeshLink { padding: 6px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--surface-soft); font-size: 12px; }
+    .packetMeshLink.selected { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); font-weight: 700; }
+    .packetMeshLink.offline { opacity: .42; text-decoration: line-through; }
+    .packetMeshNodes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+    .packetMeshNode { border: 1px solid var(--line); border-radius: 12px; padding: 10px; background: var(--surface-soft); }
+    .packetMeshNode.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+    .packetMeshNode strong, .packetMeshNode span { display: block; }
+    .packetMeshNode span { color: var(--accent); font-size: 12px; margin-top: 3px; }
+    .packetMeshNode p { color: var(--muted); font-size: 12px; margin: 7px 0 0; }
+    #packetMeshEvents { margin-top: 10px; color: var(--muted); font-size: 12px; }
     .contractRuntimeBody { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(260px, .75fr); gap: 14px; margin-top: 14px; }
     #contractOffers { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 9px; }
     .contractOfferCard { min-width: 0; padding: 11px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-soft); }
@@ -263,6 +279,7 @@
         .roomDirectory { position: static; }
         #workboardColumns { grid-template-columns: 1fr; }
         .replicaMeshNodes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .packetMeshNodes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .contractRuntimeBody { grid-template-columns: 1fr; }
         .workboardToolbar { grid-template-columns: 1fr; align-items: stretch; }
         #workboardCounts, #workboardMeta { white-space: normal; }
@@ -281,6 +298,7 @@
         #replicaMeshGraph { min-height: 400px; }
         #workboardCreateForm { flex-direction: column; }
         .replicaMeshNodes { grid-template-columns: 1fr; }
+        .packetMeshNodes { grid-template-columns: 1fr; }
         .contractRuntimeFlow { grid-template-columns: 1fr; gap: 9px; }
         .contractRuntimeStage:not(:last-child)::after { display: none; }
         .activityPanel { margin: 0 14px 14px; }
@@ -387,12 +405,15 @@
                                     <option value="1920">1920p</option>
                                 </select>
                                 <select id="camDevice" title="Camera device" aria-label="Camera device"></select>
+                                <button id="maxVideo" class="secondary" aria-pressed="false">🚀 Max video load</button>
+                                <span id="maxVideoMode">Balanced · 12fps · JPEG q68</span>
                                 <button id="mic">Share microphone</button>
                                 <select id="micDevice" title="Microphone device" aria-label="Microphone device"></select>
                                 <button id="screen">Share screen</button>
                                 <button id="roomAudio" class="secondary" disabled>Enable room audio</button>
                                 <span id="micStatus">Microphone is off</span>
                             </div>
+                            <div id="maxVideoMetrics">BALANCED TX · camera is not producing frames</div>
                             <h4 id="roomParticipantsTitle">Room participants</h4>
                             <div id="roomMediaView">
                                 <figure class="roomTile">
@@ -486,6 +507,30 @@
                     </div>
                     <div class="surfaceBody">
                         <canvas id="canvas" width="640" height="360"></canvas>
+                    </div>
+                </section>
+
+                <section id="packetMesh" class="surface">
+                    <div class="surfaceHeader">
+                        <div>
+                            <h3>Peer packet mesh</h3>
+                            <p id="packetMeshSummary">discovering connection offers…</p>
+                        </div>
+                    </div>
+                    <div class="surfaceBody">
+                        <div class="toolbar">
+                            <button id="packetMeshSend" class="primary">Send package packet</button>
+                            <button id="packetMeshGroup">Send to group</button>
+                            <button id="packetMeshBreak" class="danger">Break Edge A ⇄ Edge B</button>
+                        </div>
+                        <div id="packetMeshRoute" class="packetMeshRoute" aria-label="Available packet connections and selected route"></div>
+                        <div id="packetMeshNodes" class="packetMeshNodes" aria-live="polite"></div>
+                        <div id="packetMeshEvents" aria-live="polite"></div>
+                        <details class="replicaContract">
+                            <summary>What is actually exchanged</summary>
+                            <code>PeerPacketOffer.connect() → { peerId, send, messages, ping?, onFail?, close }</code>
+                            <p>Every node advertises loop-safe paths. Payload packets carry packetId, originId, sequence, TTL and the traversed path; the mesh chooses the cheapest live next hop and reconciles when an offer disappears.</p>
+                        </details>
                     </div>
                 </section>
 

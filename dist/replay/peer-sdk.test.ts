@@ -1,4 +1,4 @@
-// Acceptance oracle for the Peer SDK (library-uplift-tasks task 2): the happy
+// Acceptance oracle for the Peer SDK: the happy
 // path "two accounts see each other's store and can promote to direct" in ~10
 // user lines, over a real Socket.IO/RPC wire, NEXT TO legacy rpc keys on the
 // same connection. Direct = fake WebRTC runtime (injected factory, as designed).

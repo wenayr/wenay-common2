@@ -6,6 +6,9 @@ exports.listenSocketAll = listenSocketAll;
 exports.listenSocketSmart = listenSocketSmart;
 const rpc_protocol_1 = require("./rpc-protocol");
 const rpc_off_1 = require("./rpc-off");
+function wireSubscribeOpts(opts) {
+    return opts?.current == true ? { current: true } : undefined;
+}
 function createThrottleLatest(ms, sink) {
     let timer = null;
     let pending = null;
@@ -81,7 +84,7 @@ function listenSocket(e, d) {
         return true;
     }
     const removeCallback = off;
-    function on(z) {
+    function on(z, opts) {
         if (typeof z !== "function") {
             throw new TypeError("listenSocket.on expects a function");
         }
@@ -148,14 +151,22 @@ function listenSocket(e, d) {
             }
             inner(...a);
         };
-        activeOff = subscribe(active, { cbClose: off });
-        closeSignalOff = subscribeClose?.(off) ?? null;
+        const forwarded = wireSubscribeOpts(opts);
         const wait = new Promise((resolve) => {
             resolveWait = () => { resolve(); };
         });
+        const createdOff = subscribe(active, forwarded ? { cbClose: off, ...forwarded } : { cbClose: off });
+        if (last == z) {
+            activeOff = createdOff;
+            closeSignalOff = subscribeClose?.(off) ?? null;
+        }
+        else {
+            createdOff();
+            active = null;
+        }
         return (0, rpc_off_1.makeOff)(wait, off, { off, unsubscribe: off, removeCallback });
     }
-    function once(z) {
+    function once(z, opts) {
         if (typeof z !== "function") {
             throw new TypeError("listenSocket.once expects a function");
         }
@@ -176,13 +187,13 @@ function listenSocket(e, d) {
                 off();
             }
         });
-        return on(oneShot);
+        return on(oneShot, opts);
     }
     function closeStream() { e.close?.(); }
-    function callback(z) {
+    function callback(z, opts) {
         if (typeof z !== "function")
             throw new TypeError("listenSocket.callback expects a function");
-        return on(z);
+        return on(z, opts);
     }
     return { on, off, callback, removeCallback, once, close: closeStream };
 }

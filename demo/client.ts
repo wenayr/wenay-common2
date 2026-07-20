@@ -23,6 +23,7 @@ import type {WorkboardRemote} from './workboard-contract'
 import {setupWorkboardDemo} from './workboard-demo'
 import {setupReplicaSetDemo} from './replica-set-demo'
 import {setupContractRuntimeDemo} from './contract-runtime-demo'
+import {setupPacketMeshDemo} from './packet-mesh-demo'
 
 type World = {
     cursor: {x: number, y: number}
@@ -64,8 +65,10 @@ async function main() {
     const shell = setupAppShell({root: document})
     const replicaMesh = setupReplicaSetDemo({element: el, log})
     const contractRuntime = setupContractRuntimeDemo({element: el, log})
+    const packetMesh = setupPacketMeshDemo({element: el, log})
     window.addEventListener('beforeunload', replicaMesh.close)
     window.addEventListener('beforeunload', contractRuntime.close)
+    window.addEventListener('beforeunload', packetMesh.close)
     const hub = createRpcClientHub(
         // Start with polling so an HTTP-only tunnel/proxy can carry RPC, then
         // Socket.IO upgrades to WebSocket whenever the external route permits it.

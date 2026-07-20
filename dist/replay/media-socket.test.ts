@@ -132,6 +132,153 @@ async function main() {
     ok(audio.state == 'no-device' && audio.getStats().state == 'no-device', 'audio state getter stays live after construction')
     ok(video.state == 'no-device' && video.getStats().state == 'no-device', 'video state getter stays live after construction')
 
+    const fakeTrack = {stop() {}}
+    const unpacedFrames: Array<ReturnType<typeof decodeMediaFrame>> = []
+    const unpacedVideo = createVideoSource({
+        sourceId: 'unpaced-cam',
+        fps: 0,
+        width: 1,
+        worker: false,
+        stream: {
+            getTracks: () => [fakeTrack],
+            getVideoTracks: () => [fakeTrack],
+        },
+        video: {
+            videoWidth: 2,
+            videoHeight: 2,
+            async play() {},
+        },
+        canvas: {
+            width: 0,
+            height: 0,
+            getContext: () => ({drawImage() {}}),
+            async convertToBlob() {
+                await delay(1)
+                return {arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer}
+            },
+        },
+    })
+    const offUnpacedFrames = unpacedVideo[1].on(function collectUnpacedFrame(frame) {
+        unpacedFrames.push(decodeMediaFrame(frame))
+    })
+    ok(await unpacedVideo.start() == 'live', 'video fps:0 starts the unpaced capture pump')
+    await delay(30)
+    const unpacedStats = unpacedVideo.getStats()
+    unpacedVideo.stop()
+    offUnpacedFrames()
+    ok(unpacedStats.frames >= 2 && unpacedStats.dropped == 0, `unpaced pump starts the next frame without busy drops (${unpacedStats.frames} frames)`)
+    ok(unpacedFrames.length > 0 && unpacedFrames.every(frame => frame.width == 1 && frame.height == 1), 'unpaced mode preserves the explicitly selected output size')
+
+    let stoppedAfterEncodeError = 0
+    let errorEncodes = 0
+    const errorVideo = createVideoSource({
+        sourceId: 'error-cam',
+        fps: 0,
+        worker: false,
+        stream: {
+            getTracks: () => [{stop() { stoppedAfterEncodeError++ }}],
+            getVideoTracks: () => [],
+        },
+        video: {
+            videoWidth: 2,
+            videoHeight: 2,
+            async play() {},
+        },
+        canvas: {
+            width: 0,
+            height: 0,
+            getContext: () => ({drawImage() {}}),
+            async convertToBlob() {
+                errorEncodes++
+                if (errorEncodes > 1) throw new Error('scheduled encode failed')
+                return {arrayBuffer: async () => new Uint8Array([1]).buffer}
+            },
+        },
+    })
+    ok(await errorVideo.start() == 'live', 'video source starts before a later scheduled encode error')
+    await waitFor('terminal video encode error', () => errorVideo.state == 'error')
+    ok(stoppedAfterEncodeError == 1, 'terminal capture error releases the camera stream automatically')
+
+    const globals = globalThis as any
+    const originalWorker = globals.Worker
+    const originalOffscreenCanvas = globals.OffscreenCanvas
+    const originalImageCapture = globals.ImageCapture
+    const originalBlob = globals.Blob
+    const originalUrl = globals.URL
+    let answerWorker = false
+    let encodeRequests = 0
+
+    function FakeWorker(this: any, _url: string) {
+        this.onmessage = null
+        this.onerror = null
+        this.terminated = false
+    }
+    FakeWorker.prototype.postMessage = function postFakeWorkerMessage(this: any, message: any) {
+        if (!message?.bitmap) return
+        encodeRequests++
+        if (!answerWorker) return
+        queueMicrotask(() => {
+            if (!this.terminated) this.onmessage?.({data: {buf: new Uint8Array([4, 5, 6]).buffer}})
+        })
+    }
+    FakeWorker.prototype.terminate = function terminateFakeWorker(this: any) {
+        this.terminated = true
+    }
+
+    function FakeImageCapture(this: any, _track: any) {}
+    FakeImageCapture.prototype.grabFrame = async function grabFakeFrame() {
+        return {width: 2, height: 2, close() {}}
+    }
+
+    try {
+        globals.Worker = FakeWorker
+        globals.OffscreenCanvas = function FakeOffscreenCanvas() {}
+        globals.ImageCapture = FakeImageCapture
+        if (!globals.Blob) globals.Blob = function FakeBlob(_parts: any[], _opts: any) {}
+        if (!globals.URL?.createObjectURL) {
+            globals.URL = {createObjectURL: () => 'blob:fake', revokeObjectURL() {}}
+        }
+
+        const workerFrames: Uint8Array[] = []
+        const workerVideo = createVideoSource({
+            sourceId: 'worker-cam',
+            fps: 1,
+            stream: {
+                getTracks: () => [fakeTrack],
+                getVideoTracks: () => [fakeTrack],
+            },
+            video: {
+                videoWidth: 2,
+                videoHeight: 2,
+                async play() {},
+            },
+            canvas: {
+                width: 0,
+                height: 0,
+                getContext: () => ({drawImage() {}}),
+            },
+        })
+        workerVideo[1].on(function collectWorkerFrame(frame) { workerFrames.push(frame) })
+
+        const interruptedStart = workerVideo.start()
+        await waitFor('worker encode request', () => encodeRequests == 1)
+        workerVideo.stop()
+        const interruptedState = await Promise.race([interruptedStart, delay(500).then(() => 'timeout')])
+        await delay(20)
+        ok(interruptedState == 'idle' && workerFrames.length == 0, 'stop settles an in-flight worker encode without emitting a late frame')
+
+        answerWorker = true
+        ok(await workerVideo.start() == 'live', 'video source restarts after an interrupted worker encode')
+        ok(workerFrames.length == 1, 'the restarted worker source produces a fresh frame')
+        workerVideo.stop()
+    } finally {
+        globals.Worker = originalWorker
+        globals.OffscreenCanvas = originalOffscreenCanvas
+        globals.ImageCapture = originalImageCapture
+        globals.Blob = originalBlob
+        globals.URL = originalUrl
+    }
+
     const [emitAudio, audioListen] = audio
     const server = await startRealServer({audio: audioListen})
     const client = await connectClient<{audio: typeof audioListen}>(server.port)

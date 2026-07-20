@@ -10,6 +10,7 @@ import {
 } from '../src/Common/media/media-index'
 
 export type tMediaKind = 'cam' | 'mic' | 'screen'
+type tVideoLoadMode = 'balanced' | 'max'
 type tElement = (id: string) => HTMLElement
 type tLog = (line: string) => void
 
@@ -77,12 +78,15 @@ export function createMediaDemo(deps: MediaDemoDeps) {
 
     function createLocalMedia() {
         const cameraResolution = element('camRes') as HTMLSelectElement
+        const maxVideoButton = button('maxVideo')
+        const maxVideoMode = element('maxVideoMode')
         const localCameraCanvas = canvas('localCam')
         // One capture-state feed lets every consumer (room-stage buttons, the
         // in-call control bar, the published AV flags) stay in sync with the
         // SAME account-wide sources instead of duplicating capture logic.
         const [emitCaptureChange, captureChanges] = listen<[tMediaKind]>()
         let localCameraView: ReturnType<typeof attachVideoCanvas> | null = null
+        let videoLoadMode: tVideoLoadMode = 'balanced'
 
         function publish(kind: tMediaKind, source: MediaSource) {
             pipeMediaPublish(source[1], (frame, sentAt) => remote.publish(kind, frame, sentAt), {
@@ -104,7 +108,9 @@ export function createMediaDemo(deps: MediaDemoDeps) {
             return publish('cam', createVideoSource({
                 sourceId: 'cam',
                 deviceId: storedDeviceId('demo-cam-device'),
-                fps: 12,
+                // fps:0 immediately captures the next frame after the previous encode;
+                // no timer target sits between the browser and its real throughput limit.
+                fps: videoLoadMode == 'max' ? 0 : 12,
                 width: Number(cameraResolution.value) || 640,
                 codec: 'jpeg',
                 quality: 0.68,
@@ -253,6 +259,38 @@ export function createMediaDemo(deps: MediaDemoDeps) {
             void restartSource('cam', createCamera)
         })
 
+        function renderVideoLoadMode() {
+            const max = videoLoadMode == 'max'
+            maxVideoButton.textContent = max ? 'Return to balanced video' : '🚀 Max video load'
+            maxVideoButton.classList.toggle('danger', max)
+            maxVideoButton.classList.toggle('secondary', !max)
+            maxVideoButton.setAttribute('aria-pressed', String(max))
+            maxVideoMode.textContent = max
+                ? 'MAX · video only · unpaced · JPEG q68'
+                : 'Balanced · 12fps · JPEG q68'
+            maxVideoMode.dataset.mode = videoLoadMode
+        }
+
+        maxVideoButton.addEventListener('click', async function toggleMaxVideoLoad() {
+            maxVideoButton.disabled = true
+            try {
+                const next: tVideoLoadMode = videoLoadMode == 'max' ? 'balanced' : 'max'
+                if (next == 'max') {
+                    // This experiment spends the tab's capture/encode/network budget on
+                    // one line without changing the resolution selected by the user.
+                    await ensure('mic', false)
+                    await ensure('screen', false)
+                }
+                videoLoadMode = next
+                await restartSource('cam', createCamera)
+                if (videoLoadMode == 'max' && sources.cam.state != 'live') await ensure('cam', true)
+                log(`video load mode: ${videoLoadMode}`)
+            } finally {
+                maxVideoButton.disabled = false
+                renderVideoLoadMode()
+            }
+        })
+
         attachLocalCamera()
         bindCaptureButton('cam', 'cam', '📷 start camera', '⏹ stop camera')
         bindCaptureButton('mic', 'mic', 'Share microphone', 'Stop microphone')
@@ -263,6 +301,7 @@ export function createMediaDemo(deps: MediaDemoDeps) {
         navigator.mediaDevices?.addEventListener?.('devicechange', function onDevicesChanged() { void refreshDevices() })
         void refreshDevices()
         enableFullscreen(localCameraCanvas)
+        renderVideoLoadMode()
 
         return {
             sources,
@@ -270,6 +309,7 @@ export function createMediaDemo(deps: MediaDemoDeps) {
             ensure,
             captureChanges,
             cameraStats: () => localCameraView?.stats(),
+            videoLoadMode: () => videoLoadMode,
         }
     }
 
@@ -391,6 +431,9 @@ export function createMediaDemo(deps: MediaDemoDeps) {
         function renderStats() {
             let videoFrames = 0
             let audioFrames = 0
+            let videoPerSec = 0
+            let videoDrawn = 0
+            let videoAgeMs = 0
             for (const view of views.values()) {
                 const cam = view.cam.stats()
                 const screen = view.screen.stats()
@@ -399,17 +442,21 @@ export function createMediaDemo(deps: MediaDemoDeps) {
                 view.previousAudioFrames = mic.frames
                 videoFrames += cam.frames
                 audioFrames += mic.frames
+                videoPerSec += cam.perSec
+                videoDrawn += cam.drawn
+                videoAgeMs = Math.max(videoAgeMs, cam.ageMs)
 
                 const flags = peerAv?.(view.account)
                 const name = participantName(view.account)
                 view.nameChip.textContent = name
+                    + (cam.width ? ` · ${cam.perSec}fps · ${cam.ageMs}ms` : '')
                     + (flags?.micOn == false ? ' · 🎙 muted' : audioPerSec ? ' · 🎙' : '')
                 view.nameChip.title = cam.width ? `${cam.width}×${cam.height} · ${cam.perSec}/s` : ''
                 view.badge.hidden = cam.width > 0
                 view.badge.textContent = flags?.camOn == false ? '📷 camera off' : '⏳ connecting…'
                 view.screenRoot.hidden = !screen.width
             }
-            return {participants: views.size, videoFrames, audioFrames}
+            return {participants: views.size, videoFrames, videoPerSec, videoDrawn, videoAgeMs, audioFrames}
         }
 
         audioButton.addEventListener('click', function toggleRoomAudio() {
@@ -615,12 +662,13 @@ export function createMediaDemo(deps: MediaDemoDeps) {
 
     function startStats(local: ReturnType<typeof createLocalMedia>, room: ReturnType<typeof createRoomMedia>) {
         const output = element('mediaStats')
+        const loadOutput = element('maxVideoMetrics')
         const microphoneStatus = element('micStatus')
-        let previous = {cam: 0, mic: 0, screen: 0}
+        let previous = {cam: 0, mic: 0, screen: 0, camBytes: 0, camDropped: 0}
 
         setInterval(function renderMediaStats() {
             const parts: string[] = []
-            const next = {cam: 0, mic: 0, screen: 0}
+            const next = {cam: 0, mic: 0, screen: 0, camBytes: 0, camDropped: 0}
             for (const kind of ['cam', 'mic', 'screen'] as const) {
                 const stats = local.sources[kind].getStats()
                 next[kind] = stats.frames
@@ -628,6 +676,22 @@ export function createMediaDemo(deps: MediaDemoDeps) {
                     parts.push(`${kind}: ${stats.state} ${stats.frames}f ${stats.frames - previous[kind]}/s${stats.rms != null ? ` rms=${stats.rms.toFixed(3)}` : ''}`)
                 }
             }
+
+            const cameraSource = local.sources.cam.getStats()
+            next.camBytes = cameraSource.bytes
+            next.camDropped = cameraSource.dropped
+            const previousCam = cameraSource.frames >= previous.cam ? previous.cam : 0
+            const previousBytes = cameraSource.bytes >= previous.camBytes ? previous.camBytes : 0
+            const previousDropped = cameraSource.dropped >= previous.camDropped ? previous.camDropped : 0
+            const encodedFps = cameraSource.frames - previousCam
+            const bytesPerSec = cameraSource.bytes - previousBytes
+            const mibPerSec = bytesPerSec / 1024 / 1024
+            const droppedPerSec = cameraSource.dropped - previousDropped
+            const averageKiB = encodedFps ? bytesPerSec / encodedFps / 1024 : 0
+            loadOutput.textContent = cameraSource.state == 'live'
+                ? `${local.videoLoadMode().toUpperCase()} TX · ${encodedFps} encoded fps · ${mibPerSec.toFixed(2)} MiB/s · ${averageKiB.toFixed(0)} KiB/frame${local.videoLoadMode() == 'max' ? ' · unpaced' : ` · ${droppedPerSec} busy drops/s`}`
+                : `${local.videoLoadMode().toUpperCase()} TX · camera is not producing frames`
+            loadOutput.dataset.mode = local.videoLoadMode()
 
             const mic = local.sources.mic.getStats()
             microphoneStatus.textContent = mic.state == 'live'
@@ -652,7 +716,7 @@ export function createMediaDemo(deps: MediaDemoDeps) {
 
             const roomStats = room.renderStats()
             if (roomStats.participants) {
-                parts.push(`room rx: ${roomStats.participants} participant(s), ${roomStats.videoFrames} camera frame(s), ${roomStats.audioFrames} audio frame(s)`)
+                parts.push(`room rx: ${roomStats.videoPerSec}fps, ${roomStats.videoAgeMs}ms, ${roomStats.videoFrames - roomStats.videoDrawn} decode skips, ${roomStats.audioFrames} audio frame(s)`)
             }
             previous = next
             output.textContent = parts.join('  ·  ')

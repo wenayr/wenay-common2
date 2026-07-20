@@ -19,3 +19,4 @@ __exportStar(require("./peer-host"), exports);
 __exportStar(require("./peer-client"), exports);
 __exportStar(require("./peer-media-relay"), exports);
 __exportStar(require("./peer-call"), exports);
+__exportStar(require("./peer-packet-mesh"), exports);

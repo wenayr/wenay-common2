@@ -1,268 +1,106 @@
-# wenay-common2 — Roadmap (open / deferred)
+# wenay-common2 — conditional roadmap
 
-> Forward-looking backlog of distributed-state / transport features that are **not fully built**.
-> Everything here sits on top of the existing seams — `{emit,on}` transport, `exposeStore` /
-> `createStoreMirror`, and the replay `seq` / `keyframe` / `frame` contract. None of it requires
-> changing the store core; the store stays single-authority (one `seq` sequencer, last-writer-wins
-> per path), and these features are layers or adapters above that.
-> Status: 🔴 not started · 🟡 partial / ongoing · 🧊 deferred (super-low priority, not forbidden).
->
-> Current focus is NOT more transport: see `doc/target/library-uplift-tasks.md` (showcase, SDK facade,
-> file-resource/AI-job layer). Transport items below stay available but rank below everything in that plan.
-> **Shipped in v1.0.78:** `Ai.createAiRunHost/client` now turns that file/job foundation into a
-> provider-neutral AI-run protocol: idempotent create, account-filtered Store/event replay, approval/input
-> waits, cancellation with a late-output guard, semantic deltas and artifact descriptors. Design:
-> `doc/AI-RUN-PROTOCOL.md`; oracle: `replay/ai-run.test.ts`.
-> **Shipped in v1.0.81:** `Conversation.createConversationHost/client` adds account-filtered logical
-> channels, immutable versioned blocks, scoped revisioned facts, durable idempotency receipts and a
-> live root → child-dialogue stand. Design: `doc/CONVERSATION-RUNTIME.md`; oracle:
-> `replay/conversation-runtime.test.ts`.
-> **Shipped in v1.0.88:** `Observe.createStoreReplicaSet` assembles redundant single-authority Store
-> replicas from reusable connection capabilities, with deterministic leadership, ping-aware routing,
-> reconnect/failover and visible split-brain reconciliation.
-> **Shipped in v1.0.89:** `Contract.createContractRuntime` reconciles authoritative, versioned component
-> demands to reusable implementation capabilities, with prepare-before-switch bindings, leases,
-> fallback, revoke and compatible rollback. Compilation, package delivery and frontend integration
-> deliberately stay above the library. Design: `doc/CONTRACT-RUNTIME.md`.
+The core contract is complete: typed RPC, Listen/replay, Observe Store, offline/mirror helpers,
+route hand-off, Peer/media, resource/AI/artifact/conversation protocols, self-assembling Store
+replicas and versioned implementation bindings are shipped. Published history belongs in
+`doc/changes/`; this file lists only work that still has a concrete reopen condition.
 
-## 0. Distributed Runtime Model
+The library guarantees contracts. Frontend frameworks, application package delivery, databases,
+provider clients and product-specific persistence adapters are outside this repository.
 
-The strategic direction is not "RPC plus store helpers"; it is a small distributed-state runtime:
-application code keeps a stable typed API while lower layers can choose the transport, route, replay
-source, and authority model.
+## 1. Shared documents — candidate
 
-Four concerns must stay explicit:
+Trigger: a real consumer needs concurrent editing of the same text/document, including offline
+edits. Do not turn every Store into a CRDT and do not implement a text CRDT here.
 
-- **Transport** - how two endpoints exchange `{emit,on}` messages: socket.io, in-process loopback,
-  relay, WebRTC/direct channel, or a future adapter. Transport is replaceable infrastructure.
-- **Routing** - where a logical call or stream goes: server, peer through relay, peer directly, or a
-  promoted relay <-> direct path. Routing must be allowed to change without changing the facade API.
-- **Authority** - who is allowed to write truth: one server, partitioned peer-owned slices, server
-  authority with client prediction, or true multi-writer conflict resolution. This is a semantic
-  decision, not a transport decision.
-- **Replay** - how live state survives reconnect, lag, transport swap, and history playback:
-  `seq` + keyframe/frame + deltas. Replay is the continuity layer that makes route changes boring.
-
-Design rule: direct peer links and relay hand-offs are optimizations of transport/routing. They must
-not silently change auth, ownership, validation, or conflict semantics. If a method is exposed as
-`api.hit(playerId)`, it may travel through the server or a direct channel, but the authority rules
-behind that method must remain the same.
-
-This implies a useful split:
-
-- **API surface** remains facade-shaped and typed.
-- **Transport/routing layer** may substitute sockets and promote paths.
-- **Replay layer** resumes streams and mirrors from the last known `seq`.
-- **Authority layer** decides whether an incoming write is accepted, predicted, reconciled, or merged.
-
-Critical ordering rule: do **not** start with WebRTC/NAT plumbing or CRDTs. The next useful layer is a
-small route/account/policy coordinator with a fake/in-process transport adapter. Direct transport and
-multi-writer merge are expensive adapters; they only become safe after the coordinator state machine is
-boring and well-tested.
-
-### 0.1 Account route coordinator ("wrapper over wrappers") 🟡
-
-Some deployments need separate client/account identities to communicate directly when policy and
-network conditions allow it, while still allowing the server/relay to step back into the path later.
-This is not just a socket trick; it is an account-aware routing shell above the existing facade,
-mirror, and replay primitives.
-
-- **Account model:** every participant has its own account/session identity and a scoped facade/store
-  set. Runtime-account maps are a dynamic keyspace, so they should look like `noStrict(accountMap)`
-  rather than a fixed schema. Access checks stay in the facade/policy layer; `noStrict` is not an ACL.
-- **Wrapper over wrappers:** an app-level coordinator owns the set of per-account clients, exposed
-  facades, mirrors, replay subscriptions, and route state. "State of other accounts" is represented as
-  selected `Observe` mirrors/replay/offline resources, ideally started and stopped through
-  `createStoreManager`, not as a new global store core.
-- **Route states:** a pair of accounts may be `relay`, `direct`, `direct+shadowRelay` (audit/observe
-  copy), `blocked`, or `fallback`. Direct links are optional optimizations, useful for latency or
-  traffic cost, not a semantic change.
-- **Re-interposition:** if NDA/privacy policy, audit, moderation, throttling, reauth, direct-link
-  failure, or group topology changes require it, the relay must be able to re-enter the data path.
-  This is the reverse of direct promotion: open the replacement route, resume from the last `seq`,
-  switch consumers after catch-up, then close or demote the old route.
-- **Privacy rule:** direct account links are opt-in and policy-gated. Peers only receive the endpoint
-  and session material needed for that specific relationship; no implicit broad account discovery.
-
-Concrete next API shape, not final names:
+The useful library-sized addition is an engine-neutral provider factory over a proven CRDT engine:
 
 ```ts
-createRouteCoordinator({
-  policy,
-  routes,
-  resources,
-}) -> {
-  pair(a, b),
-  state(pair),
-  promoteDirect(pair, opts?),
-  reinterposeRelay(pair, reason?),
-  block(pair, reason?),
-  fallback(pair, reason?),
-  onRoute(cb),
-}
+createSharedDocument({
+    documentId,
+    engine,       // encode snapshot/state vector, apply update, observe local update
+    remote,       // snapshot/state-vector request + binary update Listen + submit command
+    awareness?,  // separate ephemeral presence/cursor line
+    policy?,
+}) -> {document, ready, status, awareness?, close}
 ```
 
-Policy must run **before** transport promotion:
+RPC carries `Uint8Array` updates and initial/differential sync messages. The host checks account and
+document ACL before accepting an update, deduplicates through the engine's idempotent update format,
+and fans accepted updates out through Listen/replay. Content snapshots and the update journal are a
+persistence-port concern. Cursor/selection awareness is ephemeral and must not enter the durable
+document log.
 
-- `canDirect(pair, ctx)` - may these accounts attempt direct at all?
-- `mustRelay(pair, ctx)` - force relay path because of NDA/audit/moderation/reauth.
-- `mustShadowRelay(pair, ctx)` - allow direct payload path, but keep audit/observe copy.
-- `canExposeEndpoint(pair, ctx)` - whether signaling may reveal endpoint/session material.
-- `canReinterpose(pair, ctx)` - whether/when relay is allowed or required to step back in.
+Acceptance before promotion into public API:
 
-Minimum state machine:
+- two clients edit the same position concurrently and converge;
+- disconnect, offline edits and reconnect converge without full replacement;
+- duplicate/reordered updates are harmless;
+- unauthorized documents and updates remain invisible;
+- a compacted snapshot plus later updates reconstructs the same document;
+- awareness disappears after disconnect without modifying document history;
+- real Socket.IO/RPC binary transport is covered by an oracle.
 
-- `relay` -> `direct:connecting` -> `direct` -> `relay:reinterposing` -> `relay`
-- `relay` -> `direct:connecting` -> `fallback` -> `relay`
-- `direct` -> `direct+shadowRelay`
-- any state -> `blocked`
+## 2. Predicted Store — candidate
 
-Required failure modes:
+Trigger: a game or latency-sensitive command UI needs immediate local feedback and visual-only
+optimism is insufficient.
 
-- direct setup never completes: keep relay active and mark fallback;
-- replacement route catches up too slowly: keep old route active and fail the switch;
-- policy changes mid-stream: re-interpose relay through replay hand-off;
-- account reauth changes facade/ACL: rebuild route policy before accepting new writes;
-- endpoint/session material is revoked: close direct and resume relay from `seq`;
-- audit/shadow route lags: decide whether to throttle, fallback, or block by policy.
+`predictedStore` is not multi-writer truth. The server mirror remains authoritative. The client keeps
+`confirmed state + ordered pending commands`, renders the result of replaying pending commands over
+the latest confirmed snapshot, removes a command when its receipt/authoritative result arrives, and
+rebases the remaining commands. A rejection removes the command and therefore snaps the projection
+back deterministically.
 
-Acceptance tests for 0.1:
+Do not build it until one consumer defines command identity, confirmation, rejection and rebase
+semantics. Generic Store patches alone cannot infer them.
 
-- policy denial: direct is never attempted;
-- direct promotion: old relay stays live until replacement catches up;
-- failed direct: old relay continues with no data gap;
-- re-interposition: direct -> relay resumes from `seq`;
-- `direct+shadowRelay`: direct path is active while relay/audit mirror observes;
-- revocation: direct closes and relay resumes without changing facade API;
-- account map uses `noStrict`, but all access checks live in policy/facade code;
-- `createStoreManager` starts/stops selected per-account mirrors without store-core changes.
+## 3. Multi-hop and group topology — complete
 
-Open questions: whether the relay sees payloads or only coordinates encrypted direct streams;
-backpressure across multi-hop and direct paths; group topology beyond a pair of accounts;
-`noStrict(accountMap)` / `createStoreManager` lifecycle integration for dynamic peer maps.
+Store multi-hop is already compositional: `createStoreReplicaSet` supports leader → follower →
+follower cascades, dynamic connection offers, accumulated latency, anti-cycle paths and route
+selection. No separate topology engine is required.
 
-Status: 🟡 partial (2026-07-09, v1.0.67). Core implemented as `Replay.createRouteCoordinator`
-(`src/Common/events/route-coordinator.ts`): `RouteConnector` contract (pure transport: open/close/state/
-metrics/onFail/capabilities), all five policy hooks, the full state machine above (including
-`direct+shadowRelay` audit copy, catch-up timeout, revocation auto-fallback, terminal `blocked`), data
-continuity through `replayRouteSubscribe`. Acceptance oracle: `replay/route-coordinator.test.ts` over
-fake in-process connectors — policy denial never touches transport, promotion keeps the old relay live,
-failed/slow direct falls back gap-free, re-interposition resumes from `seq`, shadow relay observes the
-switch window, revocation closes direct without facade changes, block is terminal.
-v1.0.68 added step 9: `createSignalHub` (offer/answer/ICE/session/revoke over the EXISTING socket/RPC
-control channel; `authorize` = server-side `canExposeEndpoint`), `createWebRtcConnector` /
-`acceptWebRtcDirect` (RTCPeerConnection injected as a runtime factory, structural types, no lib.dom),
-and `serveReplayChannel`/`channelReplayRemote` (replay wire over any ordered channel — the datachannel
-path bypasses the RPC core by design). Oracle `replay/route-webrtc.test.ts` drives promotion, endpoint
-denial, session rejection, server revoke, and an encoded `Media` `Uint8Array` frame over both the
-direct datachannel and relay fallback. v1.0.76 completes step 10 with a portable binary replay codec
-and the browser/Node `rtc` factory seam; it also completes step 7 with the app-level
-`noStrict(accountMap)` + `createStoreManager` selected-mirror lifecycle oracle. Media-side candidates
-remain a real `transport:'webrtc'` native media track/SFU for call-grade smoothness and
-`MediaStreamTrackProcessor` capture for true 30fps (`grabFrame`'s ~50ms serial latency caps snapshot
-capture at ~15-20fps); they are performance adapters, not route-coordinator prerequisites.
+Arbitrary peer packets now use `createPeerPacketMesh`: dynamic reusable connection offers open
+transport-neutral sessions, exchange path-vector route capabilities, measure additive cost, select
+the cheapest live next hop and reconcile when an offer disappears. Packets carry stable identity,
+origin, sequence, TTL and traversed path; intermediate clients forward without learning payload
+semantics. `broadcast(targets, payload)` is group delivery as independent routed packets, so one slow
+member does not stall the others. Oracle: `replay/peer-packet-mesh.test.ts`; interactive Lab stand:
+**Peer packet mesh**.
 
-Consumption-layer candidates (2026-07-10, author's ask):
-- ✅ **Call system** — SHIPPED in v1.0.74: `Peer.createCallManager` (ring/accept/decline/hangup as
-  envelopes over the existing signal hub — zero new server routes, the host `authorize` hook is the
-  single server-side policy point), host `presence` (fragment key, refcounted edges), and
-  `Peer.createMediaRelay` (the demo media hub promoted into the library; relay-first stays the
-  privacy default, `promoteDirect` the opt-in). Oracle: `replay/peer-call.test.ts`. Consumer step
-  shipped too: the demo stand rings/accepts/declines with presence, media attaches only while the
-  call is active, and the watch-ACL grant set lives in the host `authorize` hook (verified headless,
-  two Chromium tabs, zero page errors).
-- ✅ **File resource + AI job coordinator** — SHIPPED in v1.0.77: `Resource.createFileJobHost` /
-  `createFileJobClient` separate opaque storage instructions and byte transfer from an account-filtered
-  Store/replay projection of resource metadata and AI job state. The injected `FileStoragePort` owns
-  `beginUpload` / confirm / download; the injected job runner reports progress/result and obeys
-  cancellation. Oracle `replay/file-job.test.ts` covers real Socket.IO/RPC lifecycle, owner ACL and
-  late-result suppression; the local stand makes the same storage -> AI path visible.
-- ✅ **Artifact runtime stand** — SHIPPED in v1.0.80: `Artifact.createArtifactHost/client` keeps
-  interactive-output descriptors in account-filtered Store/replay while the private storage key,
-  HTML/JS bytes and short-lived open URL remain outside it. `createArtifactFrame` requires an
-  origin allowlist and mounts only a sandboxed iframe; the demo creates an AI-linked counter at the
-  separate `artifact.localhost` origin and proves open/revoke. Oracle: `replay/artifact-runtime.test.ts`.
-- ✅ **Multi-channel Conversation runtime** — SHIPPED in v1.0.81: one existing RPC connection carries
-  account-filtered conversations and child channels; immutable text/list/table/reference/custom blocks
-  and scoped revisioned facts replay through Store. Persistence is an atomic event+receipt port, not a
-  hidden database. The stand proves two participants, branching, inheritance/override/tombstones and
-  safe unknown block rendering. Oracle: `replay/conversation-runtime.test.ts`.
-- **Conversation application adapters** — next consumer work: connect the trusted control facade to a
-  real AI runner and durable event/archive store. Add an artifact-to-conversation capability bridge only
-  for a real interactive artifact that needs narrow, revocable write-back; never pass it the raw RPC facade.
-- **Store-descriptor media bridge** ("streaming center") — the store carries a small descriptor
-  (`{kind: 'video', sourceId, state}`), a bridge watches the mirror and auto-attaches/detaches
-  `Media.attachVideoCanvas`/`attachAudioPlayer` to the matching binary line. Bytes flow only while
-  subscribed (native Listen-over-RPC semantics). Pairs with the React-hooks direction.
-- 🧊 **Zero-parse patch format** (super-far future) — Cap'n Proto / FlatBuffers-style layout for
-  store patches: fields read directly from the received buffer, no parse stage. Only if a real
-  consumer hits a serialization wall; JSON envelopes are nowhere near the bottleneck today
-  (measured 2-3ms e2e on the stand).
+Store replication remains separate because it adds authority, epochs and conflict semantics on top
+of transport. Pair replay routing remains separate because it guarantees seq catch-up across a
+relay/direct hand-off. The packet mesh is specifically the higher arbitrary-data topology which was
+missing between those two completed layers.
 
-## 1. Connection hand-off — relay ↔ direct promotion ("port forwarding") 🟡
+## 4. Media and binary performance — measure first
 
-A relay/intermediary bootstraps a connection between two parties, then — on a signal — **steps out
-of the middle**: both ends open a second, direct socket and migrate the live stream onto it,
-bypassing the relay. The same mechanism must work in reverse: the relay can deliberately
-**re-interpose** and become the middleman again. Under the hood the socket substitutes itself; data
-starts flowing on the new path.
+The stand has balanced media and an explicit max-video load mode. MAX preserves the selected camera
+and resolution and removes capture pacing: every completed encode immediately starts the next frame.
+It reports encoded FPS, MiB/s, average frame bytes, receive FPS and latency. Use those numbers to
+identify the actual limiting stage.
 
-- Family: NAT hole-punching / WebRTC TURN→direct promotion, expressed over the existing `{emit,on}`
-  abstraction rather than a specific transport.
-- **Design lead (reuse what exists):** the socket swap is a *stream resume*, which the replay layer
-  already solves. Migrate with `replaySubscribe(..., {since: prev.seq()})` /
-  `syncStoreReplay(..., {since})` on the new socket — the consumer fold is gap-free by contract, so a
-  mid-stream transport change is not a special case. The transport carries only `seq`; the semantics
-  never learn the socket changed.
-- **Implemented foundation (2026-07-08):** `Replay.replayRouteSubscribe(...)` and
-  `Observe.syncStoreReplayRoute(...)` keep the old route alive, subscribe the replacement route,
-  catch it up from the last delivered `seq`, then close the old route. This covers relay → direct
-  promotion and direct → relay re-interposition for any ordered `ReplayRemote`; overlap is deduped by
-  `seq`, and a failed replacement leaves the old route active.
-- Open questions: auth continuity across the swap; per-socketKey vs whole-connection hand-off;
-  policy trigger rules for direct → relay re-interposition beyond explicit calls and `onFail`.
-- Status: 🟡 mostly done. Route hand-off/resume: `replay/route-handoff.test.ts`. Route decisions +
-  state machine: `createRouteCoordinator` (v1.0.67). Signaling + direct endpoint negotiation over the
-  existing control channel and fallback-if-never-establishes: `createSignalHub` /
-  `createWebRtcConnector` / `acceptWebRtcDirect` (v1.0.68, `replay/route-webrtc.test.ts`). Remaining:
-  real NAT/WebRTC runtime glue (injected `rtc` factory) and auth-continuity policy.
+Possible one-time adapters, only after measurement:
 
-## 2. Coordinated fan-out send to a large group 🧊
+- `MediaStreamTrackProcessor` or `VideoFrame` capture when `ImageCapture.grabFrame()` is the ceiling;
+- native WebRTC tracks/SFU when JPEG-over-RPC bandwidth or decode is the ceiling;
+- tighter replay frames, binary batching or delta formats when transport framing is the ceiling.
 
-Synchronized/batched send to a very large audience "at once", as opposed to the current model where
-**each connection is paced independently** (per-connection lag gate + `frame` policy).
+Do not optimize all three layers at once: that destroys the measurement.
 
-- Current reality: pacing is per-recipient by design — every client's link is unique. Even in video
-  fan-out no two receivers drain at the same rate, so the per-connection gate is usually the *correct*
-  answer. That is why this is shelved.
-- When it would matter: true lockstep broadcast (all-or-nothing / same-instant delivery) — rare.
-- Status: 🧊 deliberately shelved. Revisit only against a concrete lockstep requirement.
+## Explicitly not backlog
 
-## 3. Multi-authority stores — two truths, one reconciliation (games) 🔴
+- frontend-framework adapters in this package;
+- application-specific storage, database, provider or persistence implementations;
+- a home-grown CRDT/OT engine;
+- Raft/quorum/consensus hidden inside Store replication;
+- coordinated lockstep fan-out without an all-or-nothing broadcast requirement;
+- speculative binary formats or native SFU without measured need;
+- storefront GIFs and historical showcase task lists.
 
-Two stores, each **dynamically filled by its own authority ("truth")**, that must agree on a shared
-source of truth. Decompose by write topology:
+## Next decision
 
-- **Partitioned authority — fits today.** Each peer authoritative over its own slice → two
-  `exposeStore` / `createStoreMirror` pairs crossed over one duplex `{emit,on}`. No new primitive.
-  "Confirmation" = the per-direction `seq` ack.
-- **Authoritative server + client prediction — small layer on top.** Server store is the truth; the
-  client applies optimistically, then reconciles when the authoritative patch arrives. Build a
-  `predictedStore` = confirmed mirror + a pending-input list, rebased on each `mirror.each()` /
-  `changed` tick. Helper factory, not a core change.
-- **Symmetric co-write of the same path — needs a different model.** LWW-per-path converges but can
-  silently drop a concurrent write. This is the one case that genuinely needs CRDT/OT. Design lead:
-  wrap a Yjs/Automerge doc as a `RemoteStore`-shaped source and mirror from it — the store↔transport
-  decoupling makes this a small adapter, not a rewrite.
-- Status: 🧊 deferred, super-low priority. Prediction layer waits for the demo app to demand and shape
-  it (`doc/target/library-uplift-tasks.md` task 7); CRDT adapter reopens only on a real co-write need.
-  Partitioned-authority already expressible today.
-
-## 4. Data-transfer optimization backlog (ongoing) 🟡
-
-Open-ended transfer/perf work, especially for backend-heavy models. Never "done".
-
-- Candidates: tighter `frame` condensation per line; delta/patch minimization; binary framing for hot
-  paths; batching heuristics beyond the current `pipe` / `space` modes.
-- Status: 🧊 deferred, super-low priority; pick items only as real bottlenecks surface in the SDK/demo
-  consumers, not speculatively.
+The only plausible new library surface is the shared-document provider. Before implementation,
+choose one engine integration and lock the minimal host/client RPC contract above. Everything else
+waits for a consumer or a measured bottleneck.

@@ -136,6 +136,9 @@ const l = c.math.func as unknown as DeepSocketListen<Api>  // typed Listen proje
 const off = l.ticks.on(v => console.log(v))                // canonical stream subscribe; off is callable and awaitable
 off()                                                     // unsubscribe; .callback/.removeCallback are legacy compat, don't teach them
 l.ticks.once(v => console.log(v))                         // one event, then auto-off
+l.status.on(v => render(v), {current: true})               // when status is a server listenStore: current tuple first, then live
+  // Late local consumers receive the latest tuple observed by the shared physical subscription.
+  // That cache is cleared on disconnect/reauth; omitted/false stays live-only, and function-valued option material never crosses the wire.
 
 // replay upgrade — ONE WORD at the declaration site, everything below follows automatically:
 // const [tick, ticks] = listen<[number]>()                                       // before
@@ -154,7 +157,7 @@ await l.ticks.frame(mySeq)                                // pull at YOUR pace (
 import { Media } from "wenay-common2"        // or: import * as Media from "wenay-common2/media"
 
 Media.createAudioSource({format?: 'int16'|'float32', mode?: 'pcm'|'record', replay?}) -> [emit, listen] & control
-Media.createVideoSource({fps? = 3, codec? = 'jpeg', quality?, replay?}) -> [emit, listen] & control
+Media.createVideoSource({fps? = 3, codec? = 'jpeg', quality?, replay?}) -> [emit, listen] & control  // fps:0 = unpaced maximum
 control: start() -> Promise<'idle'|'requesting'|'live'|'denied'|'no-device'|'error'> · stop() · getStats() · setDevice(id) · listDevices() · state
 Media.encodeMediaFrame(meta, payload) / Media.decodeMediaFrame(frame)     // one Uint8Array = 40-byte fixed header + raw payload
 
@@ -163,7 +166,7 @@ Media.attachVideoCanvas(line, canvas, {onError?}) -> {stats(), off}       // dec
 Media.attachAudioPlayer(line, {maxBacklogSec? = 0.35}) -> {enable(), disable(), enabled, stats(), off}   // live PCM playback, backlog drops
 Media.pipeMediaPublish(line, publish, {stamp? = true, onError?}) -> off   // source -> RPC publish fn; stamp lets viewers measure latency
 ```
-Audio default is PCM frames from `AudioWorklet` where available (`mode:'record'` uses MediaRecorder chunks). Video default is camera snapshots (JPEG, low fps for vision) captured hidden-tab-proof: a worker timer ticks (setInterval is throttled to ~1/s in hidden tabs), `ImageCapture.grabFrame()` reads the track (a hidden `<video>` stops painting), and JPEG encode runs in a worker (main-thread `convertToBlob` stalls ~1s hidden) — `worker:false` opts back into the plain in-page path. Screen share is the same video source with an injected stream: `createVideoSource({stream: () => navigator.mediaDevices.getDisplayMedia({video: true})})`. Put `listen` into `createRpcServerAuto` like any other Listen; with `replay:true`, the returned listen is a replay line, so RPC auto exposes legacy + replay surfaces under the same key. Backpressure policy: audio is lossless queue; video `replay:true` defaults to keep-latest frame recovery. `transport:'webrtc'` is reserved for a future SFU/signaling adapter; socket binary is the default today. Living example: the demo stand (`npm run demo`) streams camera / mic / screen share between two tabs through a tiny server-side relay of replay lines (`demo/server.ts` + `demo/client.ts`).
+Audio default is PCM frames from `AudioWorklet` where available (`mode:'record'` uses MediaRecorder chunks). Video default is camera snapshots (JPEG, low fps for vision) captured hidden-tab-proof: a worker timer ticks (setInterval is throttled to ~1/s in hidden tabs), `ImageCapture.grabFrame()` reads the track (a hidden `<video>` stops painting), and JPEG encode runs in a worker (main-thread `convertToBlob` stalls ~1s hidden) — `worker:false` opts back into the plain in-page path. Set `fps:0` for an unpaced pump: each completed frame immediately starts the next capture, so throughput is bounded by capture, encode, publish, and browser scheduling rather than a configured FPS. Screen share is the same video source with an injected stream: `createVideoSource({stream: () => navigator.mediaDevices.getDisplayMedia({video: true})})`. Put `listen` into `createRpcServerAuto` like any other Listen; with `replay:true`, the returned listen is a replay line, so RPC auto exposes legacy + replay surfaces under the same key. Backpressure policy: audio is lossless queue; video `replay:true` defaults to keep-latest frame recovery. `transport:'webrtc'` is reserved for a future SFU/signaling adapter; socket binary is the default today. Living example: the demo stand (`npm run demo`) streams camera / mic / screen share between two tabs through a tiny server-side relay of replay lines (`demo/server.ts` + `demo/client.ts`).
 
 > Camera, microphone, and screen capture from an external address require a browser secure context.
 > Use the public certificate workflow in [`DEMO-HTTPS.md`](DEMO-HTTPS.md); plain external HTTP is not sufficient.
@@ -426,6 +429,33 @@ failures surface via `onPublishError`, never silently. Policy/session material:
 `createPeerClient({session, accept, policy})` + host `authorize` — see rare docs for the envelope
 contract and the underlying primitives (`createRouteCoordinator`, `createSignalHub`,
 `createWebRtcConnector`). Oracle: `replay/peer-sdk.test.ts`.
+
+### Arbitrary peer packets and multi-hop routes
+```
+const offers = Peer.createPeerPacketOffers<Payload>()
+// discovery publishes reusable capabilities; connect() may reopen after failure
+offers.control.upsert({
+    id: 'a-to-b', peerId: 'b', priority: 7,
+    connect: () => ({peerId: 'b', send, messages, ping?, onFail?, close}),
+})
+
+const mesh = Peer.createPeerPacketMesh<Payload>({
+    meshId: 'package-network', nodeId: 'a', offers: offers.api,
+})
+mesh.packets.on((payload, meta) => {})       // meta.path is the actual traversed path
+await mesh.send('server', payload)           // cheapest live direct or multi-hop route
+await mesh.broadcast(['b', 'c'], payload)    // independently routed group delivery
+mesh.routes()                                // targetId, nextHopId, offerId, cost, path
+```
+Nodes exchange bounded, loop-safe path advertisements through the sessions themselves. A packet carries
+`packetId`, `originId`, `sequence`, `ttl` and `path`; per-origin duplicate identities, cycles and expired
+TTLs are rejected before delivery. `send(...).ok` confirms that the selected next hop accepted the
+packet; it is not an end-to-end receipt. An intermediate client forwards the opaque payload, while
+`accept(packet, from)` authorizes only the authenticated immediate session peer. Treat `originId` and
+`path` as informational unless the payload/session adapter supplies signed provenance; every relay in
+an unsigned mesh must be trusted. The mesh owns connection retry, ping cost, route selection and
+fallback; the offer adapter owns RPC/WebRTC/worker-specific transport details. Oracle:
+`replay/peer-packet-mesh.test.ts`; stand: **Lab → Peer packet mesh**.
 
 ### Calls, presence and the media relay (messenger-style, on the same parts)
 ```

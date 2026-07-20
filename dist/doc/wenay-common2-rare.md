@@ -178,12 +178,15 @@ endCallback(fn)                                     // alias: rpcEndCallback
 listenSocket(parent, opts?) · listenSocketFirst · listenSocketAll · listenSocketSmart
 deepListenFirst(obj, opts?) · deepListenAll · deepListenSmart
 RPC Listen surface on client: stream.on(cb)->off · stream.once(cb)->off · stream.close()
+  // on/once also accept {current?:boolean}; true is narrowly forwarded to a server listenStore/current provider.
   // typed projection: client.func as unknown as DeepSocketListen<ServerFacade> (usually hidden behind a local webListen(client) helper).
   //   replay members project as ReplaySocketListen<Z> automatically (legacy surface + line/frameLine/since/keyframe/frame,
   //   tuples preserved end-to-end) — client.func.key passes to replaySubscribe as is, no casts.
   //   The same projection is built into BOTH typed-client paths (ClientAPIAll/ClientAPIStrict): on a plain rpc<T>() client
   //   replay members are already ReplaySocketListen on client.func/client.strict — no webListen and no casts for them
   //   (plain Listen members still need the DeepSocketListen projection).
+  //   Late local subscribers receive the latest tuple observed by the shared physical subscription. The cache is
+  //   cleared on disconnect/reauth; function-valued providers/options do not cross the wire.
   // off is callable + thenable: off() unsubscribes; await off waits for stream end.
   // *First/*All/*Smart differ only in callback arity: first arg / all args / single-vs-tuple smart.
 matchKeys(a,b) · matchKeysList(a, keys) · deepMapByKeys · deepMapByKeysList
@@ -529,7 +532,7 @@ Audio source:
 - `getStats().rms` gives a VU-meter signal; permission denied/no device returns typed state, not a thrown public failure.
 
 Video source:
-- default snapshots, not a 30fps video stream: JPEG, `fps` default 3, `quality` default 0.82.
+- default snapshots, not a 30fps video stream: JPEG, `fps` default 3, `quality` default 0.82; `fps:0` runs an unpaced capture-after-encode pump for throughput measurement.
 - each frame carries absolute image bytes, so `replay:true` can safely keep the latest frame for lag recovery.
 - capture is hidden-tab-proof by default (Chrome throttles hidden tabs three ways, each stage has its own escape): the tick comes from a Blob-worker timer (in-page `setInterval` drops to ~1/s), the frame comes from `ImageCapture.grabFrame()` when available (a hidden `<video>` stops painting; `<video>->canvas` stays as the fallback), and JPEG encode runs in a worker over a transferred `ImageBitmap`, returning a transferred `ArrayBuffer` — never a structured-cloned frame (main-thread `convertToBlob` is gated to ~1s per call when hidden). `worker: false` opts out of all three into the plain in-page path.
 - one explicit dimension (`width` or `height`) scales the other proportionally from the track resolution, downscale-only; pass both to force an exact size. `grabFrame`'s ~50ms serial latency caps the pipeline around ~15-20fps regardless of `fps`.
@@ -834,6 +837,21 @@ createRouteCoordinator({connect, policy?, shadow?, catchUpTimeoutMs?}) -> coordi
   // direct+shadowRelay: payload rides direct while deps.shadow(ref, ...ev) receives the relay audit copy,
   //   starting from the consumers' seq coordinate — the switch window never escapes the audit.
   // Acceptance oracle: replay/route-coordinator.test.ts (fake in-process relay/direct connectors).
+Peer.createPeerPacketOffers<T>(initial?) -> {control, api}                               // dynamic reusable connection capabilities
+Peer.createPeerPacketMesh<T>({meshId, nodeId, offers, instanceId?, maxHops?, seenLimit?, reconnectMs?, probeIntervalMs?, pingTimeoutMs?, accept?})
+  // OFFER: {id, peerId, priority?, connect() -> {peerId, send(wire), messages, ping?, onFail?, close}}.
+  // Sessions exchange path-vector route advertisements and arbitrary payload packets; lower additive
+  //   priority + measured RTT wins. A disappeared/failed offer removes all paths through it and the
+  //   next candidate becomes active; a restored offer is reopened and advertised automatically.
+  // packet: {protocol:1, kind:'packet', meshId, packetId, originId, targetId, sequence, ttl, path, payload}.
+  //   packetId dedupes per origin, path rejects loops, and TTL bounds forwarding. send().ok is next-hop
+  //   acceptance, not a destination receipt. accept(packet, from) authenticates the immediate session
+  //   peer only: unsigned originId/path are informational and every relay must be trusted unless the
+  //   adapter/payload adds verifiable provenance. Intermediate nodes never inspect payload semantics.
+  // api: send(target, payload, {packetId?, ttl?}) · broadcast(targets, payload, {ttl?}) · packets ·
+  //   routes()/routeChanges · status()/statusChanges · stats() · probe() · close().
+  // Group broadcast is intentionally independent per target, not lockstep. Oracle:
+  //   replay/peer-packet-mesh.test.ts; interactive Lab stand: Peer packet mesh.
 createSignalHub({authorize?}) -> {register(account) -> {send, signals, close}, revoke(pair, accounts, reason?), accounts(), close()}
   // WebRTC signaling over the EXISTING control channel: the port shape {send, signals} is a function +
   //   Listen — exactly what createRpcServerAuto exposes, so the relay socket IS the signaling wire

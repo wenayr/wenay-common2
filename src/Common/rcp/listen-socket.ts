@@ -20,6 +20,11 @@ type ListenCallbackResult<T extends any[] = any[]> = ReturnType<typeof createLis
 // Здесь только ТИП: на listen-socket-слое on в рантайме отдаёт
 // makeOff(wait, off) (см. ниже), а вызываемость материализует он же.
 export type SubscriptionHandle = Off<void, { off: () => void; unsubscribe: () => void; removeCallback: () => void }>
+export type RpcListenSubscribeOpts = {current?: boolean}
+
+function wireSubscribeOpts(opts: RpcListenSubscribeOpts | undefined) {
+    return opts?.current == true ? {current: true as const} : undefined
+}
 // ===================================================================
 // Утилита: throttle с trailing-latest (leading + trailing-latest)
 // ===================================================================
@@ -74,7 +79,7 @@ export function listenSocket<Z extends any[] = any[]>(
 ) {
     const { stop, status, paramsModify, throttle } = d ?? {};
     const closeOn = d?.closeOn;
-    const subscribe = (cb: Listener<any>, opts?: {cbClose?: () => void}) => e.on(cb as any, opts as any);
+    const subscribe = (cb: Listener<any>, opts?: {cbClose?: () => void, current?: true}) => e.on(cb as any, opts as any);
     const subscribeClose = closeOn && ((cb: () => void) => closeOn.on(cb));
 
     let last: Listener<Z> | null = null;
@@ -104,7 +109,7 @@ export function listenSocket<Z extends any[] = any[]>(
 
     // НЕ async: иначе async-обёртка проглотила бы вызываемый makeOff-хендл и вернула
     // бы голый Promise<void> — off() перестал бы работать. В теле нет await, де-async безопасен.
-    function on(z: Listener<Z>) {
+    function on(z: Listener<Z>, opts?: RpcListenSubscribeOpts) {
         if (typeof z !== "function") {
             throw new TypeError("listenSocket.on expects a function");
         }
@@ -154,12 +159,20 @@ export function listenSocket<Z extends any[] = any[]>(
             inner(...a);
         };
 
-        activeOff = subscribe(active, {cbClose: off});
-        closeSignalOff = subscribeClose?.(off) ?? null;
-
+        const forwarded = wireSubscribeOpts(opts)
         const wait = new Promise<void>((resolve) => {
             resolveWait = () => { resolve() };
         });
+        const createdOff = subscribe(active, forwarded ? {cbClose: off, ...forwarded} : {cbClose: off});
+        // A current provider may emit synchronously inside subscribe(). In particular,
+        // once({current:true}) tears itself down before subscribe() returns.
+        if (last == z) {
+            activeOff = createdOff
+            closeSignalOff = subscribeClose?.(off) ?? null
+        } else {
+            createdOff()
+            active = null
+        }
         // off = sub; off(): handle == off(), при этом await handle резолвится
         // на завершении стрима (wait) ровно как прежний Promise<void>. Отдельный
         // removeCallback из { callback, removeCallback } по-прежнему доступен как legacy.
@@ -173,7 +186,7 @@ export function listenSocket<Z extends any[] = any[]>(
 
     // callback — legacy-алиас: новые вызовы должны идти через on(cb), тот же off()/await-хендл.
     // once — однократная подписка: первое событие + конец стрима (RPC_STOP→CB_END), затем off.
-    function once(z: Listener<Z>) {
+    function once(z: Listener<Z>, opts?: RpcListenSubscribeOpts) {
         if (typeof z !== "function") {
             throw new TypeError("listenSocket.once expects a function");
         }
@@ -184,13 +197,13 @@ export function listenSocket<Z extends any[] = any[]>(
             try { (z as Function)(...a); }
             finally { endCallback(z as Function); off(); }
         }) as Listener<Z>;
-        return on(oneShot);
+        return on(oneShot, opts);
     }
     // close — закрыть весь Listen-источник (полный teardown, влияет на ВСЕХ потребителей узла).
     function closeStream() { (e as any).close?.(); }
-    function callback(z: Listener<Z>) {
+    function callback(z: Listener<Z>, opts?: RpcListenSubscribeOpts) {
         if (typeof z !== "function") throw new TypeError("listenSocket.callback expects a function");
-        return on(z);
+        return on(z, opts);
     }
     return { on, off, callback, removeCallback, once, close: closeStream };
 }
@@ -205,9 +218,9 @@ export function listenSocketFirst<Z extends any[] = any[]>(
     });
     type SingleArgCallback = (a: Z[0]) => void;
     return {
-        callback: r.callback as unknown as (z: SingleArgCallback) => SubscriptionHandle,
-        on: r.on as unknown as (z: SingleArgCallback) => SubscriptionHandle,
-        once: r.once as unknown as (z: SingleArgCallback) => SubscriptionHandle,
+        callback: r.callback as unknown as (z: SingleArgCallback, opts?: RpcListenSubscribeOpts) => SubscriptionHandle,
+        on: r.on as unknown as (z: SingleArgCallback, opts?: RpcListenSubscribeOpts) => SubscriptionHandle,
+        once: r.once as unknown as (z: SingleArgCallback, opts?: RpcListenSubscribeOpts) => SubscriptionHandle,
         close: r.close,
         off: r.off,
         removeCallback: r.removeCallback,
@@ -220,9 +233,9 @@ export function listenSocketAll<Z extends any[] = any[]>(
 ) {
     const r = listenSocket(e, { ...options });
     return {
-        callback: r.callback as unknown as (z: (...args: Z) => void) => SubscriptionHandle,
-        on: r.on as unknown as (z: (...args: Z) => void) => SubscriptionHandle,
-        once: r.once as unknown as (z: (...args: Z) => void) => SubscriptionHandle,
+        callback: r.callback as unknown as (z: (...args: Z) => void, opts?: RpcListenSubscribeOpts) => SubscriptionHandle,
+        on: r.on as unknown as (z: (...args: Z) => void, opts?: RpcListenSubscribeOpts) => SubscriptionHandle,
+        once: r.once as unknown as (z: (...args: Z) => void, opts?: RpcListenSubscribeOpts) => SubscriptionHandle,
         close: r.close,
         off: r.off,
         removeCallback: r.removeCallback,
@@ -239,9 +252,9 @@ export function listenSocketSmart<Z extends any[] = any[]>(
 ) {
     const r = listenSocket(e, { ...options });
     return {
-        callback: r.callback as unknown as (z: SmartCallback<Z>) => SubscriptionHandle,
-        on: r.on as unknown as (z: SmartCallback<Z>) => SubscriptionHandle,
-        once: r.once as unknown as (z: SmartCallback<Z>) => SubscriptionHandle,
+        callback: r.callback as unknown as (z: SmartCallback<Z>, opts?: RpcListenSubscribeOpts) => SubscriptionHandle,
+        on: r.on as unknown as (z: SmartCallback<Z>, opts?: RpcListenSubscribeOpts) => SubscriptionHandle,
+        once: r.once as unknown as (z: SmartCallback<Z>, opts?: RpcListenSubscribeOpts) => SubscriptionHandle,
         close: r.close,
         off: r.off,
         removeCallback: r.removeCallback,

@@ -1,6 +1,6 @@
 import { isListenCallback, createListen, isListenOn, getListenByOn } from "../events/Listen";
 import { IS_REPLAY_LISTEN } from "../events/replay-listen";
-import { listenSocket, } from "./listen-socket";
+import { listenSocket, type RpcListenSubscribeOpts } from "./listen-socket";
 import { createRpcServer, type PromiseServerHooks, type RpcLimits, type RpcServerAuth, type RpcOpt } from "./rpc-server";
 import {DeepSocketListen} from "./listen-deep";
 import {SocketTmpl, IS_RPC_LISTEN, RPC_STOP} from "./rpc-protocol";
@@ -78,7 +78,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         let result = cache.get(parent);
         if (!result) {
             const subs = new Map<Function, ReturnType<typeof listenSocket>>();
-            function subscribe(z: any) {
+            function subscribe(z: any, opts?: RpcListenSubscribeOpts) {
                 if (typeof z !== "function") return Promise.reject(new TypeError("Listen callback expects a function"));
                 // Opt-in потолок на узел: лишнего подписчика тихо игнорируем — стрим для него
                 // не стартует, серверная подписка не создаётся. Без опции ветка не берётся.
@@ -88,7 +88,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                 subs.get(z)?.off();
                 const w = listenSocket(parent, { closeOn: disconnectListen, throttle: nodeThrottle });
                 subs.set(z, w);
-                const done = w.on(z);
+                const done = w.on(z, opts);
                 done.then(() => {
                     if (subs.get(z) == w) subs.delete(z);
                     if (subs.size == 0) registry.delete(parent); // узел опустел — снимаем со счёта stats()
@@ -96,7 +96,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                 return done;
             }
             // once — однократная подписка: первое событие → CB, затем RPC_STOP→CB_END и off.
-            function subscribeOnce(z: any) {
+            function subscribeOnce(z: any, opts?: RpcListenSubscribeOpts) {
                 if (typeof z !== "function") return Promise.reject(new TypeError("Listen once expects a function"));
                 if (maxPerListen != null && subs.size >= maxPerListen) return Promise.resolve();
                 if (!registry.has(parent)) registry.set(parent, { subs });
@@ -115,7 +115,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                     }
                 };
                 subs.set(z, w);
-                const done = w.on(oneShot);
+                const done = w.on(oneShot, opts);
                 done.then(() => { if (subs.get(z) == w) subs.delete(z); if (subs.size == 0) registry.delete(parent); });
                 return done;
             }

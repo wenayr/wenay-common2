@@ -13,9 +13,9 @@ export declare function WebSocketServerHook(s: ReturnType<typeof SocketServerHoo
     disconnect(): void;
     get: {
         [k: string]: {
-            callback: (z: (...args: any[]) => void) => import("../rcp/listen-socket").SubscriptionHandle;
-            on: (z: (...args: any[]) => void) => import("../rcp/listen-socket").SubscriptionHandle;
-            once: (z: (...args: any[]) => void) => import("../rcp/listen-socket").SubscriptionHandle;
+            callback: (z: (...args: any[]) => void, opts?: import("../rcp/listen-socket").RpcListenSubscribeOpts) => import("../rcp/listen-socket").SubscriptionHandle;
+            on: (z: (...args: any[]) => void, opts?: import("../rcp/listen-socket").RpcListenSubscribeOpts) => import("../rcp/listen-socket").SubscriptionHandle;
+            once: (z: (...args: any[]) => void, opts?: import("../rcp/listen-socket").RpcListenSubscribeOpts) => import("../rcp/listen-socket").SubscriptionHandle;
             close: () => void;
             off: () => boolean;
             removeCallback: () => boolean;
