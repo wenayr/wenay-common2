@@ -24,6 +24,8 @@ import {setupWorkboardDemo} from './workboard-demo'
 import {setupReplicaSetDemo} from './replica-set-demo'
 import {setupContractRuntimeDemo} from './contract-runtime-demo'
 import {setupPacketMeshDemo} from './packet-mesh-demo'
+import {createProtocolDemo} from './protocol-demo'
+import {demoRpcOpt} from './protocol-schema'
 
 type World = {
     cursor: {x: number, y: number}
@@ -36,6 +38,7 @@ type World = {
 const tab = sessionStorage.getItem('demo-tab')
     ?? Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12)
 sessionStorage.setItem('demo-tab', tab)
+const legacyServerProfile = new URLSearchParams(location.search).get('rpc') == 'legacy-server'
 if (location.search) history.replaceState(null, '', location.pathname)
 let me = ''
 
@@ -63,6 +66,7 @@ type PeerView = ReturnType<PeerClient['peer']>
 
 async function main() {
     const shell = setupAppShell({root: document})
+    const protocol = createProtocolDemo({element: el, log, legacyServer: legacyServerProfile})
     const replicaMesh = setupReplicaSetDemo({element: el, log})
     const contractRuntime = setupContractRuntimeDemo({element: el, log})
     const packetMesh = setupPacketMeshDemo({element: el, log})
@@ -72,13 +76,20 @@ async function main() {
     const hub = createRpcClientHub(
         // Start with polling so an HTTP-only tunnel/proxy can carry RPC, then
         // Socket.IO upgrades to WebSocket whenever the external route permits it.
-        () => io({auth: {tab}}),
+        () => protocol.attach(io({
+            auth: {
+                tab,
+                rpcProfile: legacyServerProfile ? 'legacy-server' : 'current',
+            },
+        })),
         r => ({app: r<any>('app')}) as const,
+        {opt: demoRpcOpt},
     )
     const clients = await hub.setToken(null)
     await clients.app.readyStrict()
     me = await clients.app.func.demo.account()
     const rtcConfiguration = await clients.app.func.demo.rtcConfiguration() as RTCConfiguration
+    const artifactOrigin = await clients.app.func.demo.artifactOrigin() as string
 
     // ============== identity: a display name over the account label ==============
     // The name lives in the client's own World store (like cursor and color), so
@@ -101,7 +112,6 @@ async function main() {
     // When the leader is gone, the badge grows a manual failover control: promote
     // raises THIS node to leader — the board keeps living, subscriptions survive.
     async function showInstanceBadge() {
-        const instance = clients.app.func.demo.instance
         const badge = document.createElement('p')
         badge.id = 'instanceBadge'
         const promoteBtn = document.createElement('button')
@@ -112,37 +122,70 @@ async function main() {
         const holder = document.querySelector('.brand h1')?.parentElement
         holder?.appendChild(badge)
         holder?.appendChild(promoteBtn)
-        async function renderInstanceBadge() {
+        let closed = false
+        let generation = 0
+        let offChanged = function noInstanceChangeSubscription() {}
+        let offConnect = function noInstanceReconnectSubscription() {}
+
+        async function renderInstanceBadge(renderGeneration: number) {
+            const instance = clients.app.func.demo.instance
             const role = await instance.role()
             const epoch = await instance.epoch()
             const upstream = role == 'leader' ? null : await instance.upstream()
+            if (closed || generation != renderGeneration) return null
             badge.textContent = `node :${location.port || '80'} · ${role} · epoch ${epoch}`
                 + (upstream && role == 'mirror' ? ` · leader ${upstream.upstream}` : '')
             promoteBtn.hidden = !(role == 'mirror' && upstream?.upstream == 'offline')
+            return {instance, role}
+        }
+
+        async function reconnectInstanceBadge() {
+            const reconnectGeneration = ++generation
+            const rendered = await renderInstanceBadge(reconnectGeneration)
+            if (!rendered || closed || generation != reconnectGeneration) return
+            offChanged()
+            offChanged = function noInstanceChangeSubscription() {}
+            if (rendered.role == 'leader' || typeof rendered.instance.changed?.on != 'function') return
+            offChanged = rendered.instance.changed.on(function upstreamEdge() {
+                void renderInstanceBadge(generation)
+            })
+        }
+
+        function closeInstanceBadge() {
+            if (closed) return
+            closed = true
+            generation++
+            offChanged()
+            offConnect()
         }
         promoteBtn.addEventListener('click', async function promoteThisNode() {
             promoteBtn.disabled = true
             try {
-                const result = await instance.promote()
+                const result = await clients.app.func.demo.instance.promote()
                 log(`failover: this node is now the leader (epoch ${result.epoch})`)
             } catch (error) {
                 log('promote failed: ' + error)
             } finally {
                 promoteBtn.disabled = false
-                void renderInstanceBadge()
+                void reconnectInstanceBadge()
             }
         })
         try {
-            const role = await instance.role()
-            await renderInstanceBadge()
-            if (role != 'leader') instance.changed.on(function upstreamEdge() { void renderInstanceBadge() })
+            await reconnectInstanceBadge()
+            offConnect = hub.connectListen(function refreshInstanceAfterReconnect() {
+                void reconnectInstanceBadge()
+            })
+            window.addEventListener('beforeunload', closeInstanceBadge, {once: true})
         } catch {
+            closeInstanceBadge()
             badge.remove()
             promoteBtn.remove()
         }
     }
     void showInstanceBadge()
-    log('rpc connected; legacy serverTime() = ' + await clients.app.func.serverTime())
+    const legacyServerTime = await clients.app.func.serverTime()
+    protocol.reportLegacyCall(legacyServerTime)
+    log('rpc connected; existing serverTime() = ' + legacyServerTime)
     const workboard = createWorkboardClient({
         remote: clients.app.func.workboard as unknown as WorkboardRemote,
         drain: 'micro',
@@ -161,7 +204,11 @@ async function main() {
         log,
     })
     await workboard.ready
-    log('authoritative Workboard Store mirror ready')
+    protocol.reportStore(
+        clients.app.func.workboard.state as unknown as WorkboardRemote['state'],
+        workboard.status().replayMode,
+    )
+    log(`authoritative Workboard Store mirror ready (${workboard.status().replayMode})`)
     const files = createFileJobClient({remote: clients.app.func.files, drain: 'micro'})
     await files.ready
     setupFileJobs(files)
@@ -170,7 +217,7 @@ async function main() {
     await ai.ready
     const artifacts = createArtifactClient({remote: clients.app.func.artifacts, drain: 'micro'})
     await artifacts.ready
-    const artifactStand = setupArtifacts(artifacts)
+    const artifactStand = setupArtifacts(artifacts, artifactOrigin)
     setupAiRuns(ai, files, artifactStand)
     log('AI run view ready')
     const conversation = createConversationClient({remote: clients.app.func.conversation, drain: 'micro'})
@@ -711,12 +758,11 @@ function setupAiRuns(
 }
 
 // ============== interactive artifacts: descriptor mirror -> authorized open -> sandboxed frame ==============
-function setupArtifacts(artifacts: ReturnType<typeof createArtifactClient>) {
+function setupArtifacts(artifacts: ReturnType<typeof createArtifactClient>, origin: string) {
     const open = el('openArtifact') as HTMLButtonElement
     const revoke = el('revokeArtifact') as HTMLButtonElement
     const state = el('artifactState')
     const frame = el('artifactFrame') as HTMLIFrameElement
-    const origin = location.port ? 'http://artifact.localhost:' + location.port : 'http://artifact.localhost'
     const runtime = createArtifactFrame({artifacts, frame, allowedOrigins: [origin]})
     let selectedId: string | null = null
 

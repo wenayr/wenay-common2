@@ -6,6 +6,7 @@ const replay_listen_1 = require("../events/replay-listen");
 const listen_socket_1 = require("./listen-socket");
 const rpc_server_1 = require("./rpc-server");
 const rpc_protocol_1 = require("./rpc-protocol");
+const rpc_walk_1 = require("./rpc-walk");
 function createRpcServerAuto({ socket, object: target, socketKey: key, debug, hooks, disconnectListen, limits, auth, maxPerListen, throttle, opt, replay = "auto", replayOpts }) {
     const cache = new WeakMap();
     const registry = new Map();
@@ -56,7 +57,7 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
                     fired = true;
                     try {
                         z(...a);
-                        z(rpc_protocol_1.RPC_STOP);
+                        (0, rpc_walk_1.rpcEndCallback)(z);
                     }
                     finally {
                         w.off();

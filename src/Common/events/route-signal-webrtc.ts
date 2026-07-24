@@ -116,8 +116,9 @@ export type SignalHub = ReturnType<typeof createSignalHub>
 export type RtcSessionDescription = {type: string, sdp?: string}
 
 export type RtcDataChannel = {
-    send: (data: string) => void
+    send: (data: string | ArrayBuffer | ArrayBufferView) => void
     close: () => void
+    binaryType?: string
     onopen?: ((ev?: unknown) => void) | null
     onmessage?: ((ev: {data: unknown}) => void) | null
     onclose?: ((ev?: unknown) => void) | null
@@ -139,22 +140,35 @@ export type RtcPeerConnection = {
 /** ReplayMessageChannel over datachannel: sole owner of its handlers. */
 export function channelFromDataChannel(dc: RtcDataChannel): ReplayMessageChannel {
     const msgCbs = new Set<(data: string) => void>()
+    const binaryCbs = new Set<(data: Uint8Array) => void>()
     const closeCbs = new Set<() => void>()
     let closed = false
+    dc.binaryType = 'arraybuffer'
     function fireClose() {
         if (closed) return
         closed = true
         for (const cb of Array.from(closeCbs)) cb()
     }
     dc.onmessage = function onDcMessage(ev) {
-        const data = String(ev.data)
-        for (const cb of Array.from(msgCbs)) cb(data)
+        if (typeof ev.data == 'string') {
+            for (const cb of Array.from(msgCbs)) cb(ev.data)
+            return
+        }
+        const data = ev.data instanceof ArrayBuffer
+            ? new Uint8Array(ev.data)
+            : ArrayBuffer.isView(ev.data)
+                ? new Uint8Array(ev.data.buffer, ev.data.byteOffset, ev.data.byteLength)
+                : null
+        if (!data) return
+        for (const cb of Array.from(binaryCbs)) cb(data)
     }
     dc.onclose = fireClose
     dc.onerror = fireClose // for replay-wire, channel error == line end, loud via onClose
     return {
         send: data => dc.send(data),
+        sendBinary: data => dc.send(data),
         onMessage: cb => { msgCbs.add(cb); return () => msgCbs.delete(cb) },
+        onBinaryMessage: cb => { binaryCbs.add(cb); return () => binaryCbs.delete(cb) },
         onClose: cb => { closeCbs.add(cb); return () => closeCbs.delete(cb) },
         close: () => { dc.close(); fireClose() },
     }
@@ -308,7 +322,7 @@ export function createWebRtcConnector<Z extends any[] = any[]>(deps: WebRtcConne
     }
 
     return {
-        info: {label, kind: 'direct', binary: false, ordered: true, reliable: true},
+        info: {label, kind: 'direct', binary: true, ordered: true, reliable: true},
         open,
         close() {
             if (state == 'closed') return

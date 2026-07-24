@@ -1,5 +1,5 @@
 import {createStore, Store} from '../src/Common/Observe/store'
-import {exposeStoreReplay} from '../src/Common/Observe/store-replay'
+import {createReplicatedMap} from '../src/Common/Observe/replicated-map'
 import {
     tWorkboardStatus,
     WorkboardAssignInput,
@@ -79,7 +79,14 @@ export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
         }
     }
 
+    function workboardKey(item: WorkboardItem) { return item.id }
     const store = deps.store ?? createStore<WorkboardState>(initial, {drain: 'micro'})
+    const replicated = createReplicatedMap<WorkboardItem>({
+        keyOf: workboardKey,
+        store,
+        delivery: 'latest',
+        replay: {history: deps.history ?? 512},
+    })
     // Accepted store already contains items — id counter must skip over them,
     // or else new leader after promote will issue a taken work-N.
     if (deps.store) {
@@ -88,8 +95,6 @@ export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
             if (tail) nextId = Math.max(nextId, Number(tail[1]))
         }
     }
-    const exposed = exposeStoreReplay(store, {history: deps.history ?? 512})
-
     // ============== business rules ==============
     // Commands carry intent. The replay Store is deliberately read-only on the wire.
     function requireOpen() {
@@ -157,7 +162,7 @@ export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
             updatedAt: now(),
             updatedBy: account,
         }
-        store.state[current.id] = next
+        replicated.control.set(next)
         return copyItem(next)
     }
 
@@ -183,7 +188,7 @@ export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
             createdBy: account,
             updatedBy: account,
         }
-        store.state[id] = item
+        replicated.control.set(item)
         return remember(account, requestId, 'create', item) as WorkboardItem
     }
 
@@ -228,7 +233,7 @@ export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
         const previous = previousResult(account, requestId, 'remove')
         if (previous) return previous as WorkboardRemoveResult
         const item = requireItem(input)
-        delete store.state[item.id]
+        replicated.control.delete(item.id)
         const result: WorkboardRemoveResult = {id: item.id, revision: item.revision + 1, deleted: true}
         return remember(account, requestId, 'remove', result) as WorkboardRemoveResult
     }
@@ -239,7 +244,7 @@ export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
         requireOpen()
         return {
             fragment: {
-                state: exposed.api.replay,
+                state: replicated.api,
                 create: (input: WorkboardCreateInput) => create(account, input),
                 rename: (input: WorkboardRenameInput) => rename(account, input),
                 move: (input: WorkboardMoveInput) => move(account, input),
@@ -256,7 +261,7 @@ export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
         close() {
             if (closed) return
             closed = true
-            exposed.close()
+            replicated.control.close()
             receipts.clear()
         },
     }

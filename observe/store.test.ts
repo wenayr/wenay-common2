@@ -228,6 +228,77 @@ async function main() {
         ok(snap.m !== m && snap.a.shared !== shared, 'snapshot copies, does not alias the originals')
     }
 
+    console.log('\n[store] snapshot: inherited setters and non-writable prototype fields stay inert')
+    {
+        const objectSetterKey = '__store_snapshot_setter__'
+        const objectLockedKey = '__store_snapshot_locked__'
+        const arraySetterKey = '__store_snapshot_array_setter__'
+        const symbolSetterKey = Symbol('store snapshot setter')
+        let setterCalls = 0
+        const root: Record<PropertyKey, any> = {
+            [objectSetterKey]: 'own setter value',
+            [objectLockedKey]: 'own locked value',
+            [symbolSetterKey]: 'own symbol value',
+        }
+        Object.defineProperty(root, '__proto__', {
+            configurable: true,
+            enumerable: true,
+            value: 'own proto value',
+            writable: true,
+        })
+        const array: any[] = [1, 2]
+        Object.defineProperty(array, arraySetterKey, {
+            configurable: true,
+            enumerable: true,
+            value: 'own array value',
+            writable: true,
+        })
+        const store = createStore<any>({root, array}, {drain: 'micro'})
+
+        Object.defineProperty(Object.prototype, objectSetterKey, {
+            configurable: true,
+            set() { setterCalls++ },
+        })
+        Object.defineProperty(Object.prototype, objectLockedKey, {
+            configurable: true,
+            value: 'inherited locked value',
+            writable: false,
+        })
+        Object.defineProperty(Object.prototype, symbolSetterKey, {
+            configurable: true,
+            set() { setterCalls++ },
+        })
+        Object.defineProperty(Array.prototype, arraySetterKey, {
+            configurable: true,
+            set() { setterCalls++ },
+        })
+        try {
+            const snapshot = store.snapshot()
+            ok(setterCalls == 0, 'snapshot construction invokes no inherited setter')
+            ok(
+                snapshot.root[objectSetterKey] == 'own setter value'
+                && snapshot.root[objectLockedKey] == 'own locked value'
+                && snapshot.root.__proto__ == 'own proto value'
+                && snapshot.root[symbolSetterKey] == 'own symbol value',
+                'ordinary and symbol own values survive polluted Object.prototype',
+            )
+            ok(snapshot.array[arraySetterKey] == 'own array value',
+                'array expando survives a polluted Array.prototype')
+            const descriptor = Object.getOwnPropertyDescriptor(snapshot.root, objectLockedKey)
+            ok(
+                descriptor?.configurable == true
+                && descriptor.enumerable == true
+                && descriptor.writable == true,
+                'snapshot values retain ordinary writable/enumerable/configurable descriptors',
+            )
+        } finally {
+            Reflect.deleteProperty(Object.prototype, objectSetterKey)
+            Reflect.deleteProperty(Object.prototype, objectLockedKey)
+            Reflect.deleteProperty(Object.prototype, symbolSetterKey)
+            Reflect.deleteProperty(Array.prototype, arraySetterKey)
+        }
+    }
+
     console.log('\n[store] mirror sync error path: failed pull reports, chain survives')
     {
         const settle = async () => { for (let i = 0; i < 5; i++) await tick() }

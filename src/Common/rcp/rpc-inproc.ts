@@ -11,12 +11,100 @@ import type { DeepSocketListen } from './listen-deep'
 // wire as network. Reuses ALL core code (pack/unpack, dedup, MAP/STRICT/HELLO, off()-handles,
 // throttle, limits, auth) — without new semantics.
 //
-// HONEST BOUNDARY: this is in-PROC, NOT zero-cost. Each message undergoes JSON clone
-// (like real transport and rpc.harness.spec.ts:createLoopback), so Date/Map/BigInt
-// round-trip and dedup are byte-for-byte identical to prod. True zero-clone (by-reference)
+// HONEST BOUNDARY: this is in-PROC, NOT zero-cost. Each message undergoes a JSON clone
+// plus detached binary attachments, matching the two parts Socket.IO transports.
+// Date/Map/BigInt were already packed by RPC. True zero-clone (by-reference)
 // direct-call proxy — separate bigger step (Tier 1b, changes argument semantics: object
 // identity, callback lifetime).
 // ===================================================================
+
+function activeBinaryBytes(value: ArrayBuffer | ArrayBufferView) {
+    return value instanceof ArrayBuffer
+        ? new Uint8Array(value)
+        : new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+}
+
+function cloneInProcBinary(value: ArrayBuffer | ArrayBufferView) {
+    const source = activeBinaryBytes(value)
+    const bytes = new Uint8Array(source.byteLength)
+    bytes.set(source)
+    if (value instanceof ArrayBuffer) return bytes.buffer
+    if (value instanceof DataView) return new DataView(bytes.buffer)
+    const Constructor = value.constructor as any
+    if (typeof Constructor.from == 'function' && typeof Constructor.isBuffer == 'function'
+        && Constructor.isBuffer(value)) {
+        return Constructor.from(bytes)
+    }
+    try { return new Constructor(bytes.buffer) }
+    catch { return bytes }
+}
+
+function defineInProcWireValue(target: Record<string, unknown>, key: string, value: unknown) {
+    Object.defineProperty(target, key, {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value,
+    })
+}
+
+function detachInProcBinary(
+    value: any,
+    attachments: (ArrayBuffer | ArrayBufferView)[],
+    active: WeakSet<object>,
+): unknown {
+    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+        const num = attachments.length
+        attachments.push(cloneInProcBinary(value))
+        return {_placeholder: true, num}
+    }
+    if (value == null || typeof value != 'object') return value
+    const prototype = Object.getPrototypeOf(value)
+    if (!Array.isArray(value) && prototype != Object.prototype && prototype != null) return value
+    if (active.has(value)) throw new TypeError('createInProcSocketPair: cyclic wire value')
+    active.add(value)
+    try {
+        if (Array.isArray(value)) {
+            return value.map(function detachInProcArrayItem(item) {
+                return detachInProcBinary(item, attachments, active)
+            })
+        }
+        const detached: Record<string, unknown> = {}
+        for (const key of Object.keys(value)) {
+            defineInProcWireValue(detached, key, detachInProcBinary(value[key], attachments, active))
+        }
+        return detached
+    } finally {
+        active.delete(value)
+    }
+}
+
+function restoreInProcBinary(value: any, attachments: readonly (ArrayBuffer | ArrayBufferView)[]): any {
+    if (value == null || typeof value != 'object') return value
+    const keys = Object.keys(value)
+    if (keys.length == 2 && value['_placeholder'] == true && Number.isSafeInteger(value['num'])) {
+        const attachment = attachments[value['num']]
+        if (attachment == undefined) throw new TypeError('createInProcSocketPair: invalid binary placeholder')
+        return attachment
+    }
+    if (Array.isArray(value)) {
+        return value.map(function restoreInProcArrayItem(item) {
+            return restoreInProcBinary(item, attachments)
+        })
+    }
+    const restored: Record<string, unknown> = {}
+    for (const key of keys) {
+        defineInProcWireValue(restored, key, restoreInProcBinary(value[key], attachments))
+    }
+    return restored
+}
+
+function cloneInProcWire(value: any) {
+    if (value === undefined) return undefined
+    const attachments: (ArrayBuffer | ArrayBufferView)[] = []
+    const detached = detachInProcBinary(value, attachments, new WeakSet<object>())
+    return restoreInProcBinary(JSON.parse(JSON.stringify(detached)), attachments)
+}
 
 // --- resource: pair of linked SocketTmpl (same loopback as in harness, but as export) ---
 export function createInProcSocketPair(): [SocketTmpl, SocketTmpl] {
@@ -25,8 +113,8 @@ export function createInProcSocketPair(): [SocketTmpl, SocketTmpl] {
     const make = (mine: typeof A, theirs: typeof A): SocketTmpl => ({
         on: (e, cb) => { (mine[e] ??= []).push(cb) },
         emit: (e, d) => {
-            // non-reentrant (queueMicrotask) + JSON clone: wire semantics one-to-one
-            const wire = d === undefined ? undefined : JSON.parse(JSON.stringify(d))
+            // Non-reentrant and detached: no object identity leaks across the wire.
+            const wire = cloneInProcWire(d)
             for (const cb of (theirs[e] ?? [])) queueMicrotask(() => cb(wire))
         },
     })
@@ -62,7 +150,7 @@ export function createRpcInProc<T extends object>({
     /** Passes to server listen layer (throttle streams) when listen:true. */
     throttle?: number
     maxPerListen?: number
-    /** Wire optimizations (contractual): { compact?: false } disables tick compaction. */
+    /** Negotiated wire optimizations. Binary packets, compact shapes and callback batching are enabled by default. */
     opt?: RpcOpt
 }) {
     const [clientSocket, serverSocket] = createInProcSocketPair()

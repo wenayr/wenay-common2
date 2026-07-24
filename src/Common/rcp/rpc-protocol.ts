@@ -2,8 +2,27 @@
 // facade, responds Pkt.MAP with authAck in 5th element. Additive: old peers don't send/await HELLO.
 // SHAPE/CBV/CAPS — adaptive compression of subscription ticks (versioned): client sends CAPS
 // (can do compact), server on frequent object shape sends SHAPE once, then CBV (values only).
+// CB_BATCH — negotiated, ordered physical envelope for live CB/SHAPE/CBV packets.
+// BINARY — negotiated by CAPS plus a correlated byte probe; application packets then
+// travel in the private RPB envelope while these control opcodes stay backward-compatible.
 // Additive: old client doesn't send CAPS → server sends usual CB; old server ignores CAPS.
-export const Pkt = { CALL: 0, RESP: 1, CB: 2, MAP: 3, STRICT: 4, CB_END: 5, PIPE: 6, HELLO: 7, SHAPE: 8, CBV: 9, CAPS: 10 } as const;
+export const Pkt = {
+    CALL: 0,
+    RESP: 1,
+    CB: 2,
+    MAP: 3,
+    STRICT: 4,
+    CB_END: 5,
+    PIPE: 6,
+    HELLO: 7,
+    SHAPE: 8,
+    CBV: 9,
+    CAPS: 10,
+    CB_BATCH: 11,
+    // Receiver could not decode this session's stateful binary stream. The peer
+    // must allocate a fresh session/cache generation before sending more data.
+    BINARY_RESET: 12,
+} as const
 
 // Stream end sentinel. Goes ON WIRE as first callback argument —
 // hence string (Symbol won't travel via JSON); value must not change (wire compat).

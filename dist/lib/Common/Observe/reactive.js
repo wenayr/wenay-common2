@@ -125,9 +125,22 @@ function makeNode(target, parent, path, level, eng) {
         },
         set(_, k, v) {
             v = toRaw(v);
-            if (Object.is(node.target[k], v))
+            const had = Object.prototype.hasOwnProperty.call(node.target, k);
+            if (had && Object.is(node.target[k], v))
                 return true;
-            node.target[k] = v;
+            if (had) {
+                if (!Reflect.set(node.target, k, v, node.target))
+                    return false;
+            }
+            else {
+                if (!Reflect.defineProperty(node.target, k, {
+                    configurable: true,
+                    enumerable: true,
+                    value: v,
+                    writable: true,
+                }))
+                    return false;
+            }
             if (Array.isArray(proxyTarget) && k == "length")
                 proxyTarget.length = v;
             const kid = node.kids.get(k);
@@ -139,6 +152,7 @@ function makeNode(target, parent, path, level, eng) {
             return true;
         },
         defineProperty(_, k, d) {
+            const had = Object.prototype.hasOwnProperty.call(node.target, k);
             const old = node.target[k];
             const desc = 'value' in d ? { ...d, value: toRaw(d.value) } : d;
             const ok = Reflect.defineProperty(node.target, k, desc);
@@ -150,7 +164,7 @@ function makeNode(target, parent, path, level, eng) {
                     return false;
             }
             const v = node.target[k];
-            if (!Object.is(old, v)) {
+            if (!had || !Object.is(old, v)) {
                 const kid = node.kids.get(k);
                 if (kid) {
                     if (isReactiveObj(v))
@@ -168,9 +182,10 @@ function makeNode(target, parent, path, level, eng) {
             return true;
         },
         deleteProperty(_, k) {
-            if (!(k in node.target))
+            if (!Object.prototype.hasOwnProperty.call(node.target, k))
                 return true;
-            delete node.target[k];
+            if (!Reflect.deleteProperty(node.target, k))
+                return false;
             const kid = node.kids.get(k);
             if (kid) {
                 node.kids.delete(k);

@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createFileJobHost = createFileJobHost;
 const store_1 = require("../Observe/store");
 const store_replay_1 = require("../Observe/store-replay");
+const store_projection_1 = require("../Observe/store-projection");
 function errorText(error) {
     return error instanceof Error ? error.message : String(error);
 }
@@ -13,7 +14,10 @@ function copyFile(file) {
     return { ...file };
 }
 function copyJob(job) {
-    return { ...job };
+    return {
+        ...job,
+        ...(job.result !== undefined ? { result: (0, store_projection_1.cloneStoreProjectionValue)(job.result) } : {}),
+    };
 }
 function createFileJobHost(deps) {
     const { storage, runner, policy, history, drain, now = Date.now } = deps;
@@ -48,19 +52,57 @@ function createFileJobHost(deps) {
         }
         return { files, jobs };
     }
-    function refreshViews() {
+    function refreshViews(change) {
         if (closed)
             return;
         for (const view of views)
-            view.refresh();
+            view.refresh(change);
     }
     const offStore = store.listenPaths().on(refreshViews);
     function createView(account) {
         const state = (0, store_1.createStore)(project(account), drain !== undefined ? { drain } : {});
-        const replay = (0, store_replay_1.exposeStoreReplay)(state, history !== undefined ? { history } : {});
+        const replay = (0, store_replay_1.exposeStoreReplay)(state, history == undefined ? { batch: true } : { history, batch: true });
+        function refreshJob(id) {
+            const job = store.state.jobs[id];
+            const visible = !!job && !!state.state.files[job.fileId];
+            (0, store_projection_1.reconcileStoreProjectionRecord)(state, 'jobs', id, {
+                exists: visible,
+                ...(visible ? { value: copyJob(job) } : {}),
+            });
+        }
+        function refreshFile(id) {
+            const file = store.state.files[id];
+            const wasVisible = !!state.state.files[id];
+            const visible = !!file && readable(account, file);
+            (0, store_projection_1.reconcileStoreProjectionRecord)(state, 'files', id, {
+                exists: visible,
+                ...(visible ? { value: copyFile(file) } : {}),
+            });
+            if (visible == wasVisible)
+                return;
+            const jobs = visible ? store.state.jobs : state.state.jobs;
+            for (const job of Object.values(jobs))
+                if (job.fileId == id)
+                    refreshJob(job.id);
+        }
+        function refreshProjection(change) {
+            if (policy?.canRead) {
+                (0, store_projection_1.reconcileStoreProjection)(state, project(account));
+                return;
+            }
+            const changed = (0, store_projection_1.collectStoreProjectionChanges)(change, ['files', 'jobs']);
+            if (!changed) {
+                (0, store_projection_1.reconcileStoreProjection)(state, project(account));
+                return;
+            }
+            for (const id of changed.get('files') ?? [])
+                refreshFile(String(id));
+            for (const id of changed.get('jobs') ?? [])
+                refreshJob(String(id));
+        }
         let view;
         view = {
-            refresh() { state.replace(project(account)); },
+            refresh: refreshProjection,
             close() {
                 views.delete(view);
                 replay.close();
@@ -122,7 +164,7 @@ function createFileJobHost(deps) {
         if (next.message != null)
             job.message = next.message;
         if (next.result !== undefined)
-            job.result = next.result;
+            job.result = (0, store_projection_1.cloneStoreProjectionValue)(next.result);
         touchJob(job);
     }
     async function runJob(jobId, input) {
@@ -147,7 +189,7 @@ function createFileJobHost(deps) {
             job.state = 'ready';
             job.progress = 1;
             if (output?.result !== undefined)
-                job.result = output.result;
+                job.result = (0, store_projection_1.cloneStoreProjectionValue)(output.result);
             touchJob(job);
         }
         catch (error) {

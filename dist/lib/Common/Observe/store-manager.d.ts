@@ -1,11 +1,12 @@
-import { ReplayRemote, ReplaySubscribeOpts } from '../events/replay-wire';
-import { createStore, Store, StoreMask, StorePatch, StoreSyncOpts } from './store';
+import { createStore, Store, StoreMask, StoreSyncOpts } from './store';
 import { OfflineStorage, OfflineStore } from './store-offline';
+import { StoreReplayRemote, StoreReplaySyncOpts } from './store-replay';
 type RemoteStore<T extends object> = {
     get(mask?: any): T | Promise<T>;
     changed: any;
     changedPaths?: any;
     patches?: any;
+    patchesBatch?: any;
     changedData?: any;
 };
 export type StoreMirror<T extends object> = Store<T> & {
@@ -48,17 +49,17 @@ export type ManagedMirrorResource<T extends object> = CommonResource<T> & {
 };
 export type ManagedReplayResource<T extends object> = CommonResource<T> & {
     kind?: 'replay';
-    remote: ReplayRemote<[StorePatch]>;
-    syncOpts?: ReplaySubscribeOpts;
+    remote: StoreReplayRemote;
+    syncOpts?: StoreReplaySyncOpts<T>;
 };
 export type ManagedOfflineResource<T extends object> = CommonResource<T> & {
     kind?: 'offline';
-    remote?: ReplayRemote<[StorePatch]>;
+    remote?: StoreReplayRemote;
     storage: OfflineStorage;
     storageKey?: string;
     version?: number;
     debounceMs?: number;
-    syncOpts?: ReplaySubscribeOpts;
+    syncOpts?: StoreReplaySyncOpts<T>;
     migrate?: (oldSnapshot: unknown, fromVersion: number, toVersion: number) => T | Promise<T>;
 };
 export type ManagedStoreResource<T extends object = any> = ManagedMirrorResource<T> | ManagedReplayResource<T> | ManagedOfflineResource<T>;

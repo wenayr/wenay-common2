@@ -63,13 +63,39 @@ async function main() {
     // deepEqual: null, Date, Map, and Set equality.
     {
         assert(deepEqual(null, null), 'deepEqual treats null values as equal')
+        assert(deepEqual(null, undefined), 'deepEqual preserves historical loose top-level null equality')
+        assert(deepEqual(1, '1'), 'deepEqual preserves historical loose top-level primitive equality')
+        assert(deepEqual(0, -0), 'deepEqual preserves historical signed-zero equality')
         assert(!deepEqual(null, {}), 'deepEqual treats null and object as different')
         assert(deepEqual(new Date('2024-01-02T03:04:05.000Z'), new Date('2024-01-02T03:04:05.000Z')), 'deepEqual compares Date time values')
         assert(!deepEqual(new Date('2024-01-02T03:04:05.000Z'), new Date('2024-01-02T03:04:06.000Z')), 'deepEqual rejects different Date time values')
         assert(deepEqual(new Map([['a', { n: 1 }]]), new Map([['a', { n: 1 }]])), 'deepEqual compares Map values structurally')
+        assert(deepEqual(new Map([['a', 1]]), new Map([['a', '1']])),
+            'deepEqual preserves historical loose primitive comparison for Map values')
         assert(!deepEqual(new Map([['a', { n: 1 }]]), new Map([['a', { n: 2 }]])), 'deepEqual rejects different Map values')
         assert(deepEqual(new Set(['a', 'b']), new Set(['b', 'a'])), 'deepEqual compares Set membership')
         assert(!deepEqual(new Set(['a', 'b']), new Set(['a', 'c'])), 'deepEqual rejects different Set membership')
+        assert(deepEqual(/quote/gi, /quote/gi), 'deepEqual compares RegExp source and flags')
+        assert(!deepEqual(/quote/g, /other/g), 'deepEqual rejects different RegExp source')
+        assert(deepEqual(new Uint8Array([1, 2]).buffer, new Uint8Array([1, 2]).buffer),
+            'deepEqual compares ArrayBuffer bytes')
+        assert(!deepEqual(new Uint8Array([1, 2]).buffer, new Uint8Array([1, 3]).buffer),
+            'deepEqual rejects different ArrayBuffer bytes')
+        assert(!deepEqual(new DataView(new Uint8Array([1]).buffer), new DataView(new Uint8Array([2]).buffer)),
+            'deepEqual compares DataView bytes')
+        const cycleA: any = {value: 1}
+        const cycleB: any = {value: 1}
+        cycleA.self = cycleA
+        cycleB.self = cycleB
+        assert(deepEqual(cycleA, cycleB), 'deepEqual handles equivalent cyclic graphs')
+        const twoCycleA: any = {value: 1}
+        const twoCycleB: any = {value: 1}
+        twoCycleA.self = twoCycleB
+        twoCycleB.self = twoCycleA
+        assert(!deepEqual(cycleA, twoCycleA), 'deepEqual rejects different cyclic graph topology')
+        const shared = {value: 1}
+        assert(deepEqual({a: shared, b: shared}, {a: {value: 1}, b: {value: 1}}),
+            'deepEqual keeps historical sharing-insensitive plain DAG comparison')
     }
 
     // StructMap/StructSet: missing composite lookup over null/primitive leaves stays safe.

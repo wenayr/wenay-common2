@@ -7,9 +7,11 @@
 
 import {clone} from '../core/common'
 import {listenStore} from '../events/Listen'
-import {ReplayRemote, ReplaySubscribeOpts} from '../events/replay-wire'
-import {createStore, Store, StorePatch} from './store'
-import {syncStoreReplay} from './store-replay'
+import {getRpcSchemaReady} from '../events/transport-lifecycle'
+import {createStore, Store} from './store'
+import {
+    storeReplayMode, syncStoreReplay, StoreReplayRemote, StoreReplaySyncOpts, tStoreReplayMode,
+} from './store-replay'
 
 export type OfflineStorage = {
     read<T>(key: string): Promise<T | undefined>
@@ -21,6 +23,8 @@ export type OfflineStorage = {
 export type OfflineStoreRecord<T extends object> = {
     version: number
     seq: number
+    /** Sequence coordinates are not interchangeable between legacy and compact replay lines. */
+    replayMode?: tStoreReplayMode
     snapshot: T
     savedAt: number
 }
@@ -41,6 +45,7 @@ export type PersistStoreOpts = {
     storage: OfflineStorage
     version?: number
     seq?: number
+    replayMode?: tStoreReplayMode
     savedAt?: number
     debounceMs?: number
     now?: () => number
@@ -50,7 +55,7 @@ export type PersistStoreOpts = {
 
 export type CreateOfflineStoreOpts<T extends object> = {
     key: string
-    remote?: ReplayRemote<[StorePatch]>
+    remote?: StoreReplayRemote
     initial: T
     storage: OfflineStorage
     version?: number
@@ -59,7 +64,7 @@ export type CreateOfflineStoreOpts<T extends object> = {
     migrate?: (oldSnapshot: unknown, fromVersion: number, toVersion: number) => T | Promise<T>
     now?: () => number
     storeOpts?: Parameters<typeof createStore<T>>[1]
-    syncOpts?: ReplaySubscribeOpts
+    syncOpts?: StoreReplaySyncOpts<T>
     onError?: (error: unknown) => void
     onStatus?: (status: OfflineStoreStatus) => void
 }
@@ -71,12 +76,13 @@ export type OfflineStore<T extends object> = Store<T> & {
     flush(): Promise<void>
     status(): OfflineStoreStatus
     statusListen: PersistedStoreControl['statusListen']
-    reconnect(remote: ReplayRemote<[StorePatch]>, opts?: ReplaySubscribeOpts): Promise<void>
+    reconnect(remote: StoreReplayRemote, opts?: StoreReplaySyncOpts<T>): Promise<void>
 }
 
 type LoadedSnapshot<T extends object> = {
     snapshot: T
     seq: number
+    replayMode: tStoreReplayMode
     savedAt?: number
 }
 
@@ -126,6 +132,7 @@ function copyStatus(status: OfflineStoreStatus): OfflineStoreStatus {
 export function persistStore<T extends object>(store: Store<T>, opts: PersistStoreOpts) {
     const {key, storage, version = 1, debounceMs = 250, now = Date.now, onStatus} = opts
     let seq = opts.seq ?? -1
+    let replayMode = opts.replayMode ?? 'legacy'
     let savedAt = opts.savedAt
     let closed = false
     let dirty = false
@@ -186,6 +193,7 @@ export function persistStore<T extends object>(store: Store<T>, opts: PersistSto
         const record: OfflineStoreRecord<T> = {
             version,
             seq,
+            replayMode,
             snapshot: store.snapshot(),
             savedAt: nextSavedAt,
         }
@@ -223,6 +231,15 @@ export function persistStore<T extends object>(store: Store<T>, opts: PersistSto
         scheduleSave()
     }
 
+    function setReplayMode(nextMode: tStoreReplayMode) {
+        if (nextMode == replayMode) return false
+        replayMode = nextMode
+        seq = -1
+        updateStatus()
+        scheduleSave()
+        return true
+    }
+
     const offStore = store.listenPaths().on(function persistStoreChange() {
         scheduleSave()
     })
@@ -244,6 +261,8 @@ export function persistStore<T extends object>(store: Store<T>, opts: PersistSto
         forceFlush,
         close,
         setSeq,
+        setReplayMode,
+        replayMode: () => replayMode,
         seq: () => seq,
         status: () => copyStatus(status),
         statusListen,
@@ -254,18 +273,21 @@ export function persistStore<T extends object>(store: Store<T>, opts: PersistSto
 async function loadSnapshot<T extends object>(opts: CreateOfflineStoreOpts<T>): Promise<LoadedSnapshot<T>> {
     const {key, storage, initial, version = 1, migrate} = opts
     const raw = await storage.read<unknown>(key)
-    if (raw == null) return {snapshot: initial, seq: -1}
+    if (raw == null) return {snapshot: initial, seq: -1, replayMode: 'legacy'}
     if (isRecord<T>(raw)) {
-        if (raw.version == version) return {snapshot: raw.snapshot, seq: raw.seq, savedAt: raw.savedAt}
+        if (raw.version == version) return {
+            snapshot: raw.snapshot, seq: raw.seq, replayMode: raw.replayMode ?? 'legacy', savedAt: raw.savedAt,
+        }
         if (migrate) return {
             snapshot: await migrate(raw.snapshot, raw.version, version),
             seq: raw.seq,
+            replayMode: raw.replayMode ?? 'legacy',
             savedAt: raw.savedAt,
         }
-        return {snapshot: initial, seq: -1}
+        return {snapshot: initial, seq: -1, replayMode: 'legacy'}
     }
-    if (migrate) return {snapshot: await migrate(raw, 0, version), seq: -1}
-    return {snapshot: initial, seq: -1}
+    if (migrate) return {snapshot: await migrate(raw, 0, version), seq: -1, replayMode: 'legacy'}
+    return {snapshot: initial, seq: -1, replayMode: 'legacy'}
 }
 
 export async function createOfflineStore<T extends object>(opts: CreateOfflineStoreOpts<T>): Promise<OfflineStore<T>> {
@@ -277,7 +299,7 @@ export async function createOfflineStore<T extends object>(opts: CreateOfflineSt
         loaded = await loadSnapshot(opts)
     } catch (e) {
         emitError(opts, e)
-        loaded = {snapshot: opts.initial, seq: -1}
+        loaded = {snapshot: opts.initial, seq: -1, replayMode: 'legacy'}
     }
 
     const store = createStore<T>(loaded.snapshot, storeOpts)
@@ -286,6 +308,7 @@ export async function createOfflineStore<T extends object>(opts: CreateOfflineSt
         storage: opts.storage,
         version: opts.version,
         seq: loaded.seq,
+        replayMode: loaded.replayMode,
         savedAt: loaded.savedAt,
         debounceMs: opts.debounceMs,
         now: opts.now,
@@ -294,48 +317,112 @@ export async function createOfflineStore<T extends object>(opts: CreateOfflineSt
     })
     let sub: ReturnType<typeof syncStoreReplay<T>> | null = null
     let ready: Promise<void> = Promise.resolve()
+    let closed = false
+    let reconnectGeneration = 0
+    let cancelReconnect: (() => void) | null = null
 
-    async function reconnect(nextRemote: ReplayRemote<[StorePatch]>, nextSyncOpts: ReplaySubscribeOpts = syncOpts) {
+    async function runReconnect(
+        generation: number,
+        cancelled: Promise<'cancelled'>,
+        nextRemote: StoreReplayRemote,
+        nextSyncOpts: StoreReplaySyncOpts<T>,
+    ) {
+        function isCurrent() {
+            return !closed && generation == reconnectGeneration
+        }
+
         sub?.()
+        sub = null
         persist.setSyncStatus({syncing: true, offline: false, ready: false, error: undefined})
-        const {onSeq, onError, onStale, since, ...rest} = nextSyncOpts
-        const effectiveSince = since ?? (persist.seq() >= 0 ? persist.seq() : undefined)
+        const effectiveSyncOpts = {...nextSyncOpts, batch: nextSyncOpts.batch ?? true}
         try {
-            sub = syncStoreReplay(store, nextRemote, {
+            const schemaReady = effectiveSyncOpts.batch ? getRpcSchemaReady(nextRemote) : undefined
+            if (schemaReady) {
+                const schemaState = await Promise.race([
+                    Promise.resolve().then(schemaReady).then(function schemaResolved() { return 'schema' as const }),
+                    cancelled,
+                ])
+                if (schemaState == 'cancelled' || !isCurrent()) return
+            }
+            if (!isCurrent()) return
+            const mode = storeReplayMode(nextRemote, effectiveSyncOpts.batch)
+            const modeChanged = persist.setReplayMode(mode)
+            const {onSeq, onError, onStale, since, ...rest} = effectiveSyncOpts
+            const effectiveSince = modeChanged ? undefined : (since ?? (persist.seq() >= 0 ? persist.seq() : undefined))
+            const candidate = syncStoreReplay(store, nextRemote, {
                 ...rest,
                 since: effectiveSince,
                 onSeq: function offlineStoreOnSeq(seq) {
+                    if (!isCurrent()) return
                     persist.setSeq(seq)
                     onSeq?.(seq)
                 },
                 onError: function offlineStoreOnError(error) {
+                    if (!isCurrent()) return
                     persist.setSyncStatus({offline: true, syncing: false, error})
                     onError?.(error)
                     if (!onError) opts.onError?.(error)
                 },
                 onStale: onStale && function offlineStoreOnStale(info) {
+                    if (!isCurrent()) return
                     persist.setSyncStatus({stale: info.stale})
                     onStale(info)
                 },
             })
-            ready = sub.ready.then(function offlineStoreReady() {
-                persist.setSyncStatus({ready: true, syncing: false})
-            })
-            await ready
+            if (!isCurrent()) { candidate(); return }
+            sub = candidate
+            const syncState = await Promise.race([
+                candidate.ready.then(function storeReplayReady() { return 'ready' as const }),
+                cancelled,
+            ])
+            if (syncState == 'cancelled' || !isCurrent()) {
+                candidate()
+                if (sub == candidate) sub = null
+                return
+            }
+            persist.setSyncStatus({ready: true, syncing: false})
         } catch (e) {
+            if (!isCurrent()) return
             persist.setSyncStatus({ready: true, syncing: false, offline: true, error: e})
             emitError(opts, e)
         }
     }
 
+    function reconnect(nextRemote: StoreReplayRemote, nextSyncOpts: StoreReplaySyncOpts<T> = syncOpts) {
+        cancelReconnect?.()
+        cancelReconnect = null
+        const generation = ++reconnectGeneration
+        if (closed) {
+            ready = Promise.resolve()
+            return ready
+        }
+        let cancel = function cancelLater() {}
+        const cancelled = new Promise<'cancelled'>(function waitForReconnectCancellation(resolve) {
+            cancel = function resolveCancellation() { resolve('cancelled') }
+        })
+        cancelReconnect = cancel
+        const run = runReconnect(generation, cancelled, nextRemote, nextSyncOpts)
+            .finally(function finishReconnectAttempt() {
+                if (generation == reconnectGeneration) cancelReconnect = null
+            })
+        ready = run
+        return run
+    }
+
     if (remote) {
-        ready = reconnect(remote)
+        reconnect(remote)
     } else {
         persist.setSyncStatus({ready: true, syncing: false, offline: true})
     }
 
     function close() {
+        if (closed) return
+        closed = true
+        reconnectGeneration++
+        cancelReconnect?.()
+        cancelReconnect = null
         sub?.()
+        sub = null
         persist.close()
     }
 

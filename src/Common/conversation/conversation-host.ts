@@ -2,8 +2,13 @@
 // Conversation host — authorized channels, messages and scoped facts
 // =====================================================================
 
-import {createStore, StoreDrain} from '../Observe/store'
+import {createStore, StoreChange, StoreDrain} from '../Observe/store'
 import {exposeStoreReplay} from '../Observe/store-replay'
+import {
+    collectStoreProjectionChanges,
+    reconcileStoreProjection,
+    reconcileStoreProjectionRecord,
+} from '../Observe/store-projection'
 import {listen as createListenPair} from '../events/Listen'
 import {replayListen} from '../events/replay-listen'
 import {exposeReplay} from '../events/replay-wire'
@@ -227,7 +232,7 @@ export type ConversationHostDeps = {
 }
 
 type ConversationView = {
-    refresh: () => void
+    refresh: (change: StoreChange) => void
     close: () => void
 }
 
@@ -420,16 +425,16 @@ export function createConversationHost(deps: ConversationHostDeps = {}) {
         }
     }
 
-    function refreshViews() {
+    function refreshViews(change: StoreChange) {
         if (closed) return
-        for (const view of views) view.refresh()
+        for (const view of views) view.refresh(change)
     }
 
     const offStore = store.listenPaths().on(refreshViews)
 
     function createView(account: string) {
         const state = createStore<ConversationStore>(project(account), drain !== undefined ? {drain} : {})
-        const stateReplay = exposeStoreReplay(state, history !== undefined ? {history} : {})
+        const stateReplay = exposeStoreReplay(state, history == undefined ? {batch: true} : {history, batch: true})
         const [emitViewEvent, events] = replayListen<[tConversationEvent]>({
             current: () => [syncEvent(account)],
             history: history ?? 1024,
@@ -438,9 +443,59 @@ export function createConversationHost(deps: ConversationHostDeps = {}) {
             const conversation = store.state.conversations[event.conversationId]
             if (conversation && readable(account, conversation)) emitViewEvent(copyMutationEvent(event))
         })
+        function refreshChannel(id: string) {
+            const channel = store.state.channels[id]
+            const visible = !!channel && !!state.state.conversations[channel.conversationId]
+            reconcileStoreProjectionRecord(state, 'channels', id, {
+                exists: visible,
+                ...(visible ? {value: copyChannel(channel!)} : {}),
+            })
+        }
+        function refreshMessage(id: string) {
+            const message = store.state.messages[id]
+            const visible = !!message && !!state.state.conversations[message.conversationId]
+            reconcileStoreProjectionRecord(state, 'messages', id, {
+                exists: visible,
+                ...(visible ? {value: copyMessage(message!)} : {}),
+            })
+        }
+        function refreshFact(id: string) {
+            const fact = store.state.facts[id]
+            const visible = !!fact && !!state.state.conversations[fact.conversationId]
+            reconcileStoreProjectionRecord(state, 'facts', id, {
+                exists: visible,
+                ...(visible ? {value: copyFact(fact!)} : {}),
+            })
+        }
+        function refreshConversation(id: string) {
+            const conversation = store.state.conversations[id]
+            const wasVisible = !!state.state.conversations[id]
+            const visible = !!conversation && readable(account, conversation)
+            reconcileStoreProjectionRecord(state, 'conversations', id, {
+                exists: visible,
+                ...(visible ? {value: copyConversation(conversation!)} : {}),
+            })
+            if (visible == wasVisible) return
+            const channels = visible ? store.state.channels : state.state.channels
+            const messages = visible ? store.state.messages : state.state.messages
+            const facts = visible ? store.state.facts : state.state.facts
+            for (const channel of Object.values(channels)) if (channel.conversationId == id) refreshChannel(channel.id)
+            for (const message of Object.values(messages)) if (message.conversationId == id) refreshMessage(message.id)
+            for (const fact of Object.values(facts)) if (fact.conversationId == id) refreshFact(fact.id)
+        }
+        function refreshProjection(change: StoreChange) {
+            // A custom policy may close over tenant membership outside the changed record.
+            if (policy?.canRead) { reconcileStoreProjection(state, project(account)); return }
+            const changed = collectStoreProjectionChanges(change, ['conversations', 'channels', 'messages', 'facts'])
+            if (!changed) { reconcileStoreProjection(state, project(account)); return }
+            for (const id of changed.get('conversations') ?? []) refreshConversation(String(id))
+            for (const id of changed.get('channels') ?? []) refreshChannel(String(id))
+            for (const id of changed.get('messages') ?? []) refreshMessage(String(id))
+            for (const id of changed.get('facts') ?? []) refreshFact(String(id))
+        }
         let view: ConversationView
         view = {
-            refresh() { state.replace(project(account)) },
+            refresh: refreshProjection,
             close() {
                 views.delete(view)
                 offEvents()

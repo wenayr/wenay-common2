@@ -3,7 +3,7 @@
 // =====================================================================
 
 import {createStore, StoreDrain} from '../Observe/store'
-import {syncStoreReplay} from '../Observe/store-replay'
+import {StoreReplayRemote, syncStoreReplay} from '../Observe/store-replay'
 import {listen as createListenPair} from '../events/Listen'
 import {ReplayRemote, replaySubscribe} from '../events/replay-wire'
 import {
@@ -18,7 +18,7 @@ import {
 
 export type AiRunRemote = {
     capabilities: () => Promise<AiCapability[]> | AiCapability[]
-    state: ReplayRemote<any>
+    state: StoreReplayRemote
     events: ReplayRemote<[AiRunEvent]>
     createRun: (request: AiRunRequest) => Promise<AiRun> | AiRun
     cancelRun: (runId: string, reason?: string) => Promise<AiRun> | AiRun
@@ -31,13 +31,15 @@ export type AiRunClientDeps = {
     remote: AiRunRemote
     initial?: AiRunStore
     drain?: StoreDrain
+    /** Prefer compact Store coordinates; false preserves legacy stateSeq values. */
+    batch?: boolean
 }
 
 export function createAiRunClient(deps: AiRunClientDeps) {
-    const {remote, initial = {runs: {}, approvals: {}, inputs: {}}, drain} = deps
+    const {remote, initial = {runs: {}, approvals: {}, inputs: {}}, drain, batch = true} = deps
     const store = createStore<AiRunStore>(initial, drain !== undefined ? {drain} : {})
     const [emitEvent, events] = createListenPair<[AiRunEvent]>()
-    const stateSync = syncStoreReplay(store, remote.state)
+    const stateSync = syncStoreReplay(store, remote.state, {batch})
     const eventSync = replaySubscribe(remote.events, function forwardEvent(event) { emitEvent(event) })
 
     async function capabilities() {
@@ -68,6 +70,7 @@ export function createAiRunClient(deps: AiRunClientDeps) {
         /** State and event replay have both completed their initial catch-up. */
         ready: Promise.all([stateSync.ready, eventSync.ready]).then(function readyAfterReplay() {}),
         stateSeq: stateSync.seq,
+        stateMode: () => stateSync.mode,
         eventSeq: eventSync.seq,
         capabilities,
         createRun,

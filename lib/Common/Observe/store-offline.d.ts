@@ -1,5 +1,5 @@
-import { ReplayRemote, ReplaySubscribeOpts } from '../events/replay-wire';
-import { createStore, Store, StorePatch } from './store';
+import { createStore, Store } from './store';
+import { StoreReplayRemote, StoreReplaySyncOpts, tStoreReplayMode } from './store-replay';
 export type OfflineStorage = {
     read<T>(key: string): Promise<T | undefined>;
     write<T>(key: string, value: T): Promise<void>;
@@ -9,6 +9,7 @@ export type OfflineStorage = {
 export type OfflineStoreRecord<T extends object> = {
     version: number;
     seq: number;
+    replayMode?: tStoreReplayMode;
     snapshot: T;
     savedAt: number;
 };
@@ -27,6 +28,7 @@ export type PersistStoreOpts = {
     storage: OfflineStorage;
     version?: number;
     seq?: number;
+    replayMode?: tStoreReplayMode;
     savedAt?: number;
     debounceMs?: number;
     now?: () => number;
@@ -35,7 +37,7 @@ export type PersistStoreOpts = {
 };
 export type CreateOfflineStoreOpts<T extends object> = {
     key: string;
-    remote?: ReplayRemote<[StorePatch]>;
+    remote?: StoreReplayRemote;
     initial: T;
     storage: OfflineStorage;
     version?: number;
@@ -44,7 +46,7 @@ export type CreateOfflineStoreOpts<T extends object> = {
     migrate?: (oldSnapshot: unknown, fromVersion: number, toVersion: number) => T | Promise<T>;
     now?: () => number;
     storeOpts?: Parameters<typeof createStore<T>>[1];
-    syncOpts?: ReplaySubscribeOpts;
+    syncOpts?: StoreReplaySyncOpts<T>;
     onError?: (error: unknown) => void;
     onStatus?: (status: OfflineStoreStatus) => void;
 };
@@ -55,7 +57,7 @@ export type OfflineStore<T extends object> = Store<T> & {
     flush(): Promise<void>;
     status(): OfflineStoreStatus;
     statusListen: PersistedStoreControl['statusListen'];
-    reconnect(remote: ReplayRemote<[StorePatch]>, opts?: ReplaySubscribeOpts): Promise<void>;
+    reconnect(remote: StoreReplayRemote, opts?: StoreReplaySyncOpts<T>): Promise<void>;
 };
 export declare function createMemoryOfflineStorage(initial?: Record<string, unknown>): OfflineStorage & {
     dump(): Record<string, unknown>;
@@ -65,6 +67,8 @@ export declare function persistStore<T extends object>(store: Store<T>, opts: Pe
     forceFlush: () => Promise<void>;
     close: () => void;
     setSeq: (nextSeq: number) => void;
+    setReplayMode: (nextMode: tStoreReplayMode) => boolean;
+    replayMode: () => tStoreReplayMode;
     seq: () => number;
     status: () => OfflineStoreStatus;
     statusListen: {

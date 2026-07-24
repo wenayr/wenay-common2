@@ -21,8 +21,8 @@ export type StorePlaybackOpts = {
     /** Cap for a single inter-event pause, ms (long recorded silences fast-forward). */
     maxStepMs?: number
     drain?: StoreDrain
-    /** Passed through to the playback head (describe/history/now). */
-    expose?: Pick<StoreReplayOpts, 'describe' | 'history' | 'now'>
+    /** Passed through to the playback head (describe/history/now/batch). */
+    expose?: Pick<StoreReplayOpts, 'describe' | 'history' | 'now' | 'batch'>
 }
 
 export function playbackStoreReplay<T extends object>(storage: ReplayStorage<[StorePatch]>, opts: StorePlaybackOpts = {}) {

@@ -8,3 +8,4 @@ export * from "./store-manager";
 export * from "./store-durable";
 export * from "./store-playback";
 export * from "./node-health";
+export * from './replicated-map';

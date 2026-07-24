@@ -4,6 +4,7 @@ exports.resolveCA = exports.errToObj = void 0;
 exports.walk = walk;
 exports.pack = pack;
 exports.packResult = packResult;
+exports.createRpcCallbackWrapper = createRpcCallbackWrapper;
 exports.rpcEndCallback = rpcEndCallback;
 exports.unpack = unpack;
 exports.unpackResult = unpackResult;
@@ -108,6 +109,17 @@ function packResult(value) {
     return walk(value, leaf => serializeLeaf(leaf));
 }
 const _stopRegistry = new WeakMap();
+function createRpcCallbackWrapper({ id, sender, onEnd, legacyStopSentinel = false, }) {
+    function rpcCallbackWrapper(...args) {
+        if (legacyStopSentinel && args[0] == rpc_protocol_1.RPC_STOP) {
+            onEnd(id);
+            return;
+        }
+        sender(id, args);
+    }
+    _stopRegistry.set(rpcCallbackWrapper, function endRpcCallbackWrapper() { onEnd(id); });
+    return rpcCallbackWrapper;
+}
 function rpcEndCallback(fn) {
     _stopRegistry.get(fn)?.();
 }
@@ -122,15 +134,12 @@ function unpack(args, sender, onEnd, lim) {
             const id = leaf[FN_MARKER];
             if (typeof id !== "number" || !Number.isFinite(id))
                 throw new rpc_limits_1.PayloadLimitError("invalid callback id");
-            const wrapper = (...a) => {
-                if (a[0] == rpc_protocol_1.RPC_STOP) {
-                    onEnd(id);
-                    return;
-                }
-                sender(id, a);
-            };
-            _stopRegistry.set(wrapper, () => onEnd(id));
-            return wrapper;
+            return createRpcCallbackWrapper({
+                id,
+                sender,
+                onEnd,
+                legacyStopSentinel: true,
+            });
         }
         return deserializeLeaf(leaf, undefined, lim);
     }, lim));

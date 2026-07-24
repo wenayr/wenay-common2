@@ -15,6 +15,7 @@ import {Server as SocketIOServer} from 'socket.io'
 import {io} from 'socket.io-client'
 import {createRpcServerAuto} from '../../src/Common/rcp/rpc-server-auto'
 import {createRpcClientHub} from '../../src/Common/rcp/rpc-clientHub'
+import type {RpcOpt} from '../../src/Common/rcp/rpc-caps'
 import {listen as createListenPair} from '../../src/Common/events/Listen'
 
 export const delay = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -56,7 +57,7 @@ export async function startRealServer(opts: ServerOpts) {
 }
 
 // ===== real socket.io client (via hub) =====
-type ClientOpts = {port: number, token?: string | null, socketKey?: string, opt?: {compact?: boolean}}
+type ClientOpts = {port: number, token?: string | null, socketKey?: string, opt?: RpcOpt}
 
 export async function startRealClient<T extends object = any>(opts: ClientOpts) {
     const {port, token = null, socketKey = 'rpc', opt} = opts

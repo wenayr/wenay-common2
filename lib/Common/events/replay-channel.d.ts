@@ -2,6 +2,8 @@ import { ReplayRemote } from './replay-wire';
 export type ReplayMessageChannel = {
     send: (data: string) => void;
     onMessage: (cb: (data: string) => void) => (() => void) | void;
+    sendBinary?: (data: Uint8Array) => void;
+    onBinaryMessage?: (cb: (data: Uint8Array) => void) => (() => void) | void;
     onClose?: (cb: () => void) => (() => void) | void;
     close?: () => void;
 };

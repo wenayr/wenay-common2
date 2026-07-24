@@ -20,6 +20,8 @@ function replayRouteSubscribe(remote, cb, opts = {}) {
     let currentLabel = opts.label;
     let switchChain = Promise.resolve();
     const slots = new Set();
+    let deliveryQueue = [];
+    let delivering = false;
     function emitRoute(ev) {
         if (!onRoute)
             return;
@@ -30,12 +32,44 @@ function replayRouteSubscribe(remote, cb, opts = {}) {
             setTimeout(function rethrowRouteEvent() { throw e; }, 0);
         }
     }
-    function deliver(ev) {
+    function reportRouteError(error) {
+        if (!onError)
+            return;
+        try {
+            onError(error);
+        }
+        catch (caught) {
+            setTimeout(function rethrowRouteErrorCallback() { throw caught; }, 0);
+        }
+    }
+    function deliverOne(ev) {
         if (closed || ev.seq <= lastDelivered)
             return;
-        lastDelivered = ev.seq;
         cb(...ev.event);
-        onSeq?.(ev.seq);
+        lastDelivered = ev.seq;
+        if (onSeq) {
+            try {
+                onSeq(ev.seq);
+            }
+            catch (error) {
+                setTimeout(function rethrowRouteOnSeq() { throw error; }, 0);
+            }
+        }
+    }
+    function deliver(ev) {
+        deliveryQueue.push(ev);
+        if (delivering)
+            return;
+        delivering = true;
+        let index = 0;
+        try {
+            while (!closed && index < deliveryQueue.length)
+                deliverOne(deliveryQueue[index++]);
+        }
+        finally {
+            deliveryQueue.length = 0;
+            delivering = false;
+        }
     }
     function deliverMany(envs, allowReset) {
         if (allowReset && envs.length && envs[0].seq <= lastDelivered) {
@@ -45,82 +79,165 @@ function replayRouteSubscribe(remote, cb, opts = {}) {
             deliver(ev);
     }
     function attach(nextRemote, since, nextOpts, allowReset) {
-        const { policy = 'queue', hint, label } = nextOpts;
+        const { policy = 'queue', hint, label, timeoutMs } = nextOpts;
         let slot;
         let slotClosed = false;
         let replaying = true;
-        let lineError;
+        let lineFailed = false;
+        let handle;
+        const slotClosedResult = Symbol('replay route slot closed');
+        let resolveSlotEnd = function resolveRouteSlotLater(_result) { };
+        let rejectSlotEnd = function rejectRouteSlotLater(_error) { };
+        const slotEnd = new Promise(function waitForRouteSlotEnd(resolve, reject) {
+            resolveSlotEnd = resolve;
+            rejectSlotEnd = reject;
+        });
         const queue = [];
-        const frameLineState = (0, transport_lifecycle_1.getRpcMemberState)(nextRemote, 'frameLine');
-        const liveLine = policy == 'frame' && frameLineState != false && nextRemote.frameLine ? nextRemote.frameLine : nextRemote.line;
-        const handle = liveLine.on(function liveTap(ev) {
+        function disposeSlot() {
+            if (slotClosed)
+                return;
+            slotClosed = true;
+            queue.length = 0;
+            unsubscribeHandle(handle);
+            slots.delete(slot);
+        }
+        function closeSlot() {
+            if (slotClosed)
+                return;
+            resolveSlotEnd(slotClosedResult);
+            disposeSlot();
+        }
+        function failLine(error) {
+            if (lineFailed || slotClosed)
+                return;
+            lineFailed = true;
+            rejectSlotEnd(error);
+            disposeSlot();
+            if (!replaying) {
+                reportRouteError(error);
+            }
+        }
+        function liveTap(ev) {
             if (slotClosed)
                 return;
             if (ev == null || typeof ev.seq != 'number') {
-                lineError = new Error('replayRouteSubscribe: line ended by route (' + String(ev) + ')');
-                slot.close();
-                if (!replaying)
-                    onError?.(lineError);
+                failLine(new Error('replayRouteSubscribe: line ended by route (' + String(ev) + ')'));
                 return;
             }
             if (replaying)
                 queue.push(ev);
-            else
-                deliver(ev);
-        });
-        function closeSlot() {
+            else {
+                try {
+                    deliver(ev);
+                }
+                catch (error) {
+                    failLine(error);
+                }
+            }
+        }
+        function attachLiveLine() {
             if (slotClosed)
                 return;
-            slotClosed = true;
-            unsubscribeHandle(handle);
-            slots.delete(slot);
-        }
-        async function catchUp() {
+            const liveLine = policy == 'frame' && (0, transport_lifecycle_1.rpcMemberMayBeAvailable)(nextRemote, 'frameLine')
+                ? nextRemote.frameLine
+                : nextRemote.line;
             try {
-                let done = false;
-                const frameState = (0, transport_lifecycle_1.getRpcMemberState)(nextRemote, 'frame');
-                if (since >= 0 && frameState != false && nextRemote.frame) {
-                    const envs = await nextRemote.frame(since, hint);
-                    if (slotClosed)
-                        return;
-                    if (envs) {
-                        deliverMany(envs, allowReset);
-                        done = true;
-                    }
+                handle = liveLine.on(liveTap);
+                if (!slotClosed && typeof handle?.then == 'function') {
+                    handle.then(function routeLineEnded() { failLine(new Error('replayRouteSubscribe: logical route line ended')); }, function routeLineRejected(error) { failLine(error); });
                 }
-                if (!done) {
-                    const tail = since >= 0 ? await nextRemote.since(since) : null;
-                    if (slotClosed)
-                        return;
-                    if (tail) {
-                        deliverMany(tail, false);
-                    }
-                    else {
-                        const kf = await nextRemote.keyframe();
-                        if (slotClosed)
-                            return;
-                        if (kf)
-                            deliverMany([kf], allowReset);
-                    }
-                }
-                if (lineError)
-                    throw lineError;
-                while (queue.length)
-                    deliver(queue.shift());
-                replaying = false;
             }
-            catch (e) {
-                closeSlot();
-                throw e;
+            catch (error) {
+                failLine(error);
+            }
+            if (slotClosed) {
+                unsubscribeHandle(handle);
+                handle = null;
             }
         }
+        const schemaReady = (0, transport_lifecycle_1.getRpcSchemaReady)(nextRemote);
+        let lineReady;
+        if (schemaReady) {
+            try {
+                lineReady = Promise.resolve(schemaReady()).then(attachLiveLine);
+            }
+            catch (error) {
+                lineReady = Promise.reject(error);
+            }
+            lineReady.catch(function deferRouteLineReadyFailureToCatchUp() { });
+        }
+        else {
+            attachLiveLine();
+            lineReady = Promise.resolve();
+        }
+        function waitForSlot(value) {
+            return Promise.race([Promise.resolve(value), slotEnd]);
+        }
+        async function catchUpRemote() {
+            const lineState = await waitForSlot(lineReady);
+            if (lineState == slotClosedResult)
+                return;
+            let done = false;
+            if (since >= 0 && (0, transport_lifecycle_1.rpcMemberMayBeAvailable)(nextRemote, 'frame')) {
+                const envs = await waitForSlot(nextRemote.frame(since, hint));
+                if (envs == slotClosedResult)
+                    return;
+                if (envs) {
+                    deliverMany(envs, allowReset);
+                    done = true;
+                }
+            }
+            if (!done) {
+                const tail = since >= 0 ? await waitForSlot(nextRemote.since(since)) : null;
+                if (tail == slotClosedResult)
+                    return;
+                if (tail) {
+                    deliverMany(tail, false);
+                }
+                else {
+                    const kf = await waitForSlot(nextRemote.keyframe());
+                    if (kf == slotClosedResult)
+                        return;
+                    if (kf)
+                        deliverMany([kf], allowReset);
+                }
+            }
+            for (let index = 0; index < queue.length; index++)
+                deliver(queue[index]);
+            queue.length = 0;
+            replaying = false;
+        }
+        const catchUpReady = Promise.race([
+            catchUpRemote(),
+            slotEnd.then(function routeSlotClosed() { }),
+        ]).catch(function closeFailedRoute(error) {
+            disposeSlot();
+            throw error;
+        });
         slot = {
             label,
-            ready: catchUp(),
+            ready: catchUpReady,
             close: closeSlot,
             closed: () => slotClosed,
         };
-        slots.add(slot);
+        if (timeoutMs != null) {
+            slot.ready = new Promise(function boundRouteCatchUp(resolve, reject) {
+                const timer = setTimeout(function routeCatchUpTimedOut() {
+                    const error = new Error('route catch-up timeout: ' + (label ?? 'route'));
+                    closeSlot();
+                    reject(error);
+                }, timeoutMs);
+                catchUpReady.then(function routeCatchUpFinished() {
+                    clearTimeout(timer);
+                    resolve();
+                }, function routeCatchUpFailed(error) {
+                    clearTimeout(timer);
+                    reject(error);
+                });
+            });
+        }
+        if (!slotClosed)
+            slots.add(slot);
         return slot;
     }
     async function doSwitch(nextRemote, nextOpts = {}, initial = false) {
@@ -139,14 +256,14 @@ function replayRouteSubscribe(remote, cb, opts = {}) {
                 return;
             active = slot;
             currentLabel = slot.label;
-            if (from && from !== slot)
+            if (from && from != slot)
                 from.close();
             emitRoute({ phase: 'ready', from: fromLabel, to: toLabel, seq: lastDelivered });
         }
         catch (e) {
             slot.close();
             emitRoute({ phase: 'error', from: fromLabel, to: toLabel, seq: lastDelivered, error: e });
-            onError?.(e);
+            reportRouteError(e);
             throw e;
         }
     }
@@ -162,6 +279,7 @@ function replayRouteSubscribe(remote, cb, opts = {}) {
         if (closed)
             return;
         closed = true;
+        deliveryQueue.length = 0;
         for (const slot of Array.from(slots))
             slot.close();
         active = null;

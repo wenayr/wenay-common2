@@ -6,11 +6,19 @@ const common_1 = require("../core/common");
 const Listen_1 = require("../events/Listen");
 const store_1 = require("./store");
 const store_replay_1 = require("./store-replay");
+const transport_lifecycle_1 = require("../events/transport-lifecycle");
 const store_follower_1 = require("./store-follower");
 function errorText(error) {
     if (typeof error?.message == 'string')
         return error.message;
     return String(error);
+}
+async function optionalRemoteMember(remote, member) {
+    if ((0, transport_lifecycle_1.hasRpcMemberLookup)(remote)) {
+        await (0, transport_lifecycle_1.getRpcSchemaReady)(remote)?.();
+        return (0, transport_lifecycle_1.rpcMemberAvailable)(remote, member);
+    }
+    return remote?.[member] != null;
 }
 function unsubscribeHandle(handle) {
     if (typeof handle == 'function') {
@@ -109,7 +117,8 @@ function createStoreReplicaSet(deps) {
     const pingTimeoutMs = deps.route?.pingTimeoutMs ?? 3000;
     const hysteresisMs = deps.route?.hysteresisMs ?? 8;
     const store = deps.store ?? (0, store_1.createStore)((deps.initial ?? {}));
-    const exposed = (0, store_replay_1.exposeStoreReplay)(store, deps.expose);
+    const exposeOpts = deps.expose ?? {};
+    const exposed = (0, store_replay_1.exposeStoreReplay)(store, { ...exposeOpts, batch: exposeOpts.batch ?? true });
     const offers = new Map();
     const [emitDescriptor, descriptorChanges] = (0, Listen_1.listen)();
     const [emitConflict, conflictListen] = (0, Listen_1.listen)();
@@ -135,6 +144,7 @@ function createStoreReplicaSet(deps) {
     let opChain = Promise.resolve();
     let readySettled = false;
     let lastPublishedDescriptor = null;
+    let dataStatusScheduled = false;
     let settleReady = function settleReadyLater() { };
     const ready = new Promise(function waitForReplicaReady(resolve) { settleReady = resolve; });
     function settleReplicaReady() {
@@ -178,6 +188,7 @@ function createStoreReplicaSet(deps) {
         };
     }
     function publishStatus() {
+        dataStatusScheduled = false;
         const routes = {};
         for (const [id, entry] of offers)
             routes[id] = routeSnapshot(entry);
@@ -204,6 +215,16 @@ function createStoreReplicaSet(deps) {
             emitDescriptor(current);
         }
         settleReplicaReady();
+    }
+    function scheduleDataStatus() {
+        if (closed || dataStatusScheduled)
+            return;
+        dataStatusScheduled = true;
+        queueMicrotask(function publishReplicaDataStatus() {
+            if (!dataStatusScheduled || closed)
+                return;
+            publishStatus();
+        });
     }
     const status = (0, store_1.createStore)({
         role,
@@ -328,9 +349,12 @@ function createStoreReplicaSet(deps) {
         scheduleReconcile('route failed');
     }
     async function ping(entry, generation) {
-        const probe = entry.session?.remote.ping;
-        if (!probe)
+        const session = entry.session;
+        if (!session || !(await optionalRemoteMember(session.remote, 'ping')))
             return 0;
+        if (generation != entry.generation || session != entry.session)
+            throw new Error('stale ping generation');
+        const probe = session.remote.ping;
         const started = now();
         let timeoutHandle = null;
         const timeout = new Promise(function pingDeadline(_resolve, reject) {
@@ -419,9 +443,14 @@ function createStoreReplicaSet(deps) {
             entry.offFail = session.onFail?.on(function replicaSessionFailed(reason) {
                 failEntry(entry, reason ?? new Error('replica session failed'));
             }) ?? null;
-            entry.offChanged = session.remote.changed?.on(function remoteDescriptorChanged() {
-                void refreshEntry(entry);
-            }) ?? null;
+            const hasChanged = await optionalRemoteMember(session.remote, 'changed');
+            if (closed || generation != entry.generation || entry.session != session)
+                return;
+            if (hasChanged) {
+                entry.offChanged = session.remote.changed.on(function remoteDescriptorChanged() {
+                    void refreshEntry(entry);
+                });
+            }
             await refreshEntry(entry);
         }
         catch (error) {
@@ -517,11 +546,11 @@ function createStoreReplicaSet(deps) {
         return { detectedAt: now(), local: localDescriptor, authority: next, localState, authorityState, diff };
     }
     function trackAuthoritySeq(seq) {
-        if (activeDescriptor?.lineId == activeDescriptor?.authorityLineId)
+        if (activeDescriptor?.lineId == activeDescriptor?.authorityLineId && upstreamSub?.mode == 'legacy')
             authoritySeq = seq;
         else
             authoritySeq = Math.max(authoritySeq, activeDescriptor?.authoritySeq ?? -1);
-        publishStatus();
+        scheduleDataStatus();
     }
     async function follow(entry, next, reason) {
         const session = entry.session;
@@ -538,14 +567,13 @@ function createStoreReplicaSet(deps) {
         const previousCost = authorityCost;
         const previousPath = authorityPath;
         const previousProof = proof;
-        const localState = store.snapshot();
         const authorityChanged = !sameAuthority(previousDescriptor ?? (previousRole == 'leader' ? previousAuthority : null), next);
         const sameSequenceSpace = sameAuthority(previousDescriptor, next) && previousDescriptor?.lineId == next.lineId;
         const authorityFrame = previousRole == 'leader' && authorityChanged
             ? keyframeState(await session.remote.replay.keyframe())
             : null;
         const pendingConflict = authorityFrame
-            ? conflictFor(localState, authorityFrame, previousAuthority, next)
+            ? conflictFor(store.snapshot(), authorityFrame, previousAuthority, next)
             : null;
         role = 'reconciling';
         leaderId = next.leaderId;
@@ -561,6 +589,7 @@ function createStoreReplicaSet(deps) {
             if (!upstreamSub) {
                 created = true;
                 upstreamSub = (0, store_replay_1.syncStoreReplayRoute)(store, session.remote.replay, {
+                    batch: deps.route?.batch ?? false,
                     label: entry.offer.id,
                     since: -1,
                     reset: true,
@@ -736,7 +765,7 @@ function createStoreReplicaSet(deps) {
     const offHead = exposed.replay.line.on(function localReplicaHeadChanged() {
         if (role == 'leader')
             authoritySeq = exposed.replay.head();
-        publishStatus();
+        scheduleDataStatus();
     });
     const offOfferSource = deps.offers?.changes.on(function replaceDiscoveredOffers(next) { setOffers(next); }) ?? null;
     if (deps.offers)

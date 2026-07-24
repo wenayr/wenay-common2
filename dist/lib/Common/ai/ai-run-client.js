@@ -6,10 +6,10 @@ const store_replay_1 = require("../Observe/store-replay");
 const Listen_1 = require("../events/Listen");
 const replay_wire_1 = require("../events/replay-wire");
 function createAiRunClient(deps) {
-    const { remote, initial = { runs: {}, approvals: {}, inputs: {} }, drain } = deps;
+    const { remote, initial = { runs: {}, approvals: {}, inputs: {} }, drain, batch = true } = deps;
     const store = (0, store_1.createStore)(initial, drain !== undefined ? { drain } : {});
     const [emitEvent, events] = (0, Listen_1.listen)();
-    const stateSync = (0, store_replay_1.syncStoreReplay)(store, remote.state);
+    const stateSync = (0, store_replay_1.syncStoreReplay)(store, remote.state, { batch });
     const eventSync = (0, replay_wire_1.replaySubscribe)(remote.events, function forwardEvent(event) { emitEvent(event); });
     async function capabilities() {
         return remote.capabilities();
@@ -31,6 +31,7 @@ function createAiRunClient(deps) {
         events,
         ready: Promise.all([stateSync.ready, eventSync.ready]).then(function readyAfterReplay() { }),
         stateSeq: stateSync.seq,
+        stateMode: () => stateSync.mode,
         eventSeq: eventSync.seq,
         capabilities,
         createRun,

@@ -3,12 +3,11 @@
 // =====================================================================
 
 import {createStore, StoreDrain} from '../Observe/store'
-import {syncStoreReplay} from '../Observe/store-replay'
-import {ReplayRemote} from '../events/replay-wire'
+import {StoreReplayRemote, syncStoreReplay} from '../Observe/store-replay'
 import {FileJob, FileJobStore, FileResource, FileUploadRequest} from './file-job-host'
 
 export type FileJobRemote = {
-    state: ReplayRemote<any>
+    state: StoreReplayRemote
     startUpload: (request: FileUploadRequest) => Promise<{file: FileResource, upload: unknown}> | {file: FileResource, upload: unknown}
     confirmUpload: (fileId: string) => Promise<FileResource> | FileResource
     startJob: (fileId: string, input: unknown) => Promise<FileJob> | FileJob
@@ -21,12 +20,14 @@ export type FileJobClientDeps = {
     remote: FileJobRemote
     initial?: FileJobStore
     drain?: StoreDrain
+    /** Prefer compact Store coordinates; false preserves legacy seq values. */
+    batch?: boolean
 }
 
 export function createFileJobClient(deps: FileJobClientDeps) {
-    const {remote, initial = {files: {}, jobs: {}}, drain} = deps
+    const {remote, initial = {files: {}, jobs: {}}, drain, batch = true} = deps
     const store = createStore<FileJobStore>(initial, drain !== undefined ? {drain} : {})
-    const sync = syncStoreReplay(store, remote.state)
+    const sync = syncStoreReplay(store, remote.state, {batch})
 
     async function startUpload(request: FileUploadRequest) {
         return remote.startUpload(request)
@@ -53,6 +54,7 @@ export function createFileJobClient(deps: FileJobClientDeps) {
         store,
         ready: sync.ready,
         seq: sync.seq,
+        stateMode: () => sync.mode,
         startUpload,
         confirmUpload,
         startJob,

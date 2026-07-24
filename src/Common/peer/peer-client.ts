@@ -12,9 +12,17 @@
 import {applyStorePatch, createStore, StoreDrain, StorePatch} from '../Observe/store'
 import {exposeStoreReplay} from '../Observe/store-replay'
 import {exposeReplay, ReplayRemote} from '../events/replay-wire'
+import {getRpcMemberState, getRpcSchemaReady, getRpcTransportLifecycle} from '../events/transport-lifecycle'
 import {createRouteCoordinator, RouteConnector, RoutePolicy, tConnectorState} from '../events/route-coordinator'
 import {acceptWebRtcDirect, createWebRtcConnector, RtcPeerConnection, SignalEnvelope, SignalPort} from '../events/route-signal-webrtc'
 import {PatchEnvelope, RelayPushResult, tRelayGap} from './peer-relay'
+import {
+    PEER_PUBLISH_BATCH_MAX_BYTES,
+    createMeasuredPeerPublishBatchQueue,
+    splitMeasuredPeerPublishEnvelopes,
+    tMeasuredPeerPublishBatch,
+} from './peer-publish-batch'
+import {readPeerRelayFrame, readPeerRelaySeq} from './peer-remote-compat'
 
 /** Runtime shape of the host fragment as seen through the client deep proxy. */
 export type PeerRemote = {
@@ -23,6 +31,8 @@ export type PeerRemote = {
         signals: {on: (cb: (env: SignalEnvelope) => void) => any}
     }
     publish: (env: PatchEnvelope) => Promise<RelayPushResult | void> | RelayPushResult | void
+    /** Present on batching hosts; legacy hosts keep serving `publish`. */
+    publishBatch?: (envelopes: PatchEnvelope[]) => Promise<RelayPushResult | void> | RelayPushResult | void
     peers: Record<string, ReplayRemote<[StorePatch]> & {seq?: () => number | Promise<number>}>
     /** Present on hosts >= 1.0.74: who is online (subscribe to changes FIRST, then list()). */
     presence?: {
@@ -82,6 +92,15 @@ export function createPeerClient<T extends object, J extends tRelayGap = 'resume
     // request. One repair at a time; envelopes racing past it get re-rejected with
     // a fresh coordinate, so the loop converges by induction.
     let repairing: Promise<void> | null = null
+    let closed = false
+
+    function peerClientClosedError() {
+        return new Error('peer client closed')
+    }
+
+    function ensurePeerClientOpen() {
+        if (closed) throw peerClientClosedError()
+    }
 
     function repairEnvelopes(from: number): PatchEnvelope[] {
         const line = exposed.replay
@@ -98,45 +117,291 @@ export function createPeerClient<T extends object, J extends tRelayGap = 'resume
         return kf ? [kf] : []
     }
 
-    async function runRepair(from: number) {
-        for (const env of repairEnvelopes(from)) {
-            const res = await remote.publish(env)
-            if (res != null && typeof res == 'object') {
-                throw new Error('peer publish: repair rejected at relay seq ' + res.seq)
+    // RPC schema is the capability handshake. A plain in-process remote has no
+    // schema, so the first batch call is the probe and falls back once on reject.
+    type tPublishMode = 'batch' | 'legacy' | 'probe'
+    const publishLifecycle = getRpcTransportLifecycle(remote)
+    const publishSchemaReady = getRpcSchemaReady(remote)
+    let publishGeneration = publishLifecycle?.generation()
+
+    function detectPublishMode(): tPublishMode {
+        const state = getRpcMemberState(remote, 'publishBatch')
+        if (state == true) return 'batch'
+        if (state == false) return 'legacy'
+        if (publishSchemaReady) return 'probe'
+        if (typeof remote.publishBatch != 'function') return 'legacy'
+        return 'probe'
+    }
+
+    let publishMode = detectPublishMode()
+
+    function refreshPublishMode() {
+        const generation = publishLifecycle?.generation()
+        const generationChanged = generation != publishGeneration
+        if (generationChanged) publishGeneration = generation
+        const detected = detectPublishMode()
+        if (detected != 'probe' || generationChanged) publishMode = detected
+        return publishMode
+    }
+
+    type PublishItem = PatchEnvelope
+    type PublishBatch = tMeasuredPeerPublishBatch<PublishItem>
+
+    async function publishLegacy(batches: readonly PublishBatch[], sequential = false) {
+        ensurePeerClientOpen()
+        if (sequential) {
+            for (const batch of batches) {
+                for (const item of batch.items) {
+                    ensurePeerClientOpen()
+                    const result = await remote.publish(item)
+                    if (result == false || (result != null && typeof result == 'object')) return result
+                }
             }
+            return true as RelayPushResult
+        }
+        const calls: Array<Promise<RelayPushResult | void>> = []
+        for (const batch of batches) {
+            for (const item of batch.items) {
+                ensurePeerClientOpen()
+                calls.push(Promise.resolve(remote.publish(item)))
+            }
+        }
+        const results = await Promise.all(calls)
+        for (const result of results) {
+            if (result == false || (result != null && typeof result == 'object')) return result
+        }
+        return true as RelayPushResult
+    }
+
+    function canPublishBatch(batch: PublishBatch) {
+        return batch.byteLength <= PEER_PUBLISH_BATCH_MAX_BYTES
+    }
+
+    function publishBatchGroup(batch: PublishBatch) {
+        ensurePeerClientOpen()
+        if (!canPublishBatch(batch)) return Promise.resolve(remote.publish(batch.items[0]))
+        return Promise.resolve(remote.publishBatch!(batch.items))
+    }
+
+    async function publishKnownBatches(batches: readonly PublishBatch[], sequential = false) {
+        if (sequential) {
+            for (const batch of batches) {
+                const result = await publishBatchGroup(batch)
+                if (result == false || (result != null && typeof result == 'object')) return result
+            }
+            return true as RelayPushResult
+        }
+        const calls: Array<Promise<RelayPushResult | void>> = []
+        for (const batch of batches) calls.push(publishBatchGroup(batch))
+        const results = await Promise.all(calls)
+        for (const result of results) {
+            if (result == false || (result != null && typeof result == 'object')) return result
+        }
+        return true as RelayPushResult
+    }
+
+    async function publishBatches(batches: readonly PublishBatch[], sequential = false) {
+        ensurePeerClientOpen()
+        if (publishSchemaReady && getRpcMemberState(remote, 'publishBatch') == undefined) {
+            await publishSchemaReady()
+            ensurePeerClientOpen()
+        }
+        refreshPublishMode()
+        if (publishMode == 'legacy') return publishLegacy(batches, sequential)
+        if (publishMode == 'batch') {
+            try {
+                return await publishKnownBatches(batches, sequential)
+            } catch (error) {
+                // A rolling downgrade changes the current RPC schema. Re-read it
+                // before deciding whether this is a transport error or a legacy host.
+                if (closed) throw error
+                const modeAfterError = refreshPublishMode()
+                if (modeAfterError == 'legacy') return publishLegacy(batches, sequential)
+                throw error
+            }
+        }
+
+        const [first, ...rest] = batches
+        if (!first) return true as RelayPushResult
+        if (!canPublishBatch(first)) return publishLegacy(batches, sequential)
+        try {
+            const result = await remote.publishBatch!(first.items)
+            ensurePeerClientOpen()
+            publishMode = 'batch'
+            if (result == false || (result != null && typeof result == 'object')) return result
+        } catch (error) {
+            if (closed) throw error
+            refreshPublishMode()
+            if (publishMode == 'probe') publishMode = 'legacy'
+            // If the probe reached a new relay but its response was lost, replaying
+            // legacy envelopes is still safe because owner seq makes them idempotent.
+            return publishLegacy(batches, sequential)
+        }
+        return publishKnownBatches(rest, sequential)
+    }
+
+    async function runRepair(from: number) {
+        ensurePeerClientOpen()
+        const batches = splitMeasuredPeerPublishEnvelopes(repairEnvelopes(from))
+        const res = await publishBatches(batches, true)
+        if (res != null && typeof res == 'object') {
+            throw new Error('peer publish: repair rejected at relay seq ' + res.seq)
         }
     }
 
     function queueRepair(from: number) {
-        if (repairing) return
+        if (closed) return Promise.resolve()
+        if (repairing) return repairing
         repairing = runRepair(from)
             .catch(function reportRepairError(e) {
+                if (closed) return
                 if (onPublishError) onPublishError(e)
                 else setTimeout(function rethrowRepairError() { throw e }, 0)
             })
-            .finally(() => { repairing = null })
+            .finally(function finishRepair() { repairing = null })
+        return repairing
     }
 
-    function handleVerdict(res: RelayPushResult | void) {
-        if (res != null && typeof res == 'object' && typeof res.seq == 'number') queueRepair(res.seq)
+    async function handleVerdict(res: RelayPushResult | void) {
+        if (closed) return
+        if (res != null && typeof res == 'object' && typeof res.seq == 'number') await queueRepair(res.seq)
     }
+
+    async function publishQueued(batch: PublishBatch) {
+        await handleVerdict(await publishBatches([batch]))
+    }
+
+    function reportPublishReject(error: unknown) {
+        try {
+            onPublishError?.(error)
+        } catch (callbackError) {
+            setTimeout(function rethrowPublishErrorCallback() { throw callbackError }, 0)
+        }
+    }
+
+    type PublishWork =
+        | {kind: 'batch', batch: PublishBatch}
+        | {
+            kind: 'barrier'
+            run: () => Promise<void>
+            resolve: () => void
+            reject: (error: unknown) => void
+        }
+    type PublishBarrier = Extract<PublishWork, {kind: 'barrier'}>
+
+    const MAX_PENDING_PUBLISH_BATCHES = 64
+    const publishWork: PublishWork[] = []
+    let publishing = false
+    let activeBarrier: PublishBarrier | null = null
+
+    async function drainPublishWork() {
+        if (publishing || closed) return
+        publishing = true
+        try {
+            while (!closed && publishWork.length) {
+                const work = publishWork.shift()!
+                if (work.kind == 'batch') {
+                    try { await publishQueued(work.batch) }
+                    catch (error) {
+                        if (!closed) reportPublishReject(error)
+                    }
+                    continue
+                }
+                activeBarrier = work
+                try {
+                    await work.run()
+                    if (closed) work.reject(peerClientClosedError())
+                    else work.resolve()
+                } catch (error) {
+                    work.reject(error)
+                } finally {
+                    if (activeBarrier == work) activeBarrier = null
+                }
+            }
+        } finally {
+            publishing = false
+            if (!closed && publishWork.length) void drainPublishWork()
+        }
+    }
+
+    function pendingBatchSuffixLength() {
+        let count = 0
+        for (let index = publishWork.length - 1; index >= 0; index--) {
+            if (publishWork[index].kind != 'batch') break
+            count++
+        }
+        return count
+    }
+
+    function dispatchPublish(batch: PublishBatch) {
+        if (closed) return
+        const pendingBatches = pendingBatchSuffixLength()
+        if (journal != 'sacred' && pendingBatches >= MAX_PENDING_PUBLISH_BATCHES) {
+            const keyframe = exposed.replay.keyframe()
+            const root = keyframe ? splitMeasuredPeerPublishEnvelopes([keyframe])[0] : undefined
+            publishWork.length -= pendingBatches
+            publishWork.push({kind: 'batch', batch: root ?? batch})
+        } else {
+            publishWork.push({kind: 'batch', batch})
+        }
+        void drainPublishWork()
+    }
+
+    function rejectPublishWork(error: Error) {
+        const pending = publishWork.splice(0)
+        for (const work of pending) {
+            if (work.kind == 'barrier') work.reject(error)
+        }
+        const active = activeBarrier
+        activeBarrier = null
+        active?.reject(error)
+    }
+
+    const publishQueue = createMeasuredPeerPublishBatchQueue<PublishItem>({
+        emit: dispatchPublish,
+        schedule: queueMicrotask,
+    })
 
     const offPublish = exposed.replay.line.on(function publishEnvelope(env: PatchEnvelope) {
-        Promise.resolve(remote.publish(env)).then(handleVerdict, function onPublishReject(e) {
-            // transport hiccup: the NEXT publish gets a {seq} verdict and repairs the gap
-            onPublishError?.(e)
-        })
+        publishQueue.push(env)
     })
     const warmup = exposed.replay.keyframe()
-    if (warmup) Promise.resolve(remote.publish(warmup)).then(handleVerdict, e => onPublishError?.(e))
+    if (warmup) publishQueue.push(warmup)
 
     /** Reconnect hook: compare the relay's coordinate with the local line and repair the gap. */
-    async function resync() {
-        const node = remote.peers[account]
-        const relaySeq = Number(await node?.seq?.() ?? -1)
-        const localSeq = exposed.replay.keyframe()?.seq ?? -1
-        if (relaySeq >= localSeq) return
-        await runRepair(relaySeq)
+    function resync() {
+        if (closed) {
+            const rejected = Promise.reject<void>(peerClientClosedError())
+            void rejected.catch(function containIgnoredClosedResync() {})
+            return rejected
+        }
+        publishQueue.flush()
+        if (closed) {
+            const rejected = Promise.reject<void>(peerClientClosedError())
+            void rejected.catch(function containIgnoredFlushClose() {})
+            return rejected
+        }
+        const pending = new Promise<void>(function queueResync(resolve, reject) {
+            publishWork.push({
+                kind: 'barrier',
+                async run() {
+                    ensurePeerClientOpen()
+                    // Writes arriving during this coordinate read remain behind
+                    // the barrier and therefore follow any resulting repair.
+                    const node = remote.peers[account]
+                    const relaySeq = await readPeerRelaySeq(node)
+                    ensurePeerClientOpen()
+                    const localSeq = exposed.replay.keyframe()?.seq ?? -1
+                    if (relaySeq >= localSeq) return
+                    await runRepair(relaySeq)
+                },
+                resolve,
+                reject,
+            })
+            void drainPublishWork()
+        })
+        void pending.catch(function containIgnoredResyncRejection() {})
+        return pending
     }
 
     // ============== transport wiring: signaling port + connectors ==============
@@ -163,14 +428,26 @@ export function createPeerClient<T extends object, J extends tRelayGap = 'resume
                 // awaiting a proxy could invoke `.then` as a remote call
                 const node = remote.peers[other]
                 state = 'open'
+                function subscribeLine(cb: (event: any) => void) {
+                    return node.line.on(cb)
+                }
+                function since(seq: number) {
+                    return node.since(seq)
+                }
+                function keyframe() {
+                    return node.keyframe()
+                }
+                function frame(seq: number, hint?: unknown) {
+                    return readPeerRelayFrame(node, seq, hint)
+                }
                 return {
-                    line: {on: (cb: (ev: any) => void) => node.line.on(cb)},
-                    since: (seq: number) => node.since(seq),
-                    keyframe: () => node.keyframe(),
-                    frame: (seq: number, hint?: unknown) => node.frame!(seq, hint),
+                    line: {on: subscribeLine},
+                    since,
+                    keyframe,
+                    frame,
                 }
             },
-            close: () => { state = 'closed' },
+            close() { state = 'closed' },
             state: () => state,
         }
     }
@@ -239,10 +516,14 @@ export function createPeerClient<T extends object, J extends tRelayGap = 'resume
         /** Call after a transport reconnect: repairs the relay journal without waiting for the next write. */
         resync,
         close() {
+            if (closed) return
+            closed = true
+            rejectPublishWork(peerClientClosedError())
+            offPublish()
+            publishQueue.close()
             for (const view of Array.from(views.values())) view.close()
             coord.close()
             stopAccept?.()
-            offPublish()
             exposed.close()
         },
     }

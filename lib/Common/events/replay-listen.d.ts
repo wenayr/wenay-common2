@@ -19,6 +19,7 @@ export type ReplayListenOptions<Z extends any[]> = {
     history?: number;
     getSince?: (seq: number) => ReplayEvent<Z>[] | undefined;
     onJournal?: (ev: ReplayEvent<Z>) => void;
+    onJournalBatch?: (events: readonly ReplayEvent<Z>[]) => void;
     now?: () => number;
     firstSeq?: number;
     staleMs?: number;
@@ -34,6 +35,7 @@ type ReplayOnOptions<Z extends any[]> = {
 export type ListenOnReplay<Z extends any[] = any[]> = ((cb: Listener<Z>, opts?: ReplayOnOptions<Z>) => (() => void)) & ListenOnBrand<Z>;
 export declare function withReplayListen<T>(base: ListenApi<T>, options?: ReplayListenOptions<NormalizeTuple<T>>): {
     emit: Listener<NormalizeTuple<T>>;
+    emitBatch: (events: readonly NormalizeTuple<T>[]) => void;
     head: () => number;
     isStale: () => boolean;
     lastTs: () => number;
@@ -46,7 +48,7 @@ export declare function withReplayListen<T>(base: ListenApi<T>, options?: Replay
     on: ListenOnReplay<NormalizeTuple<T>>;
     once: (cb: Listener<NormalizeTuple<T>>, opts?: {
         key?: key;
-        current?: ListenCurrent<NormalizeTuple<T>>;
+        current?: ListenCurrent<NormalizeTuple<T>> | undefined;
     }) => () => void;
     has(key: import("./Listen").ListenKey): boolean;
     off(keyOrCallback: import("./Listen").ListenKey | Listener<NormalizeTuple<T>> | null): void;
@@ -60,6 +62,7 @@ export type ListenReplayApi<T> = ReturnType<typeof withReplayListen<T>>;
 export type ReplayListenUseOptions<T> = ListenOptions<T> & ReplayListenOptions<NormalizeTuple<T>>;
 export declare function replayListen<T>(options?: ReplayListenUseOptions<T>): readonly [(...a: NormalizeTuple<T>) => void, {
     emit: Listener<NormalizeTuple<T>>;
+    emitBatch: (events: readonly NormalizeTuple<T>[]) => void;
     head: () => number;
     isStale: () => boolean;
     lastTs: () => number;

@@ -18,12 +18,35 @@
 // emit (it numbers them). replayListen provides the correct emit itself.
 
 import {
-    createListen, registerListenOn,
+    createListen, LISTEN_DISPATCH_ERROR, registerListenOn,
     Listener, ListenApi, ListenCurrent, ListenCurrentProvider, ListenOnBrand, ListenOptions, NormalizeTuple,
 } from './Listen'
 
 type key = string | symbol
 type cbClose = () => void
+
+function createReplayDeliveryControl() {
+    let activeErrors: any[] | null = null
+
+    function capture(error: unknown) {
+        if (activeErrors) {
+            activeErrors.push(error)
+            return
+        }
+        throw error
+    }
+
+    function during<T>(errors: any[], deliver: () => T) {
+        const previousErrors = activeErrors
+        activeErrors = errors
+        try { return deliver() }
+        finally { activeErrors = previousErrors }
+    }
+
+    return {capture, during}
+}
+
+type ReplayDeliveryControl = ReturnType<typeof createReplayDeliveryControl>
 
 // Brand of replay-line (Symbol.for — survives module duplicates src/dist). Needed for the wire:
 // replay-api structurally passes isListenCallback, therefore auto-detection in rpc-server-auto
@@ -64,6 +87,8 @@ export type ReplayListenOptions<Z extends any[]> = {
     getSince?: (seq: number) => ReplayEvent<Z>[] | undefined
     /** Hook for writing to external journal: called on each numbered emit. */
     onJournal?: (ev: ReplayEvent<Z>) => void
+    /** Atomic bulk precommit. Persist the whole batch or throw before publication. */
+    onJournalBatch?: (events: readonly ReplayEvent<Z>[]) => void
     /** Clock for ts (default Date.now) — substitutable in tests/on external clock. */
     now?: () => number
     /**
@@ -101,8 +126,17 @@ export type ListenOnReplay<Z extends any[] = any[]> =
     ((cb: Listener<Z>, opts?: ReplayOnOptions<Z>) => (() => void)) & ListenOnBrand<Z>
 
 export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOptions<NormalizeTuple<T>> = {}) {
+    return decorateReplayListen(base, options, createReplayDeliveryControl())
+}
+
+function decorateReplayListen<T>(
+    base: ListenApi<T>, options: ReplayListenOptions<NormalizeTuple<T>>, deliveryControl: ReplayDeliveryControl,
+) {
     type Z = NormalizeTuple<T>
-    const {current: currentOpt, frame: condense, history = 0, getSince, onJournal, now = Date.now, staleMs, onStale, firstSeq = 0} = options
+    const {
+        current: currentOpt, frame: condense, history = 0, getSince, onJournal, onJournalBatch,
+        now = Date.now, staleMs, onStale, firstSeq = 0,
+    } = options
     // 'last' — keyframe from last journal event: single-entity line,
     // last tick = complete state. lastEv is written in the numbering emit below.
     let lastEv: ReplayEvent<Z> | undefined
@@ -117,7 +151,9 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
     // envelope-protocol. save/restore → survives re-entrant emit.
     let emitting: ReplayEvent<Z> | null = null
     // line of envelopes {seq, ts, event} — normal Listen: wire proxies it as-is
-    const line = createListen<[ReplayEvent<Z>]>(() => {})
+    const line = createListen<[ReplayEvent<Z>]>(function noReplayLineProducer() {}, {
+        [LISTEN_DISPATCH_ERROR]: deliveryControl.capture,
+    })
     line.run()
 
     function journalSince(seq: number) {
@@ -171,29 +207,102 @@ export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOpt
         armStaleTimer(staleMs!)                  // no-op without onStale/staleMs or with live timer
     }
 
+    // === business logic: precommit, then publish ===
+    // Re-entrant emits are queued so a staged bulk cannot interleave its seq range.
+    const queued: Z[][] = []
+    let publishing = false
+
+    function commitJournalEvent(ev: ReplayEvent<Z>, deliveryErrors: any[]) {
+        head = ev.seq
+        if (history > 0) ring[(ev.seq - 1) % history] = ev
+        if (currentOpt == 'last') lastEv = ev
+        touchStale(ev.ts)
+        // Persistence already owns this coordinate. A broken wire consumer must
+        // neither roll the head back nor suppress the independent local fan-out.
+        deliveryControl.during(deliveryErrors, function deliverCommittedEvent() {
+            const prev = emitting
+            emitting = ev
+            try {
+                try { line.emit(ev) }
+                catch (error) { deliveryErrors.push(error) }
+                try { base.emit(...ev.event) }
+                catch (error) { deliveryErrors.push(error) }
+            } finally {
+                emitting = prev
+            }
+        })
+    }
+
+    function publishJournalBatch(events: Z[], deliveryErrors: any[]) {
+        if (onJournalBatch) {
+            const staged = events.map(function stageJournalEvent(event, index): ReplayEvent<Z> {
+                return {seq: head + index + 1, ts: now(), event}
+            })
+            for (const ev of staged) onJournal?.(ev)
+            onJournalBatch(staged)
+            // Once the transaction succeeded every staged coordinate is durable.
+            // Publish all of them even when an observer throws midway.
+            for (const ev of staged) commitJournalEvent(ev, deliveryErrors)
+            return
+        }
+        // A per-event adapter cannot promise a transaction. Commit a safe prefix:
+        // each event reaches storage before its own head/fan-out becomes visible.
+        for (const event of events) {
+            const ev: ReplayEvent<Z> = {seq: head + 1, ts: now(), event}
+            onJournal?.(ev)
+            commitJournalEvent(ev, deliveryErrors)
+        }
+    }
+
+    function deferDeliveryErrors(errors: any[]) {
+        if (errors.length == 0) return
+        const error = errors.length == 1 ? errors[0] : new AggregateError(errors, 'Multiple replay listeners failed')
+        setTimeout(function rethrowReplayDeliveryError() { throw error }, 0)
+    }
+
+    function emitBatchJournaled(events: readonly Z[]) {
+        if (events.length == 0) return
+        const owned = events.map(event => [...event] as Z)
+        if (publishing) { queued.push(owned); return }
+        publishing = true
+        const deliveryErrors: any[] = []
+        let publicationError: any = null
+        try {
+            let next: Z[] | undefined = owned
+            while (next) {
+                publishJournalBatch(next, deliveryErrors)
+                next = queued.shift()
+            }
+        } catch (error) {
+            queued.length = 0
+            publicationError = error
+        } finally {
+            publishing = false
+        }
+        deferDeliveryErrors(deliveryErrors)
+        if (publicationError != null) throw publicationError
+    }
+
     const api = {
         ...base,
         /** Numbering emit: seq++, write to journal, fan-out. Only door to journal. */
         emit: function emitJournaled(...e: Z) {
-            const ev: ReplayEvent<Z> = {seq: ++head, ts: now(), event: e}
-            if (history > 0) ring[(ev.seq - 1) % history] = ev
-            if (currentOpt == 'last') lastEv = ev
-            onJournal?.(ev)
-            touchStale(ev.ts)  // fresh-edge BEFORE fan-out: subscriber sees "line came alive", then event
-            // line BEFORE local fan-out: local cb throw won't leave wire without event
-            line.emit(ev)
-            const prev = emitting
-            emitting = ev
-            try { base.emit(...e) } finally { emitting = prev }
+            emitBatchJournaled([e])
         } as Listener<Z>,
+        /** Number and precommit a producer batch before publishing its first event. */
+        emitBatch: emitBatchJournaled,
         /** Current line head (seq of last event; 0 = not yet). */
         head: () => head,
         /** Lazy staleness: staleMs is set, there was at least one event and it's older than staleMs. Does not require a timer. */
         isStale: () => staleMs != null && head > 0 && now() - lastTs >= staleMs,
         /** ts of last journal event (0 = not yet). */
         lastTs: () => lastTs,
-        /** Close base + remove staleness watchdog timer (if any). */
-        close: function closeReplay() { stopStaleTimer(); base.close() },
+        /** Close base, numbered wire line and staleness watchdog. */
+        close: function closeReplay() {
+            stopStaleTimer()
+            line.close()
+            base.close()
+        },
         /** Journal tail after seq (or undefined = evicted). For store-layer / introspection. */
         getSince: journalSince,
         /** Line of envelopes {seq, ts, event} — for wire (exposeReplay) and external journals. */
@@ -290,10 +399,20 @@ export type ReplayListenUseOptions<T> = ListenOptions<T> & ReplayListenOptions<N
 
 /** [emit, listen]: emit numbers and journals (goes through decorator, not bypassing it). */
 export function replayListen<T>(options: ReplayListenUseOptions<T> = {}) {
-    const {current, frame, history, getSince, onJournal, now, staleMs, onStale, firstSeq, ...listenOptions} = options
+    const {
+        current, frame, history, getSince, onJournal, onJournalBatch,
+        now, staleMs, onStale, firstSeq, ...listenOptions
+    } = options
     let t: ((...a: NormalizeTuple<T>) => void)
-    const base = createListen<T>((e) => { t = e }, {fast: true, ...listenOptions})
-    const listen = withReplayListen<T>(base, {current, frame, history, getSince, onJournal, now, staleMs, onStale, firstSeq})
+    const deliveryControl = createReplayDeliveryControl()
+    const base = createListen<T>(function captureReplayEmit(e) { t = e }, {
+        fast: true,
+        ...listenOptions,
+        [LISTEN_DISPATCH_ERROR]: deliveryControl.capture,
+    })
+    const listen = decorateReplayListen<T>(base, {
+        current, frame, history, getSince, onJournal, onJournalBatch, now, staleMs, onStale, firstSeq,
+    }, deliveryControl)
     base.run()
     t = listen.emit  // IMPORTANT: through decorator — otherwise events bypass journal
     return [t!, listen] as const

@@ -127,6 +127,10 @@ async function main() {
     const replayVideo = createVideoSource({sourceId: 'cam-replay', replay: true})
     ok(audio.kind == 'audio' && video.kind == 'video', 'media factories return control + [emit, listen] tuple')
     ok(!!(replayVideo[1] as any).line && typeof (replayVideo[1] as any).frame == 'function', 'media replay:true returns replay-listen surface for RPC auto exposure')
+    const replayVideoApi = replayVideo[1] as any
+    for (let i = 0; i < 300; i++) replayVideo[0](new Uint8Array(256 * 1024))
+    ok(replayVideoApi.getSince(292)?.length == 8 && replayVideoApi.getSince(291) === undefined,
+        'default video replay retains only an eight-frame recovery tail, not 64 MiB of frames')
     ok(await audio.start() == 'no-device', 'Node without getUserMedia returns typed no-device state, not throw')
     ok(await video.start() == 'no-device', 'video source also returns typed no-device state without browser globals')
     ok(audio.state == 'no-device' && audio.getStats().state == 'no-device', 'audio state getter stays live after construction')

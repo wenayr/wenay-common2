@@ -266,7 +266,9 @@ function stateFromMediaError(e: any): MediaSourceState {
 function defaultReplayOptions(kind: MediaSourceKind): ReplayListenUseOptions<[Uint8Array]> {
     if (kind == 'video') {
         return {
-            history: 256,
+            // Video catch-up is keep-latest. Eight frames retain a short explicit
+            // tail without pinning tens of MiB of encoded camera data by default.
+            history: 8,
             current: 'last',
             frame: tail => tail.length ? [tail[tail.length - 1]] : [],
         }
@@ -522,8 +524,12 @@ const ctx = canvas.getContext('2d')
 onmessage = async function onEncodeRequest(ev) {
     const req = ev.data
     try {
-        canvas.width = req.w
-        canvas.height = req.h
+        const resized = canvas.width != req.w || canvas.height != req.h
+        if (canvas.width != req.w) canvas.width = req.w
+        if (canvas.height != req.h) canvas.height = req.h
+        // Resizing clears the bitmap. Reused canvases need the same semantic
+        // reset so transparent PNG/WebP pixels cannot expose the prior frame.
+        if (!resized) ctx.clearRect(0, 0, req.w, req.h)
         ctx.drawImage(req.bitmap, 0, 0, req.w, req.h)
         req.bitmap.close()
         const blob = await canvas.convertToBlob({type: req.mime, quality: req.quality})

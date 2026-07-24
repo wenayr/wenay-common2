@@ -5,8 +5,14 @@
 // receive opaque input and resource ids; bytes, credentials and raw reasoning
 // stay in the application adapter behind the runner port.
 
-import {createStore, StoreDrain} from '../Observe/store'
+import {createStore, StoreChange, StoreDrain} from '../Observe/store'
 import {exposeStoreReplay} from '../Observe/store-replay'
+import {
+    cloneStoreProjectionValue,
+    collectStoreProjectionChanges,
+    reconcileStoreProjection,
+    reconcileStoreProjectionRecord,
+} from '../Observe/store-projection'
 import {listen as createListenPair} from '../events/Listen'
 import {exposeReplay} from '../events/replay-wire'
 import {replayListen} from '../events/replay-listen'
@@ -161,7 +167,7 @@ export type AiRunHostDeps = {
 }
 
 type AiRunView = {
-    refresh: () => void
+    refresh: (change: StoreChange) => void
     close: () => void
 }
 
@@ -183,19 +189,34 @@ function copyUsage(usage: AiRunUsage | undefined) {
 }
 
 function copyArtifact(artifact: AiArtifact) {
-    return {...artifact}
+    return {
+        ...artifact,
+        ...(artifact.descriptor !== undefined ? {descriptor: cloneStoreProjectionValue(artifact.descriptor)} : {}),
+    }
 }
 
 function copyRun(run: AiRun): AiRun {
-    return {...run, resourceIds: [...run.resourceIds], artifacts: run.artifacts.map(copyArtifact), usage: copyUsage(run.usage)}
+    return {
+        ...run,
+        resourceIds: [...run.resourceIds],
+        artifacts: run.artifacts.map(copyArtifact),
+        usage: copyUsage(run.usage),
+        ...(run.result !== undefined ? {result: cloneStoreProjectionValue(run.result)} : {}),
+    }
 }
 
 function copyApproval(approval: AiRunApproval) {
-    return {...approval}
+    return {
+        ...approval,
+        ...(approval.data !== undefined ? {data: cloneStoreProjectionValue(approval.data)} : {}),
+    }
 }
 
 function copyInput(input: AiRunInput) {
-    return {...input}
+    return {
+        ...input,
+        ...(input.schema !== undefined ? {schema: cloneStoreProjectionValue(input.schema)} : {}),
+    }
 }
 
 function terminal(state: AiRunState) {
@@ -258,16 +279,16 @@ export function createAiRunHost(deps: AiRunHostDeps) {
         }
     }
 
-    function refreshViews() {
+    function refreshViews(change: StoreChange) {
         if (closed) return
-        for (const view of views) view.refresh()
+        for (const view of views) view.refresh(change)
     }
 
     const offStore = store.listenPaths().on(refreshViews)
 
     function createView(account: string) {
         const state = createStore<AiRunStore>(project(account), drain !== undefined ? {drain} : {})
-        const stateReplay = exposeStoreReplay(state, history !== undefined ? {history} : {})
+        const stateReplay = exposeStoreReplay(state, history == undefined ? {batch: true} : {history, batch: true})
         const [emitViewEvent, events] = replayListen<[AiRunEvent]>({
             current: () => [syncEvent(account)],
             history: history ?? 1024,
@@ -277,9 +298,48 @@ export function createAiRunHost(deps: AiRunHostDeps) {
             const run = store.state.runs[event.runId]
             if (run && readable(account, run)) emitViewEvent(event)
         })
+        function refreshApproval(id: string) {
+            const approval = store.state.approvals[id]
+            const visible = !!approval && !!state.state.runs[approval.runId]
+            reconcileStoreProjectionRecord(state, 'approvals', id, {
+                exists: visible,
+                ...(visible ? {value: copyApproval(approval!)} : {}),
+            })
+        }
+        function refreshInput(id: string) {
+            const input = store.state.inputs[id]
+            const visible = !!input && !!state.state.runs[input.runId]
+            reconcileStoreProjectionRecord(state, 'inputs', id, {
+                exists: visible,
+                ...(visible ? {value: copyInput(input!)} : {}),
+            })
+        }
+        function refreshRun(id: string) {
+            const run = store.state.runs[id]
+            const wasVisible = !!state.state.runs[id]
+            const visible = !!run && readable(account, run)
+            reconcileStoreProjectionRecord(state, 'runs', id, {
+                exists: visible,
+                ...(visible ? {value: copyRun(run!)} : {}),
+            })
+            if (visible == wasVisible) return
+            const approvals = visible ? store.state.approvals : state.state.approvals
+            const inputs = visible ? store.state.inputs : state.state.inputs
+            for (const approval of Object.values(approvals)) if (approval.runId == id) refreshApproval(approval.id)
+            for (const input of Object.values(inputs)) if (input.runId == id) refreshInput(input.id)
+        }
+        function refreshProjection(change: StoreChange) {
+            // A custom policy may close over tenant membership outside the changed record.
+            if (policy?.canRead) { reconcileStoreProjection(state, project(account)); return }
+            const changed = collectStoreProjectionChanges(change, ['runs', 'approvals', 'inputs'])
+            if (!changed) { reconcileStoreProjection(state, project(account)); return }
+            for (const id of changed.get('runs') ?? []) refreshRun(String(id))
+            for (const id of changed.get('approvals') ?? []) refreshApproval(String(id))
+            for (const id of changed.get('inputs') ?? []) refreshInput(String(id))
+        }
         let view: AiRunView
         view = {
-            refresh() { state.replace(project(account)) },
+            refresh: refreshProjection,
             close() {
                 views.delete(view)
                 offEvents()
@@ -311,7 +371,9 @@ export function createAiRunHost(deps: AiRunHostDeps) {
     function emitRunEvent(event: Exclude<AiRunEvent, {type: 'sync'}>) {
         const run = store.state.runs[event.runId]
         if (!run || closed) return
-        emitEvent(event)
+        // Replay/event consumers own their message, never the authority's
+        // retained result, descriptor or policy-visible Store value.
+        emitEvent(cloneStoreProjectionValue(event) as Exclude<AiRunEvent, {type: 'sync'}>)
     }
 
     function refreshWaitingState(run: AiRun) {
@@ -370,7 +432,12 @@ export function createAiRunHost(deps: AiRunHostDeps) {
         const run = store.state.runs[runId]
         if (!active(run)) return undefined
         if (!input || typeof input.kind != 'string' || !input.kind.trim()) throw new Error('AI artifact kind is required')
-        const artifact: AiArtifact = {...input, id: input.id ?? makeId(), kind: input.kind}
+        const artifact: AiArtifact = {
+            ...input,
+            id: input.id ?? makeId(),
+            kind: input.kind,
+            ...(input.descriptor !== undefined ? {descriptor: cloneStoreProjectionValue(input.descriptor)} : {}),
+        }
         run.artifacts.push(artifact)
         touchRun(run)
         emitRunEvent({runId, type: 'artifact', artifact: copyArtifact(artifact)})
@@ -385,14 +452,17 @@ export function createAiRunHost(deps: AiRunHostDeps) {
         const createdAt = now()
         const approval: AiRunApproval = {
             id: makeId(), runId, kind: request.kind, label: request.label, state: 'pending', createdAt, updatedAt: createdAt,
-            ...(request.data !== undefined ? {data: request.data} : {}),
+            ...(request.data !== undefined ? {data: cloneStoreProjectionValue(request.data)} : {}),
         }
         store.state.approvals[approval.id] = approval
         refreshWaitingState(run)
-        emitRunEvent({runId, type: 'approval.requested', approval: copyApproval(approval)})
-        return new Promise<'approved' | 'rejected'>(function waitForApproval(resolve, reject) {
+        const waiting = new Promise<'approved' | 'rejected'>(function waitForApproval(resolve, reject) {
             approvalWaiters.set(approval.id, {resolve, reject})
         })
+        // Direct and in-process consumers may answer from the event callback itself.
+        // Register first so that synchronous resolution cannot outrun the waiter.
+        emitRunEvent({runId, type: 'approval.requested', approval: copyApproval(approval)})
+        return waiting
     }
 
     function waitForInput(runId: string, request: {label: string, schema?: unknown}) {
@@ -402,14 +472,15 @@ export function createAiRunHost(deps: AiRunHostDeps) {
         const createdAt = now()
         const input: AiRunInput = {
             id: makeId(), runId, label: request.label, state: 'waiting', createdAt, updatedAt: createdAt,
-            ...(request.schema !== undefined ? {schema: request.schema} : {}),
+            ...(request.schema !== undefined ? {schema: cloneStoreProjectionValue(request.schema)} : {}),
         }
         store.state.inputs[input.id] = input
         refreshWaitingState(run)
-        emitRunEvent({runId, type: 'input.requested', input: copyInput(input)})
-        return new Promise<unknown>(function waitForProvidedInput(resolve, reject) {
+        const waiting = new Promise<unknown>(function waitForProvidedInput(resolve, reject) {
             inputWaiters.set(input.id, {resolve, reject})
         })
+        emitRunEvent({runId, type: 'input.requested', input: copyInput(input)})
+        return waiting
     }
 
     async function executeRun(runId: string, request: AiRunRequest) {
@@ -435,7 +506,7 @@ export function createAiRunHost(deps: AiRunHostDeps) {
             cancelPendingWaiters(current, 'AI run completed before its response arrived')
             current.state = 'completed'
             current.progress = 1
-            if (output?.result !== undefined) current.result = output.result
+            if (output?.result !== undefined) current.result = cloneStoreProjectionValue(output.result)
             if (output?.usage !== undefined) current.usage = copyUsage(output.usage)
             touchRun(current)
             emitRunEvent({runId, type: 'completed', ...(current.result !== undefined ? {result: current.result} : {}), ...(current.usage ? {usage: copyUsage(current.usage)!} : {})})
@@ -519,7 +590,7 @@ export function createAiRunHost(deps: AiRunHostDeps) {
         touchInput(input)
         refreshWaitingState(run)
         emitRunEvent({runId: run.id, type: 'input.provided', input: copyInput(input)})
-        inputWaiters.get(input.id)?.resolve(value)
+        inputWaiters.get(input.id)?.resolve(cloneStoreProjectionValue(value))
         inputWaiters.delete(input.id)
         return copyInput(input)
     }

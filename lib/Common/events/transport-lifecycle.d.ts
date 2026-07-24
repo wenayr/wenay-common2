@@ -1,8 +1,14 @@
 export declare const RPC_TRANSPORT_LIFECYCLE: unique symbol;
 export declare const RPC_TRANSPORT_CONTROL: unique symbol;
 export declare const RPC_MEMBER_LOOKUP: unique symbol;
+export declare const RPC_SCHEMA_READY: unique symbol;
 export type RpcMemberLookup = (member: string) => boolean | undefined;
+export declare function hasRpcMemberLookup(remote: any): boolean;
 export declare function getRpcMemberState(remote: any, member: string): boolean | undefined;
+export declare function rpcMemberAvailable(remote: any, member: string): boolean;
+export declare function rpcMemberMayBeAvailable(remote: any, member: string): boolean;
+export type RpcSchemaReady = () => Promise<void>;
+export declare function getRpcSchemaReady(remote: any): RpcSchemaReady | undefined;
 export type TransportLifecycleApi = {
     connected: () => boolean;
     closed: () => boolean;

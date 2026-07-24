@@ -27,8 +27,71 @@ async function waitFor(label: string, condition: () => boolean) {
     throw new Error('timeout: ' + label)
 }
 
+async function testSynchronousAnswers() {
+    let providerResult: any
+    const host = createAiRunHost({
+        runner: {
+            async run({requestApproval, waitForInput, emit, artifact}) {
+                const approvalData = {nested: {value: 1}}
+                const decision = await requestApproval({kind: 'direct', label: 'Approve now', data: approvalData})
+                approvalData.nested.value = 99
+                const schema = {type: 'object', nested: {required: true}}
+                const input = await waitForInput({label: 'Answer now', schema})
+                schema.nested.required = false
+                const live = {type: 'notice' as const, message: 'owned', data: {value: 1}}
+                emit(live)
+                live.data.value = 99
+                const descriptor = {value: 1}
+                artifact({kind: 'direct', descriptor})
+                descriptor.value = 99
+                providerResult = {decision, input, nested: {value: 1}}
+                setTimeout(function mutateReturnedResult() { providerResult.nested.value = 99 }, 0)
+                return {result: providerResult}
+            },
+        },
+        id: (() => { let n = 0; return () => 'direct-' + (++n) })(),
+        drain: 'micro',
+    })
+    const connection = host.connection('owner')
+    const seen: AiRunEvent[] = []
+    const supplied = {answer: true}
+    const off = connection.fragment.events.line.on(function answerInsideDelivery(envelope) {
+        const event = envelope.event[0]
+        seen.push(event)
+        if (event.type == 'approval.requested') connection.fragment.resolveApproval(event.approval.id, 'approved')
+        if (event.type == 'input.requested') {
+            connection.fragment.provideInput(event.input.id, supplied)
+            supplied.answer = false
+        }
+        if (event.type == 'completed' && event.result) {
+            const completedResult = event.result as any
+            completedResult.nested.value = 777
+        }
+    })
+    const run = connection.fragment.createRun({requestId: 'sync', kind: 'direct', input: null})
+    await waitFor('synchronous approval and input callbacks', () => host.store.state.runs[run.id]?.state == 'completed')
+    await delay(10)
+    const saved = host.store.state.runs[run.id]
+    const approval = Object.values(host.store.state.approvals)[0]
+    const input = Object.values(host.store.state.inputs)[0]
+    const notice = seen.find(event => event.type == 'notice') as Extract<AiRunEvent, {type: 'notice'}> | undefined
+    ok((saved.result as any)?.decision == 'approved' && (saved.result as any)?.input?.answer == true,
+        'synchronous event callbacks resolve already-registered waiters')
+    ok((saved.result as any)?.nested?.value == 1,
+        'provider and in-process event consumers cannot mutate the retained Store result')
+    ok((approval.data as any)?.nested?.value == 1 && (input.schema as any)?.nested?.required == true,
+        'approval data and input schema are owned by the Store')
+    ok((notice?.data as any)?.value == 1 && saved.artifacts[0]?.descriptor && (saved.artifacts[0].descriptor as any).value == 1,
+        'live events and artifact descriptors do not retain provider references')
+    off()
+    connection.close()
+    host.close()
+}
+
 async function main() {
     console.log('\n[ai-run] idempotent AI lifecycle, approvals and resume over an existing RPC connection')
+
+    await testSynchronousAnswers()
 
     const starts = new Map<string, number>()
     const releases = new Map<string, () => void>()

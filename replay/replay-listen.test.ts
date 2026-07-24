@@ -123,6 +123,88 @@ async function main() {
         ok(journal.map(ev => ev.seq).join(',') == '4,5,6', 'onJournal saw every seq, external ring evicts')
     }
 
+    console.log('\n[replay] atomic producer batches precommit before head/fan-out')
+    {
+        let reject = true
+        const journal: number[][] = []
+        const [, listen] = replayListen<[number]>({
+            history: 10,
+            onJournalBatch(events) {
+                if (reject) throw new Error('rejected batch')
+                journal.push(events.map(event => event.seq))
+            },
+        })
+        const seen: number[] = []
+        listen.on(function reentrantBatch(v) {
+            seen.push(v)
+            if (v == 1) listen.emit(3)
+        })
+        let failed = false
+        try { listen.emitBatch([[1], [2]]) }
+        catch { failed = true }
+        ok(failed && listen.head() == 0 && seen.length == 0,
+            'failed bulk precommit leaves head and subscribers untouched')
+
+        reject = false
+        listen.emitBatch([[1], [2]])
+        ok(seen.join(',') == '1,2,3' && listen.head() == 3,
+            're-entrant emit waits until the committed batch keeps seq/fan-out order')
+        ok(journal.map(batch => batch.join(',')).join('|') == '1,2|3',
+            'bulk hook receives each producer batch with its final coordinates')
+    }
+
+    console.log('\n[replay] committed batches survive throwing sibling consumers')
+    {
+        const journal: number[][] = []
+        const [, listen] = replayListen<[number]>({
+            history: 10,
+            onJournalBatch(events) { journal.push(events.map(event => event.seq)) },
+        })
+        const firstWire: number[] = []
+        const secondWire: number[] = []
+        const firstLocal: number[] = []
+        const secondLocal: number[] = []
+        listen.line.on(function throwingWire(event) {
+            firstWire.push(event.seq)
+            if (event.seq == 1) throw new Error('wire consumer failed')
+        })
+        listen.line.on(function healthyWire(event) { secondWire.push(event.seq) })
+        listen.on(function throwingLocal(value) {
+            firstLocal.push(value)
+            if (value == 1) {
+                listen.emit(4)
+                throw new Error('local consumer failed at 1')
+            }
+            if (value == 2) throw new Error('local consumer failed at 2')
+        })
+        listen.on(function healthyLocal(value) { secondLocal.push(value) })
+
+        let resolveError: (error: any) => void = function ignoreError() {}
+        const deferredError = new Promise<any>(function waitForDeferredError(resolve) { resolveError = resolve })
+        const timeout = setTimeout(function deliveryErrorTimeout() { resolveError(null) }, 100)
+        function captureDeferredError(error: any) {
+            clearTimeout(timeout)
+            resolveError(error)
+        }
+        process.once('uncaughtException', captureDeferredError)
+        let returned = true
+        try { listen.emitBatch([[1], [2], [3]]) }
+        catch { returned = false }
+        const error = await deferredError
+        process.removeListener('uncaughtException', captureDeferredError)
+
+        ok(returned && error instanceof AggregateError,
+            'observer failures are reported after the committed producer call returns successfully')
+        ok(listen.head() == 4 && listen.getSince(0)?.map(event => event.seq).join(',') == '1,2,3,4',
+            'durable head and journal keep the complete batch plus its queued re-entrant emit')
+        ok(firstWire.join(',') == '1,2,3,4' && secondWire.join(',') == '1,2,3,4',
+            'a throwing wire consumer does not hole a sibling subscriber')
+        ok(firstLocal.join(',') == '1,2,3,4' && secondLocal.join(',') == '1,2,3,4',
+            'a throwing local consumer does not hole a sibling subscriber')
+        ok(journal.map(batch => batch.join(',')).join('|') == '1,2,3|4',
+            'precommit records every coordinate exactly once')
+    }
+
     console.log('\n[replay] journal introspection (for layer B)')
     {
         const [emit, listen] = replayListen<[number]>({history: 5, now: () => 42})

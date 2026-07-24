@@ -7,6 +7,7 @@ function createMediaRelay(deps) {
     const { lines, videoHistory = 8, audioHistory = 64, canWatch } = deps;
     const accounts = new Map();
     const watch = (0, rpc_dynamic_1.noStrict)({});
+    let closed = false;
     function makeLine(kind) {
         return kind == 'video'
             ? (0, replay_listen_1.replayListen)({
@@ -16,6 +17,8 @@ function createMediaRelay(deps) {
             : (0, replay_listen_1.replayListen)({ history: audioHistory });
     }
     function linesOf(account) {
+        if (closed)
+            throw new Error('media relay closed');
         let entry = accounts.get(account);
         if (!entry) {
             entry = { emits: {}, view: (0, rpc_dynamic_1.noStrict)({}) };
@@ -86,6 +89,8 @@ function createMediaRelay(deps) {
         return view;
     }
     function watchOf(watcher) {
+        if (closed)
+            throw new Error('media relay closed');
         let cached = watcherViews.get(watcher);
         if (cached)
             return cached.root;
@@ -148,10 +153,15 @@ function createMediaRelay(deps) {
         accounts: () => Array.from(accounts.keys()),
         dropAccount,
         close() {
+            if (closed)
+                return;
+            closed = true;
             for (const cache of watcherViews.values())
                 closeWatcherCache(cache);
             for (const entry of accounts.values())
                 dropLines(entry);
+            for (const account of Object.keys(watch))
+                delete watch[account];
             accounts.clear();
             watcherViews.clear();
         },

@@ -11,6 +11,7 @@ export declare function createPatchRelayJournal(opts?: {
     gap?: tRelayGap;
 }): {
     push: (env: PatchEnvelope) => RelayPushResult;
+    pushBatch: (envelopes: PatchEnvelope[]) => RelayPushResult;
     remote: ReplayRemote<[StorePatch]> & {
         seq: () => number;
     };

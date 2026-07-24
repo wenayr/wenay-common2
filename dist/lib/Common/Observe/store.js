@@ -1,13 +1,18 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.cloneStoreValue = cloneStoreValue;
 exports.applyStoreMask = applyStoreMask;
 exports.applyStorePatch = applyStorePatch;
 exports.applyStorePatches = applyStorePatches;
+exports.listenStorePatches = listenStorePatches;
 exports.createStore = createStore;
 exports.exposeStore = exposeStore;
 exports.createStoreMirror = createStoreMirror;
 const Listen_1 = require("../events/Listen");
 const reactive_1 = require("./reactive");
+const transport_lifecycle_1 = require("../events/transport-lifecycle");
+const positive_integer_option_1 = require("../positive-integer-option");
+const rpc_wire_size_1 = require("../rcp/rpc-wire-size");
 const hasSetImmediate = typeof setImmediate == "function";
 function pathText(path) {
     return path.map(String).join(".");
@@ -77,7 +82,7 @@ function isObj(v) {
 function getAt(root, path) {
     let cur = root;
     for (const k of path) {
-        if (!isObj(cur))
+        if (!isObj(cur) || !Object.prototype.hasOwnProperty.call(cur, k))
             return undefined;
         cur = cur[k];
     }
@@ -86,7 +91,7 @@ function getAt(root, path) {
 function hasAt(root, path) {
     let cur = root;
     for (const k of path) {
-        if (!isObj(cur) || !(k in cur))
+        if (!isObj(cur) || !Object.prototype.hasOwnProperty.call(cur, k))
             return false;
         cur = cur[k];
     }
@@ -95,8 +100,9 @@ function hasAt(root, path) {
 function readRawAt(root, path) {
     let cur = (0, reactive_1.toRaw)(root);
     for (const k of path) {
-        if (!isObj(cur) || !(k in cur))
+        if (!isObj(cur) || !Object.prototype.hasOwnProperty.call(cur, k)) {
             return { exists: false, value: undefined };
+        }
         cur = (0, reactive_1.toRaw)(cur[k]);
     }
     return { exists: true, value: cur };
@@ -105,27 +111,72 @@ function ensureParent(root, path) {
     let cur = root;
     for (let i = 0; i < path.length - 1; i++) {
         const k = path[i];
-        if (!isObj(cur[k]))
-            cur[k] = {};
+        if (!Object.prototype.hasOwnProperty.call(cur, k) || !isObj(cur[k])) {
+            defineOwnValue(cur, k, {});
+        }
         cur = cur[k];
     }
     return cur;
 }
+function safeStorePath(path, label = 'store path') {
+    if (!Array.isArray(path))
+        throw new TypeError(`${label} must be an array`);
+    return Array.from(path, function validateStorePathKey(key) {
+        if (typeof key != 'string' && typeof key != 'number' && typeof key != 'symbol') {
+            throw new TypeError(`${label} keys must be string, number or symbol`);
+        }
+        return key;
+    });
+}
+function defineOwnValue(target, key, value) {
+    const ok = Reflect.defineProperty(target, key, {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value,
+    });
+    if (!ok)
+        throw new TypeError(`store cannot define path key: ${String(key)}`);
+}
+function defineSnapshotValue(target, key, value) {
+    let prototype = Object.getPrototypeOf(target);
+    let inherited;
+    while (prototype && !inherited) {
+        inherited = Object.getOwnPropertyDescriptor(prototype, key);
+        prototype = Object.getPrototypeOf(prototype);
+    }
+    if (!inherited
+        || Object.prototype.hasOwnProperty.call(inherited, 'value') && inherited.writable == true) {
+        target[key] = value;
+        return;
+    }
+    defineOwnValue(target, key, value);
+}
 function replaceRoot(root, value) {
-    for (const k of Reflect.ownKeys(root))
-        if (!isObj(value) || !(k in value))
+    for (const k of Reflect.ownKeys(root)) {
+        if (!isObj(value) || !Object.prototype.hasOwnProperty.call(value, k))
             delete root[k];
-    if (isObj(value))
+    }
+    if (isObj(value)) {
         for (const k of Reflect.ownKeys(value))
-            root[k] = value[k];
+            defineOwnValue(root, k, value[k]);
+    }
 }
 function setAt(root, path, value) {
     if (path.length == 0) {
         replaceRoot(root, value);
         return;
     }
+    const safePath = safeStorePath(path);
+    setPreparedAt(root, safePath, value);
+}
+function setPreparedAt(root, path, value) {
+    if (path.length == 0) {
+        replaceRoot(root, value);
+        return;
+    }
     const p = ensureParent(root, path);
-    p[path[path.length - 1]] = value;
+    defineOwnValue(p, path[path.length - 1], value);
 }
 function snapshotValue(value, seen = new WeakMap()) {
     value = (0, reactive_1.toRaw)(value);
@@ -138,6 +189,19 @@ function snapshotValue(value, seen = new WeakMap()) {
         return new Date(value.valueOf());
     if (value instanceof RegExp)
         return new RegExp(value.source, value.flags);
+    if (value instanceof ArrayBuffer)
+        return value.slice(0);
+    if (ArrayBuffer.isView(value)) {
+        const bytes = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+        if (value instanceof DataView)
+            return new DataView(bytes);
+        const Constructor = value.constructor;
+        if (typeof Constructor.from == 'function' && typeof Constructor.isBuffer == 'function'
+            && Constructor.isBuffer(value)) {
+            return Constructor.from(new Uint8Array(bytes));
+        }
+        return new Constructor(bytes);
+    }
     if (value instanceof Map) {
         const out = new Map();
         seen.set(value, out);
@@ -150,11 +214,19 @@ function snapshotValue(value, seen = new WeakMap()) {
         value.forEach(v => out.add(snapshotValue(v, seen)));
         return out;
     }
-    const out = Array.isArray(value) ? [] : {};
+    const out = Array.isArray(value)
+        ? []
+        : Object.create(Object.getPrototypeOf(value) == null ? null : Object.prototype);
     seen.set(value, out);
-    for (const k of Reflect.ownKeys(value))
-        out[k] = snapshotValue(value[k], seen);
+    for (const k of Reflect.ownKeys(value)) {
+        if (Array.isArray(value) && k == 'length')
+            continue;
+        defineSnapshotValue(out, k, snapshotValue(value[k], seen));
+    }
     return out;
+}
+function cloneStoreValue(value) {
+    return snapshotValue(value);
 }
 function maskPaths(mask, base = []) {
     if (mask === true || mask == null)
@@ -180,9 +252,18 @@ function deleteAt(root, path) {
         replaceRoot(root, {});
         return;
     }
+    const safePath = safeStorePath(path);
+    deletePreparedAt(root, safePath);
+}
+function deletePreparedAt(root, path) {
+    if (path.length == 0) {
+        replaceRoot(root, {});
+        return;
+    }
     const parent = getAt(root, path.slice(0, -1));
-    if (isObj(parent))
-        delete parent[path[path.length - 1]];
+    const key = path[path.length - 1];
+    if (isObj(parent) && Object.prototype.hasOwnProperty.call(parent, key))
+        delete parent[key];
 }
 function applyMask(root, mask, data, base = []) {
     if (mask === true || mask == null) {
@@ -198,15 +279,31 @@ function applyMask(root, mask, data, base = []) {
 function applyStoreMask(store, mask, data) {
     applyMask(store.state, mask ?? true, data);
 }
-function applyStorePatch(store, patch) {
-    if (patch.exists === false)
-        deleteAt(store.state, patch.path);
+function prepareStorePatch(patch) {
+    if (patch == null || typeof patch != 'object' || !Array.isArray(patch.path)
+        || typeof patch.exists != 'boolean') {
+        throw new TypeError('store patch must contain path[] and boolean exists');
+    }
+    const path = safeStorePath(patch.path, 'store patch path');
+    return {
+        path,
+        exists: patch.exists,
+        value: patch.exists ? snapshotValue(patch.value) : undefined,
+    };
+}
+function applyPreparedStorePatch(store, patch) {
+    if (!patch.exists)
+        deletePreparedAt(store.state, patch.path);
     else
-        setAt(store.state, patch.path, snapshotValue(patch.value));
+        setPreparedAt(store.state, patch.path, patch.value);
+}
+function applyStorePatch(store, patch) {
+    applyPreparedStorePatch(store, prepareStorePatch(patch));
 }
 function applyStorePatches(store, patches) {
-    for (const patch of patches)
-        applyStorePatch(store, patch);
+    const prepared = Array.from(patches, prepareStorePatch);
+    for (const patch of prepared)
+        applyPreparedStorePatch(store, patch);
 }
 function pathToMask(path) {
     let out = true;
@@ -276,6 +373,47 @@ function makePatch(root, path) {
         value: exists ? snapshotValue(getAt(root, path)) : undefined,
     };
 }
+function manageColdListenLifecycle(type, count, api) {
+    if (type == 'add' && count == 1 && !api.isRunning())
+        api.run();
+    if (type == 'remove' && count == 0 && api.isRunning())
+        api.close();
+}
+function coldListenOptions() {
+    return { event: manageColdListenLifecycle };
+}
+function createStorePatchesListen(store) {
+    function sampleChangedStorePath(path) {
+        return makePatch(store.state, path);
+    }
+    function produceStorePatchBatches(emit) {
+        const off = store.listenPaths().on(function emitStorePatchBatch(change) {
+            emit(change.paths.map(sampleChangedStorePath));
+        });
+        return off;
+    }
+    return (0, Listen_1.createListen)(produceStorePatchBatches, coldListenOptions());
+}
+const storePatchesListenOwner = Symbol('storePatchesListenOwner');
+function createStorePatchesListenOwner(store) {
+    let patches;
+    return function getStorePatchesListen() {
+        patches ??= createStorePatchesListen(store);
+        return patches;
+    };
+}
+function installStorePatchesListenOwner(store) {
+    const owner = store;
+    let getPatches = owner[storePatchesListenOwner];
+    if (!getPatches) {
+        getPatches = createStorePatchesListenOwner(store);
+        Object.defineProperty(owner, storePatchesListenOwner, { value: getPatches });
+    }
+    return getPatches;
+}
+function listenStorePatches(store) {
+    return installStorePatchesListenOwner(store)();
+}
 function patchesForMask(patch, mask) {
     const selected = maskPaths(mask ?? true);
     const out = [];
@@ -300,21 +438,51 @@ function patchesForMask(patch, mask) {
     }
     return out;
 }
-function createPatchesListen(store) {
-    return (0, Listen_1.createListen)((emit) => {
-        const off = store.listenPaths().on((change) => {
-            for (const path of change.paths)
-                emit(makePatch(store.state, path));
+function createPatchesListen(batches) {
+    function produceIndividualStorePatches(emit) {
+        const off = batches.on(function emitIndividualStorePatches(patches) {
+            for (const patch of patches)
+                emit(patch);
         });
         return off;
-    }, {
-        event: (type, count, api) => {
-            if (type == "add" && count == 1 && !api.isRunning())
-                api.run();
-            if (type == "remove" && count == 0 && api.isRunning())
-                api.close();
-        },
-    });
+    }
+    return (0, Listen_1.createListen)(produceIndividualStorePatches, coldListenOptions());
+}
+function createPatchesBatchListen(batches, opts = {}) {
+    const maxItems = (0, positive_integer_option_1.positiveIntegerOption)(opts.maxItems, 256, 'exposeStore: push.maxItems');
+    const maxBytes = (0, positive_integer_option_1.positiveIntegerOption)(opts.maxBytes, 64 * 1024, 'exposeStore: push.maxBytes');
+    const envelopeBytes = 48;
+    function produceBoundedStorePatchBatches(emit) {
+        return batches.on(function emitBoundedStorePatchBatches(patches) {
+            let pending = [];
+            let pendingBytes = envelopeBytes;
+            let pendingBinaryCount = 0;
+            function flush() {
+                if (pending.length == 0)
+                    return;
+                emit(pending);
+                pending = [];
+                pendingBytes = envelopeBytes;
+                pendingBinaryCount = 0;
+            }
+            for (const patch of patches) {
+                let metrics = (0, rpc_wire_size_1.rpcResultWireMetrics)(patch, pendingBinaryCount);
+                let bytes = Number.isFinite(metrics.byteLength) ? metrics.byteLength + 1 : maxBytes;
+                if (pending.length && (pending.length >= maxItems || pendingBytes + bytes > maxBytes)) {
+                    flush();
+                    metrics = (0, rpc_wire_size_1.rpcResultWireMetrics)(patch);
+                    bytes = Number.isFinite(metrics.byteLength) ? metrics.byteLength + 1 : maxBytes;
+                }
+                pending.push(patch);
+                pendingBytes += bytes;
+                pendingBinaryCount += metrics.binaryCount;
+                if (pending.length >= maxItems)
+                    flush();
+            }
+            flush();
+        });
+    }
+    return (0, Listen_1.createListen)(produceBoundedStorePatchBatches, coldListenOptions());
 }
 function createEachListen(store, opts = {}) {
     if (opts.depth != null && opts.depth != 1)
@@ -648,6 +816,7 @@ function createStore(initial, opts = {}) {
         listenPaths: () => (0, reactive_1.listenUpdatePaths)(state),
         count: () => Array.from(store._counts.values()).reduce((a, b) => a + b, 0),
     };
+    installStorePatchesListenOwner(store);
     return store;
 }
 function exposeStore(store, opts = {}) {
@@ -660,7 +829,10 @@ function exposeStore(store, opts = {}) {
         changedPaths: store.listenPaths(),
     };
     if (opts.push) {
-        api.patches = createPatchesListen(store);
+        const patchBatches = listenStorePatches(store);
+        const pushOpts = opts.push === true ? {} : opts.push;
+        api.patches = createPatchesListen(patchBatches);
+        api.patchesBatch = createPatchesBatchListen(patchBatches, pushOpts);
         api.changedData = createChangedDataListen(store);
     }
     return api;
@@ -670,9 +842,9 @@ function isRemoteListen(listen) {
 }
 function subscribeRemote(listen, cb) {
     if (typeof listen?.on != "function")
-        return () => { };
+        return function noopRemoteUnsubscribe() { };
     const handle = listen.on(cb);
-    return () => {
+    return function unsubscribeRemote() {
         if (typeof handle == "function")
             handle();
         else if (typeof handle?.off == "function")
@@ -683,12 +855,29 @@ function subscribeRemote(listen, cb) {
 }
 function createStoreMirror(remote, initial = {}, opts = {}) {
     const store = createStore(initial, opts);
-    const makeReport = (subOpts) => (error) => {
-        if (subOpts.onError)
-            subOpts.onError(error);
-        else
-            setTimeout(() => { throw error; }, 0);
-    };
+    function makeReport(subOpts) {
+        return function reportStoreMirrorError(error) {
+            if (subOpts.onError)
+                subOpts.onError(error);
+            else
+                setTimeout(function throwStoreMirrorError() { throw error; }, 0);
+        };
+    }
+    function waitForRemoteSchema(...members) {
+        if (!members.some(member => (0, transport_lifecycle_1.getRpcMemberState)(remote, member) == undefined))
+            return undefined;
+        return (0, transport_lifecycle_1.getRpcSchemaReady)(remote)?.();
+    }
+    function remoteListenAvailable(member, candidate, allowRpcUnknown = false) {
+        const state = (0, transport_lifecycle_1.getRpcMemberState)(remote, member);
+        if (state == true)
+            return isRemoteListen(candidate);
+        if (state == false)
+            return false;
+        if ((0, transport_lifecycle_1.hasRpcMemberLookup)(remote))
+            return allowRpcUnknown && isRemoteListen(candidate);
+        return isRemoteListen(candidate);
+    }
     async function pull(mask) {
         const snap = await remote.get(mask);
         applyMask(store.state, mask, snap);
@@ -696,39 +885,71 @@ function createStoreMirror(remote, initial = {}, opts = {}) {
     async function sync(mask, subOpts = { current: true }) {
         const baseMask = mask ?? true;
         const report = makeReport(subOpts);
-        if (subOpts.current !== false)
-            await pull(baseMask);
+        let initializing = subOpts.current !== false;
         let pendingMask = undefined;
         let chain = Promise.resolve();
-        const drained = createDrained(() => {
+        const drained = createDrained(function pullQueuedStoreMask() {
             const nextMask = pendingMask === undefined ? baseMask : pendingMask;
             pendingMask = undefined;
-            chain = chain.then(() => pull(nextMask)).catch(report);
+            chain = chain.then(function pullNextStoreMask() { return pull(nextMask); }).catch(report);
         }, subOpts.drain);
-        const queue = (nextMask) => {
+        function queueStoreMask(nextMask) {
             pendingMask = pendingMask === undefined ? nextMask : mergeMasks(pendingMask, nextMask);
-            drained.push();
-        };
+            if (!initializing)
+                drained.push();
+        }
+        function handleRemoteChangedPaths(change) {
+            const nextMask = intersectMaskWithPaths(baseMask, change?.paths);
+            if (nextMask !== undefined)
+                queueStoreMask(nextMask);
+        }
+        function handleRemoteChanged() {
+            queueStoreMask(baseMask);
+        }
+        const wantsPaths = subOpts.partial !== false;
+        const pathsSchema = wantsPaths && subOpts.current !== false ? waitForRemoteSchema('changedPaths') : undefined;
+        if (pathsSchema)
+            await pathsSchema;
         const changedPaths = remote.changedPaths;
-        const usePaths = subOpts.partial !== false && isRemoteListen(changedPaths);
+        const usePaths = wantsPaths && remoteListenAvailable('changedPaths', changedPaths);
         const off = usePaths
-            ? subscribeRemote(changedPaths, (change) => {
-                const nextMask = intersectMaskWithPaths(baseMask, change?.paths);
-                if (nextMask !== undefined)
-                    queue(nextMask);
-            })
-            : subscribeRemote(remote.changed, () => queue(baseMask));
-        return () => { drained.close(); off(); };
+            ? subscribeRemote(changedPaths, handleRemoteChangedPaths)
+            : subscribeRemote(remote.changed, handleRemoteChanged);
+        try {
+            if (initializing)
+                await pull(baseMask);
+            initializing = false;
+            if (pendingMask !== undefined)
+                drained.push();
+        }
+        catch (error) {
+            drained.close();
+            off();
+            throw error;
+        }
+        return function closeStoreSync() {
+            drained.close();
+            off();
+        };
     }
     async function syncPatches(mask, subOpts = { current: true }) {
-        if (!isRemoteListen(remote.patches))
+        const canWaitForSchema = subOpts.current !== false;
+        const patchesSchema = canWaitForSchema
+            ? waitForRemoteSchema('patches', ...(subOpts.batch != false ? ['patchesBatch'] : []))
+            : undefined;
+        if (patchesSchema)
+            await patchesSchema;
+        const useBatch = subOpts.batch != false
+            && remoteListenAvailable('patchesBatch', remote.patchesBatch);
+        const patchListen = useBatch ? remote.patchesBatch : remote.patches;
+        if (!remoteListenAvailable(useBatch ? 'patchesBatch' : 'patches', patchListen, !canWaitForSchema && !useBatch)) {
             throw new Error("createStoreMirror.syncPatches: remote.patches is not exposed");
+        }
         const baseMask = mask ?? true;
         const report = makeReport(subOpts);
-        if (subOpts.current !== false)
-            await pull(baseMask);
+        let initializing = subOpts.current !== false;
         const pending = [];
-        const drained = createDrained(() => {
+        const drained = createDrained(function applyPendingStorePatches() {
             const batch = pending.splice(0);
             try {
                 applyStorePatches(store, batch);
@@ -737,24 +958,55 @@ function createStoreMirror(remote, initial = {}, opts = {}) {
                 report(e);
             }
         }, subOpts.drain);
-        const off = subscribeRemote(remote.patches, (patch) => {
+        function queuePatch(patch) {
             const next = patchesForMask(patch, baseMask);
             if (next.length == 0)
-                return;
+                return false;
             pending.push(...next);
-            drained.push();
-        });
-        return () => { drained.close(); off(); };
+            return true;
+        }
+        function handleRemoteStorePatches(value) {
+            let queued = false;
+            if (useBatch) {
+                for (const patch of value)
+                    queued = queuePatch(patch) || queued;
+            }
+            else
+                queued = queuePatch(value);
+            if (queued && !initializing)
+                drained.push();
+        }
+        const off = subscribeRemote(patchListen, handleRemoteStorePatches);
+        try {
+            if (initializing)
+                await pull(baseMask);
+            initializing = false;
+            if (pending.length)
+                drained.push();
+        }
+        catch (error) {
+            drained.close();
+            off();
+            throw error;
+        }
+        return function closeStorePatchSync() {
+            drained.close();
+            off();
+        };
     }
     async function syncChangedData(mask, subOpts = { current: true }) {
-        if (!isRemoteListen(remote.changedData))
+        const canWaitForSchema = subOpts.current !== false;
+        const changedDataSchema = canWaitForSchema ? waitForRemoteSchema('changedData') : undefined;
+        if (changedDataSchema)
+            await changedDataSchema;
+        if (!remoteListenAvailable('changedData', remote.changedData, !canWaitForSchema)) {
             throw new Error("createStoreMirror.syncChangedData: remote.changedData is not exposed");
+        }
         const baseMask = mask ?? true;
         const report = makeReport(subOpts);
-        if (subOpts.current !== false)
-            await pull(baseMask);
+        let initializing = subOpts.current !== false;
         const pending = [];
-        const drained = createDrained(() => {
+        const drained = createDrained(function applyPendingStoreChangedData() {
             const batch = pending.splice(0);
             try {
                 for (const change of batch) {
@@ -767,11 +1019,28 @@ function createStoreMirror(remote, initial = {}, opts = {}) {
                 report(e);
             }
         }, subOpts.drain);
-        const off = subscribeRemote(remote.changedData, (change) => {
+        function handleRemoteStoreChangedData(change) {
             pending.push(change);
-            drained.push();
-        });
-        return () => { drained.close(); off(); };
+            if (!initializing)
+                drained.push();
+        }
+        const off = subscribeRemote(remote.changedData, handleRemoteStoreChangedData);
+        try {
+            if (initializing)
+                await pull(baseMask);
+            initializing = false;
+            if (pending.length)
+                drained.push();
+        }
+        catch (error) {
+            drained.close();
+            off();
+            throw error;
+        }
+        return function closeStoreChangedDataSync() {
+            drained.close();
+            off();
+        };
     }
     return Object.assign(store, { sync, syncPatches, syncChangedData });
 }

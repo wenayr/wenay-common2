@@ -9,9 +9,10 @@
 // Leadership/epoch stay an upper-layer concern (follower/replica-set policies);
 // this module owns exactly one property: the LINE survives the process.
 
-import {createStore, StoreDrain, StorePatch, applyStorePatch} from './store'
+import {createStore, StoreDrain, StorePatch, applyStorePatch, listenStorePatches} from './store'
 import {exposeStoreReplay, StoreReplayOpts} from './store-replay'
-import {archiveReplay, openHistory, ReplayStorage} from '../events/replay-history'
+import {openHistory, ReplayStorage} from '../events/replay-history'
+import {ReplayEvent} from '../events/replay-listen'
 
 export type DurableStoreReplayDeps<T extends object> = {
     /** Persistence port: memory reference impl, fs impl (wenay-common2/server), or your DB adapter. */
@@ -23,9 +24,9 @@ export type DurableStoreReplayDeps<T extends object> = {
     /** ...or every T ms along the event ts line — whichever comes first. */
     everyMs?: number
     drain?: StoreDrain
-    /** Line options passed through to exposeStoreReplay (describe/onJournal/now).
+    /** Line options passed through to exposeStoreReplay (describe/onJournal/now/batch).
      *  history/getSince/firstSeq are owned by the durable head itself. */
-    expose?: Pick<StoreReplayOpts, 'describe' | 'onJournal' | 'now'>
+    expose?: Pick<StoreReplayOpts, 'describe' | 'onJournal' | 'now' | 'batch'>
 }
 
 export function createDurableStoreReplay<T extends object>(deps: DurableStoreReplayDeps<T>) {
@@ -41,11 +42,41 @@ export function createDurableStoreReplay<T extends object>(deps: DurableStoreRep
         restoredSeq = envelopes[envelopes.length - 1].seq
     }
     const store = createStore<T>(state, drain !== undefined ? {drain} : {})
+
+    // === archive state ===
+    const cadenceEvents = everyEvents ?? 64
+    let events = 0
+    let keyframes = 0
+    let lastKfSeq = 0
+    let lastKfTs = 0
+
     // === line: numbering continues; since() is served from the SAME storage ===
     let lineHead = () => restoredSeq
-    const exposed = exposeStoreReplay(store, {
-        ...(deps.expose ?? {}),
+    const {batch: requestedBatch = true, onJournal: userOnJournal, ...exposeOpts} = deps.expose ?? {}
+    const bulkPut = storage.putEvents
+    function persistEvent(ev: ReplayEvent<[StorePatch]>) {
+        userOnJournal?.(ev)
+        storage.putEvent(ev)
+        events++
+    }
+    function persistBatch(batch: readonly ReplayEvent<[StorePatch]>[]) {
+        bulkPut!(batch)
+        events += batch.length
+    }
+    // A batch contains at least one legacy patch, so its old head can never exceed
+    // the persisted legacy head. Starting there makes an old coordinate either an
+    // exact continuation boundary or an evicted/future value that resets by keyframe.
+    const safeBatch = requestedBatch ? {
+        ...(requestedBatch === true ? {} : requestedBatch),
+        getSince: undefined,
         firstSeq: restoredSeq,
+    } : false
+    const exposed = exposeStoreReplay(store, {
+        ...exposeOpts,
+        batch: safeBatch,
+        firstSeq: restoredSeq,
+        onJournal: bulkPut ? userOnJournal : persistEvent,
+        onJournalBatch: bulkPut ? persistBatch : undefined,
         getSince: function persistedSince(seq: number) {
             if (seq > lineHead()) return undefined           // foreign lifetime → keyframe reset
             if (seq == lineHead()) return []
@@ -55,12 +86,40 @@ export function createDurableStoreReplay<T extends object>(deps: DurableStoreRep
         },
     })
     lineHead = exposed.replay.head
-    // === archive: every new patch + cadence keyframes (baseline keyframe at boot) ===
-    const archive = archiveReplay(exposed.replay, {
-        storage,
-        ...(everyEvents != null ? {everyEvents} : {}),
-        ...(everyMs != null ? {everyMs} : {}),
-    })
+
+    // === keyframes: only after the full drain was precommitted and published ===
+    function takeKeyframe() {
+        const kf = exposed.replay.keyframe()
+        if (!kf) return
+        storage.putKeyframe(kf)
+        keyframes++
+        lastKfSeq = kf.seq
+        lastKfTs = kf.ts
+    }
+    function updateKeyframeCadence() {
+        const head = exposed.replay.head()
+        const ts = exposed.replay.lastTs()
+        const due = head - lastKfSeq >= cadenceEvents || (everyMs != null && ts - lastKfTs >= everyMs)
+        if (due) takeKeyframe()
+    }
+    try { takeKeyframe() }
+    catch (error) {
+        exposed.close()
+        throw error
+    }
+    // exposeStoreReplay registered first on the shared sampled source. A storage
+    // failure stops dispatch before cadence can write a keyframe for an uncommitted head.
+    const offBurst = listenStorePatches(store).on(function finishDurableBurst() { updateKeyframeCadence() })
+    function retry() {
+        exposed.flushPending()
+        updateKeyframeCadence()
+    }
+    const archive = {
+        stats: () => ({events, keyframes}),
+        close() {
+            offBurst()
+        },
+    }
     return {
         /** The durable store — authority state; write here. */
         store,
@@ -72,6 +131,8 @@ export function createDurableStoreReplay<T extends object>(deps: DurableStoreRep
         restored: {seq: restoredSeq, fromArchive: !!envelopes},
         /** Archiver counters {events, keyframes} since this boot. */
         stats: archive.stats,
+        /** Retry a Store drain retained after an atomic storage failure. */
+        retry,
         close() { archive.close(); exposed.close() },
     }
 }

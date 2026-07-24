@@ -1,6 +1,6 @@
 import { type RpcLimits } from "./rpc-limits";
 import { type SocketTmpl } from "./rpc-protocol";
-import { type RpcOpt } from "./rpc-caps";
+import { type RpcOpt } from './rpc-caps';
 type Func = (...args: any[]) => any;
 type PromiseServerHooks<T> = {
     onRequest?: (ctx: {

@@ -68,6 +68,22 @@ async function main() {
         'back-to-back incoming rings reserve admission: one rings, one is busy')
     localCalls.close()
 
+    const [, pendingProbeSignals] = createListenPair<[SignalEnvelope]>()
+    const pendingProbe = createCallManager({
+        self: 'pending',
+        port: {
+            signals: pendingProbeSignals,
+            send: function neverSettleReadyProbe() { return new Promise<boolean>(function pendingForever() {}) },
+        },
+    })
+    let pendingReady = false
+    void pendingProbe.ready.then(function rememberSettledReady() { pendingReady = true })
+    await delay(0)
+    ok(!pendingReady, 'call manager readiness remains pending while its self-probe is unfinished')
+    pendingProbe.close()
+    await delay(0)
+    ok(pendingReady, 'call manager close settles an unfinished readiness self-probe')
+
     // Resource cleanup must not walk through the public ACL proxy: after revoke
     // that proxy intentionally hides every line, while the relay still owns them.
     const cleanupGrants = new Set(['watcher|owner'])
@@ -85,6 +101,25 @@ async function main() {
     try { cleanupMedia.dropAccount('owner') } catch { cleanupSafe = false }
     ok(cleanupSafe && cleanupClosed && !cleanupMedia.accounts().includes('owner'), 'dropAccount closes owned lines after watch access is revoked')
     cleanupMedia.close()
+
+    const terminalMedia = createMediaRelay({lines: {cam: 'video', mic: 'audio'}})
+    const terminalPublish = terminalMedia.publishOf('owner')
+    const terminalSource = terminalMedia.lines('owner').cam
+    const terminalFiltered = terminalMedia.watchOf('watcher').owner.cam
+    let terminalSourceClosed = false
+    let terminalFilteredClosed = false
+    terminalSource.onClose(function rememberTerminalSourceClose() { terminalSourceClosed = true })
+    terminalFiltered.onClose(function rememberTerminalFilteredClose() { terminalFilteredClosed = true })
+    terminalPublish('cam', new Uint8Array([1]), 1)
+    terminalMedia.close()
+    let terminalPublishRejected = false
+    let terminalWatchRejected = false
+    try { terminalPublish('cam', new Uint8Array([2]), 2) } catch { terminalPublishRejected = true }
+    try { terminalMedia.watchOf('late') } catch { terminalWatchRejected = true }
+    ok(terminalSourceClosed && terminalFilteredClosed && terminalPublishRejected && terminalWatchRejected,
+        'media relay close is terminal for source lines, filtered lines, publishers and watchers')
+    ok(terminalMedia.accounts().length == 0 && Object.keys(terminalMedia.watch).length == 0,
+        'media relay close clears account histories and the dynamic watch keyspace')
 
     // ================= SERVER: peer fragment + media relay, no call-specific code =================
     // Watch ACL as APP code: media access follows call state — the policy set is

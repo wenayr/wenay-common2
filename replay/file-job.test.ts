@@ -45,11 +45,19 @@ async function main() {
         runner: {
             async run({file, job, report, cancelled}) {
                 started.add(job.id)
-                report({progress: 0.25, message: 'AI reading ' + file.name})
+                const interimResult = {stage: {name: 'reading'}}
+                report({
+                    progress: 0.25,
+                    message: 'AI reading ' + file.name,
+                    ...(file.name == 'scan.png' ? {result: interimResult} : {}),
+                })
+                interimResult.stage.name = 'mutated after report'
                 await new Promise<void>(resolve => releases.set(job.id, resolve))
                 if (cancelled()) return
                 report({progress: 0.75, message: 'AI composing result'})
-                return {result: {summary: 'processed ' + file.name}}
+                const result = {summary: 'processed ' + file.name, nested: {owned: true}}
+                setTimeout(function mutateReturnedResult() { result.nested.owned = false }, 0)
+                return {result}
             },
         },
         id: (() => { let n = 0; return () => 'id-' + (++n) })(),
@@ -112,10 +120,15 @@ async function main() {
     await waitFor('runner starts', () => started.has(firstJob.id))
     await waitFor('progress projection', () => a.files.store.state.jobs[firstJob.id]?.progress == 0.25)
     ok(a.files.store.state.jobs[firstJob.id]?.message == 'AI reading scan.png', 'progress reaches the owner through Store/replay')
+    ok((host.store.state.jobs[firstJob.id]?.result as any)?.stage?.name == 'reading',
+        'provider mutation after report cannot silently change the authority Store')
     ok(Object.keys(b.files.store.state.jobs).length == 0, 'other account does not see AI job state')
     releases.get(firstJob.id)!()
     await waitFor('job result', () => a.files.store.state.jobs[firstJob.id]?.state == 'ready')
+    await delay(10)
     ok((a.files.store.state.jobs[firstJob.id]?.result as any)?.summary == 'processed scan.png', 'structured AI result reaches the mirror')
+    ok((host.store.state.jobs[firstJob.id]?.result as any)?.nested?.owned == true,
+        'provider mutation after return cannot silently change the final authority result')
 
     const secondUpload = await a.files.startUpload({name: 'cancel.pdf', size: 8})
     uploaded.add(secondUpload.file.id)

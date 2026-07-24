@@ -5,11 +5,13 @@ certificate automatically, and keeps Socket.IO/WebSocket and browser media APIs 
 The commands are for a **repository checkout**. They are not installed as CLI commands with the npm
 package.
 
-The current stand exposes the same application through two independently trusted certificates:
+The current stand exposes the same application through two independently trusted certificates and
+uses a third, isolated certificate for sandboxed artifact iframes:
 
 ```text
 https://77.40.53.96:3100/
 https://77-40-53-96.sslip.io:3100/
+https://artifact.77-40-53-96.sslip.io:3100/
 ```
 
 The first URL uses a Let’s Encrypt certificate whose Subject Alternative Name is the literal public
@@ -18,7 +20,7 @@ is required because sslip.io resolves the address embedded in the hostname. Port
 of either certificate identity, so the application does not have to run on `80` or `443`.
 
 The raw-IP certificate uses Let’s Encrypt's `shortlived` profile and is valid for 160 hours. The
-sslip.io certificate currently uses the ordinary 90-day profile. Caddy obtains and renews both; the
+sslip.io certificates currently use the ordinary 90-day profile. Caddy obtains and renews all three; the
 short lifetime does not require a manual six-day reinstall.
 
 ## Certificate choices
@@ -134,7 +136,9 @@ current addresses, the command above has this shortcut:
 npm run demo:https
 ```
 
-When only `-PublicIp` is passed, the launcher derives the matching sslip.io fallback. When only an
+When only `-PublicIp` is passed, the launcher derives the matching sslip.io fallback. It also derives
+`artifact.<fallback-host>` as the cookie-free iframe origin; pass `-ArtifactHost` when a custom DNS
+name should be used. When only an
 IPv4 sslip.io `-PublicHost` is passed, it derives the raw IP. Passing both explicitly is clearer for
 provisioning scripts. Use `-RawIpOnly` or `-HostnameOnly` when only one identity should be issued:
 
@@ -147,7 +151,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-demo-https.ps1 `
     -ChallengePort 3102
 ```
 
-That command is the pure direct-IP variant: it obtains and serves no DNS-name certificate.
+That command exposes the application only through the direct-IP identity. The isolated artifact
+iframe still needs its derived sslip.io certificate because an executable sandbox must not share the
+application origin.
 
 If the launcher chooses the wrong network interface, specify the computer’s LAN address:
 
@@ -199,23 +205,32 @@ serve the demo on port `80`; it only allows the ACME validation request through.
 4. starts Node on `127.0.0.1:<BackendPort>`;
 5. starts the NAT-PMP keeper unless `-SkipNatPmp` was passed;
 6. starts Caddy on `<PublicBind>:<PublicPort>` as the TLS reverse proxy;
-7. requests every enabled identity through ACME HTTP-01 — by default the ordinary hostname
-   certificate and the raw-IP `shortlived` certificate;
+7. requests every enabled identity through ACME HTTP-01 — by default the ordinary hostname,
+   isolated artifact hostname, and raw-IP `shortlived` certificates;
 8. sets the raw IP as Caddy's `default_sni`, because standards-compliant clients omit SNI when the
    URL host is an IP literal;
 9. waits up to `CertificateWaitSeconds` per enabled certificate (120 seconds each by default) until
-   it is trusted and the proxied application returns a successful response.
+   it is trusted and the endpoint returns its expected readiness response: the application is
+   proxied, while the artifact origin answers its root health check directly in Caddy.
+
+The production demo bundle is minified, and Caddy serves compressible HTTP responses with zstd or
+gzip. This covers the bundle, HTTP facade and polling phase; it does not compress Socket.IO messages
+after WebSocket Upgrade. WebSocket `perMessageDeflate` is a separate deployment decision because the
+same demo connection also carries already-compressed JPEG media. Its unused admin endpoint is
+disabled, so another local Caddy process cannot collide on port `2019`.
 
 The essential raw-IP Caddy configuration generated for this machine is:
 
 ```caddyfile
 {
+    admin off
     auto_https disable_redirects
     default_sni 77.40.53.96
 }
 
 https://77.40.53.96:3100 {
     bind 192.168.0.165
+    encode zstd gzip
 
     tls {
         issuer acme https://acme-v02.api.letsencrypt.org/directory {
@@ -226,6 +241,26 @@ https://77.40.53.96:3100 {
     }
 
     reverse_proxy 127.0.0.1:3100
+}
+
+https://artifact.77-40-53-96.sslip.io:3100 {
+    bind 192.168.0.165
+    encode zstd gzip
+
+    tls {
+        issuer acme {
+            alt_http_port 3102
+            disable_tlsalpn_challenge
+        }
+    }
+
+    route {
+        @artifact path /artifact-open/*
+        reverse_proxy @artifact 127.0.0.1:3100
+        @artifactHealth path /
+        respond @artifactHealth 204
+        respond 404
+    }
 }
 ```
 
@@ -248,15 +283,17 @@ Check the local Node backend:
 curl.exe --noproxy '*' -I http://localhost:3100/
 ```
 
-Check the direct-IP certificate and the hostname fallback:
+Check the direct-IP certificate, hostname fallback, and isolated artifact origin:
 
 ```powershell
 curl.exe --noproxy '*' -I https://77.40.53.96:3100/
 curl.exe --noproxy '*' -I https://77-40-53-96.sslip.io:3100/
+curl.exe --noproxy '*' -I https://artifact.77-40-53-96.sslip.io:3100/
 ```
 
-An `HTTP/1.1 200 OK` response without a certificate warning confirms HTTPS. Run these commands from a
-machine outside the LAN to confirm the public route, not only local NAT loopback.
+A successful 2xx response without a certificate warning confirms HTTPS. The two application roots
+return `200`; the isolated artifact health root intentionally returns `204`. Run these commands from
+a machine outside the LAN to confirm the public route, not only local NAT loopback.
 
 Inspect the served certificate without reading Caddy’s private-key files:
 
@@ -399,8 +436,9 @@ Then change the application router rule to public TCP `3200 → local 3200` and 
 | Public connection times out | Add/fix TCP `3100 → LAN_IP:3100`, the Windows Firewall rule, every upstream NAT layer, or the LAN address reservation. |
 | HTTPS returns `502` | Certificate and Caddy work, but the Node backend is down. Read `backend.err.log`. |
 | Page stays at `connecting…` | Test the Socket.IO polling URL and forced WebSocket command above. Caddy needs no separate WebSocket configuration. |
-| Public URL works outside but not inside the LAN | The router probably lacks NAT loopback. Use the local HTTP URL for local work and an external network for the public test. |
+| Public URL works outside but not inside the LAN | The router probably lacks NAT loopback. Use the local HTTP URL for ordinary local work and an external network for the public test. The sandbox artifact iframe still uses its public isolated origin and therefore also requires NAT loopback or an external route. |
 | Camera/microphone is unavailable | Confirm the public page has `window.isSecureContext === true`, grant browser permission, and check the device. Plain external `http://<ip>` is not a secure context. |
+| Artifact iframe is refused | Verify the `artifact.<sslip-host>` certificate and DNS, then inspect the iframe response CSP. The launcher passes the exact app origins to `frame-ancestors`; do not replace them with `*`. |
 | Port already belongs to another process | Inspect it with `Get-NetTCPConnection -State Listen -LocalPort 3100,3102` and choose another free port in `3100–3500` or stop the intended owner. |
 
 ## Official references

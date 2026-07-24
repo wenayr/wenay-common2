@@ -24,6 +24,8 @@ import {ListenOnReplay, ListenReplayApi, ReplayEvent} from './replay-listen'
 export type ReplayStorage<Z extends any[] = any[]> = {
     /** Write a line event (called on each numbered emit). */
     putEvent: (ev: ReplayEvent<Z>) => void
+    /** Optional atomic bulk write: persist every event or throw without exposing a partial prefix. */
+    putEvents?: (events: readonly ReplayEvent<Z>[]) => void
     /** Write a keyframe (state at kf.seq — event of the same type). */
     putKeyframe: (kf: ReplayEvent<Z>) => void
     /** Nearest keyframe with seq <= at.seq (or ts <= at.ts). Without at — the latest. undefined = none. */
@@ -46,6 +48,67 @@ function upperBy<E>(arr: E[], k: (e: E) => number, v: number) {
 const bySeq = (e: ReplayEvent) => e.seq
 const byTs = (e: ReplayEvent) => e.ts
 
+// Bounded archives are hot append-only logs. Keeping the logical head in a
+// closure avoids Array.shift() moves and capacity-dependent array modes while
+// retaining the same sorted binary-search contract.
+function createMemoryReplayLog<E>(limit?: number) {
+    const capacity = !limit || limit == Infinity
+        ? null
+        : !Number.isFinite(limit) || limit < 1
+            ? 0
+            : Math.floor(limit)
+    const values: E[] = []
+    let start = 0
+    let length = 0
+
+    function at(index: number) {
+        return capacity == null ? values[index] : values[(start + index) % capacity]
+    }
+
+    function append(value: E) {
+        if (capacity == null) {
+            values.push(value)
+            length++
+            return
+        }
+        if (capacity == 0) return
+        if (length < capacity) {
+            values[(start + length) % capacity] = value
+            length++
+            return
+        }
+        values[start] = value
+        start = (start + 1) % capacity
+    }
+
+    function upper(k: (value: E) => number, value: number) {
+        if (capacity == null) return upperBy(values, k, value)
+        let lo = 0
+        let hi = length
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1
+            if (k(at(mid)) <= value) lo = mid + 1
+            else hi = mid
+        }
+        return lo
+    }
+
+    function between(k: (value: E) => number, from: number, to: number) {
+        const begin = upper(k, from)
+        const end = upper(k, to)
+        if (capacity == null) return values.slice(begin, end)
+        const out: E[] = []
+        for (let index = begin; index < end; index++) out.push(at(index))
+        return out
+    }
+
+    function latest(k: (value: E) => number, value: number) {
+        return at(upper(k, value) - 1)
+    }
+
+    return {append, between, latest, size: () => length}
+}
+
 /**
  * Reference memory storage (and oracle for file/DB implementations).
  * maxEvents/maxKeyframes — evict oldest: models a bounded archive.
@@ -53,25 +116,28 @@ const byTs = (e: ReplayEvent) => e.ts
 export function createMemoryReplayStorage<Z extends any[] = any[]>(opts: {maxEvents?: number, maxKeyframes?: number} = {}) {
     const {maxEvents, maxKeyframes} = opts
     // written strictly in ascending seq order → arrays are always sorted
-    const events: ReplayEvent<Z>[] = []
-    const keyframes: ReplayEvent<Z>[] = []
+    const events = createMemoryReplayLog<ReplayEvent<Z>>(maxEvents)
+    const keyframes = createMemoryReplayLog<ReplayEvent<Z>>(maxKeyframes)
+    function putEvent(ev: ReplayEvent<Z>) {
+        events.append(ev)
+    }
+    function putEvents(batch: readonly ReplayEvent<Z>[]) {
+        for (const ev of batch) putEvent(ev)
+    }
     return {
-        putEvent: (ev: ReplayEvent<Z>) => {
-            events.push(ev)
-            if (maxEvents && events.length > maxEvents) events.shift()
-        },
+        putEvent,
+        putEvents,
         putKeyframe: (kf: ReplayEvent<Z>) => {
-            keyframes.push(kf)
-            if (maxKeyframes && keyframes.length > maxKeyframes) keyframes.shift()
+            keyframes.append(kf)
         },
         getKeyframe: (at: {seq?: number, ts?: number} = {}) => {
-            const end = at.ts != null ? upperBy(keyframes, byTs, at.ts) : upperBy(keyframes, bySeq, at.seq ?? Infinity)
-            return keyframes[end - 1]
+            return at.ts != null
+                ? keyframes.latest(byTs, at.ts)
+                : keyframes.latest(bySeq, at.seq ?? Infinity)
         },
-        getEvents: (from: number, to: number) =>
-            events.slice(upperBy(events, bySeq, from), upperBy(events, bySeq, to)),
+        getEvents: (from: number, to: number) => events.between(bySeq, from, to),
         /** Introspection for metrics/tests. */
-        size: () => ({events: events.length, keyframes: keyframes.length}),
+        size: () => ({events: events.size(), keyframes: keyframes.size()}),
     }
 }
 

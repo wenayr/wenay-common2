@@ -19,7 +19,8 @@ export declare function createPeerHost(deps?: PeerHostDeps): {
                 send: (env: SignalEnvelope) => Promise<boolean>;
                 signals: import("../events/Listen").ListenApi<[SignalEnvelope]>;
             };
-            publish: (env: PatchEnvelope) => import("./peer-relay").RelayPushResult;
+            publish: (envelope: PatchEnvelope) => import("./peer-relay").RelayPushResult;
+            publishBatch: (envelopes: PatchEnvelope[]) => import("./peer-relay").RelayPushResult;
             peers: Record<string, ReplayRemote<[StorePatch]>>;
             presence: {
                 list: () => string[];
@@ -30,6 +31,7 @@ export declare function createPeerHost(deps?: PeerHostDeps): {
     };
     relay: (account: string) => {
         push: (env: PatchEnvelope) => import("./peer-relay").RelayPushResult;
+        pushBatch: (envelopes: PatchEnvelope[]) => import("./peer-relay").RelayPushResult;
         remote: ReplayRemote<[StorePatch]> & {
             seq: () => number;
         };

@@ -32,7 +32,12 @@ async function waitFor(label: string, cond: () => boolean) {
 // journal; behavior knobs simulate lag, open failure, catch-up failure.
 // =====================================================================
 
-type FakeBehavior = {lag: number, failOpen?: boolean, failCatchUp?: boolean}
+type FakeBehavior = {
+    lag: number
+    failOpen?: boolean
+    failCatchUp?: boolean
+    hangCatchUp?: boolean
+}
 
 function makeFakeNet<Z extends any[]>(replay: any) {
     const behavior: Record<tRouteKind, FakeBehavior> = {
@@ -66,9 +71,24 @@ function makeFakeNet<Z extends any[]>(replay: any) {
                             return () => { lines--; off() }
                         },
                     },
-                    since: async (s: number) => { await delay(b.lag); if (b.failCatchUp) throw new Error(kind + ' since failed'); return replay.getSince(s) ?? null },
-                    keyframe: async () => { await delay(b.lag); if (b.failCatchUp) throw new Error(kind + ' keyframe failed'); return replay.keyframe() ?? null },
-                    frame: async (s: number, hint?: unknown) => { await delay(b.lag); if (b.failCatchUp) throw new Error(kind + ' frame failed'); return replay.frame(s, hint) },
+                    since: async (s: number) => {
+                        await delay(b.lag)
+                        if (b.failCatchUp) throw new Error(kind + ' since failed')
+                        if (b.hangCatchUp) await new Promise<void>(function keepCatchUpPending() {})
+                        return replay.getSince(s) ?? null
+                    },
+                    keyframe: async () => {
+                        await delay(b.lag)
+                        if (b.failCatchUp) throw new Error(kind + ' keyframe failed')
+                        if (b.hangCatchUp) await new Promise<void>(function keepCatchUpPending() {})
+                        return replay.keyframe() ?? null
+                    },
+                    frame: async (s: number, hint?: unknown) => {
+                        await delay(b.lag)
+                        if (b.failCatchUp) throw new Error(kind + ' frame failed')
+                        if (b.hangCatchUp) await new Promise<void>(function keepCatchUpPending() {})
+                        return replay.frame(s, hint)
+                    },
                 }
             },
             close: () => { state = 'closed' },
@@ -209,6 +229,33 @@ async function main() {
         await delay(10)
         ok(json(got) == json([0, 1, 2]), 'no dups/gaps even after the slow direct eventually resolves')
         ok(sub.label() == 'relay', 'consumer settled back on relay')
+        coord.close()
+    }
+
+    console.log('\n[route-coordinator] timeout cancels a permanently blocked replacement')
+    {
+        let state = 0
+        const [emit, replay] = replayListen<[number]>({current: () => [state], history: 100})
+        const net = makeFakeNet<[number]>(replay)
+        net.behavior.direct.hangCatchUp = true
+        const coord = createRouteCoordinator<[number]>({connect: net.connect, catchUpTimeoutMs: 15})
+        const link = coord.pair('a', 'b')
+        const got: number[] = []
+        const sub = link.subscribe(n => got.push(n))
+        await sub.ready
+
+        const result = await Promise.race([
+            link.promoteDirect(),
+            delay(100).then(function markStillBlocked() { return null }),
+        ])
+        ok(result != null && !result.ok && link.state() == 'fallback',
+            'timeout closes the blocked direct slot and lets rollback finish')
+        ok(net.activeLines('direct') == 0 && sub.label() == 'relay',
+            'blocked replacement releases its live line before returning')
+        state = 1
+        emit(state)
+        await delay(10)
+        ok(json(got) == json([0, 1]), 'relay remains live after a permanently blocked promotion')
         coord.close()
     }
 

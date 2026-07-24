@@ -1,6 +1,7 @@
 import {listen} from '../src/Common/events/Listen'
-import {createStore, StoreDrain} from '../src/Common/Observe/store'
-import {syncStoreReplay} from '../src/Common/Observe/store-replay'
+import {StoreDrain} from '../src/Common/Observe/store'
+import {followReplicatedMap, ReplicatedMapStatus, tReplicatedMapDelivery} from '../src/Common/Observe/replicated-map'
+import {tStoreReplayMode} from '../src/Common/Observe/store-replay'
 import {
     tWorkboardStatus,
     WorkboardAssignInput,
@@ -23,6 +24,7 @@ type WorkboardTransport = {
 
 type WorkboardClientDeps = {
     remote: WorkboardRemote
+    /** @deprecated Replicated Map owns transport lifecycle/status; retained for stand call-site compatibility. */
     transport?: WorkboardTransport
     initial?: WorkboardState
     drain?: StoreDrain
@@ -30,6 +32,8 @@ type WorkboardClientDeps = {
 
 export type WorkboardClientStatus = {
     connection: tWorkboardConnection
+    delivery: tReplicatedMapDelivery
+    replayMode: tStoreReplayMode
     pending: number
     lastError: string | null
     seq: number
@@ -42,47 +46,51 @@ function errorText(error: unknown) {
 }
 
 export function createWorkboardClient(deps: WorkboardClientDeps) {
-    const store = createStore<WorkboardState>(deps.initial ?? {}, deps.drain !== undefined ? {drain: deps.drain} : {})
     const [emitStatus, statusChanges] = listen<[WorkboardClientStatus]>()
     let connection: tWorkboardConnection = 'connecting'
     let pending = 0
     let lastError: string | null = null
     let closed = false
-    let wasLive = false
+    let initialized = false
 
-    const stateSync = syncStoreReplay(store, deps.remote.state, {
-        onError(error) {
+    function applyReplicatedMapStatus(next: ReplicatedMapStatus) {
+        if (next.state == 'live') {
+            connection = 'live'
+            lastError = null
+        } else if (next.state == 'reconnecting') connection = 'reconnecting'
+        else if (next.state == 'connecting') connection = 'connecting'
+        else {
             connection = 'stale'
-            lastError = errorText(error)
-            changed()
-        },
+            if (next.error != null) lastError = errorText(next.error)
+        }
+        if (initialized) changed()
+    }
+
+    const stateSync = followReplicatedMap(deps.remote.state, {
+        initial: deps.initial,
+        drain: deps.drain,
+        onStatus: applyReplicatedMapStatus,
     })
+    initialized = true
+    const store = stateSync.debug.store
 
     function status(): WorkboardClientStatus {
-        return {connection, pending, lastError, seq: stateSync.seq()}
+        return {
+            connection,
+            delivery: stateSync.delivery(),
+            replayMode: stateSync.replayMode(),
+            pending,
+            lastError,
+            seq: stateSync.seq(),
+        }
     }
 
     function changed() {
         if (!closed) emitStatus(status())
     }
 
-    function setConnection(next: tWorkboardConnection) {
-        if (connection == next) return
-        connection = next
-        if (next == 'live') wasLive = true
-        changed()
-    }
-
-    const offConnect = deps.transport?.connectListen(function workboardTransportConnected() {
-        setConnection('live')
-    }) ?? function noConnectListener() {}
-    const offDisconnect = deps.transport?.disconnectListen(function workboardTransportDisconnected(reason) {
-        lastError = reason || null
-        setConnection(wasLive ? 'reconnecting' : 'connecting')
-    }) ?? function noDisconnectListener() {}
-
     const ready = stateSync.ready.then(function workboardReady() {
-        setConnection('live')
+        applyReplicatedMapStatus(stateSync.status())
     })
 
     async function run<T>(command: () => T | Promise<T>) {
@@ -122,19 +130,22 @@ export function createWorkboardClient(deps: WorkboardClientDeps) {
     }
 
     function items(statusFilter?: tWorkboardStatus) {
-        return Object.values(store.state)
+        return Object.values(stateSync.snapshot())
             .filter(item => !statusFilter || item.status == statusFilter)
             .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
     }
 
     function counts() {
         const result: Record<tWorkboardStatus, number> = {new: 0, active: 0, done: 0}
-        for (const item of Object.values(store.state)) result[item.status]++
+        for (const item of Object.values(stateSync.snapshot())) result[item.status]++
         return result
     }
 
     return {
+        /** @deprecated Stand compatibility; application reads go through the Replicated Map facade. */
         store,
+        batches: stateSync.batches,
+        get: stateSync.get,
         statusChanges,
         ready,
         status,
@@ -149,9 +160,7 @@ export function createWorkboardClient(deps: WorkboardClientDeps) {
         close() {
             if (closed) return
             closed = true
-            offConnect()
-            offDisconnect()
-            stateSync()
+            stateSync.close()
             statusChanges.close()
         },
     }

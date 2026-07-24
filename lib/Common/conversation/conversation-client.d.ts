@@ -1,8 +1,9 @@
 import { StoreDrain } from '../Observe/store';
+import { StoreReplayRemote } from '../Observe/store-replay';
 import { ReplayRemote } from '../events/replay-wire';
 import { Conversation, ConversationChannel, ConversationChannelInput, ConversationCreateInput, ConversationCreateResult, ConversationFact, ConversationFactInput, ConversationFactRetractInput, ConversationMessage, ConversationPostInput, ConversationStore, tConversationEvent } from './conversation-host';
 export type ConversationRemote = {
-    state: ReplayRemote<any>;
+    state: StoreReplayRemote;
     events: ReplayRemote<[tConversationEvent]>;
     createConversation: (input: ConversationCreateInput) => ConversationCreateResult | Promise<ConversationCreateResult>;
     createChannel: (input: ConversationChannelInput) => ConversationChannel | Promise<ConversationChannel>;
@@ -14,12 +15,14 @@ export type ConversationClientDeps = {
     remote: ConversationRemote;
     initial?: ConversationStore;
     drain?: StoreDrain;
+    batch?: boolean;
 };
 export declare function createConversationClient(deps: ConversationClientDeps): {
     store: import("../Observe/store").Store<ConversationStore>;
     events: import("../events/Listen").ListenApi<[tConversationEvent]>;
     ready: Promise<void>;
     stateSeq: () => number;
+    stateMode: () => import("../Observe/store-replay").tStoreReplayMode;
     eventSeq: () => number;
     createConversation: (input: ConversationCreateInput) => Promise<ConversationCreateResult>;
     createChannel: (input: ConversationChannelInput) => Promise<ConversationChannel>;

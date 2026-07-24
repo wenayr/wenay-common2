@@ -8,9 +8,10 @@
 
 import {deepEqual} from '../core/common'
 import {listen} from '../events/Listen'
-import {ReplayRemote} from '../events/replay-wire'
 import {createStore, Store, StorePatch} from './store'
-import {exposeStoreReplay, StoreReplayOpts, syncStoreReplayRoute} from './store-replay'
+import {exposeStoreReplay, StoreReplayOpts, StoreReplayRemote, syncStoreReplayRoute} from './store-replay'
+import {ReplayRemote} from '../events/replay-wire'
+import {getRpcSchemaReady, hasRpcMemberLookup, rpcMemberAvailable} from '../events/transport-lifecycle'
 import {diffKeyedState} from './store-follower'
 
 export type tStoreReplicaRole = 'leader' | 'follower' | 'offline' | 'electing' | 'reconciling' | 'closed'
@@ -44,7 +45,7 @@ export type StoreReplicaDescriptor = {
 export type StoreReplicaRemote = {
     descriptor: () => StoreReplicaDescriptor | Promise<StoreReplicaDescriptor>
     changed?: {on: (cb: (descriptor?: StoreReplicaDescriptor) => void) => any}
-    replay: ReplayRemote<[StorePatch]>
+    replay: StoreReplayRemote
     /** The return value is opaque; elapsed wall time is the route sample. */
     ping?: () => unknown | Promise<unknown>
 }
@@ -145,6 +146,8 @@ export type StoreReplicaRoutePolicy = {
     pingTimeoutMs?: number
     /** A new route must beat the current one by this many milliseconds. */
     hysteresisMs?: number
+    /** Opt in only when every offered route shares one batch line identity (default false). */
+    batch?: boolean
 }
 
 export type StoreReplicaSetDeps<T extends object> = {
@@ -164,6 +167,14 @@ export type StoreReplicaSetDeps<T extends object> = {
 function errorText(error: unknown) {
     if (typeof (error as any)?.message == 'string') return (error as any).message
     return String(error)
+}
+
+async function optionalRemoteMember(remote: any, member: string) {
+    if (hasRpcMemberLookup(remote)) {
+        await getRpcSchemaReady(remote)?.()
+        return rpcMemberAvailable(remote, member)
+    }
+    return remote?.[member] != null
 }
 
 function unsubscribeHandle(handle: any) {
@@ -271,7 +282,8 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
     const pingTimeoutMs = deps.route?.pingTimeoutMs ?? 3000
     const hysteresisMs = deps.route?.hysteresisMs ?? 8
     const store = deps.store ?? createStore<T>((deps.initial ?? {}) as T)
-    const exposed = exposeStoreReplay(store, deps.expose)
+    const exposeOpts = deps.expose ?? {}
+    const exposed = exposeStoreReplay(store, {...exposeOpts, batch: exposeOpts.batch ?? true})
     const offers = new Map<string, OfferEntry>()
     const [emitDescriptor, descriptorChanges] = listen<[StoreReplicaDescriptor]>()
     const [emitConflict, conflictListen] = listen<[StoreReplicaConflict<T>]>()
@@ -298,6 +310,7 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
     let opChain: Promise<unknown> = Promise.resolve()
     let readySettled = false
     let lastPublishedDescriptor: StoreReplicaDescriptor | null = null
+    let dataStatusScheduled = false
     let settleReady = function settleReadyLater() {}
     const ready = new Promise<void>(function waitForReplicaReady(resolve) { settleReady = resolve })
 
@@ -358,6 +371,7 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
     }
 
     function publishStatus() {
+        dataStatusScheduled = false
         const routes: Record<string, StoreReplicaRouteStatus> = {}
         for (const [id, entry] of offers) routes[id] = routeSnapshot(entry)
         const next: StoreReplicaSetStatus = {
@@ -383,6 +397,15 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
             emitDescriptor(current)
         }
         settleReplicaReady()
+    }
+
+    function scheduleDataStatus() {
+        if (closed || dataStatusScheduled) return
+        dataStatusScheduled = true
+        queueMicrotask(function publishReplicaDataStatus() {
+            if (!dataStatusScheduled || closed) return
+            publishStatus()
+        })
     }
 
     const status = createStore<StoreReplicaSetStatus>({
@@ -499,8 +522,10 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
     }
 
     async function ping(entry: OfferEntry, generation: number) {
-        const probe = entry.session?.remote.ping
-        if (!probe) return 0
+        const session = entry.session
+        if (!session || !(await optionalRemoteMember(session.remote, 'ping'))) return 0
+        if (generation != entry.generation || session != entry.session) throw new Error('stale ping generation')
+        const probe = session.remote.ping!
         const started = now()
         let timeoutHandle: ReturnType<typeof setTimeout> | null = null
         const timeout = new Promise<never>(function pingDeadline(_resolve, reject) {
@@ -582,9 +607,13 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
             entry.offFail = session.onFail?.on(function replicaSessionFailed(reason?: unknown) {
                 failEntry(entry, reason ?? new Error('replica session failed'))
             }) ?? null
-            entry.offChanged = session.remote.changed?.on(function remoteDescriptorChanged() {
-                void refreshEntry(entry)
-            }) ?? null
+            const hasChanged = await optionalRemoteMember(session.remote, 'changed')
+            if (closed || generation != entry.generation || entry.session != session) return
+            if (hasChanged) {
+                entry.offChanged = session.remote.changed!.on(function remoteDescriptorChanged() {
+                    void refreshEntry(entry)
+                })
+            }
             await refreshEntry(entry)
         } catch (error) {
             if (generation == entry.generation) failEntry(entry, error)
@@ -678,9 +707,11 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
     }
 
     function trackAuthoritySeq(seq: number) {
-        if (activeDescriptor?.lineId == activeDescriptor?.authorityLineId) authoritySeq = seq
+        // Batch and legacy heads count different units. The descriptor remains in
+        // canonical legacy coordinates, so only a legacy direct route may advance it from delivery.
+        if (activeDescriptor?.lineId == activeDescriptor?.authorityLineId && upstreamSub?.mode == 'legacy') authoritySeq = seq
         else authoritySeq = Math.max(authoritySeq, activeDescriptor?.authoritySeq ?? -1)
-        publishStatus()
+        scheduleDataStatus()
     }
 
     async function follow(entry: OfferEntry, next: StoreReplicaDescriptor, reason: string) {
@@ -697,14 +728,13 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
         const previousCost = authorityCost
         const previousPath = authorityPath
         const previousProof = proof
-        const localState = store.snapshot()
         const authorityChanged = !sameAuthority(previousDescriptor ?? (previousRole == 'leader' ? previousAuthority : null), next)
         const sameSequenceSpace = sameAuthority(previousDescriptor, next) && previousDescriptor?.lineId == next.lineId
         const authorityFrame = previousRole == 'leader' && authorityChanged
             ? keyframeState<T>(await session.remote.replay.keyframe())
             : null
         const pendingConflict = authorityFrame
-            ? conflictFor(localState, authorityFrame, previousAuthority, next)
+            ? conflictFor(store.snapshot(), authorityFrame, previousAuthority, next)
             : null
 
         role = 'reconciling'
@@ -722,6 +752,7 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
             if (!upstreamSub) {
                 created = true
                 upstreamSub = syncStoreReplayRoute(store, session.remote.replay, {
+                    batch: deps.route?.batch ?? false,
                     label: entry.offer.id,
                     since: -1,
                     reset: true,
@@ -892,7 +923,7 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
 
     const offHead = exposed.replay.line.on(function localReplicaHeadChanged() {
         if (role == 'leader') authoritySeq = exposed.replay.head()
-        publishStatus()
+        scheduleDataStatus()
     })
     const offOfferSource = deps.offers?.changes.on(function replaceDiscoveredOffers(next) { setOffers(next) }) ?? null
     if (deps.offers) setOffers(deps.offers.list())

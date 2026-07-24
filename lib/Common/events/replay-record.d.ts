@@ -7,6 +7,7 @@ export type ReplayRecordCodec = {
 export declare function createJsonlReplayWriter<Z extends any[] = any[]>(write: (line: string) => void, codec?: ReplayRecordCodec): ReplayStorage<Z>;
 export declare function loadJsonlReplay<Z extends any[] = any[]>(lines: Iterable<string> | string, codec?: ReplayRecordCodec): {
     putEvent: (ev: ReplayEvent<Z>) => void;
+    putEvents: (batch: readonly ReplayEvent<Z>[]) => void;
     putKeyframe: (kf: ReplayEvent<Z>) => void;
     getKeyframe: (at?: {
         seq?: number;

@@ -108,6 +108,28 @@ async function main() {
         line2.arch.close()
     }
 
+    console.log('\n[history] bounded memory ring wrap + bulk/keyframe lookup')
+    {
+        const storage = createMemoryReplayStorage<[number]>({maxEvents: 4, maxKeyframes: 3})
+        const events = Array.from({length: 10}, function makeHistoryEvent(_value, index): ReplayEvent<[number]> {
+            const seq = index + 1
+            return {seq, ts: seq * 100, event: [seq]}
+        })
+        storage.putEvents!(events)
+        for (const seq of [2, 5, 8, 10]) storage.putKeyframe(events[seq - 1])
+
+        ok(json(storage.getEvents(-1, Infinity).map(ev => ev.seq)) == json([7, 8, 9, 10]),
+            'bulk append larger than the cap retains the exact newest logical window')
+        ok(json(storage.getEvents(7, 9).map(ev => ev.seq)) == json([8, 9]),
+            'binary seek across the physical ring wrap preserves from < seq <= to')
+        ok(storage.getKeyframe({seq: 7})?.seq == 5,
+            'bounded keyframe lookup by seq uses the nearest retained predecessor')
+        ok(storage.getKeyframe({ts: 850})?.seq == 8,
+            'bounded keyframe lookup by ts stays ordered after wrap')
+        ok(storage.size().events == 4 && storage.size().keyframes == 3,
+            'bounded introspection reports logical lengths, not physical slots')
+    }
+
     console.log('\n[history] handover: archive replay → live journal → live')
     {
         const storage = createMemoryReplayStorage<[number]>()

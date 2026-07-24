@@ -81,7 +81,7 @@ export function setupWorkboardDemo(deps: WorkboardDemoDeps) {
         connection.textContent = state.connection
         connection.dataset.state = state.connection
         const pending = state.pending ? ` · ${state.pending} pending` : ''
-        meta.textContent = `replay seq ${state.seq}${pending}`
+        meta.textContent = `map ${state.delivery} · replay ${state.replayMode} · seq ${state.seq}${pending}`
         createButton.disabled = state.connection == 'stale' || state.pending > 0
         if (state.lastError && !message.textContent) showMessage(state.lastError, 'error')
     }
@@ -326,7 +326,7 @@ export function setupWorkboardDemo(deps: WorkboardDemoDeps) {
     }
 
     function noteActivity(key: string) {
-        const next = client.store.state[key]
+        const next = client.get(key)
         const previous = lastSeen.get(key)
         if (next) lastSeen.set(key, {...next})
         else lastSeen.delete(key)
@@ -346,12 +346,15 @@ export function setupWorkboardDemo(deps: WorkboardDemoDeps) {
         renderFeed()
     }
 
-    // Keyframes and live replay both land as per-item callbacks.
-    const offItems = client.store.each().on(function renderChangedWorkItem(key) {
-        noteActivity(key)
+    // One physical replay envelope produces one UI render, even when many keys changed.
+    const offItems = client.batches.on(function renderWorkboardBatch(change) {
+        const changedKeys = new Set(change.operations.map(operation => operation.key))
+        for (const key of changedKeys) {
+            noteActivity(key)
+            cards.get(key)?.highlight()
+        }
         renderBoard()
         renderStatus()
-        cards.get(key)?.highlight()
     })
     const offStatus = client.statusChanges.on(function renderWorkboardStatus() { renderStatus() })
     renderBoard()

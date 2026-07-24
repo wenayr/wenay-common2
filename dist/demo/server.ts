@@ -1,6 +1,7 @@
 // Demo stand server: the Peer SDK next to a legacy rpc key, static page hosting.
 // Run: npm run demo  ->  open the two printed URLs in two tabs.
-import express from 'express'
+import express, {type NextFunction, type Request, type Response} from 'express'
+import {randomUUID} from 'crypto'
 import {createServer} from 'http'
 import path from 'path'
 import {Server as SocketIOServer} from 'socket.io'
@@ -12,6 +13,8 @@ import {createAiRunHost} from '../src/Common/ai/ai-index'
 import {createArtifactHost} from '../src/Common/artifact/artifact-index'
 import {createConversationHost} from '../src/Common/conversation/conversation-index'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
+import {Pkt} from '../src/Common/rcp/rpc-protocol'
+import {createHttpFacadeServer} from '../src/server/httpFacadeServer'
 import {io as ioClient} from 'socket.io-client'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createStoreFollower} from '../src/Common/Observe/store-follower'
@@ -19,6 +22,7 @@ import {createArtifactByteCache, createArtifactMirror, sha256Hex} from '../src/C
 import type {ArtifactRecord, ArtifactStore} from '../src/Common/artifact/artifact-index'
 import {createWorkboardHost, WorkboardHost} from './workboard-host'
 import type {WorkboardState} from './workboard-contract'
+import {demoRpcOpt} from './protocol-schema'
 
 const portStart = Number(process.env.DEMO_PORT_START ?? 3100)
 const portEnd = Number(process.env.DEMO_PORT_END ?? 3500)
@@ -65,6 +69,68 @@ function readDemoIceServers() {
 }
 
 const rtcConfiguration = {iceServers: readDemoIceServers()}
+const configuredHttpFacadeToken = process.env.DEMO_HTTP_FACADE_TOKEN?.trim() || null
+const httpFacadeToken = configuredHttpFacadeToken ?? randomUUID()
+
+function configuredOrigin(value: string, label: string) {
+    let url
+    try { url = new URL(value) }
+    catch { throw new Error(label + ' must be an absolute http(s) origin') }
+    if ((url.protocol != 'http:' && url.protocol != 'https:') || url.username || url.password
+        || url.pathname != '/' || url.search || url.hash) {
+        throw new Error(label + ' must contain only an http(s) origin')
+    }
+    return url.origin
+}
+
+function readConfiguredAppOrigins() {
+    const raw = process.env.DEMO_APP_ORIGINS
+    if (!raw) return null
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed) || parsed.length == 0 || parsed.some(value => typeof value != 'string')) {
+        throw new Error('DEMO_APP_ORIGINS must be a non-empty JSON string array')
+    }
+    return parsed.map(value => configuredOrigin(value, 'DEMO_APP_ORIGINS entry'))
+}
+
+const configuredArtifactOrigin = process.env.DEMO_ARTIFACT_ORIGIN
+    ? configuredOrigin(process.env.DEMO_ARTIFACT_ORIGIN, 'DEMO_ARTIFACT_ORIGIN')
+    : null
+const configuredAppOrigins = readConfiguredAppOrigins()
+
+// The compatibility link makes a new client meet the exact wire behavior of an
+// old server: CAPS is unknown in both directions, while MAP/CALL/RESP stay intact.
+function createDemoRpcSocket(socket: any, emulateLegacyServer = false) {
+    function isCaps(data: unknown) {
+        return Array.isArray(data) && data[0] == Pkt.CAPS
+    }
+
+    return {
+        emit(key: string, data: unknown) {
+            if (!emulateLegacyServer || !isCaps(data)) socket.emit(key, data)
+        },
+        on(key: string, cb: (data: unknown) => void) {
+            socket.on(key, function receiveDemoRpcPacket(data: unknown) {
+                if (!emulateLegacyServer || !isCaps(data)) cb(data)
+            })
+        },
+    }
+}
+
+function legacyWorkboardFragment(fragment: any) {
+    const state = fragment?.state
+    if (state == null || typeof state != 'object') return fragment
+    const {batch: _batch, ...legacyState} = state
+    return {...fragment, state: legacyState}
+}
+
+function artifactOrigin() {
+    return configuredArtifactOrigin ?? 'http://artifact.localhost:' + port
+}
+
+function artifactFrameAncestors() {
+    return configuredAppOrigins ?? ['http://localhost:' + port]
+}
 
 // ============== public-exposure guards (demo policy, not library API) ==============
 // The stand is one shared world; these bounds keep a public instance memory-flat
@@ -180,7 +246,7 @@ const artifacts = createArtifactHost({
             const expiresAt = Date.now() + 60_000
             artifactTickets.set(ticket, {artifactId: artifact.id, storageKey: String(storageKey), expiresAt})
             // Separate cookie-free origin: the iframe is not the app/RPC origin.
-            return {url: 'http://artifact.localhost:' + port + '/artifact-open/' + artifact.id + '?ticket=' + ticket, expiresAt}
+            return {url: artifactOrigin() + '/artifact-open/' + artifact.id + '?ticket=' + ticket, expiresAt}
         },
         remove({storageKey}) {
             const key = String(storageKey)
@@ -396,6 +462,13 @@ function createVideoRooms() {
             const roomId = accountRooms.get(watcher)
             return watcher != owner && !!roomId && accountRooms.get(owner) == roomId
         },
+        close() {
+            for (const timer of emptyTimers.values()) clearTimeout(timer)
+            emptyTimers.clear()
+            accountRooms.clear()
+            rooms.clear()
+            changes.close()
+        },
     }
 }
 
@@ -462,6 +535,10 @@ function createCallWatchPolicy() {
         authorize,
         canWatch: (watcher: string, owner: string) => grants.has(watcher + '|' + owner),
         dropAccount,
+        close() {
+            for (const pair of Array.from(calls.keys())) finish(pair, 'stand closed')
+            grants.clear()
+        },
     }
 }
 
@@ -508,6 +585,9 @@ const janitor = setInterval(function sweepDemoGarbage() {
 }, 60_000)
 janitor.unref?.()
 
+const participantAccounts = new Map<string, string>()
+let nextParticipant = 0
+
 const app = express()
 app.put('/resource-upload/:fileId', express.raw({type: '*/*', limit: '9mb'}), function receiveResourceUpload(req, res) {
     const expected = uploadTickets.get(req.params.fileId)
@@ -530,7 +610,8 @@ app.get('/resource-download/:fileId', function downloadResource(req, res) {
 })
 app.get('/artifact-open/:artifactId', function openArtifact(req, res) {
     const ticket = typeof req.query.ticket == 'string' ? artifactTickets.get(req.query.ticket) : undefined
-    if (req.hostname != 'artifact.localhost' || !ticket || ticket.artifactId != req.params.artifactId || ticket.expiresAt <= Date.now()) {
+    if (req.hostname != new URL(artifactOrigin()).hostname || !ticket
+        || ticket.artifactId != req.params.artifactId || ticket.expiresAt <= Date.now()) {
         res.status(404).end()
         return
     }
@@ -540,13 +621,68 @@ app.get('/artifact-open/:artifactId', function openArtifact(req, res) {
         return
     }
     res.set({
-        'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors http://localhost:" + port,
+        'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors " + artifactFrameAncestors().join(' '),
         'Cross-Origin-Resource-Policy': 'cross-origin',
         'Referrer-Policy': 'no-referrer',
         'X-Content-Type-Options': 'nosniff',
     })
     res.type('html').send(html)
 })
+
+// ============== generated HTTP facade example ==============
+// This is deliberately one small diagnostics object, not the per-account RPC
+// facade. The same object is walked twice to demonstrate GET and POST mirrors.
+function authorizeDemoHttpFacade(req: Request, res: Response, next: NextFunction) {
+    if (req.get('authorization') == `Bearer ${httpFacadeToken}`) {
+        next()
+        return
+    }
+    res.status(401).json({ok: false, error: {message: 'Unauthorized'}})
+}
+
+const httpFacadeDemo = {
+    demo: {
+        status: function httpFacadeStatus() {
+            const instance = instanceFragment()
+            return {
+                time: new Date(),
+                role: instance.role(),
+                epoch: instance.epoch(),
+                participants: participantAccounts.size,
+                auth: 'bearer',
+            }
+        },
+        echo: function httpFacadeEcho(value: unknown) {
+            return {value, echoedAt: new Date()}
+        },
+    },
+}
+
+const httpFacadeLimits = {
+    maxDepth: 8,
+    maxKeys: 100,
+    maxArgs: 4,
+    maxArrayLen: 100,
+    maxStringLen: 4096,
+}
+createHttpFacadeServer({
+    app,
+    object: httpFacadeDemo,
+    method: 'get',
+    basePath: '/http-facade',
+    middleware: authorizeDemoHttpFacade,
+    limits: httpFacadeLimits,
+})
+createHttpFacadeServer({
+    app,
+    object: httpFacadeDemo,
+    method: 'post',
+    basePath: '/http-facade',
+    // Reject unauthorized calls before spending work parsing their bodies.
+    middleware: [authorizeDemoHttpFacade, express.json({limit: '16kb'})],
+    limits: httpFacadeLimits,
+})
+
 app.use(express.static(path.resolve(__dirname, 'public'), {
     // The stand is rebuilt in place; stale browser bundles otherwise keep an
     // old RPC client alive while the page itself still looks healthy.
@@ -562,8 +698,6 @@ app.get('/', (_req, res) => res.sendFile(path.resolve(__dirname, 'public', 'inde
 const httpServer = createServer(app)
 // screen-share JPEG frames can exceed the 1MB Socket.IO default
 const ioServer = new SocketIOServer(httpServer, {maxHttpBufferSize: 1e8})
-const participantAccounts = new Map<string, string>()
-let nextParticipant = 0
 
 function participantAccount(tab: string) {
     const existing = participantAccounts.get(tab)
@@ -663,6 +797,7 @@ async function connectUpstream(target: string) {
             auth: {tab: 'mirror-' + process.pid, role: 'mirror', token: process.env.DEMO_MIRROR_TOKEN ?? ''},
         }),
         r => ({app: r<any>('app')}) as const,
+        {opt: demoRpcOpt},
     )
     const clients = await hub.setToken(null)
     await clients.app.readyStrict()
@@ -719,7 +854,7 @@ async function connectUpstream(target: string) {
             const ticket = 'demo-artifact-ticket-' + (++nextArtifactTicket)
             const expiresAt = Date.now() + 60_000
             artifactTickets.set(ticket, {artifactId: artifact.id, storageKey: key, expiresAt})
-            return {url: 'http://artifact.localhost:' + port + '/artifact-open/' + artifact.id + '?ticket=' + ticket, expiresAt}
+            return {url: artifactOrigin() + '/artifact-open/' + artifact.id + '?ticket=' + ticket, expiresAt}
         },
         revoke: function forwardRevoke(account: string, artifactId: string) { return leader.mirror.artifacts.revoke(account, artifactId) },
         drain: 'micro',
@@ -731,6 +866,7 @@ async function connectUpstream(target: string) {
 
     await Promise.all([follower.ready, artifactCatalog.ready])
     console.log('[demo] leader board and artifact catalog mirrored, cascade is live')
+    let closed = false
     return {
         hub,
         follower,
@@ -739,6 +875,16 @@ async function connectUpstream(target: string) {
         promote: promoteToLeader,
         isPromoted: () => promotedHost != null,
         promotedWorkboard: () => promotedHost,
+        close() {
+            if (closed) return
+            closed = true
+            promotedHost?.close()
+            artifactMirror.close()
+            artifactCatalog.close()
+            follower.close()
+            artifactCache.clear()
+            ;(hub.socket as any)?.disconnect?.()
+        },
     }
 }
 
@@ -793,11 +939,13 @@ ioServer.on('connection', function onDemoConnection(socket) {
                 mirror: {...mirrorFragment(), artifacts: mirrorArtifactsFragment(mirrorArtifacts.fragment)},
             },
             disconnectListen: mirrorGoneListen,
+            opt: demoRpcOpt,
         })
         console.log('[demo] mirror link connected')
         return
     }
     const account = participantAccount(tab)
+    const emulateLegacyServer = socket.handshake.auth?.rpcProfile == 'legacy-server'
     const peer = host.connection(account)
     const resource = files.connection(account)
     const aiRun = ai.connection(account)
@@ -806,6 +954,9 @@ ioServer.on('connection', function onDemoConnection(socket) {
     const conversation = conversations.connection(account)
     const workboardConnection = upstreamLink ? null : workboard.connection(account)
     const workboardFragment = upstreamLink ? upstreamLink.fragmentFor(account) : workboardConnection!.fragment
+    const workboardRpcFragment = emulateLegacyServer
+        ? legacyWorkboardFragment(workboardFragment)
+        : workboardFragment
     const [disconnect, disconnectListen] = listen<[]>()
     socket.on('disconnect', function closeDemoResources() {
         disconnect()
@@ -817,7 +968,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
         workboardConnection?.close()
     })
     createRpcServerAuto({
-        socket: {emit: (key, data) => socket.emit(key, data), on: (key, cb) => socket.on(key, cb)},
+        socket: createDemoRpcSocket(socket, emulateLegacyServer),
         socketKey: 'app',
         object: {
             // legacy key on the SAME connection — the SDK does not displace old code
@@ -826,6 +977,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
             demo: {
                 account: () => account,
                 rtcConfiguration: () => rtcConfiguration,
+                artifactOrigin,
                 instance: instanceFragment(),
                 rooms: limitCommands(account, videoRooms.connection(account), ['create', 'join', 'leave']),
             },
@@ -834,7 +986,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
             ai: aiRun.fragment,
             artifacts: artifact.fragment,
             conversation: conversation.fragment,
-            workboard: limitCommands(account, workboardFragment, ['create', 'rename', 'move', 'assign', 'remove']),
+            workboard: limitCommands(account, workboardRpcFragment, ['create', 'rename', 'move', 'assign', 'remove']),
             media: {
                 publish: media.publishOf(account),
                 // policy-gated view: THIS connection's account is what canWatch receives
@@ -842,8 +994,9 @@ ioServer.on('connection', function onDemoConnection(socket) {
             },
         },
         disconnectListen,
+        opt: demoRpcOpt,
     })
-    console.log(`[demo] ${account} connected`)
+    console.log(`[demo] ${account} connected${emulateLegacyServer ? ' (legacy-server RPC profile)' : ''}`)
 })
 
 function listenOn(port: number) {
@@ -881,19 +1034,75 @@ async function startDemo() {
     port = await listenOnAvailablePort()
     console.log('[demo] shared-cursor + calls + Conversation stand is up:')
     console.log(`  open each participant tab: http://localhost:${port}/`)
-    console.log(`  artifact origin: http://artifact.localhost:${port} (sandboxed iframe only)`)
+    console.log(`  artifact origin: ${artifactOrigin()} (sandboxed iframe only)`)
+    console.log(`  HTTP facade GET: http://localhost:${port}/http-facade/demo/status`)
+    console.log(`  HTTP facade POST: http://localhost:${port}/http-facade/demo/echo  body {"args":["hello"]}`)
+    console.log(`  HTTP facade auth: Authorization: Bearer ${configuredHttpFacadeToken
+        ? '<DEMO_HTTP_FACADE_TOKEN> (configured)'
+        : `${httpFacadeToken} (generated for this run)`}`)
     if (mirrorOf) console.log(`  this instance mirrors the workboard of ${mirrorOf}`)
 }
 
 void startDemo()
 
 // ============== graceful shutdown ==============
+let shuttingDown = false
+
+function closeDemoResource(label: string, close: () => void) {
+    try { close() }
+    catch (error) { console.error(`[demo] ${label} close failed`, error) }
+}
+
+function closeDemoResources() {
+    clearInterval(janitor)
+    closeDemoResource('upstream', function closeUpstream() { upstreamLink?.close() })
+    upstreamLink = null
+    closeDemoResource('workboard', workboard.close)
+    closeDemoResource('files', files.close)
+    closeDemoResource('AI', ai.close)
+    closeDemoResource('artifacts', artifacts.close)
+    closeDemoResource('conversations', conversations.close)
+    closeDemoResource('media', media.close)
+    closeDemoResource('rooms', videoRooms.close)
+    closeDemoResource('calls', callPolicy.close)
+    closeDemoResource('peer host', host.close)
+    uploadTickets.clear()
+    uploadBytes.clear()
+    artifactTickets.clear()
+    artifactBytes.clear()
+    commandUse.clear()
+    offlineSince.clear()
+    participantAccounts.clear()
+}
+
 function shutdown(signal: string) {
+    if (shuttingDown) return
+    shuttingDown = true
     console.log(`[demo] ${signal} — closing`)
-    ioServer.close()
-    httpServer.close(function exitWhenClosed() { process.exit(0) })
-    const force = setTimeout(function exitForced() { process.exit(0) }, 2000)
+    let socketClosed = false
+    let httpClosed = !httpServer.listening
+
+    function exitWhenClosed() {
+        if (!socketClosed || !httpClosed) return
+        closeDemoResources()
+        process.exit(0)
+    }
+
+    ioServer.close(function demoSocketsClosed() {
+        socketClosed = true
+        exitWhenClosed()
+    })
+    if (httpServer.listening) {
+        httpServer.close(function demoHttpClosed() {
+            httpClosed = true
+            exitWhenClosed()
+        })
+    }
+    const force = setTimeout(function exitForced() {
+        closeDemoResources()
+        process.exit(0)
+    }, 5000)
     ;(force as any).unref?.()
 }
-process.on('SIGINT', function onSigint() { shutdown('SIGINT') })
-process.on('SIGTERM', function onSigterm() { shutdown('SIGTERM') })
+process.once('SIGINT', function onSigint() { shutdown('SIGINT') })
+process.once('SIGTERM', function onSigterm() { shutdown('SIGTERM') })

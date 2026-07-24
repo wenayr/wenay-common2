@@ -98,9 +98,18 @@ async function main() {
     const b = createNode('b', 'follower')
     const slow = createRoute('relay-a', a, 25)
     const fast = createRoute('direct-a', a, 2)
+    const originalSnapshot = b.control.store.snapshot
+    const mutableStore = b.control.store as any
+    let handoffSnapshots = 0
+    mutableStore.snapshot = function countHandoffSnapshot() {
+        handoffSnapshots++
+        return originalSnapshot()
+    }
     b.control.addOffer(slow.offer)
     await b.api.ready
     await waitFor('B follows A', () => b.api.status.state.role == 'follower')
+    ok(handoffSnapshots == 0, 'ordinary follower route attachment skips the conflict-only local snapshot')
+    mutableStore.snapshot = originalSnapshot
     ok(json(b.api.store.snapshot()) == json(a.api.store.snapshot()), 'follower starts from the leader keyframe')
     ok(b.api.status.state.routeId == 'relay-a', 'the first discovered route becomes active')
 

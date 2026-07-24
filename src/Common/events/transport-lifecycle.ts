@@ -5,20 +5,82 @@
 export const RPC_TRANSPORT_LIFECYCLE = Symbol.for('wenay-common2.rpc.transportLifecycle')
 export const RPC_TRANSPORT_CONTROL = Symbol.for('wenay-common2.rpc.transportControl')
 export const RPC_MEMBER_LOOKUP = Symbol.for('wenay-common2.rpc.memberLookup')
+export const RPC_SCHEMA_READY = Symbol.for('wenay-common2.rpc.schemaReady')
 
 export type RpcMemberLookup = (member: string) => boolean | undefined
 
-export function getRpcMemberState(remote: any, member: string) {
-    let lookup: RpcMemberLookup | undefined
+function getRpcMemberLookup(remote: any) {
     try {
         const candidate = remote?.[RPC_MEMBER_LOOKUP]
         if (typeof candidate != 'function') return undefined
         if (Object.getOwnPropertyDescriptor(candidate, RPC_MEMBER_LOOKUP)?.value != true) return undefined
-        lookup = candidate
+        return candidate as RpcMemberLookup
     } catch {
         return undefined
     }
-    return lookup!(member)
+}
+
+export function hasRpcMemberLookup(remote: any) {
+    return getRpcMemberLookup(remote) != undefined
+}
+
+export function getRpcMemberState(remote: any, member: string) {
+    return getRpcMemberLookup(remote)?.(member)
+}
+
+export function rpcMemberAvailable(remote: any, member: string) {
+    const lookup = getRpcMemberLookup(remote)
+    if (lookup) {
+        try { return lookup(member) == true }
+        catch { return false }
+    }
+    try {
+        return remote != null
+            && (typeof remote == 'object' || typeof remote == 'function')
+            && member in remote
+            && remote[member] != null
+    } catch {
+        return false
+    }
+}
+
+/**
+ * Capability choice after the caller has awaited RPC_SCHEMA_READY. Dynamic
+ * schema paths may honestly remain unknown; retain their structural/proxy
+ * member until the map explicitly proves absence.
+ */
+export function rpcMemberMayBeAvailable(remote: any, member: string) {
+    const lookup = getRpcMemberLookup(remote)
+    if (lookup) {
+        try {
+            const state = lookup(member)
+            if (state != undefined) return state
+            return remote?.[member] != null
+        } catch {
+            return false
+        }
+    }
+    try {
+        return remote != null
+            && (typeof remote == 'object' || typeof remote == 'function')
+            && member in remote
+            && remote[member] != null
+    } catch {
+        return false
+    }
+}
+
+export type RpcSchemaReady = () => Promise<void>
+
+export function getRpcSchemaReady(remote: any) {
+    try {
+        const candidate = remote?.[RPC_SCHEMA_READY]
+        if (typeof candidate != 'function') return undefined
+        if (Object.getOwnPropertyDescriptor(candidate, RPC_SCHEMA_READY)?.value != true) return undefined
+        return candidate as RpcSchemaReady
+    } catch {
+        return undefined
+    }
 }
 
 export type TransportLifecycleApi = {

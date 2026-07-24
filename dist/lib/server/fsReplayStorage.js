@@ -42,39 +42,87 @@ function openFsReplayStorage(file, opts = {}) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     let mem = (0, replay_history_1.createMemoryReplayStorage)();
     if (fs.existsSync(file)) {
-        for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+        const bytes = fs.readFileSync(file);
+        const committedBytes = bytes.lastIndexOf(10) + 1;
+        if (committedBytes != bytes.byteLength)
+            fs.truncateSync(file, committedBytes);
+        for (const line of bytes.subarray(0, committedBytes).toString('utf8').split(/\r?\n/)) {
             if (!line.trim())
                 continue;
             const rec = codec.parse(line);
             if (rec?.t == 'e')
                 mem.putEvent(rec.v);
+            else if (rec?.t == 'b')
+                mem.putEvents(rec.v);
             else if (rec?.t == 'k')
                 mem.putKeyframe(rec.v);
         }
     }
+    function appendRecord(record) {
+        const line = codec.stringify(record) + '\n';
+        const start = fs.existsSync(file) ? fs.statSync(file).size : 0;
+        try {
+            fs.appendFileSync(file, line);
+        }
+        catch (error) {
+            try {
+                if (fs.existsSync(file))
+                    fs.truncateSync(file, start);
+            }
+            catch { }
+            throw error;
+        }
+    }
     function append(t, v) {
-        fs.appendFileSync(file, codec.stringify({ t, v }) + '\n');
+        appendRecord({ t, v });
+    }
+    function putEvents(events) {
+        if (events.length == 0)
+            return;
+        const record = events.length == 1 ? { t: 'e', v: events[0] } : { t: 'b', v: events };
+        appendRecord(record);
+        mem.putEvents(events);
+    }
+    function putEvent(event) {
+        putEvents([event]);
+    }
+    function putKeyframe(keyframe) {
+        append('k', keyframe);
+        mem.putKeyframe(keyframe);
+    }
+    function getKeyframe(at) {
+        return mem.getKeyframe(at);
+    }
+    function getEvents(from, to) {
+        return mem.getEvents(from, to);
+    }
+    function compact() {
+        const keyframe = mem.getKeyframe();
+        if (!keyframe)
+            return;
+        const tail = mem.getEvents(keyframe.seq, Infinity);
+        const tmp = file + '.tmp';
+        const lines = [codec.stringify({ t: 'k', v: keyframe }), ...tail.map(function encodeTailEvent(event) {
+                return codec.stringify({ t: 'e', v: event });
+            })];
+        fs.writeFileSync(tmp, lines.join('\n') + '\n');
+        fs.renameSync(tmp, file);
+        const next = (0, replay_history_1.createMemoryReplayStorage)();
+        next.putKeyframe(keyframe);
+        for (const event of tail)
+            next.putEvent(event);
+        mem = next;
+    }
+    function size() {
+        return mem.size();
     }
     return {
-        putEvent: (ev) => { mem.putEvent(ev); append('e', ev); },
-        putKeyframe: (kf) => { mem.putKeyframe(kf); append('k', kf); },
-        getKeyframe: (at) => mem.getKeyframe(at),
-        getEvents: (from, to) => mem.getEvents(from, to),
-        compact: () => {
-            const kf = mem.getKeyframe();
-            if (!kf)
-                return;
-            const tail = mem.getEvents(kf.seq, Infinity);
-            const tmp = file + '.tmp';
-            const lines = [codec.stringify({ t: 'k', v: kf }), ...tail.map(ev => codec.stringify({ t: 'e', v: ev }))];
-            fs.writeFileSync(tmp, lines.join('\n') + '\n');
-            fs.renameSync(tmp, file);
-            const next = (0, replay_history_1.createMemoryReplayStorage)();
-            next.putKeyframe(kf);
-            for (const ev of tail)
-                next.putEvent(ev);
-            mem = next;
-        },
-        size: () => mem.size(),
+        putEvent,
+        putEvents,
+        putKeyframe,
+        getKeyframe,
+        getEvents,
+        compact,
+        size,
     };
 }

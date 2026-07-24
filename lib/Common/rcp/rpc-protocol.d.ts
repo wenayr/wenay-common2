@@ -10,6 +10,8 @@ export declare const Pkt: {
     readonly SHAPE: 8;
     readonly CBV: 9;
     readonly CAPS: 10;
+    readonly CB_BATCH: 11;
+    readonly BINARY_RESET: 12;
 };
 export declare const RPC_STOP = "___STOP";
 export declare const IS_RPC_LISTEN: unique symbol;

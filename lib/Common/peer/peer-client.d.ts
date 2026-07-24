@@ -11,6 +11,7 @@ export type PeerRemote = {
         };
     };
     publish: (env: PatchEnvelope) => Promise<RelayPushResult | void> | RelayPushResult | void;
+    publishBatch?: (envelopes: PatchEnvelope[]) => Promise<RelayPushResult | void> | RelayPushResult | void;
     peers: Record<string, ReplayRemote<[StorePatch]> & {
         seq?: () => number | Promise<number>;
     }>;

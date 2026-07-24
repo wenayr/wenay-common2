@@ -37,8 +37,9 @@ export type RtcSessionDescription = {
     sdp?: string;
 };
 export type RtcDataChannel = {
-    send: (data: string) => void;
+    send: (data: string | ArrayBuffer | ArrayBufferView) => void;
     close: () => void;
+    binaryType?: string;
     onopen?: ((ev?: unknown) => void) | null;
     onmessage?: ((ev: {
         data: unknown;

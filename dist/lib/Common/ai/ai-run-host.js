@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createAiRunHost = createAiRunHost;
 const store_1 = require("../Observe/store");
 const store_replay_1 = require("../Observe/store-replay");
+const store_projection_1 = require("../Observe/store-projection");
 const Listen_1 = require("../events/Listen");
 const replay_wire_1 = require("../events/replay-wire");
 const replay_listen_1 = require("../events/replay-listen");
@@ -16,16 +17,31 @@ function copyUsage(usage) {
     return usage ? { ...usage } : undefined;
 }
 function copyArtifact(artifact) {
-    return { ...artifact };
+    return {
+        ...artifact,
+        ...(artifact.descriptor !== undefined ? { descriptor: (0, store_projection_1.cloneStoreProjectionValue)(artifact.descriptor) } : {}),
+    };
 }
 function copyRun(run) {
-    return { ...run, resourceIds: [...run.resourceIds], artifacts: run.artifacts.map(copyArtifact), usage: copyUsage(run.usage) };
+    return {
+        ...run,
+        resourceIds: [...run.resourceIds],
+        artifacts: run.artifacts.map(copyArtifact),
+        usage: copyUsage(run.usage),
+        ...(run.result !== undefined ? { result: (0, store_projection_1.cloneStoreProjectionValue)(run.result) } : {}),
+    };
 }
 function copyApproval(approval) {
-    return { ...approval };
+    return {
+        ...approval,
+        ...(approval.data !== undefined ? { data: (0, store_projection_1.cloneStoreProjectionValue)(approval.data) } : {}),
+    };
 }
 function copyInput(input) {
-    return { ...input };
+    return {
+        ...input,
+        ...(input.schema !== undefined ? { schema: (0, store_projection_1.cloneStoreProjectionValue)(input.schema) } : {}),
+    };
 }
 function terminal(state) {
     return state == 'completed' || state == 'failed' || state == 'cancelled';
@@ -82,16 +98,16 @@ function createAiRunHost(deps) {
             inputs: Object.values(state.inputs),
         };
     }
-    function refreshViews() {
+    function refreshViews(change) {
         if (closed)
             return;
         for (const view of views)
-            view.refresh();
+            view.refresh(change);
     }
     const offStore = store.listenPaths().on(refreshViews);
     function createView(account) {
         const state = (0, store_1.createStore)(project(account), drain !== undefined ? { drain } : {});
-        const stateReplay = (0, store_replay_1.exposeStoreReplay)(state, history !== undefined ? { history } : {});
+        const stateReplay = (0, store_replay_1.exposeStoreReplay)(state, history == undefined ? { batch: true } : { history, batch: true });
         const [emitViewEvent, events] = (0, replay_listen_1.replayListen)({
             current: () => [syncEvent(account)],
             history: history ?? 1024,
@@ -103,9 +119,61 @@ function createAiRunHost(deps) {
             if (run && readable(account, run))
                 emitViewEvent(event);
         });
+        function refreshApproval(id) {
+            const approval = store.state.approvals[id];
+            const visible = !!approval && !!state.state.runs[approval.runId];
+            (0, store_projection_1.reconcileStoreProjectionRecord)(state, 'approvals', id, {
+                exists: visible,
+                ...(visible ? { value: copyApproval(approval) } : {}),
+            });
+        }
+        function refreshInput(id) {
+            const input = store.state.inputs[id];
+            const visible = !!input && !!state.state.runs[input.runId];
+            (0, store_projection_1.reconcileStoreProjectionRecord)(state, 'inputs', id, {
+                exists: visible,
+                ...(visible ? { value: copyInput(input) } : {}),
+            });
+        }
+        function refreshRun(id) {
+            const run = store.state.runs[id];
+            const wasVisible = !!state.state.runs[id];
+            const visible = !!run && readable(account, run);
+            (0, store_projection_1.reconcileStoreProjectionRecord)(state, 'runs', id, {
+                exists: visible,
+                ...(visible ? { value: copyRun(run) } : {}),
+            });
+            if (visible == wasVisible)
+                return;
+            const approvals = visible ? store.state.approvals : state.state.approvals;
+            const inputs = visible ? store.state.inputs : state.state.inputs;
+            for (const approval of Object.values(approvals))
+                if (approval.runId == id)
+                    refreshApproval(approval.id);
+            for (const input of Object.values(inputs))
+                if (input.runId == id)
+                    refreshInput(input.id);
+        }
+        function refreshProjection(change) {
+            if (policy?.canRead) {
+                (0, store_projection_1.reconcileStoreProjection)(state, project(account));
+                return;
+            }
+            const changed = (0, store_projection_1.collectStoreProjectionChanges)(change, ['runs', 'approvals', 'inputs']);
+            if (!changed) {
+                (0, store_projection_1.reconcileStoreProjection)(state, project(account));
+                return;
+            }
+            for (const id of changed.get('runs') ?? [])
+                refreshRun(String(id));
+            for (const id of changed.get('approvals') ?? [])
+                refreshApproval(String(id));
+            for (const id of changed.get('inputs') ?? [])
+                refreshInput(String(id));
+        }
         let view;
         view = {
-            refresh() { state.replace(project(account)); },
+            refresh: refreshProjection,
             close() {
                 views.delete(view);
                 offEvents();
@@ -131,7 +199,7 @@ function createAiRunHost(deps) {
         const run = store.state.runs[event.runId];
         if (!run || closed)
             return;
-        emitEvent(event);
+        emitEvent((0, store_projection_1.cloneStoreProjectionValue)(event));
     }
     function refreshWaitingState(run) {
         if (terminal(run.state))
@@ -195,7 +263,12 @@ function createAiRunHost(deps) {
             return undefined;
         if (!input || typeof input.kind != 'string' || !input.kind.trim())
             throw new Error('AI artifact kind is required');
-        const artifact = { ...input, id: input.id ?? makeId(), kind: input.kind };
+        const artifact = {
+            ...input,
+            id: input.id ?? makeId(),
+            kind: input.kind,
+            ...(input.descriptor !== undefined ? { descriptor: (0, store_projection_1.cloneStoreProjectionValue)(input.descriptor) } : {}),
+        };
         run.artifacts.push(artifact);
         touchRun(run);
         emitRunEvent({ runId, type: 'artifact', artifact: copyArtifact(artifact) });
@@ -212,14 +285,15 @@ function createAiRunHost(deps) {
         const createdAt = now();
         const approval = {
             id: makeId(), runId, kind: request.kind, label: request.label, state: 'pending', createdAt, updatedAt: createdAt,
-            ...(request.data !== undefined ? { data: request.data } : {}),
+            ...(request.data !== undefined ? { data: (0, store_projection_1.cloneStoreProjectionValue)(request.data) } : {}),
         };
         store.state.approvals[approval.id] = approval;
         refreshWaitingState(run);
-        emitRunEvent({ runId, type: 'approval.requested', approval: copyApproval(approval) });
-        return new Promise(function waitForApproval(resolve, reject) {
+        const waiting = new Promise(function waitForApproval(resolve, reject) {
             approvalWaiters.set(approval.id, { resolve, reject });
         });
+        emitRunEvent({ runId, type: 'approval.requested', approval: copyApproval(approval) });
+        return waiting;
     }
     function waitForInput(runId, request) {
         const run = store.state.runs[runId];
@@ -230,14 +304,15 @@ function createAiRunHost(deps) {
         const createdAt = now();
         const input = {
             id: makeId(), runId, label: request.label, state: 'waiting', createdAt, updatedAt: createdAt,
-            ...(request.schema !== undefined ? { schema: request.schema } : {}),
+            ...(request.schema !== undefined ? { schema: (0, store_projection_1.cloneStoreProjectionValue)(request.schema) } : {}),
         };
         store.state.inputs[input.id] = input;
         refreshWaitingState(run);
-        emitRunEvent({ runId, type: 'input.requested', input: copyInput(input) });
-        return new Promise(function waitForProvidedInput(resolve, reject) {
+        const waiting = new Promise(function waitForProvidedInput(resolve, reject) {
             inputWaiters.set(input.id, { resolve, reject });
         });
+        emitRunEvent({ runId, type: 'input.requested', input: copyInput(input) });
+        return waiting;
     }
     async function executeRun(runId, request) {
         const run = store.state.runs[runId];
@@ -265,7 +340,7 @@ function createAiRunHost(deps) {
             current.state = 'completed';
             current.progress = 1;
             if (output?.result !== undefined)
-                current.result = output.result;
+                current.result = (0, store_projection_1.cloneStoreProjectionValue)(output.result);
             if (output?.usage !== undefined)
                 current.usage = copyUsage(output.usage);
             touchRun(current);
@@ -356,7 +431,7 @@ function createAiRunHost(deps) {
         touchInput(input);
         refreshWaitingState(run);
         emitRunEvent({ runId: run.id, type: 'input.provided', input: copyInput(input) });
-        inputWaiters.get(input.id)?.resolve(value);
+        inputWaiters.get(input.id)?.resolve((0, store_projection_1.cloneStoreProjectionValue)(value));
         inputWaiters.delete(input.id);
         return copyInput(input);
     }

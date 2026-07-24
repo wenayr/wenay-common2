@@ -1,14 +1,14 @@
 import {listen} from '../events/Listen'
-import {ReplayRemote, ReplaySubscribeOpts} from '../events/replay-wire'
-import {createStore, createStoreMirror, Store, StoreMask, StorePatch, StoreSyncOpts} from './store'
+import {createStore, createStoreMirror, Store, StoreMask, StoreSyncOpts} from './store'
 import {createOfflineStore, OfflineStorage, OfflineStore} from './store-offline'
-import {syncStoreReplay} from './store-replay'
+import {syncStoreReplay, StoreReplayRemote, StoreReplaySyncOpts} from './store-replay'
 
 type RemoteStore<T extends object> = {
     get(mask?: any): T | Promise<T>
     changed: any
     changedPaths?: any
     patches?: any
+    patchesBatch?: any
     changedData?: any
 }
 
@@ -59,18 +59,18 @@ export type ManagedMirrorResource<T extends object> = CommonResource<T> & {
 
 export type ManagedReplayResource<T extends object> = CommonResource<T> & {
     kind?: 'replay'
-    remote: ReplayRemote<[StorePatch]>
-    syncOpts?: ReplaySubscribeOpts
+    remote: StoreReplayRemote
+    syncOpts?: StoreReplaySyncOpts<T>
 }
 
 export type ManagedOfflineResource<T extends object> = CommonResource<T> & {
     kind?: 'offline'
-    remote?: ReplayRemote<[StorePatch]>
+    remote?: StoreReplayRemote
     storage: OfflineStorage
     storageKey?: string
     version?: number
     debounceMs?: number
-    syncOpts?: ReplaySubscribeOpts
+    syncOpts?: StoreReplaySyncOpts<T>
     migrate?: (oldSnapshot: unknown, fromVersion: number, toVersion: number) => T | Promise<T>
 }
 
@@ -188,6 +188,7 @@ export function createStoreManager<const R extends ManagedStoreResources>(resour
         let error: unknown
         let startedAt: number | undefined
         let stoppedAt: number | undefined
+        let generation = 0
 
         function setState(next: ManagedStoreState, nextError?: unknown) {
             state = next
@@ -201,63 +202,132 @@ export function createStoreManager<const R extends ManagedStoreResources>(resour
             return {key, state, kind, error, startedAt, stoppedAt}
         }
 
+        function once(stop: () => void) {
+            let stopped = false
+            return function stopManagedResourceOnce() {
+                if (stopped) return
+                stopped = true
+                stop()
+            }
+        }
+
+        function isCurrent(attempt: number) {
+            return attempt == generation && state == 'starting'
+        }
+
+        function cancelledStartError() {
+            return new Error(`store manager: ${key} was stopped during start`)
+        }
+
+        async function runStart(attempt: number) {
+            let attemptStore: any
+            let attemptStop: (() => void) | undefined
+
+            function releaseAttempt() {
+                attemptStop?.()
+                if (stopSync == attemptStop) stopSync = undefined
+                if (kind == 'offline' && store == attemptStore) store = undefined
+            }
+
+            function requireCurrent() {
+                if (isCurrent(attempt)) return
+                releaseAttempt()
+                throw cancelledStartError()
+            }
+
+            try {
+                requireCurrent()
+                if (kind == 'mirror') {
+                    const r = resource as ManagedMirrorResource<any>
+                    store ??= createStoreMirror(r.remote, r.initial, r.storeOpts) as StoreMirror<any>
+                    attemptStore = store
+                    const mode = r.sync?.mode ?? 'pull'
+                    const opts = r.sync?.opts
+                    const nextStop = mode == 'patches'
+                        ? await store.syncPatches(r.mask, opts)
+                        : mode == 'changedData'
+                            ? await store.syncChangedData(r.mask, opts)
+                            : await store.sync(r.mask, opts)
+                    attemptStop = once(nextStop)
+                    requireCurrent()
+                    stopSync = attemptStop
+                } else if (kind == 'replay') {
+                    const r = resource as ManagedReplayResource<any>
+                    store ??= createStore(r.initial, r.storeOpts)
+                    attemptStore = store
+                    const syncOpts = r.syncOpts ?? {}
+                    const sub = syncStoreReplay(store, r.remote, {...syncOpts, batch: syncOpts.batch ?? true})
+                    attemptStop = once(sub)
+                    requireCurrent()
+                    stopSync = attemptStop
+                    await sub.ready
+                    requireCurrent()
+                } else {
+                    const r = resource as ManagedOfflineResource<any>
+                    const nextStore = await createOfflineStore({
+                        key: r.storageKey ?? key,
+                        remote: r.remote,
+                        initial: r.initial,
+                        storage: r.storage,
+                        version: r.version,
+                        debounceMs: r.debounceMs,
+                        storeOpts: r.storeOpts,
+                        syncOpts: r.syncOpts,
+                        migrate: r.migrate,
+                    })
+                    attemptStore = nextStore
+                    attemptStop = once(function closeManagedOfflineStore() { nextStore.close() })
+                    requireCurrent()
+                    store = nextStore
+                    stopSync = attemptStop
+                    await nextStore.ready
+                    requireCurrent()
+                }
+                setState('ready')
+                return store
+            } catch (e) {
+                const current = isCurrent(attempt)
+                releaseAttempt()
+                if (current) setState('error', e)
+                throw e
+            }
+        }
+
         async function start(opts: ManagedStoreStartOpts = {}) {
             if (resource.explicitOnly && !opts.explicit) {
                 throw new Error(`store manager: ${key} is explicitOnly`)
             }
             if (state == 'ready' && store) return store
-            if (pending) return pending
-            pending = (async () => {
-                setState('starting')
-                try {
-                    if (kind == 'mirror') {
-                        const r = resource as ManagedMirrorResource<any>
-                        store ??= createStoreMirror(r.remote, r.initial, r.storeOpts) as StoreMirror<any>
-                        const mode = r.sync?.mode ?? 'pull'
-                        const opts = r.sync?.opts
-                        stopSync = mode == 'patches'
-                            ? await store.syncPatches(r.mask, opts)
-                            : mode == 'changedData'
-                                ? await store.syncChangedData(r.mask, opts)
-                                : await store.sync(r.mask, opts)
-                    } else if (kind == 'replay') {
-                        const r = resource as ManagedReplayResource<any>
-                        store ??= createStore(r.initial, r.storeOpts)
-                        const sub = syncStoreReplay(store, r.remote, r.syncOpts)
-                        stopSync = sub
-                        await sub.ready
-                    } else {
-                        const r = resource as ManagedOfflineResource<any>
-                        store = await createOfflineStore({
-                            key: r.storageKey ?? key,
-                            remote: r.remote,
-                            initial: r.initial,
-                            storage: r.storage,
-                            version: r.version,
-                            debounceMs: r.debounceMs,
-                            storeOpts: r.storeOpts,
-                            syncOpts: r.syncOpts,
-                            migrate: r.migrate,
-                        })
-                        await store.ready
-                    }
-                    setState('ready')
-                    return store
-                } catch (e) {
-                    setState('error', e)
-                    throw e
-                } finally {
-                    pending = undefined
+            if (pending) {
+                if (state != 'stopped') return pending
+                const stoppedPending = pending
+                const stoppedGeneration = generation
+                try { await stoppedPending } catch {}
+                if (generation != stoppedGeneration) {
+                    if (status().state == 'starting' && pending) return pending
+                    throw cancelledStartError()
                 }
-            })()
+                return start(opts)
+            }
+            const attempt = ++generation
+            setState('starting')
+            let nextPending: Promise<any>
+            nextPending = Promise.resolve()
+                .then(function startManagedStore() { return runStart(attempt) })
+                .finally(function finishManagedStoreStart() {
+                    if (pending == nextPending) pending = undefined
+                })
+            pending = nextPending
             return pending
         }
 
         function stop() {
-            stopSync?.()
+            generation++
+            const activeStop = stopSync
             stopSync = undefined
+            activeStop?.()
             if (kind == 'offline') {
-                store?.close?.()
+                if (!activeStop) store?.close?.()
                 store = undefined
             }
             if (state != 'idle') setState('stopped')

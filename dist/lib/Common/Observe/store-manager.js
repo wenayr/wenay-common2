@@ -56,6 +56,7 @@ function createStoreManager(resources) {
         let error;
         let startedAt;
         let stoppedAt;
+        let generation = 0;
         function setState(next, nextError) {
             state = next;
             error = nextError;
@@ -68,68 +69,140 @@ function createStoreManager(resources) {
         function status() {
             return { key, state, kind, error, startedAt, stoppedAt };
         }
+        function once(stop) {
+            let stopped = false;
+            return function stopManagedResourceOnce() {
+                if (stopped)
+                    return;
+                stopped = true;
+                stop();
+            };
+        }
+        function isCurrent(attempt) {
+            return attempt == generation && state == 'starting';
+        }
+        function cancelledStartError() {
+            return new Error(`store manager: ${key} was stopped during start`);
+        }
+        async function runStart(attempt) {
+            let attemptStore;
+            let attemptStop;
+            function releaseAttempt() {
+                attemptStop?.();
+                if (stopSync == attemptStop)
+                    stopSync = undefined;
+                if (kind == 'offline' && store == attemptStore)
+                    store = undefined;
+            }
+            function requireCurrent() {
+                if (isCurrent(attempt))
+                    return;
+                releaseAttempt();
+                throw cancelledStartError();
+            }
+            try {
+                requireCurrent();
+                if (kind == 'mirror') {
+                    const r = resource;
+                    store ??= (0, store_1.createStoreMirror)(r.remote, r.initial, r.storeOpts);
+                    attemptStore = store;
+                    const mode = r.sync?.mode ?? 'pull';
+                    const opts = r.sync?.opts;
+                    const nextStop = mode == 'patches'
+                        ? await store.syncPatches(r.mask, opts)
+                        : mode == 'changedData'
+                            ? await store.syncChangedData(r.mask, opts)
+                            : await store.sync(r.mask, opts);
+                    attemptStop = once(nextStop);
+                    requireCurrent();
+                    stopSync = attemptStop;
+                }
+                else if (kind == 'replay') {
+                    const r = resource;
+                    store ??= (0, store_1.createStore)(r.initial, r.storeOpts);
+                    attemptStore = store;
+                    const syncOpts = r.syncOpts ?? {};
+                    const sub = (0, store_replay_1.syncStoreReplay)(store, r.remote, { ...syncOpts, batch: syncOpts.batch ?? true });
+                    attemptStop = once(sub);
+                    requireCurrent();
+                    stopSync = attemptStop;
+                    await sub.ready;
+                    requireCurrent();
+                }
+                else {
+                    const r = resource;
+                    const nextStore = await (0, store_offline_1.createOfflineStore)({
+                        key: r.storageKey ?? key,
+                        remote: r.remote,
+                        initial: r.initial,
+                        storage: r.storage,
+                        version: r.version,
+                        debounceMs: r.debounceMs,
+                        storeOpts: r.storeOpts,
+                        syncOpts: r.syncOpts,
+                        migrate: r.migrate,
+                    });
+                    attemptStore = nextStore;
+                    attemptStop = once(function closeManagedOfflineStore() { nextStore.close(); });
+                    requireCurrent();
+                    store = nextStore;
+                    stopSync = attemptStop;
+                    await nextStore.ready;
+                    requireCurrent();
+                }
+                setState('ready');
+                return store;
+            }
+            catch (e) {
+                const current = isCurrent(attempt);
+                releaseAttempt();
+                if (current)
+                    setState('error', e);
+                throw e;
+            }
+        }
         async function start(opts = {}) {
             if (resource.explicitOnly && !opts.explicit) {
                 throw new Error(`store manager: ${key} is explicitOnly`);
             }
             if (state == 'ready' && store)
                 return store;
-            if (pending)
-                return pending;
-            pending = (async () => {
-                setState('starting');
+            if (pending) {
+                if (state != 'stopped')
+                    return pending;
+                const stoppedPending = pending;
+                const stoppedGeneration = generation;
                 try {
-                    if (kind == 'mirror') {
-                        const r = resource;
-                        store ??= (0, store_1.createStoreMirror)(r.remote, r.initial, r.storeOpts);
-                        const mode = r.sync?.mode ?? 'pull';
-                        const opts = r.sync?.opts;
-                        stopSync = mode == 'patches'
-                            ? await store.syncPatches(r.mask, opts)
-                            : mode == 'changedData'
-                                ? await store.syncChangedData(r.mask, opts)
-                                : await store.sync(r.mask, opts);
-                    }
-                    else if (kind == 'replay') {
-                        const r = resource;
-                        store ??= (0, store_1.createStore)(r.initial, r.storeOpts);
-                        const sub = (0, store_replay_1.syncStoreReplay)(store, r.remote, r.syncOpts);
-                        stopSync = sub;
-                        await sub.ready;
-                    }
-                    else {
-                        const r = resource;
-                        store = await (0, store_offline_1.createOfflineStore)({
-                            key: r.storageKey ?? key,
-                            remote: r.remote,
-                            initial: r.initial,
-                            storage: r.storage,
-                            version: r.version,
-                            debounceMs: r.debounceMs,
-                            storeOpts: r.storeOpts,
-                            syncOpts: r.syncOpts,
-                            migrate: r.migrate,
-                        });
-                        await store.ready;
-                    }
-                    setState('ready');
-                    return store;
+                    await stoppedPending;
                 }
-                catch (e) {
-                    setState('error', e);
-                    throw e;
+                catch { }
+                if (generation != stoppedGeneration) {
+                    if (status().state == 'starting' && pending)
+                        return pending;
+                    throw cancelledStartError();
                 }
-                finally {
+                return start(opts);
+            }
+            const attempt = ++generation;
+            setState('starting');
+            let nextPending;
+            nextPending = Promise.resolve()
+                .then(function startManagedStore() { return runStart(attempt); })
+                .finally(function finishManagedStoreStart() {
+                if (pending == nextPending)
                     pending = undefined;
-                }
-            })();
+            });
+            pending = nextPending;
             return pending;
         }
         function stop() {
-            stopSync?.();
+            generation++;
+            const activeStop = stopSync;
             stopSync = undefined;
+            activeStop?.();
             if (kind == 'offline') {
-                store?.close?.();
+                if (!activeStop)
+                    store?.close?.();
                 store = undefined;
             }
             if (state != 'idle')

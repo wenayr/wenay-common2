@@ -4,8 +4,13 @@
 // The Store carries only small lifecycle descriptors. Storage owns bytes and
 // short-lived read instructions; the private provider key never crosses RPC.
 
-import {createStore, Store, StoreDrain} from '../Observe/store'
+import {createStore, Store, StoreChange, StoreDrain} from '../Observe/store'
 import {exposeStoreReplay} from '../Observe/store-replay'
+import {
+    collectStoreProjectionChanges,
+    reconcileStoreProjection,
+    reconcileStoreProjectionRecord,
+} from '../Observe/store-projection'
 
 export type ArtifactRuntime = 'sandboxed-iframe' | 'download'
 export type ArtifactState = 'ready' | 'revoked' | 'expired'
@@ -89,7 +94,7 @@ export type ArtifactHostDeps = {
 }
 
 type ArtifactView = {
-    refresh: () => void
+    refresh: (change: StoreChange) => void
     close: () => void
 }
 
@@ -166,19 +171,34 @@ export function createArtifactHost(deps: ArtifactHostDeps) {
         return {artifacts}
     }
 
-    function refreshViews() {
+    function refreshViews(change: StoreChange) {
         if (closed) return
-        for (const view of views) view.refresh()
+        for (const view of views) view.refresh(change)
     }
 
     const offStore = store.listenPaths().on(refreshViews)
 
     function createView(account: string) {
         const state = createStore<ArtifactStore>(project(account), drain !== undefined ? {drain} : {})
-        const replay = exposeStoreReplay(state, history !== undefined ? {history} : {})
+        const replay = exposeStoreReplay(state, history == undefined ? {batch: true} : {history, batch: true})
+        function refreshProjection(change: StoreChange) {
+            // A custom policy may close over tenant membership outside the changed record.
+            if (policy?.canRead) { reconcileStoreProjection(state, project(account)); return }
+            const changed = collectStoreProjectionChanges(change, ['artifacts'])
+            if (!changed) { reconcileStoreProjection(state, project(account)); return }
+            for (const itemKey of changed.get('artifacts') ?? []) {
+                const id = String(itemKey)
+                const artifact = store.state.artifacts[id]
+                const visible = !!artifact && readable(account, artifact)
+                reconcileStoreProjectionRecord(state, 'artifacts', id, {
+                    exists: visible,
+                    ...(visible ? {value: copyArtifact(artifact!)} : {}),
+                })
+            }
+        }
         let view: ArtifactView
         view = {
-            refresh() { state.replace(project(account)) },
+            refresh: refreshProjection,
             close() {
                 views.delete(view)
                 replay.close()

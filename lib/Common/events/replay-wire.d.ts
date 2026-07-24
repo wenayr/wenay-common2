@@ -37,6 +37,16 @@ export type ReplaySubscribeOpts = {
     now?: () => number;
     policy?: 'queue' | 'frame';
     hint?: unknown;
+    catchUp?: 'frame' | 'tail';
+    gapPolicy?: 'keyframe' | 'error';
+    prepareCatchUp?: (context: {
+        initial: boolean;
+        since: number;
+    }) => void | {
+        reset: boolean;
+    } | Promise<void | {
+        reset: boolean;
+    }>;
 };
 export declare function readReplayDescriptor(remote: Pick<ReplayRemote, 'describe'>): Promise<Record<string, any> | null>;
 export declare function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Listener<Z>, opts?: ReplaySubscribeOpts): (() => void) & {

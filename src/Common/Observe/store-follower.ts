@@ -10,9 +10,8 @@
 // Upstream status is a small separate reactive store: nothing local is written to the mirror store,
 // otherwise it will diverge from the leader.
 
-import {createStore, StorePatch} from './store'
-import {exposeStoreReplay, syncStoreReplay, StoreReplayOpts} from './store-replay'
-import {ReplayRemote} from '../events/replay-wire'
+import {createStore} from './store'
+import {exposeStoreReplay, syncStoreReplay, StoreReplayOpts, StoreReplayRemote, tStoreReplayMode} from './store-replay'
 import {getRpcTransportLifecycle} from '../events/transport-lifecycle'
 import {deepEqual} from '../core/common'
 
@@ -22,6 +21,8 @@ export type FollowerStatus = {
     upstream: tFollowerUpstream
     /** Last applied seq of the leader — reconnect point and measure of lag. */
     seq: number
+    /** Coordinate space of seq; persist and compare it together with seq. */
+    replayMode?: tStoreReplayMode
     /** Epoch of the line: for a follower — epoch of its leader, after promote — own (+1). */
     epoch: number
     /** Text of terminal subscription error (when upstream == 'closed'). */
@@ -30,13 +31,15 @@ export type FollowerStatus = {
 
 export type StoreFollowerDeps<T extends object> = {
     /** Replay wire of the leader — RPC projection of exposeStoreReplay(...).api.replay. */
-    remote: ReplayRemote<[StorePatch]>
+    remote: StoreReplayRemote
     /** State before the first keyframe (usually {}). */
     initial?: T
     /** Cascade journal options for OWN subscribers (history/getSince/...). */
     expose?: StoreReplayOpts
     /** Upstream staleness threshold, ms — passed to replay subscription as staleMs. */
     staleMs?: number
+    /** Prefer the compact upstream capability (default true); old leaders fall back to legacy. */
+    batch?: boolean
     /** Epoch of the upstream leader (fork-choice on failover): promote() returns epoch + 1. */
     epoch?: number
 }
@@ -48,7 +51,9 @@ function errorText(error: unknown) {
 
 export function createStoreFollower<T extends object>(deps: StoreFollowerDeps<T>) {
     const store = createStore<T>((deps.initial ?? {}) as T)
-    const status = createStore<FollowerStatus>({upstream: 'catching-up', seq: -1, epoch: deps.epoch ?? 0, error: null})
+    const status = createStore<FollowerStatus>({
+        upstream: 'catching-up', seq: -1, replayMode: 'legacy', epoch: deps.epoch ?? 0, error: null,
+    })
 
     function setUpstream(next: tFollowerUpstream) {
         // promoted and closed — terminal roles: late transport events do not change them
@@ -58,7 +63,11 @@ export function createStoreFollower<T extends object>(deps: StoreFollowerDeps<T>
 
     // ============== mirroring: leader → local store ==============
     const sub = syncStoreReplay(store, deps.remote, {
-        onSeq: function trackUpstreamSeq(seq) { status.state.seq = seq },
+        batch: deps.batch ?? true,
+        onSeq: function trackUpstreamSeq(seq) {
+            status.state.seq = seq
+            status.state.replayMode = sub.mode
+        },
         onLive: function upstreamLive() { setUpstream('live') },
         onError: function upstreamFailed(error) {
             status.state.error = errorText(error)
@@ -77,7 +86,8 @@ export function createStoreFollower<T extends object>(deps: StoreFollowerDeps<T>
     }) ?? function noConnectListener() {}
 
     // ============== cascade: the same store — replay source for own clients ==============
-    const exposed = exposeStoreReplay(store, deps.expose)
+    const exposeOpts = deps.expose ?? {}
+    const exposed = exposeStoreReplay(store, {...exposeOpts, batch: exposeOpts.batch ?? true})
 
     // ============== manual promotion (failover, phase 4 of plan) ==============
     // Mirroring stops, state remains as is, and the CASCADE

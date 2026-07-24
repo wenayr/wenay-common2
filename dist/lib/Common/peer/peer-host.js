@@ -9,12 +9,16 @@ function createPeerHost(deps = {}) {
     const { authorize, history, gap, accounts: accountAllowed } = deps;
     const hub = (0, route_signal_webrtc_1.createSignalHub)({ authorize });
     const relays = new Map();
+    const connections = new Set();
+    let closed = false;
     const peersMap = {};
     const peersView = (0, rpc_dynamic_1.noStrict)(new Proxy(peersMap, {
-        has(_t, k) { return typeof k == 'string' && (!accountAllowed || accountAllowed(k)); },
+        has(_t, k) { return !closed && typeof k == 'string' && (!accountAllowed || accountAllowed(k)); },
         get(t, k) {
             if (typeof k != 'string')
                 return t[k];
+            if (closed)
+                return undefined;
             if (accountAllowed && !accountAllowed(k))
                 return undefined;
             return ensureRelay(k).remote;
@@ -42,6 +46,8 @@ function createPeerHost(deps = {}) {
         emitPresence({ account, online: false });
     }
     function ensureRelay(account) {
+        if (closed)
+            throw new Error('peer host closed');
         let relay = relays.get(account);
         if (!relay) {
             relay = (0, peer_relay_1.createPatchRelayJournal)({ history, gap });
@@ -51,24 +57,36 @@ function createPeerHost(deps = {}) {
         return relay;
     }
     function connection(account) {
+        if (closed)
+            throw new Error('peer host closed');
         const port = hub.register(account);
         const mine = ensureRelay(account);
         presenceJoin(account);
-        let closed = false;
+        let connectionClosed = false;
+        function publish(envelope) {
+            return mine.push(envelope);
+        }
+        function publishBatch(envelopes) {
+            return mine.pushBatch(envelopes);
+        }
+        function closeConnection() {
+            if (connectionClosed)
+                return;
+            connectionClosed = true;
+            connections.delete(closeConnection);
+            port.close();
+            presenceLeave(account);
+        }
+        connections.add(closeConnection);
         return {
             fragment: {
                 signal: { send: port.send, signals: port.signals },
-                publish: (env) => mine.push(env),
+                publish,
+                publishBatch,
                 peers: peersView,
                 presence,
             },
-            close: function closeConnection() {
-                if (closed)
-                    return;
-                closed = true;
-                port.close();
-                presenceLeave(account);
-            },
+            close: closeConnection,
         };
     }
     return {
@@ -78,12 +96,20 @@ function createPeerHost(deps = {}) {
         presence,
         revoke: hub.revoke,
         close() {
-            hub.close();
+            if (closed)
+                return;
+            closed = true;
             presenceChanges.close();
+            for (const closeConnection of Array.from(connections))
+                closeConnection();
+            connections.clear();
+            hub.close();
             online.clear();
             for (const relay of relays.values())
                 relay.close();
             relays.clear();
+            for (const account of Object.keys(peersMap))
+                delete peersMap[account];
         },
     };
 }

@@ -54,6 +54,21 @@
     .appNav { display: flex; gap: 4px; margin: 0 24px; padding: 4px; width: fit-content; border: 1px solid var(--line); border-radius: 11px; background: rgba(255, 255, 255, .75); }
     .appNav button { min-width: 96px; border: 0; background: transparent; color: var(--muted); font-weight: 650; }
     .appNav button.selected { background: var(--surface); color: var(--text); box-shadow: 0 1px 5px rgba(30, 42, 60, .12); }
+    .protocolHandshake { margin: 12px 24px 0; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 5px 18px rgba(30, 42, 60, .04); }
+    .protocolHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .protocolTitle { display: flex; align-items: center; gap: 9px; min-width: 0; }
+    .protocolTitle > span:first-child { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+    #protocolMode { padding: 4px 8px; border-radius: 999px; background: var(--warning-soft); color: var(--warning); font-size: 11px; white-space: nowrap; }
+    #protocolMode[data-state="live"] { background: var(--success-soft); color: var(--success); }
+    #protocolMode[data-state="fallback"] { background: var(--relay-soft); color: var(--relay); }
+    #protocolCompatibility { color: var(--accent); font-size: 11px; font-weight: 700; text-decoration: none; }
+    #protocolCompatibility:hover { text-decoration: underline; }
+    .protocolStages { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+    .protocolStage { min-width: 0; padding: 8px 10px; border-radius: 9px; background: var(--surface-soft); }
+    .protocolStage strong, .protocolStage span { display: block; }
+    .protocolStage strong { font-size: 11px; }
+    .protocolStage span { margin-top: 2px; color: var(--muted); font: 10px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+    #protocolTraffic { margin: 8px 0 0; color: var(--muted); font: 10px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
     .presenceBar { display: flex; align-items: center; gap: 12px; margin: 12px 24px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
     #online { white-space: nowrap; color: var(--success); font-size: 12px; font-weight: 700; }
     #participants { display: flex; flex: 1; gap: 6px; align-items: center; flex-wrap: wrap; }
@@ -277,6 +292,7 @@
     @media (max-width: 920px) {
         .roomWorkspace, .labGrid { grid-template-columns: 1fr; }
         .roomDirectory { position: static; }
+        .protocolStages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         #workboardColumns { grid-template-columns: 1fr; }
         .replicaMeshNodes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .packetMeshNodes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -289,6 +305,9 @@
         .identity { display: block; text-align: right; }
         .appNav { width: calc(100% - 28px); margin: 0 14px; }
         .appNav button { min-width: 0; flex: 1; }
+        .protocolHandshake { margin: 10px 14px 0; }
+        .protocolHeader { align-items: flex-start; flex-direction: column; }
+        .protocolStages { grid-template-columns: 1fr; }
         .presenceBar { align-items: flex-start; margin: 10px 14px 0; flex-wrap: wrap; }
         #participants { order: 3; flex-basis: 100%; }
         main { padding: 16px 14px 24px; }
@@ -326,6 +345,36 @@
         <button data-view-button="store" role="tab">Store</button>
         <button data-view-button="lab" role="tab">Lab</button>
     </nav>
+
+    <section class="protocolHandshake" aria-label="Negotiated RPC and Store wire">
+        <div class="protocolHeader">
+            <div class="protocolTitle">
+                <span>Wire handshake</span>
+                <strong id="protocolMode" data-state="connecting">negotiating…</strong>
+                <span id="protocolTransport" class="pageMeta">Socket.IO connecting</span>
+            </div>
+            <a id="protocolCompatibility" target="_blank" rel="noopener"></a>
+        </div>
+        <div class="protocolStages">
+            <div class="protocolStage">
+                <strong>1 · Client presents</strong>
+                <span id="protocolClient">waiting for client CAPS</span>
+            </div>
+            <div class="protocolStage">
+                <strong>2 · Server presents</strong>
+                <span id="protocolServer">waiting for server CAPS</span>
+            </div>
+            <div class="protocolStage">
+                <strong>3 · Binary proof</strong>
+                <span id="protocolProbe">waiting for intersected capabilities</span>
+            </div>
+            <div class="protocolStage">
+                <strong>4 · Store + old API</strong>
+                <span id="protocolStore">waiting for Store schema</span>
+            </div>
+        </div>
+        <p id="protocolTraffic">Application traffic is waiting. CAPS/MAP stay readable for old-peer bootstrap.</p>
+    </section>
 
     <div class="presenceBar">
         <span id="online">Connecting…</span>

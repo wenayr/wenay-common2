@@ -17,27 +17,87 @@ function upperBy(arr, k, v) {
 }
 const bySeq = (e) => e.seq;
 const byTs = (e) => e.ts;
+function createMemoryReplayLog(limit) {
+    const capacity = !limit || limit == Infinity
+        ? null
+        : !Number.isFinite(limit) || limit < 1
+            ? 0
+            : Math.floor(limit);
+    const values = [];
+    let start = 0;
+    let length = 0;
+    function at(index) {
+        return capacity == null ? values[index] : values[(start + index) % capacity];
+    }
+    function append(value) {
+        if (capacity == null) {
+            values.push(value);
+            length++;
+            return;
+        }
+        if (capacity == 0)
+            return;
+        if (length < capacity) {
+            values[(start + length) % capacity] = value;
+            length++;
+            return;
+        }
+        values[start] = value;
+        start = (start + 1) % capacity;
+    }
+    function upper(k, value) {
+        if (capacity == null)
+            return upperBy(values, k, value);
+        let lo = 0;
+        let hi = length;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (k(at(mid)) <= value)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        return lo;
+    }
+    function between(k, from, to) {
+        const begin = upper(k, from);
+        const end = upper(k, to);
+        if (capacity == null)
+            return values.slice(begin, end);
+        const out = [];
+        for (let index = begin; index < end; index++)
+            out.push(at(index));
+        return out;
+    }
+    function latest(k, value) {
+        return at(upper(k, value) - 1);
+    }
+    return { append, between, latest, size: () => length };
+}
 function createMemoryReplayStorage(opts = {}) {
     const { maxEvents, maxKeyframes } = opts;
-    const events = [];
-    const keyframes = [];
+    const events = createMemoryReplayLog(maxEvents);
+    const keyframes = createMemoryReplayLog(maxKeyframes);
+    function putEvent(ev) {
+        events.append(ev);
+    }
+    function putEvents(batch) {
+        for (const ev of batch)
+            putEvent(ev);
+    }
     return {
-        putEvent: (ev) => {
-            events.push(ev);
-            if (maxEvents && events.length > maxEvents)
-                events.shift();
-        },
+        putEvent,
+        putEvents,
         putKeyframe: (kf) => {
-            keyframes.push(kf);
-            if (maxKeyframes && keyframes.length > maxKeyframes)
-                keyframes.shift();
+            keyframes.append(kf);
         },
         getKeyframe: (at = {}) => {
-            const end = at.ts != null ? upperBy(keyframes, byTs, at.ts) : upperBy(keyframes, bySeq, at.seq ?? Infinity);
-            return keyframes[end - 1];
+            return at.ts != null
+                ? keyframes.latest(byTs, at.ts)
+                : keyframes.latest(bySeq, at.seq ?? Infinity);
         },
-        getEvents: (from, to) => events.slice(upperBy(events, bySeq, from), upperBy(events, bySeq, to)),
-        size: () => ({ events: events.length, keyframes: keyframes.length }),
+        getEvents: (from, to) => events.between(bySeq, from, to),
+        size: () => ({ events: events.size(), keyframes: keyframes.size() }),
     };
 }
 function archiveReplay(replay, opts) {

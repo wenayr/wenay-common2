@@ -9,6 +9,7 @@
 import {listen} from '../events/Listen'
 
 const MAX_ROUTE_ADVERTISEMENTS = 4096
+const MAX_PENDING_PACKETS_PER_ROUTE = 64
 
 export type tPeerPacketRouteState = 'connecting' | 'open' | 'failed' | 'closed'
 
@@ -290,6 +291,9 @@ export function createPeerPacketMesh<T>(deps: PeerPacketMeshDeps<T>) {
             offFail: null as any,
             reconnect: null as ReturnType<typeof setTimeout> | null,
             probe: null as ReturnType<typeof setTimeout> | null,
+            pendingPackets: [] as PeerPacketEnvelope<T>[],
+            handlingPackets: false,
+            packetDrainGeneration: 0,
         }
     }
 
@@ -485,15 +489,6 @@ export function createPeerPacketMesh<T>(deps: PeerPacketMeshDeps<T>) {
     }
 
     async function handlePacket(entry: OfferEntry, packet: PeerPacketEnvelope<T>) {
-        if (!validPacket(packet, entry.offer.peerId) || packet.path.includes(nodeId)) {
-            stats.invalid++
-            return
-        }
-        if (seen.has(seenKey(packet.originId, packet.packetId))) {
-            stats.duplicates++
-            return
-        }
-        remember(packet.originId, packet.packetId)
         const arrived = {...packet, path: [...packet.path, nodeId]}
         const generation = entry.generation
         if (accept) {
@@ -524,10 +519,46 @@ export function createPeerPacketMesh<T>(deps: PeerPacketMeshDeps<T>) {
         await forward(arrived)
     }
 
+    async function drainPackets(entry: OfferEntry) {
+        if (entry.handlingPackets) return
+        const drainGeneration = entry.packetDrainGeneration
+        entry.handlingPackets = true
+        try {
+            while (!closed && drainGeneration == entry.packetDrainGeneration && entry.pendingPackets.length) {
+                const packet = entry.pendingPackets.shift()!
+                await handlePacket(entry, packet)
+            }
+        } finally {
+            // A dead session can leave its policy Promise pending indefinitely.
+            // Its finally must not unlock or drain the replacement session's lane.
+            if (drainGeneration != entry.packetDrainGeneration) return
+            entry.handlingPackets = false
+            if (!closed && entry.pendingPackets.length) void drainPackets(entry)
+        }
+    }
+
+    function enqueuePacket(entry: OfferEntry, packet: PeerPacketEnvelope<T>) {
+        if (!validPacket(packet, entry.offer.peerId) || packet.path.includes(nodeId)) {
+            stats.invalid++
+            return
+        }
+        if (seen.has(seenKey(packet.originId, packet.packetId))) {
+            stats.duplicates++
+            return
+        }
+        remember(packet.originId, packet.packetId)
+        if (entry.pendingPackets.length >= MAX_PENDING_PACKETS_PER_ROUTE) {
+            stats.rejected++
+            return
+        }
+        entry.pendingPackets.push(packet)
+        void drainPackets(entry)
+    }
+
     function handleMessage(entry: OfferEntry, message: PeerPacketWire<T>) {
         if (message == null || typeof message != 'object') { stats.invalid++; return }
         if (message.kind == 'routes') handleRoutes(entry, message)
-        else if (message.kind == 'packet') void handlePacket(entry, message)
+        else if (message.kind == 'packet') enqueuePacket(entry, message)
         else stats.invalid++
     }
 
@@ -539,6 +570,9 @@ export function createPeerPacketMesh<T>(deps: PeerPacketMeshDeps<T>) {
         closeSession(entry.session)
         entry.session = null
         entry.advertisements.clear()
+        entry.pendingPackets.length = 0
+        entry.packetDrainGeneration++
+        entry.handlingPackets = false
         if (entry.probe) clearTimeout(entry.probe)
         entry.probe = null
         entry.rtt = null
@@ -593,14 +627,14 @@ export function createPeerPacketMesh<T>(deps: PeerPacketMeshDeps<T>) {
         }
     }
 
-    function connectEntry(entry: OfferEntry) {
+    function connectEntry(entry: OfferEntry, deferPublish = false) {
         if (closed || entry.state == 'connecting' || entry.state == 'open') return
         if (entry.reconnect) clearTimeout(entry.reconnect)
         entry.reconnect = null
         const generation = ++entry.generation
         entry.state = 'connecting'
         entry.error = null
-        publishStatus()
+        if (!deferPublish) publishStatus()
         Promise.resolve().then(function connectPacketRoute() {
             return entry.offer.connect()
         }).then(function openPacketRoute(session) {
@@ -652,16 +686,19 @@ export function createPeerPacketMesh<T>(deps: PeerPacketMeshDeps<T>) {
         })
     }
 
-    function removeEntry(id: string) {
+    function removeEntry(id: string, deferPublish = false) {
         const entry = entries.get(id)
-        if (!entry) return
+        if (!entry) return false
         entries.delete(id)
         entry.generation++
         if (entry.reconnect) clearTimeout(entry.reconnect)
         clearEntrySession(entry)
         entry.state = 'closed'
-        publishStatus()
-        recomputeRoutes()
+        if (!deferPublish) {
+            publishStatus()
+            recomputeRoutes()
+        }
+        return true
     }
 
     function setOffers(next: readonly PeerPacketOffer<T>[]) {
@@ -671,16 +708,22 @@ export function createPeerPacketMesh<T>(deps: PeerPacketMeshDeps<T>) {
             if (stored.peerId == nodeId) continue
             replacements.set(stored.id, stored)
         }
+        let changed = false
         for (const [id, entry] of entries) {
             const replacement = replacements.get(id)
             if (!replacement || replacement.connect != entry.offer.connect || replacement.peerId != entry.offer.peerId ||
-                replacement.priority != entry.offer.priority) removeEntry(id)
+                replacement.priority != entry.offer.priority) changed = removeEntry(id, true) || changed
         }
         for (const [id, offer] of replacements) {
             if (entries.has(id)) continue
             const entry = createOfferEntry(offer)
             entries.set(id, entry)
-            connectEntry(entry)
+            connectEntry(entry, true)
+            changed = true
+        }
+        if (changed) {
+            publishStatus()
+            recomputeRoutes()
         }
     }
 
@@ -740,7 +783,12 @@ export function createPeerPacketMesh<T>(deps: PeerPacketMeshDeps<T>) {
             if (closed) return
             closed = true
             unsubscribeHandle(offOfferSource)
-            for (const id of Array.from(entries.keys())) removeEntry(id)
+            let changed = false
+            for (const id of Array.from(entries.keys())) changed = removeEntry(id, true) || changed
+            if (changed) {
+                publishStatus()
+                recomputeRoutes()
+            }
             packets.close()
             routeChanges.close()
             statusChanges.close()

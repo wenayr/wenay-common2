@@ -26,6 +26,7 @@
 //SourceMapIndexGenerator.install();
 
 import {Immutable, KeysWithoutType, Mutable, MutableFull, PickTypes, ReadonlyFull} from "./BaseTypes";
+import {compareDeepValues} from './deep-equal'
 
 import "../node_console"
 //import "./Time";
@@ -176,41 +177,10 @@ export function readonlyFull<T>(arg :T) { return arg as ReadonlyFull<T>; }
 // deep structure comparison
 /** @deprecated use {@link isEqual} */
 export function deepEqual(object1: any, object2: any) {//}, equalityComparer? :(a :any, b :any)=>boolean|undefined) {
-    if (object1==object2) return true;
-    if (object1 == null || object2 == null) return false;
-    if (typeof object1!="object" || typeof object2!="object") return false;
-    if (object1.constructor !== object2.constructor) return false;
-    if (object1 instanceof Date) return object1.getTime() === object2.getTime();
-    if (object1 instanceof Map) {
-        if (object1.size !== object2.size) return false;
-        for (const [k, v] of object1) if (!object2.has(k) || !deepEqual(v, object2.get(k))) return false;
-        return true;
-    }
-    if (object1 instanceof Set) {
-        if (object1.size !== object2.size) return false;
-        for (const v of object1) if (!object2.has(v)) return false;
-        return true;
-    }
-    const keys1 = Object.keys(object1);
-    const keys2 = Object.keys(object2);
-
-    if (keys1.length != keys2.length) return false;
-
-    for (const key of keys1) {
-        const val1 = object1[key];
-        const val2 = object2[key];
-        if (val1===val2) continue;
-        // if (equalityComparer)
-        //     if (equalityComparer?.(val1, val2)==true) continue;
-        const areObjects = typeof(val1)=="object" && typeof(val2)=="object" && val1!=null && val2!=null;
-        //if (areObjects ? !deepEqual(val1, val2) : val1 !== val2)
-        if (!areObjects || !deepEqual(val1, val2))
-            return false;
-    }
-    return true;
+    return compareDeepValues(object1, object2, 'legacy')
 }
 
-/** Deep structural equality of plain object/array trees (no Map/Set/Date/NaN special-casing). */
+/** Deep structural equality including rich/binary values and cyclic object graphs. */
 export const isEqual = deepEqual
 
 // shallow structure comparison

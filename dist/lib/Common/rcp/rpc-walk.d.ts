@@ -3,6 +3,12 @@ import { type RpcLimits } from "./rpc-limits";
 export declare function walk(val: any, onLeaf: (v: any) => any, lim?: Required<RpcLimits>, depth?: number): any;
 export declare function pack(args: any[], pool: idPool, cbStore: Map<number, Function>, cbIds: number[]): any[];
 export declare function packResult(value: any): any;
+export declare function createRpcCallbackWrapper({ id, sender, onEnd, legacyStopSentinel, }: {
+    id: number;
+    sender: (id: number, args: any[]) => void;
+    onEnd: (id: number) => void;
+    legacyStopSentinel?: boolean;
+}): (...args: any[]) => void;
 export declare function rpcEndCallback(fn: Function): void;
 export declare function unpack(args: any[], sender: (id: number, a: any[]) => void, onEnd: (id: number) => void, lim?: Required<RpcLimits>): any[];
 export declare function unpackResult(value: any, lim?: Required<RpcLimits>): any;

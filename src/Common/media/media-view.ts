@@ -92,8 +92,10 @@ export function attachVideoCanvas(line: tMediaLine, canvas: any, opts: AttachVid
     let width = 0
     let height = 0
     let busy = false
+    let closed = false
+    let bitmap: any = null
 
-    const off = makeOff(line.on(async function onVideoFrame(raw: any, sentAt?: number) {
+    const detach = makeOff(line.on(async function onVideoFrame(raw: any, sentAt?: number) {
         frames++
         age.note(sentAt)
         rate.note()
@@ -102,20 +104,38 @@ export function attachVideoCanvas(line: tMediaLine, canvas: any, opts: AttachVid
         try {
             const f = decodeMediaFrame(toBytes(raw))
             if (f.kind != 'video-frame' || !f.width || !f.height) return
-            const bitmap = await makeBitmap(new Blob([f.payload.slice()], {type: mimeForCodec(f.codec)}))
+            // Blob snapshots the supplied view, including its byte offset/length.
+            // A preceding slice only duplicates every ordinary compressed video
+            // payload; retain the copy only for SharedArrayBuffer-backed input.
+            const blobPayload = f.payload.buffer instanceof ArrayBuffer
+                ? f.payload as Uint8Array<ArrayBuffer>
+                : f.payload.slice()
+            bitmap = await makeBitmap(new Blob([blobPayload as any], {type: mimeForCodec(f.codec)}))
+            if (closed) return
             if (canvas.width != f.width) canvas.width = f.width
             if (canvas.height != f.height) canvas.height = f.height
             ctx.drawImage(bitmap, 0, 0)
-            bitmap?.close?.()
             width = f.width
             height = f.height
             drawn++
         } catch (e) {
             opts.onError?.(e)
         } finally {
+            try {
+                bitmap?.close?.()
+            } catch (e) {
+                opts.onError?.(e)
+            }
+            bitmap = null
             busy = false
         }
     }))
+
+    function off() {
+        if (closed) return
+        closed = true
+        detach()
+    }
 
     return {
         stats: () => ({frames, drawn, perSec: rate.perSec, ageMs: age.ageMs, width, height}),
@@ -236,8 +256,12 @@ export function pipeMediaPublish(
 ) {
     return line.on(function publishFrame(frame: any) {
         try {
-            Promise.resolve(publish(frame, opts.stamp == false ? undefined : Date.now()))
-                .catch(function onPublishFail(e) { opts.onError?.(e) })
+            const result = publish(frame, opts.stamp == false ? undefined : Date.now())
+            if (result != null
+                && (typeof result == 'object' || typeof result == 'function')
+                && typeof (result as any).then == 'function') {
+                Promise.resolve(result).catch(function onPublishFail(e) { opts.onError?.(e) })
+            }
         } catch (e) {
             opts.onError?.(e)
         }

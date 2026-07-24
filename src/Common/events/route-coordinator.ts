@@ -12,6 +12,7 @@
 import {listen, Listener} from './Listen'
 import {ReplayRemote} from './replay-wire'
 import {replayRouteSubscribe, ReplayRouteSubscribeOpts} from './replay-route'
+import {getRpcSchemaReady, hasRpcMemberLookup, rpcMemberAvailable} from './transport-lifecycle'
 
 // =====================================================================
 // Connector contract — what any transport must provide (socket, in-proc,
@@ -118,6 +119,12 @@ function unsubscribeHandle(handle: any) {
     else if (typeof handle?.unsubscribe == 'function') handle.unsubscribe()
 }
 
+function optionalRemoteMember(remote: any, member: string) {
+    if (hasRpcMemberLookup(remote)) return rpcMemberAvailable(remote, member)
+    try { return remote?.[member] != null }
+    catch { return false }
+}
+
 /**
  * Lazy ReplayRemote over connector.open(): subscriptions/requests valid immediately,
  * transport raised once on first use. open error bubbles through catch-up (switch fails,
@@ -125,28 +132,46 @@ function unsubscribeHandle(handle: any) {
  */
 function lazyRemote<Z extends any[]>(connector: RouteConnector<Z>): ReplayRemote<Z> {
     let opened: Promise<ReplayRemote<Z>> | null = null
-    const get = () => opened ??= Promise.resolve(connector.open())
-    function lazyLine(pick: (r: ReplayRemote<Z>) => {on: (cb: any) => any}) {
+    function get() {
+        return opened ??= Promise.resolve(connector.open())
+    }
+    function lazyLine(pick: (r: ReplayRemote<Z>) => {on: (cb: any) => any} | Promise<{on: (cb: any) => any}>) {
         return {
             on(cb: (ev: any) => void) {
                 let off: any = null
                 let dead = false
-                get().then(function attachLazyLine(r) { if (!dead) off = pick(r).on(cb) },
-                    function swallowOpenError() {})
+                get()
+                    .then(pick)
+                    .then(function attachLazyLine(line) { if (!dead) off = line.on(cb) })
+                    .catch(function swallowOpenError() {})
                 return function offLazyLine() { dead = true; unsubscribeHandle(off) }
             },
         }
     }
+    async function since(seq: number) {
+        return (await get()).since(seq)
+    }
+
+    async function keyframe() {
+        return (await get()).keyframe()
+    }
+
+    async function frame(seq: number, hint?: unknown) {
+        const remote = await get()
+        await getRpcSchemaReady(remote)?.()
+        return optionalRemoteMember(remote, 'frame') ? remote.frame!(seq, hint) : null
+    }
+
     return {
         line: lazyLine(r => r.line),
         // policy 'frame' honestly fails over to line when the transport gives no frameLine
-        frameLine: lazyLine(r => r.frameLine ?? r.line),
-        since: async seq => (await get()).since(seq),
-        keyframe: async () => (await get()).keyframe(),
-        frame: async (seq, hint) => {
-            const r = await get()
-            return r.frame ? r.frame(seq, hint) : null
-        },
+        frameLine: lazyLine(async function resolveFrameLine(r) {
+            await getRpcSchemaReady(r)?.()
+            return optionalRemoteMember(r, 'frameLine') ? r.frameLine! : r.line
+        }),
+        since,
+        keyframe,
+        frame,
     }
 }
 
@@ -237,16 +262,10 @@ export function createRouteCoordinator<Z extends any[] = any[]>(deps: RouteCoord
         }
 
         async function switchSubs(remote: ReplayRemote<Z>, label: string, timeoutMs?: number) {
-            const jobs = Array.from(subs, function switchOne(sub) { return sub.switch(remote, {label}) })
-            if (timeoutMs == null) return Promise.all(jobs)
-            let timer: any
-            const timeout = new Promise<never>((_, reject) => {
-                timer = setTimeout(function catchUpTimeout() {
-                    reject(new Error('route catch-up timeout: ' + label))
-                }, timeoutMs)
+            const jobs = Array.from(subs, function switchOne(sub) {
+                return sub.switch(remote, {label, timeoutMs})
             })
-            try { await Promise.race([Promise.all(jobs), timeout]) }
-            finally { clearTimeout(timer) }
+            return Promise.all(jobs)
         }
 
         // subscriptions added during a switch are brought up to the current route

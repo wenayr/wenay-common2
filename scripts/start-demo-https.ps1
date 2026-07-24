@@ -5,6 +5,7 @@ param(
     [switch]$HostnameOnly,
     [string]$PublicHost = '',
     [string]$PublicIp = '',
+    [string]$ArtifactHost = '',
     [int]$PublicPort = 3100,
     [int]$BackendPort = 3100,
     [int]$ChallengePort = 3102,
@@ -279,6 +280,33 @@ if ($enablePublicIp) {
         throw "PublicIp must be a literal IPv4 address, got: $PublicIp"
     }
 }
+if (!$ArtifactHost) {
+    if ($PublicHost -match '\.sslip\.io$') {
+        $ArtifactHost = 'artifact.' + $PublicHost
+    } elseif ($PublicIp) {
+        $ArtifactHost = 'artifact.' + ($PublicIp -replace '\.', '-') + '.sslip.io'
+    } else {
+        throw 'ArtifactHost is required when PublicHost is not an sslip.io hostname'
+    }
+}
+if ($ArtifactHost -match '[:/]' -or
+    [System.Uri]::CheckHostName($ArtifactHost) -ne [System.UriHostNameType]::Dns) {
+    throw "ArtifactHost must be a DNS hostname without a scheme or port, got: $ArtifactHost"
+}
+if ($ArtifactHost -eq $PublicHost) {
+    throw 'ArtifactHost must differ from PublicHost so sandboxed artifacts stay cross-origin'
+}
+$artifactOrigin = "https://${ArtifactHost}:${PublicPort}"
+$appOrigins = @(
+    "http://localhost:${BackendPort}"
+    "http://127.0.0.1:${BackendPort}"
+)
+if ($enablePublicHost) {
+    $appOrigins += "https://${PublicHost}:${PublicPort}"
+}
+if ($enablePublicIp) {
+    $appOrigins += "https://${PublicIp}:${PublicPort}"
+}
 $publicUrl = "https://${PublicHost}:${PublicPort}/"
 if ($enablePublicIp) {
     $publicUrl = "https://${PublicIp}:${PublicPort}/"
@@ -319,6 +347,7 @@ if ($enablePublicHost) {
 
 https://${PublicHost}:${PublicPort} {
     bind ${PublicBind}
+    encode zstd gzip
     tls {
         issuer acme {
             alt_http_port ${ChallengePort}
@@ -336,6 +365,7 @@ if ($enablePublicIp) {
 
 https://${PublicIp}:${PublicPort} {
     bind ${PublicBind}
+    encode zstd gzip
     tls {
         issuer acme https://acme-v02.api.letsencrypt.org/directory {
             profile shortlived
@@ -348,6 +378,27 @@ https://${PublicIp}:${PublicPort} {
 "@
 }
 
+$artifactConfig = @"
+
+https://${ArtifactHost}:${PublicPort} {
+    bind ${PublicBind}
+    encode zstd gzip
+    tls {
+        issuer acme {
+            alt_http_port ${ChallengePort}
+            disable_tlsalpn_challenge
+        }
+    }
+    route {
+        @artifact path /artifact-open/*
+        reverse_proxy @artifact 127.0.0.1:${BackendPort}
+        @artifactHealth path /
+        respond @artifactHealth 204
+        respond 404
+    }
+}
+"@
+
 $defaultSniConfig = ''
 if ($enablePublicIp) {
     $defaultSniConfig = "    default_sni $PublicIp"
@@ -355,11 +406,13 @@ if ($enablePublicIp) {
 
 $caddyConfig = @"
 {
+    admin off
     auto_https disable_redirects
 $defaultSniConfig
 }
 ${hostnameConfig}
 ${rawIpConfig}
+${artifactConfig}
 "@
 [System.IO.File]::WriteAllText($caddyConfigPath, $caddyConfig, $utf8NoBom)
 & $caddyPath fmt '--overwrite' $caddyConfigPath
@@ -378,9 +431,13 @@ $natPmpErr = Join-Path $runtimeDir 'nat-pmp.err.log'
 $oldStart = $env:DEMO_PORT_START
 $oldEnd = $env:DEMO_PORT_END
 $oldHost = $env:DEMO_HOST
+$oldArtifactOrigin = $env:DEMO_ARTIFACT_ORIGIN
+$oldAppOrigins = $env:DEMO_APP_ORIGINS
 $env:DEMO_PORT_START = [string]$BackendPort
 $env:DEMO_PORT_END = [string]$BackendPort
 $env:DEMO_HOST = '127.0.0.1'
+$env:DEMO_ARTIFACT_ORIGIN = $artifactOrigin
+$env:DEMO_APP_ORIGINS = ConvertTo-Json -InputObject $appOrigins -Compress
 try {
     $backendArgs = @{
         FilePath = $nodePath
@@ -396,6 +453,8 @@ try {
     $env:DEMO_PORT_START = $oldStart
     $env:DEMO_PORT_END = $oldEnd
     $env:DEMO_HOST = $oldHost
+    $env:DEMO_ARTIFACT_ORIGIN = $oldArtifactOrigin
+    $env:DEMO_APP_ORIGINS = $oldAppOrigins
 }
 
 Start-Sleep -Seconds 1
@@ -450,6 +509,7 @@ try {
             challengePort = $ChallengePort
             publicUrl = $publicUrl
             localUrl = "http://localhost:${BackendPort}/"
+            artifactUrl = $artifactOrigin + '/'
         }
         if ($enablePublicHost) {
             $recoveryState['publicHostUrl'] = "https://${PublicHost}:${PublicPort}/"
@@ -494,6 +554,7 @@ try {
         challengePort = $ChallengePort
         publicUrl = $publicUrl
         localUrl = "http://localhost:${BackendPort}/"
+        artifactUrl = $artifactOrigin + '/'
     }
     if ($enablePublicHost) {
         $state['publicHostUrl'] = "https://${PublicHost}:${PublicPort}/"
@@ -533,6 +594,7 @@ try {
             challengePort = $ChallengePort
             publicUrl = $publicUrl
             localUrl = "http://localhost:${BackendPort}/"
+            artifactUrl = $artifactOrigin + '/'
         }
         if ($enablePublicHost) {
             $recoveryState['publicHostUrl'] = "https://${PublicHost}:${PublicPort}/"
@@ -582,6 +644,7 @@ try {
     if ($enablePublicIp) {
         Wait-HttpsCertificate $caddy $PublicIp $PublicPort $PublicBind $CertificateWaitSeconds
     }
+    Wait-HttpsCertificate $caddy $ArtifactHost $PublicPort $PublicBind $CertificateWaitSeconds
     if ($backend.HasExited) {
         throw 'the Node backend exited while the HTTPS endpoints were being checked'
     }
@@ -599,6 +662,7 @@ if ($enablePublicIp) {
 if ($enablePublicHost) {
     Write-Host "Public hostname certificate is ready: https://${PublicHost}:${PublicPort}/"
 }
+Write-Host "Sandbox artifact certificate is ready: ${artifactOrigin}/"
 Write-Host "Local HTTP stand: http://localhost:${BackendPort}/"
 Write-Host "Required app forwarding: external TCP ${PublicPort} -> ${PublicBind}:${PublicPort}"
 Write-Host "Logs: $runtimeDir"

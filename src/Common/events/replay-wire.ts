@@ -17,7 +17,12 @@
 import {Listener, NormalizeTuple} from './Listen'
 import {ListenReplayApi, ReplayEvent, StaleInfo} from './replay-listen'
 import {conflateReplay, ConflateOpts} from './replay-conflate'
-import {getRpcMemberState, getRpcTransportLifecycle} from './transport-lifecycle'
+import {
+    getRpcSchemaReady,
+    getRpcTransportLifecycle,
+    rpcMemberAvailable,
+    rpcMemberMayBeAvailable,
+} from './transport-lifecycle'
 
 /** Wire-pair form of replay-line — what spreads into RPC server object. */
 export type ReplayExpose<T> = {
@@ -102,6 +107,13 @@ export type ReplaySubscribeOpts = {
     policy?: 'queue' | 'frame'
     /** Opaque hint to producer frame-lambda (arbitrary skip rules). Wire doesn't inspect. */
     hint?: unknown
+    /** Catch-up source: frame (default) may compact; tail skips frame and requests since directly. */
+    catchUp?: 'frame' | 'tail'
+    /** Missing-tail policy while resuming: keyframe reset (default) or terminal error. */
+    gapPolicy?: 'keyframe' | 'error'
+    /** Advanced identity gate before initial/reconnect catch-up; reset requests a fresh keyframe. */
+    prepareCatchUp?: (context: {initial: boolean, since: number}) =>
+        void | {reset: boolean} | Promise<void | {reset: boolean}>
 }
 
 // unsubscribe handle is either a function (Listen) or object (wire SubscriptionHandle)
@@ -113,9 +125,9 @@ function unsubscribeHandle(handle: any) {
 
 /** Read the line's static source descriptor (schema/originId/...); null when the server has none. */
 export async function readReplayDescriptor(remote: Pick<ReplayRemote, 'describe'>) {
-    const state = getRpcMemberState(remote, 'describe')
-    if (state == false || !remote.describe) return null
-    return (await remote.describe()) ?? null
+    await getRpcSchemaReady(remote)?.()
+    if (!rpcMemberAvailable(remote, 'describe')) return null
+    return (await remote.describe!()) ?? null
 }
 
 /**
@@ -125,13 +137,29 @@ export async function readReplayDescriptor(remote: Pick<ReplayRemote, 'describe'
  * .seq() (last delivered — for reconnect), .isStale() and .lastTs().
  */
 export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Listener<Z>, opts: ReplaySubscribeOpts = {}) {
-    const {since = -1, onSeq, onError, onLive, staleMs, onStale, skewMs = 0, now = Date.now, policy = 'queue', hint} = opts
+    const {
+        since = -1,
+        onSeq,
+        onError,
+        onLive,
+        staleMs,
+        onStale,
+        skewMs = 0,
+        now = Date.now,
+        policy = 'queue',
+        hint,
+        catchUp: catchUpMode = 'frame',
+        gapPolicy = 'keyframe',
+        prepareCatchUp,
+    } = opts
     const lifecycle = getRpcTransportLifecycle(remote)
     let lastDelivered = since
     let replaying = true
     let closed = false
     let recoveryGeneration = 0
-    const queue: ReplayEvent<Z>[] = []
+    let queue: ReplayEvent<Z>[] = []
+    let deliveryQueue: ReplayEvent<Z>[] = []
+    let delivering = false
 
     let readySettled = false
     let resolveReady: () => void = function resolveReadyLater() {}
@@ -177,18 +205,56 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
     }
     armStaleTimer(staleMs!)
 
-    function deliver(ev: ReplayEvent<Z>) {
+    function deliverOne(ev: ReplayEvent<Z>) {
         if (closed || ev.seq <= lastDelivered) return
+        if (gapPolicy == 'error' && lastDelivered >= 0 && ev.seq != lastDelivered + 1) {
+            failRecovery(
+                new Error(`non-contiguous sequence: expected ${lastDelivered + 1}, received ${ev.seq}`),
+                lastDelivered,
+                'sequence gap',
+            )
+            return
+        }
+        try { cb(...ev.event) }
+        catch (error) {
+            failRecovery(error, lastDelivered, 'consumer callback')
+            return
+        }
         lastDelivered = ev.seq
         lastTs = ev.ts
         lastArrival = now()
-        cb(...ev.event)
-        onSeq?.(ev.seq)
+        if (onSeq) {
+            try { onSeq(ev.seq) }
+            catch (error) { setTimeout(function rethrowOnSeq() { throw error }, 0) }
+        }
         if (!replaying) assessStale()
     }
 
+    function deliver(ev: ReplayEvent<Z>) {
+        deliveryQueue.push(ev)
+        if (delivering) return
+        delivering = true
+        let index = 0
+        try {
+            // Consumer callbacks and onSeq may synchronously emit the next envelope.
+            // Finish and commit the current delivery before visiting those successors.
+            while (!closed && index < deliveryQueue.length) deliverOne(deliveryQueue[index++])
+        } finally {
+            deliveryQueue.length = 0
+            delivering = false
+        }
+    }
+
+    function orderedEvents(events: ReplayEvent<Z>[], owned = false) {
+        for (let index = 1; index < events.length; index++) {
+            if (events[index - 1].seq <= events[index].seq) continue
+            return (owned ? events : [...events]).sort((a, b) => a.seq - b.seq)
+        }
+        return events
+    }
+
     function deliverSorted(events: ReplayEvent<Z>[], allowReset: boolean) {
-        const sorted = [...events].sort((a, b) => a.seq - b.seq)
+        const sorted = orderedEvents(events)
         // Initial attach historically accepts a keyframe from a restarted seq-space.
         // Reconnect never resets: its contract is anchored at lastDelivered.
         if (allowReset && sorted.length && sorted[0].seq <= lastDelivered) {
@@ -201,13 +267,12 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
         // Delivery can synchronously trigger another live envelope; keep replaying
         // until every such batch has also been ordered and deduplicated.
         while (queue.length) {
-            const batch = queue.splice(0).sort((a, b) => a.seq - b.seq)
-            for (const event of batch) deliver(event)
+            const batch = queue
+            queue = []
+            for (const event of orderedEvents(batch, true)) deliver(event)
         }
     }
 
-    const frameLineState = getRpcMemberState(remote, 'frameLine')
-    const liveLine = policy == 'frame' && frameLineState != false && remote.frameLine ? remote.frameLine : remote.line
     let handle: any = null
     let offConnect = function noConnectListener() {}
     let offDisconnect = function noDisconnectListener() {}
@@ -218,6 +283,7 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
         closed = true
         recoveryGeneration++
         queue.length = 0
+        deliveryQueue.length = 0
         stopStaleTimer()
         offConnect()
         offDisconnect()
@@ -245,7 +311,8 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
         }
     }
 
-    handle = liveLine.on(function liveTap(ev: ReplayEvent<Z>) {
+    function liveTap(ev: ReplayEvent<Z>) {
+        if (closed) return
         if (ev == null || typeof (ev as any).seq != 'number') {
             failRecovery(new Error('line ended by server (' + String(ev) + ')'), lastDelivered, 'live line')
             return
@@ -253,17 +320,43 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
         lastArrival = now()
         if (replaying) queue.push(ev)
         else deliver(ev)
-    })
+    }
 
-    if (typeof handle?.then == 'function') {
-        handle.then(
-            function logicalLineEnded() {
-                if (!closed) failRecovery(new Error('logical RPC line ended'), lastDelivered, 'live line')
-            },
-            function logicalLineFailed(error: any) {
-                if (!closed) failRecovery(error, lastDelivered, 'live line')
-            },
-        )
+    function attachLiveLine() {
+        if (closed) return
+        const liveLine = policy == 'frame' && rpcMemberMayBeAvailable(remote, 'frameLine')
+            ? remote.frameLine!
+            : remote.line
+        handle = liveLine.on(liveTap)
+        if (closed) {
+            unsubscribeHandle(handle)
+            handle = null
+            return
+        }
+        if (typeof handle?.then == 'function') {
+            handle.then(
+                function logicalLineEnded() {
+                    if (!closed) failRecovery(new Error('logical RPC line ended'), lastDelivered, 'live line')
+                },
+                function logicalLineFailed(error: any) {
+                    if (!closed) failRecovery(error, lastDelivered, 'live line')
+                },
+            )
+        }
+    }
+
+    const schemaReady = getRpcSchemaReady(remote)
+    let lineReady: Promise<void>
+    if (schemaReady) {
+        try {
+            lineReady = Promise.resolve(schemaReady()).then(attachLiveLine)
+        } catch (error) {
+            lineReady = Promise.reject(error)
+        }
+        lineReady.catch(function deferLineReadyFailureToCatchUp() {})
+    } else {
+        attachLiveLine()
+        lineReady = Promise.resolve()
     }
 
     function isCurrent(generation: number) {
@@ -272,10 +365,17 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
 
     async function catchUp(generation: number, point: number, initial: boolean) {
         try {
+            await lineReady
+            if (!isCurrent(generation)) return
+            const preparation = await prepareCatchUp?.({initial, since: point})
+            if (!isCurrent(generation)) return
+            if (preparation?.reset) {
+                point = -1
+                lastDelivered = -1
+            }
             let done = false
-            const frameState = getRpcMemberState(remote, 'frame')
-            if (point >= 0 && frameState != false && remote.frame) {
-                const envelopes = await remote.frame(point, hint)
+            if (catchUpMode == 'frame' && point >= 0 && rpcMemberMayBeAvailable(remote, 'frame')) {
+                const envelopes = await remote.frame!(point, hint)
                 if (!isCurrent(generation)) return
                 if (envelopes) {
                     deliverSorted(envelopes, initial)
@@ -288,6 +388,9 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
                 if (tail) {
                     deliverSorted(tail, false)
                 } else {
+                    if (point >= 0 && gapPolicy == 'error') {
+                        throw new Error('journal evicted or unavailable; gap policy forbids keyframe reset')
+                    }
                     const keyframe = await remote.keyframe()
                     if (!isCurrent(generation)) return
                     if (keyframe) {

@@ -9,10 +9,10 @@ export type ArtifactByteCacheDeps = {
 export declare function createArtifactByteCache(deps: ArtifactByteCacheDeps): {
     get: (artifact: ArtifactRecord) => Promise<{
         hash: string;
-        bytes: tArtifactBytes;
+        bytes: string | Uint8Array<ArrayBuffer>;
     }>;
     has: (hashKey: string) => boolean;
-    peek: (hashKey: string) => tArtifactBytes | undefined;
+    peek: (hashKey: string) => string | Uint8Array<ArrayBuffer> | undefined;
     stats: () => {
         entries: number;
         totalBytes: number;

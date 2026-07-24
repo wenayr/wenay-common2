@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.isPlainObject = isPlainObject;
 exports.createCbShapeServer = createCbShapeServer;
+const rpc_limits_1 = require("./rpc-limits");
 const THRESHOLD = 5;
 const MAX_SHAPES = 5;
 function isPlainObject(v) {
@@ -16,7 +17,9 @@ function createCbShapeServer(threshold = THRESHOLD, maxShapes = MAX_SHAPES) {
     const byCb = new Map();
     function offer(cbId, obj) {
         const keys = Object.keys(obj);
-        const sig = keys.slice().sort().join("\x00");
+        if (!keys.every(rpc_limits_1.isSafeKey))
+            return { mode: 'full' };
+        const sig = JSON.stringify(keys.slice().sort());
         let st = byCb.get(cbId);
         if (!st) {
             st = { shapes: [], nextId: 0 };

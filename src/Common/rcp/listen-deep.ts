@@ -49,16 +49,18 @@ export type IsReplayMember<V> = V extends { getSince: Function; keyframe: Functi
 
 // Types for various Socket listener variants
 export type DeepSocketListen<T> = {
-    [K in keyof T]: IsReplayMember<T[K]> extends true
-        ? ReplaySocketListen<InferArgs<T[K]>>
-        : T[K] extends { on: Function }
-        ? WithSubHandle<ReturnType<typeof listenSocket<InferArgs<T[K]>>>>
-        : T[K] extends ListenOn<infer Z>   // bare on (branded) → same subscription {on, once, close, ...}
-        ? WithSubHandle<ReturnType<typeof listenSocket<Z>>>
-        : T[K] extends (...a: any[]) => any ? T[K]
-        : T[K] extends Promise<any> ? T[K] // Promise instances pass as-is (typeof Promise caught only constructor)
-        : T[K] extends typeof Promise ? T[K]
-        : T[K] extends object ? DeepSocketListen<T[K]>
+    [K in keyof T]: IsReplayMember<NonNullable<T[K]>> extends true
+        ? ReplaySocketListen<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null>
+        : NonNullable<T[K]> extends { on: Function }
+        ? WithSubHandle<ReturnType<typeof listenSocket<InferArgs<NonNullable<T[K]>>>>>
+            | Extract<T[K], undefined | null>
+        : NonNullable<T[K]> extends ListenOn<infer Z>   // bare on (branded) → same subscription {on, once, close, ...}
+        ? WithSubHandle<ReturnType<typeof listenSocket<Z>>> | Extract<T[K], undefined | null>
+        : NonNullable<T[K]> extends (...a: any[]) => any ? T[K]
+        : NonNullable<T[K]> extends Promise<any> ? T[K] // Promise instances pass as-is (typeof Promise caught only constructor)
+        : NonNullable<T[K]> extends typeof Promise ? T[K]
+        : NonNullable<T[K]> extends object
+            ? DeepSocketListen<NonNullable<T[K]>> | Extract<T[K], undefined | null>
         : T[K];
 };
 

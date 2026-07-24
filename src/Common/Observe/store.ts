@@ -1,5 +1,8 @@
-import {createListen} from "../events/Listen";
+import {createListen, type ListenApi} from '../events/Listen'
 import {listenUpdate, listenUpdatePaths, onUpdate, reactive, isReactive, toRaw, ReactiveChange} from "./reactive";
+import {getRpcMemberState, getRpcSchemaReady, hasRpcMemberLookup} from '../events/transport-lifecycle'
+import {positiveIntegerOption} from '../positive-integer-option'
+import {rpcResultWireMetrics} from '../rcp/rpc-wire-size'
 
 export type StorePath = readonly PropertyKey[]
 export type StoreDrain = "micro" | "immediate" | number | ((flush: () => void) => void)
@@ -22,10 +25,18 @@ export type StoreChangedData<M = any> = {
 }
 export type StoreSyncOpts = StoreSubOpts & {
     partial?: boolean
+    /** Prefer one natural patch array callback; old servers fall back to patches. */
+    batch?: boolean
     onError?: (error: any) => void
 }
+export type StorePatchBatchOpts = {
+    /** Hard patch ceiling for one callback (default 256). */
+    maxItems?: number
+    /** Packed RPC payload target for one callback (default 64 KiB; one patch may exceed it). */
+    maxBytes?: number
+}
 export type StoreExposeOpts = {
-    push?: boolean
+    push?: boolean | StorePatchBatchOpts
 }
 
 export type StoreCtx<T = any> = {
@@ -133,6 +144,7 @@ type RemoteStore<T extends object> = {
     changed: any
     changedPaths?: any
     patches?: any
+    patchesBatch?: any
     changedData?: any
 }
 
@@ -144,6 +156,7 @@ export type StoreRemoteApi<T extends object> = {
     changed: any
     changedPaths: any
     patches?: any
+    patchesBatch?: any
     changedData?: any
 }
 
@@ -208,7 +221,7 @@ function isObj(v: any): v is object {
 function getAt(root: any, path: StorePath): any {
     let cur = root
     for (const k of path) {
-        if (!isObj(cur)) return undefined
+        if (!isObj(cur) || !Object.prototype.hasOwnProperty.call(cur, k)) return undefined
         cur = (cur as any)[k as any]
     }
     return cur
@@ -217,7 +230,7 @@ function getAt(root: any, path: StorePath): any {
 function hasAt(root: any, path: StorePath): boolean {
     let cur = root
     for (const k of path) {
-        if (!isObj(cur) || !(k in cur)) return false
+        if (!isObj(cur) || !Object.prototype.hasOwnProperty.call(cur, k)) return false
         cur = (cur as any)[k as any]
     }
     return true
@@ -226,7 +239,9 @@ function hasAt(root: any, path: StorePath): boolean {
 function readRawAt(root: any, path: StorePath) {
     let cur = toRaw(root)
     for (const k of path) {
-        if (!isObj(cur) || !(k in cur)) return {exists: false, value: undefined}
+        if (!isObj(cur) || !Object.prototype.hasOwnProperty.call(cur, k)) {
+            return {exists: false, value: undefined}
+        }
         cur = toRaw((cur as any)[k as any])
     }
     return {exists: true, value: cur}
@@ -236,21 +251,70 @@ function ensureParent(root: any, path: StorePath) {
     let cur = root
     for (let i = 0; i < path.length - 1; i++) {
         const k = path[i]
-        if (!isObj((cur as any)[k as any])) (cur as any)[k as any] = {}
+        if (!Object.prototype.hasOwnProperty.call(cur, k) || !isObj((cur as any)[k as any])) {
+            defineOwnValue(cur, k, {})
+        }
         cur = (cur as any)[k as any]
     }
     return cur
 }
 
+function safeStorePath(path: StorePath, label = 'store path') {
+    if (!Array.isArray(path)) throw new TypeError(`${label} must be an array`)
+    return Array.from(path, function validateStorePathKey(key) {
+        if (typeof key != 'string' && typeof key != 'number' && typeof key != 'symbol') {
+            throw new TypeError(`${label} keys must be string, number or symbol`)
+        }
+        return key
+    })
+}
+
+function defineOwnValue(target: any, key: PropertyKey, value: any) {
+    const ok = Reflect.defineProperty(target, key, {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value,
+    })
+    if (!ok) throw new TypeError(`store cannot define path key: ${String(key)}`)
+}
+
+function defineSnapshotValue(target: any, key: PropertyKey, value: any) {
+    let prototype = Object.getPrototypeOf(target)
+    let inherited: PropertyDescriptor | undefined
+    while (prototype && !inherited) {
+        inherited = Object.getOwnPropertyDescriptor(prototype, key)
+        prototype = Object.getPrototypeOf(prototype)
+    }
+    if (!inherited
+        || Object.prototype.hasOwnProperty.call(inherited, 'value') && inherited.writable == true) {
+        target[key as any] = value
+        return
+    }
+    // Fresh snapshot containers can use the engine's fast property path except
+    // where assignment would invoke or inherit a polluted prototype property.
+    defineOwnValue(target, key, value)
+}
+
 function replaceRoot(root: any, value: any) {
-    for (const k of Reflect.ownKeys(root)) if (!isObj(value) || !(k in value)) delete root[k as any]
-    if (isObj(value)) for (const k of Reflect.ownKeys(value)) (root as any)[k as any] = (value as any)[k as any]
+    for (const k of Reflect.ownKeys(root)) {
+        if (!isObj(value) || !Object.prototype.hasOwnProperty.call(value, k)) delete root[k as any]
+    }
+    if (isObj(value)) {
+        for (const k of Reflect.ownKeys(value)) defineOwnValue(root, k, (value as any)[k as any])
+    }
 }
 
 function setAt(root: any, path: StorePath, value: any) {
     if (path.length == 0) { replaceRoot(root, value); return }
+    const safePath = safeStorePath(path)
+    setPreparedAt(root, safePath, value)
+}
+
+function setPreparedAt(root: any, path: StorePath, value: any) {
+    if (path.length == 0) { replaceRoot(root, value); return }
     const p = ensureParent(root, path)
-    p[path[path.length - 1] as any] = value
+    defineOwnValue(p, path[path.length - 1], value)
 }
 
 // ============================================================
@@ -268,6 +332,17 @@ function snapshotValue<T>(value: T, seen = new WeakMap<object, any>()): T {
     if (old) return old
     if (value instanceof Date) return new Date(value.valueOf()) as T
     if (value instanceof RegExp) return new RegExp(value.source, value.flags) as T
+    if (value instanceof ArrayBuffer) return value.slice(0) as T
+    if (ArrayBuffer.isView(value)) {
+        const bytes = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)
+        if (value instanceof DataView) return new DataView(bytes) as T
+        const Constructor = value.constructor as any
+        if (typeof Constructor.from == 'function' && typeof Constructor.isBuffer == 'function'
+            && Constructor.isBuffer(value)) {
+            return Constructor.from(new Uint8Array(bytes)) as T
+        }
+        return new Constructor(bytes) as T
+    }
     if (value instanceof Map) {
         const out = new Map<any, any>()
         seen.set(value, out)
@@ -280,10 +355,20 @@ function snapshotValue<T>(value: T, seen = new WeakMap<object, any>()): T {
         value.forEach(v => out.add(snapshotValue(v, seen)))
         return out as T
     }
-    const out: any = Array.isArray(value) ? [] : {}
+    const out: any = Array.isArray(value)
+        ? []
+        : Object.create(Object.getPrototypeOf(value) == null ? null : Object.prototype)
     seen.set(value, out)
-    for (const k of Reflect.ownKeys(value)) out[k as any] = snapshotValue((value as any)[k as any], seen)
+    for (const k of Reflect.ownKeys(value)) {
+        if (Array.isArray(value) && k == 'length') continue
+        defineSnapshotValue(out, k, snapshotValue((value as any)[k as any], seen))
+    }
     return out
+}
+
+/** Detached Store-safe value clone used at projection and wire ownership boundaries. */
+export function cloneStoreValue<T>(value: T): T {
+    return snapshotValue(value)
 }
 
 function maskPaths(mask: any, base: PropertyKey[] = []): PropertyKey[][] {
@@ -304,8 +389,15 @@ function pickSnapshot(root: any, mask: any, base: PropertyKey[] = []): any {
 
 function deleteAt(root: any, path: StorePath) {
     if (path.length == 0) { replaceRoot(root, {}); return }
+    const safePath = safeStorePath(path)
+    deletePreparedAt(root, safePath)
+}
+
+function deletePreparedAt(root: any, path: StorePath) {
+    if (path.length == 0) { replaceRoot(root, {}); return }
     const parent = getAt(root, path.slice(0, -1))
-    if (isObj(parent)) delete (parent as any)[path[path.length - 1] as any]
+    const key = path[path.length - 1]
+    if (isObj(parent) && Object.prototype.hasOwnProperty.call(parent, key)) delete (parent as any)[key as any]
 }
 
 function applyMask(root: any, mask: any, data: any, base: PropertyKey[] = []) {
@@ -321,13 +413,31 @@ export function applyStoreMask<T extends object>(store: Store<T>, mask: StoreMas
     applyMask(store.state, mask ?? true, data)
 }
 
+function prepareStorePatch(patch: StorePatch) {
+    if (patch == null || typeof patch != 'object' || !Array.isArray(patch.path)
+        || typeof patch.exists != 'boolean') {
+        throw new TypeError('store patch must contain path[] and boolean exists')
+    }
+    const path = safeStorePath(patch.path, 'store patch path')
+    return {
+        path,
+        exists: patch.exists,
+        value: patch.exists ? snapshotValue(patch.value) : undefined,
+    } satisfies StorePatch
+}
+
+function applyPreparedStorePatch<T extends object>(store: Store<T>, patch: StorePatch) {
+    if (!patch.exists) deletePreparedAt(store.state, patch.path)
+    else setPreparedAt(store.state, patch.path, patch.value)
+}
+
 export function applyStorePatch<T extends object>(store: Store<T>, patch: StorePatch) {
-    if (patch.exists === false) deleteAt(store.state, patch.path)
-    else setAt(store.state, patch.path, snapshotValue(patch.value))
+    applyPreparedStorePatch(store, prepareStorePatch(patch))
 }
 
 export function applyStorePatches<T extends object>(store: Store<T>, patches: readonly StorePatch[]) {
-    for (const patch of patches) applyStorePatch(store, patch)
+    const prepared = Array.from(patches, prepareStorePatch)
+    for (const patch of prepared) applyPreparedStorePatch(store, patch)
 }
 
 function pathToMask(path: StorePath): any {
@@ -390,6 +500,63 @@ function makePatch(root: any, path: StorePath): StorePatch {
     }
 }
 
+function manageColdListenLifecycle(type: 'add' | 'remove', count: number, api: ListenApi<any>) {
+    if (type == 'add' && count == 1 && !api.isRunning()) api.run()
+    if (type == 'remove' && count == 0 && api.isRunning()) api.close()
+}
+
+function coldListenOptions() {
+    return {event: manageColdListenLifecycle}
+}
+
+/**
+ * Natural patch batch of one reactive drain window. Values are sampled only
+ * after the window settles, so the array describes one consistent Store state.
+ * Cold like the other Store listens: without subscribers it installs no watcher.
+ */
+function createStorePatchesListen<T extends object>(store: Store<T>) {
+    function sampleChangedStorePath(path: PropertyKey[]) {
+        return makePatch(store.state, path)
+    }
+
+    function produceStorePatchBatches(emit: (patches: readonly StorePatch[]) => void) {
+        const off = store.listenPaths().on(function emitStorePatchBatch(change: StoreChange) {
+            emit(change.paths.map(sampleChangedStorePath))
+        })
+        return off
+    }
+    return createListen<[readonly StorePatch[]]>(produceStorePatchBatches, coldListenOptions())
+}
+
+// One Store must be sampled once per drain even when legacy and batch consumers
+// coexist. Its lazy sampler belongs to the Store closure, not module state.
+const storePatchesListenOwner = Symbol('storePatchesListenOwner')
+type StorePatchesListenOwner<T extends object> = Store<T> & {
+    [storePatchesListenOwner]?: () => ReturnType<typeof createStorePatchesListen<T>>
+}
+
+function createStorePatchesListenOwner<T extends object>(store: Store<T>) {
+    let patches: ReturnType<typeof createStorePatchesListen<T>> | undefined
+    return function getStorePatchesListen() {
+        patches ??= createStorePatchesListen(store)
+        return patches
+    }
+}
+
+function installStorePatchesListenOwner<T extends object>(store: Store<T>) {
+    const owner = store as StorePatchesListenOwner<T>
+    let getPatches = owner[storePatchesListenOwner]
+    if (!getPatches) {
+        getPatches = createStorePatchesListenOwner(store)
+        Object.defineProperty(owner, storePatchesListenOwner, {value: getPatches})
+    }
+    return getPatches
+}
+
+export function listenStorePatches<T extends object>(store: Store<T>) {
+    return installStorePatchesListenOwner(store)()
+}
+
 function patchesForMask(patch: StorePatch, mask: any) {
     const selected = maskPaths(mask ?? true)
     const out: StorePatch[] = []
@@ -414,18 +581,51 @@ function patchesForMask(patch: StorePatch, mask: any) {
     return out
 }
 
-function createPatchesListen<T extends object>(store: Store<T>) {
-    return createListen<[StorePatch]>((emit) => {
-        const off = store.listenPaths().on((change: StoreChange) => {
-            for (const path of change.paths) emit(makePatch(store.state, path))
+function createPatchesListen(batches: ReturnType<typeof listenStorePatches>) {
+    function produceIndividualStorePatches(emit: (patch: StorePatch) => void) {
+        const off = batches.on(function emitIndividualStorePatches(patches) {
+            for (const patch of patches) emit(patch)
         })
         return off
-    }, {
-        event: (type, count, api) => {
-            if (type == "add" && count == 1 && !api.isRunning()) api.run()
-            if (type == "remove" && count == 0 && api.isRunning()) api.close()
-        },
-    })
+    }
+    return createListen<[StorePatch]>(produceIndividualStorePatches, coldListenOptions())
+}
+
+function createPatchesBatchListen(
+    batches: ReturnType<typeof listenStorePatches>, opts: StorePatchBatchOpts = {},
+) {
+    const maxItems = positiveIntegerOption(opts.maxItems, 256, 'exposeStore: push.maxItems')
+    const maxBytes = positiveIntegerOption(opts.maxBytes, 64 * 1024, 'exposeStore: push.maxBytes')
+    const envelopeBytes = 48
+    function produceBoundedStorePatchBatches(emit: (patches: readonly StorePatch[]) => void) {
+        return batches.on(function emitBoundedStorePatchBatches(patches) {
+            let pending: StorePatch[] = []
+            let pendingBytes = envelopeBytes
+            let pendingBinaryCount = 0
+            function flush() {
+                if (pending.length == 0) return
+                emit(pending)
+                pending = []
+                pendingBytes = envelopeBytes
+                pendingBinaryCount = 0
+            }
+            for (const patch of patches) {
+                let metrics = rpcResultWireMetrics(patch, pendingBinaryCount)
+                let bytes = Number.isFinite(metrics.byteLength) ? metrics.byteLength + 1 : maxBytes
+                if (pending.length && (pending.length >= maxItems || pendingBytes + bytes > maxBytes)) {
+                    flush()
+                    metrics = rpcResultWireMetrics(patch)
+                    bytes = Number.isFinite(metrics.byteLength) ? metrics.byteLength + 1 : maxBytes
+                }
+                pending.push(patch)
+                pendingBytes += bytes
+                pendingBinaryCount += metrics.binaryCount
+                if (pending.length >= maxItems) flush()
+            }
+            flush()
+        })
+    }
+    return createListen<[readonly StorePatch[]]>(produceBoundedStorePatchBatches, coldListenOptions())
 }
 
 // Changed TOP-level keys as a regular Listen: (key, value | undefined, {path}).
@@ -758,6 +958,7 @@ export function createStore<T extends object>(initial: T, opts: Parameters<typeo
         listenPaths: () => listenUpdatePaths(state),
         count: () => Array.from(store._counts.values()).reduce((a: number, b: number) => a + b, 0),
     }
+    installStorePatchesListenOwner(store)
     return store
 }
 
@@ -776,7 +977,10 @@ export function exposeStore<T extends object>(store: Store<T>, opts: StoreExpose
         changedPaths: store.listenPaths(),
     }
     if (opts.push) {
-        api.patches = createPatchesListen(store)
+        const patchBatches = listenStorePatches(store)
+        const pushOpts = opts.push === true ? {} : opts.push
+        api.patches = createPatchesListen(patchBatches)
+        api.patchesBatch = createPatchesBatchListen(patchBatches, pushOpts)
         api.changedData = createChangedDataListen(store)
     }
     return api
@@ -787,9 +991,9 @@ function isRemoteListen(listen: any) {
 }
 
 function subscribeRemote(listen: any, cb: (...args: any[]) => void) {
-    if (typeof listen?.on != "function") return () => {}
+    if (typeof listen?.on != "function") return function noopRemoteUnsubscribe() {}
     const handle = listen.on(cb)
-    return () => {
+    return function unsubscribeRemote() {
         if (typeof handle == "function") handle()
         else if (typeof handle?.off == "function") handle.off()
         else if (typeof listen?.off == "function") listen.off(cb)
@@ -798,9 +1002,24 @@ function subscribeRemote(listen: any, cb: (...args: any[]) => void) {
 
 export function createStoreMirror<T extends object>(remote: RemoteStore<T>, initial = {} as T, opts: Parameters<typeof createStore<T>>[1] = {}) {
     const store = createStore<T>(initial, opts)
-    const makeReport = (subOpts: StoreSyncOpts) => (error: any) => {
-        if (subOpts.onError) subOpts.onError(error)
-        else setTimeout(() => { throw error }, 0)
+    function makeReport(subOpts: StoreSyncOpts) {
+        return function reportStoreMirrorError(error: any) {
+            if (subOpts.onError) subOpts.onError(error)
+            else setTimeout(function throwStoreMirrorError() { throw error }, 0)
+        }
+    }
+
+    function waitForRemoteSchema(...members: string[]) {
+        if (!members.some(member => getRpcMemberState(remote, member) == undefined)) return undefined
+        return getRpcSchemaReady(remote)?.()
+    }
+
+    function remoteListenAvailable(member: string, candidate: any, allowRpcUnknown = false) {
+        const state = getRpcMemberState(remote, member)
+        if (state == true) return isRemoteListen(candidate)
+        if (state == false) return false
+        if (hasRpcMemberLookup(remote)) return allowRpcUnknown && isRemoteListen(candidate)
+        return isRemoteListen(candidate)
     }
 
     async function pull(mask: any) {
@@ -811,62 +1030,121 @@ export function createStoreMirror<T extends object>(remote: RemoteStore<T>, init
     async function sync<M extends StoreMask<T>>(mask: M, subOpts: StoreSyncOpts = {current: true}) {
         const baseMask = mask ?? true
         const report = makeReport(subOpts)
-        if (subOpts.current !== false) await pull(baseMask)
-
+        let initializing = subOpts.current !== false
         let pendingMask: any = undefined
         // pulls are chained: a slow (stale) response can never land on top
         // of a newer one that resolved first
         let chain: Promise<void> = Promise.resolve()
-        const drained = createDrained(() => {
+        const drained = createDrained(function pullQueuedStoreMask() {
             const nextMask = pendingMask === undefined ? baseMask : pendingMask
             pendingMask = undefined
-            chain = chain.then(() => pull(nextMask)).catch(report)
+            chain = chain.then(function pullNextStoreMask() { return pull(nextMask) }).catch(report)
         }, subOpts.drain)
-        const queue = (nextMask: any) => {
+        function queueStoreMask(nextMask: any) {
             pendingMask = pendingMask === undefined ? nextMask : mergeMasks(pendingMask, nextMask)
-            drained.push()
+            if (!initializing) drained.push()
         }
 
+        function handleRemoteChangedPaths(change?: StoreChange) {
+            const nextMask = intersectMaskWithPaths(baseMask, change?.paths)
+            if (nextMask !== undefined) queueStoreMask(nextMask)
+        }
+
+        function handleRemoteChanged() {
+            queueStoreMask(baseMask)
+        }
+
+        const wantsPaths = subOpts.partial !== false
+        // With no initial pull, waiting before the live subscription would create
+        // a real loss window. Unknown therefore takes the always-present legacy line.
+        const pathsSchema = wantsPaths && subOpts.current !== false ? waitForRemoteSchema('changedPaths') : undefined
+        if (pathsSchema) await pathsSchema
         const changedPaths = remote.changedPaths
-        const usePaths = subOpts.partial !== false && isRemoteListen(changedPaths)
+        const usePaths = wantsPaths && remoteListenAvailable('changedPaths', changedPaths)
         const off = usePaths
-            ? subscribeRemote(changedPaths, (change?: StoreChange) => {
-                const nextMask = intersectMaskWithPaths(baseMask, change?.paths)
-                if (nextMask !== undefined) queue(nextMask)
-            })
-            : subscribeRemote(remote.changed, () => queue(baseMask))
-        return () => { drained.close(); off() }
+            ? subscribeRemote(changedPaths, handleRemoteChangedPaths)
+            : subscribeRemote(remote.changed, handleRemoteChanged)
+        try {
+            if (initializing) await pull(baseMask)
+            initializing = false
+            if (pendingMask !== undefined) drained.push()
+        } catch (error) {
+            drained.close()
+            off()
+            throw error
+        }
+        return function closeStoreSync() {
+            drained.close()
+            off()
+        }
     }
 
     async function syncPatches<M extends StoreMask<T>>(mask: M, subOpts: StoreSyncOpts = {current: true}) {
-        if (!isRemoteListen(remote.patches)) throw new Error("createStoreMirror.syncPatches: remote.patches is not exposed")
+        const canWaitForSchema = subOpts.current !== false
+        const patchesSchema = canWaitForSchema
+            ? waitForRemoteSchema('patches', ...(subOpts.batch != false ? ['patchesBatch'] : []))
+            : undefined
+        if (patchesSchema) await patchesSchema
+        const useBatch = subOpts.batch != false
+            && remoteListenAvailable('patchesBatch', remote.patchesBatch)
+        const patchListen = useBatch ? remote.patchesBatch : remote.patches
+        // current:false must attach without waiting; legacy patches is the only
+        // lossless conservative choice while a branded schema is still unknown.
+        if (!remoteListenAvailable(useBatch ? 'patchesBatch' : 'patches', patchListen, !canWaitForSchema && !useBatch)) {
+            throw new Error("createStoreMirror.syncPatches: remote.patches is not exposed")
+        }
         const baseMask = mask ?? true
         const report = makeReport(subOpts)
-        if (subOpts.current !== false) await pull(baseMask)
-
+        let initializing = subOpts.current !== false
         const pending: StorePatch[] = []
-        const drained = createDrained(() => {
+        const drained = createDrained(function applyPendingStorePatches() {
             const batch = pending.splice(0)
             try { applyStorePatches(store, batch) }
             catch (e) { report(e) }
         }, subOpts.drain)
-        const off = subscribeRemote(remote.patches, (patch: StorePatch) => {
+        function queuePatch(patch: StorePatch) {
             const next = patchesForMask(patch, baseMask)
-            if (next.length == 0) return
+            if (next.length == 0) return false
             pending.push(...next)
-            drained.push()
-        })
-        return () => { drained.close(); off() }
+            return true
+        }
+
+        function handleRemoteStorePatches(value: StorePatch | readonly StorePatch[]) {
+            let queued = false
+            if (useBatch) {
+                for (const patch of value as readonly StorePatch[]) queued = queuePatch(patch) || queued
+            } else queued = queuePatch(value as StorePatch)
+            if (queued && !initializing) drained.push()
+        }
+
+        const off = subscribeRemote(patchListen, handleRemoteStorePatches)
+        try {
+            if (initializing) await pull(baseMask)
+            initializing = false
+            if (pending.length) drained.push()
+        } catch (error) {
+            drained.close()
+            off()
+            throw error
+        }
+        return function closeStorePatchSync() {
+            drained.close()
+            off()
+        }
     }
 
     async function syncChangedData<M extends StoreMask<T>>(mask: M, subOpts: StoreSyncOpts = {current: true}) {
-        if (!isRemoteListen(remote.changedData)) throw new Error("createStoreMirror.syncChangedData: remote.changedData is not exposed")
+        const canWaitForSchema = subOpts.current !== false
+        const changedDataSchema = canWaitForSchema ? waitForRemoteSchema('changedData') : undefined
+        if (changedDataSchema) await changedDataSchema
+        if (!remoteListenAvailable('changedData', remote.changedData, !canWaitForSchema)) {
+            throw new Error("createStoreMirror.syncChangedData: remote.changedData is not exposed")
+        }
         const baseMask = mask ?? true
         const report = makeReport(subOpts)
-        if (subOpts.current !== false) await pull(baseMask)
-
+        let initializing = subOpts.current !== false
         const pending: StoreChangedData[] = []
-        const drained = createDrained(() => {
+        const drained = createDrained(function applyPendingStoreChangedData() {
             const batch = pending.splice(0)
             try {
                 for (const change of batch) {
@@ -875,11 +1153,26 @@ export function createStoreMirror<T extends object>(remote: RemoteStore<T>, init
                 }
             } catch (e) { report(e) }
         }, subOpts.drain)
-        const off = subscribeRemote(remote.changedData, (change: StoreChangedData) => {
+
+        function handleRemoteStoreChangedData(change: StoreChangedData) {
             pending.push(change)
-            drained.push()
-        })
-        return () => { drained.close(); off() }
+            if (!initializing) drained.push()
+        }
+
+        const off = subscribeRemote(remote.changedData, handleRemoteStoreChangedData)
+        try {
+            if (initializing) await pull(baseMask)
+            initializing = false
+            if (pending.length) drained.push()
+        } catch (error) {
+            drained.close()
+            off()
+            throw error
+        }
+        return function closeStoreChangedDataSync() {
+            drained.close()
+            off()
+        }
     }
 
     return Object.assign(store, {sync, syncPatches, syncChangedData})

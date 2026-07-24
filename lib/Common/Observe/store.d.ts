@@ -1,4 +1,4 @@
-import { createListen } from "../events/Listen";
+import { createListen, type ListenApi } from '../events/Listen';
 import { listenUpdate, listenUpdatePaths, reactive, ReactiveChange } from "./reactive";
 export type StorePath = readonly PropertyKey[];
 export type StoreDrain = "micro" | "immediate" | number | ((flush: () => void) => void);
@@ -19,10 +19,15 @@ export type StoreChangedData<M = any> = {
 };
 export type StoreSyncOpts = StoreSubOpts & {
     partial?: boolean;
+    batch?: boolean;
     onError?: (error: any) => void;
 };
+export type StorePatchBatchOpts = {
+    maxItems?: number;
+    maxBytes?: number;
+};
 export type StoreExposeOpts = {
-    push?: boolean;
+    push?: boolean | StorePatchBatchOpts;
 };
 export type StoreCtx<T = any> = {
     store: Store<any>;
@@ -93,6 +98,7 @@ type RemoteStore<T extends object> = {
     changed: any;
     changedPaths?: any;
     patches?: any;
+    patchesBatch?: any;
     changedData?: any;
 };
 export type StoreRemoteApi<T extends object> = {
@@ -103,11 +109,14 @@ export type StoreRemoteApi<T extends object> = {
     changed: any;
     changedPaths: any;
     patches?: any;
+    patchesBatch?: any;
     changedData?: any;
 };
+export declare function cloneStoreValue<T>(value: T): T;
 export declare function applyStoreMask<T extends object>(store: Store<T>, mask: StoreMask<T> | any, data: any): void;
 export declare function applyStorePatch<T extends object>(store: Store<T>, patch: StorePatch): void;
 export declare function applyStorePatches<T extends object>(store: Store<T>, patches: readonly StorePatch[]): void;
+export declare function listenStorePatches<T extends object>(store: Store<T>): ListenApi<[readonly StorePatch[]]>;
 export declare function createStore<T extends object>(initial: T, opts?: Parameters<typeof reactive<T>>[1]): Store<T>;
 export declare function exposeStore<T extends object>(store: Store<T>, opts?: StoreExposeOpts): StoreRemoteApi<T>;
 export declare function createStoreMirror<T extends object>(remote: RemoteStore<T>, initial?: T, opts?: Parameters<typeof createStore<T>>[1]): Store<T> & {

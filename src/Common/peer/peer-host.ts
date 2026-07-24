@@ -41,15 +41,18 @@ export function createPeerHost(deps: PeerHostDeps = {}) {
     const {authorize, history, gap, accounts: accountAllowed} = deps
     const hub = createSignalHub({authorize})
     const relays = new Map<string, PatchRelayJournal>()
+    const connections = new Set<() => void>()
+    let closed = false
     // dynamic keyspace: accounts appear at runtime, clients resolve them by string path.
     // The Proxy auto-creates an EMPTY journal on first touch, so a mirror subscribed
     // before its owner ever connected simply waits for the first publish instead of
     // failing loudly (the rpc dynamic walk does `seg in curr` + `curr[seg]`).
     const peersMap: Record<string, ReplayRemote<[StorePatch]>> = {}
     const peersView: Record<string, ReplayRemote<[StorePatch]>> = noStrict(new Proxy(peersMap, {
-        has(_t, k) { return typeof k == 'string' && (!accountAllowed || accountAllowed(k)) },
+        has(_t, k) { return !closed && typeof k == 'string' && (!accountAllowed || accountAllowed(k)) },
         get(t, k) {
             if (typeof k != 'string') return (t as any)[k]
+            if (closed) return undefined
             if (accountAllowed && !accountAllowed(k)) return undefined
             return ensureRelay(k).remote
         },
@@ -79,6 +82,7 @@ export function createPeerHost(deps: PeerHostDeps = {}) {
     }
 
     function ensureRelay(account: string) {
+        if (closed) throw new Error('peer host closed')
         let relay = relays.get(account)
         if (!relay) {
             relay = createPatchRelayJournal({history, gap})
@@ -95,23 +99,34 @@ export function createPeerHost(deps: PeerHostDeps = {}) {
      *     disconnectListen.on(peer.close)
      */
     function connection(account: string) {
+        if (closed) throw new Error('peer host closed')
         const port = hub.register(account)
         const mine = ensureRelay(account)
         presenceJoin(account)
-        let closed = false
+        let connectionClosed = false
+        function publish(envelope: PatchEnvelope) {
+            return mine.push(envelope)
+        }
+        function publishBatch(envelopes: PatchEnvelope[]) {
+            return mine.pushBatch(envelopes)
+        }
+        function closeConnection() {
+            if (connectionClosed) return
+            connectionClosed = true
+            connections.delete(closeConnection)
+            port.close()
+            presenceLeave(account)
+        }
+        connections.add(closeConnection)
         return {
             fragment: {
                 signal: {send: port.send, signals: port.signals},
-                publish: (env: PatchEnvelope) => mine.push(env),
+                publish,
+                publishBatch,
                 peers: peersView,
                 presence,
             },
-            close: function closeConnection() {
-                if (closed) return
-                closed = true
-                port.close()
-                presenceLeave(account)
-            },
+            close: closeConnection,
         }
     }
 
@@ -125,11 +140,16 @@ export function createPeerHost(deps: PeerHostDeps = {}) {
         /** Server-side route revoke (policy change): both parties fall back to relay. */
         revoke: hub.revoke,
         close() {
-            hub.close()
+            if (closed) return
+            closed = true
             presenceChanges.close()
+            for (const closeConnection of Array.from(connections)) closeConnection()
+            connections.clear()
+            hub.close()
             online.clear()
             for (const relay of relays.values()) relay.close()
             relays.clear()
+            for (const account of Object.keys(peersMap)) delete peersMap[account]
         },
     }
 }

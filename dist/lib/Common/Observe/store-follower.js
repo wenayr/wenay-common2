@@ -13,7 +13,9 @@ function errorText(error) {
 }
 function createStoreFollower(deps) {
     const store = (0, store_1.createStore)((deps.initial ?? {}));
-    const status = (0, store_1.createStore)({ upstream: 'catching-up', seq: -1, epoch: deps.epoch ?? 0, error: null });
+    const status = (0, store_1.createStore)({
+        upstream: 'catching-up', seq: -1, replayMode: 'legacy', epoch: deps.epoch ?? 0, error: null,
+    });
     function setUpstream(next) {
         if (status.state.upstream == 'closed' || status.state.upstream == 'promoted')
             return;
@@ -21,7 +23,11 @@ function createStoreFollower(deps) {
             status.state.upstream = next;
     }
     const sub = (0, store_replay_1.syncStoreReplay)(store, deps.remote, {
-        onSeq: function trackUpstreamSeq(seq) { status.state.seq = seq; },
+        batch: deps.batch ?? true,
+        onSeq: function trackUpstreamSeq(seq) {
+            status.state.seq = seq;
+            status.state.replayMode = sub.mode;
+        },
         onLive: function upstreamLive() { setUpstream('live'); },
         onError: function upstreamFailed(error) {
             status.state.error = errorText(error);
@@ -36,7 +42,8 @@ function createStoreFollower(deps) {
     const offConnect = lifecycle?.onConnect(function upstreamBack() {
         setUpstream('catching-up');
     }) ?? function noConnectListener() { };
-    const exposed = (0, store_replay_1.exposeStoreReplay)(store, deps.expose);
+    const exposeOpts = deps.expose ?? {};
+    const exposed = (0, store_replay_1.exposeStoreReplay)(store, { ...exposeOpts, batch: exposeOpts.batch ?? true });
     let promoted = false;
     function promote() {
         if (status.state.upstream == 'closed')

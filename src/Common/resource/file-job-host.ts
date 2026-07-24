@@ -5,8 +5,14 @@
 // lifecycle around them: an upload intent, a confirmed resource, a cancellable
 // job, and an account-filtered Store/replay view for each RPC connection.
 
-import {createStore, StoreDrain} from '../Observe/store'
+import {createStore, StoreChange, StoreDrain} from '../Observe/store'
 import {exposeStoreReplay} from '../Observe/store-replay'
+import {
+    cloneStoreProjectionValue,
+    collectStoreProjectionChanges,
+    reconcileStoreProjection,
+    reconcileStoreProjectionRecord,
+} from '../Observe/store-projection'
 
 export type FileResourceState = 'uploading' | 'uploaded' | 'failed'
 export type FileJobState = 'queued' | 'running' | 'ready' | 'failed' | 'cancelled'
@@ -91,7 +97,7 @@ export type FileJobHostDeps = {
 }
 
 type FileJobView = {
-    refresh: () => void
+    refresh: (change: StoreChange) => void
     close: () => void
 }
 
@@ -108,7 +114,10 @@ function copyFile(file: FileResource) {
 }
 
 function copyJob(job: FileJob) {
-    return {...job}
+    return {
+        ...job,
+        ...(job.result !== undefined ? {result: cloneStoreProjectionValue(job.result)} : {}),
+    }
 }
 
 export function createFileJobHost(deps: FileJobHostDeps) {
@@ -148,19 +157,47 @@ export function createFileJobHost(deps: FileJobHostDeps) {
         return {files, jobs}
     }
 
-    function refreshViews() {
+    function refreshViews(change: StoreChange) {
         if (closed) return
-        for (const view of views) view.refresh()
+        for (const view of views) view.refresh(change)
     }
 
     const offStore = store.listenPaths().on(refreshViews)
 
     function createView(account: string) {
         const state = createStore<FileJobStore>(project(account), drain !== undefined ? {drain} : {})
-        const replay = exposeStoreReplay(state, history !== undefined ? {history} : {})
+        const replay = exposeStoreReplay(state, history == undefined ? {batch: true} : {history, batch: true})
+        function refreshJob(id: string) {
+            const job = store.state.jobs[id]
+            const visible = !!job && !!state.state.files[job.fileId]
+            reconcileStoreProjectionRecord(state, 'jobs', id, {
+                exists: visible,
+                ...(visible ? {value: copyJob(job!)} : {}),
+            })
+        }
+        function refreshFile(id: string) {
+            const file = store.state.files[id]
+            const wasVisible = !!state.state.files[id]
+            const visible = !!file && readable(account, file)
+            reconcileStoreProjectionRecord(state, 'files', id, {
+                exists: visible,
+                ...(visible ? {value: copyFile(file!)} : {}),
+            })
+            if (visible == wasVisible) return
+            const jobs = visible ? store.state.jobs : state.state.jobs
+            for (const job of Object.values(jobs)) if (job.fileId == id) refreshJob(job.id)
+        }
+        function refreshProjection(change: StoreChange) {
+            // A custom policy may close over tenant membership outside the changed record.
+            if (policy?.canRead) { reconcileStoreProjection(state, project(account)); return }
+            const changed = collectStoreProjectionChanges(change, ['files', 'jobs'])
+            if (!changed) { reconcileStoreProjection(state, project(account)); return }
+            for (const id of changed.get('files') ?? []) refreshFile(String(id))
+            for (const id of changed.get('jobs') ?? []) refreshJob(String(id))
+        }
         let view: FileJobView
         view = {
-            refresh() { state.replace(project(account)) },
+            refresh: refreshProjection,
             close() {
                 views.delete(view)
                 replay.close()
@@ -217,7 +254,7 @@ export function createFileJobHost(deps: FileJobHostDeps) {
             job.progress = clampProgress(next.progress)
         }
         if (next.message != null) job.message = next.message
-        if (next.result !== undefined) job.result = next.result
+        if (next.result !== undefined) job.result = cloneStoreProjectionValue(next.result)
         touchJob(job)
     }
 
@@ -239,7 +276,7 @@ export function createFileJobHost(deps: FileJobHostDeps) {
             if (cancelled.has(jobId) || closed || store.state.jobs[jobId]?.state == 'cancelled') return
             job.state = 'ready'
             job.progress = 1
-            if (output?.result !== undefined) job.result = output.result
+            if (output?.result !== undefined) job.result = cloneStoreProjectionValue(output.result)
             touchJob(job)
         } catch (error) {
             if (cancelled.has(jobId) || closed || store.state.jobs[jobId]?.state == 'cancelled') return

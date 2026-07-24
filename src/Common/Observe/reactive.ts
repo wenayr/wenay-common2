@@ -172,8 +172,20 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
         },
         set(_, k, v) {
             v = toRaw(v)                             // no reactive-in-reactive: state holds raw values only
-            if (Object.is(node.target[k], v)) return true
-            node.target[k] = v
+            const had = Object.prototype.hasOwnProperty.call(node.target, k)
+            if (had && Object.is(node.target[k], v)) return true
+            if (had) {
+                if (!Reflect.set(node.target, k, v, node.target)) return false
+            } else {
+                // A Store key is data, even when Object/Array.prototype was polluted
+                // with a setter or a non-writable property of the same name.
+                if (!Reflect.defineProperty(node.target, k, {
+                    configurable: true,
+                    enumerable: true,
+                    value: v,
+                    writable: true,
+                })) return false
+            }
             if (Array.isArray(proxyTarget) && k == "length") proxyTarget.length = v
             const kid = node.kids.get(k)
             if (kid) rebind(kid, v)                  // an existing child slot got a whole new value
@@ -182,6 +194,7 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
             return true
         },
         defineProperty(_, k, d) {
+            const had = Object.prototype.hasOwnProperty.call(node.target, k)
             const old = node.target[k]
             const desc = 'value' in d ? {...d, value: toRaw(d.value)} : d
             const ok = Reflect.defineProperty(node.target, k, desc)
@@ -191,7 +204,7 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
                 if (!mirror) return false
             }
             const v = node.target[k]
-            if (!Object.is(old, v)) {
+            if (!had || !Object.is(old, v)) {
                 const kid = node.kids.get(k)
                 if (kid) {
                     if (isReactiveObj(v)) rebind(kid, v)
@@ -203,8 +216,8 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
             return true
         },
         deleteProperty(_, k) {
-            if (!(k in node.target)) return true
-            delete node.target[k]
+            if (!Object.prototype.hasOwnProperty.call(node.target, k)) return true
+            if (!Reflect.deleteProperty(node.target, k)) return false
             const kid = node.kids.get(k)
             if (kid) { node.kids.delete(k); markChanged(kid); detachTree(kid) }
             node.eng.onMutation?.(dirtyPathFor(node, k))

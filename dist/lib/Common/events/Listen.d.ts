@@ -40,17 +40,21 @@ export type ListenCoreOptions<T = any> = {
     fast?: boolean;
     onRemove?: (key: ListenKey) => void;
     event?: (type: 'add' | 'remove', count: number, api: ListenCoreApi<T>) => void;
-};
+} & ListenDispatchErrorPort;
 export type ListenOptions<T = any> = {
     event?: (type: 'add' | 'remove', count: number, api: ListenApi<T>) => void;
     fast?: boolean;
     closeOn?: ListenApi<any>;
-};
+} & ListenDispatchErrorPort;
 export type ListenStoreOptions<T> = ListenOptions<T> & {
     current: ListenCurrentProvider<NormalizeTuple<T>>;
 };
 export type ListenOnBrand<Z extends any[] = any[]> = {
     readonly [LISTEN_ON_BRAND]: Z;
+};
+export declare const LISTEN_DISPATCH_ERROR: unique symbol;
+export type ListenDispatchErrorPort = {
+    [LISTEN_DISPATCH_ERROR]?: (error: unknown) => void;
 };
 export declare function getListenByOn(fn: any): any;
 export declare function isListenOn(fn: any): boolean;

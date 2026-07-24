@@ -1,16 +1,16 @@
 import { type SocketTmpl } from "./rpc-protocol";
-import { type RpcLimits } from "./rpc-limits";
+import { type RpcLimits } from './rpc-limits';
 import { makeOff } from "./rpc-off";
-import { type RpcOpt } from "./rpc-caps";
+import { type RpcOpt } from './rpc-caps';
 import type { IsReplayMember, InferArgs, ReplaySocketListen } from "./listen-deep";
 type UnwrapPromise<T> = T extends Promise<infer R> ? R : T;
-export type DeepDataOnly<T> = T extends Function ? never : T extends readonly any[] ? {
+export type DeepDataOnly<T> = T extends Function ? never : T extends ArrayBuffer | ArrayBufferView ? T : T extends readonly any[] ? {
     [I in keyof T]: DeepDataOnly<T[I]>;
 } : T extends object ? {
     [K in keyof T as T[K] extends Function ? never : K]: DeepDataOnly<T[K]>;
 } : T;
 export type ClientAPIAll<T> = {
-    [K in keyof T as T[K] extends Function ? K : T[K] extends object ? K : never]: IsReplayMember<T[K]> extends true ? ReplaySocketListen<InferArgs<T[K]>> : T[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>> : T[K] extends object ? ClientAPIAll<T[K]> : never;
+    [K in keyof T as NonNullable<T[K]> extends Function ? K : NonNullable<T[K]> extends object ? K : never]: IsReplayMember<NonNullable<T[K]>> extends true ? ReplaySocketListen<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null> : NonNullable<T[K]> extends (...args: infer A) => infer R ? ((...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>>) | Extract<T[K], undefined | null> : NonNullable<T[K]> extends object ? ClientAPIAll<NonNullable<T[K]>> | Extract<T[K], undefined | null> : never;
 };
 type NonFalsy<T> = Exclude<T, false | null | 0 | "" | undefined>;
 export type ClientAPIStrict<T> = {

@@ -1,8 +1,8 @@
 import { StoreDrain } from '../Observe/store';
-import { ReplayRemote } from '../events/replay-wire';
+import { StoreReplayRemote } from '../Observe/store-replay';
 import { FileJob, FileJobStore, FileResource, FileUploadRequest } from './file-job-host';
 export type FileJobRemote = {
-    state: ReplayRemote<any>;
+    state: StoreReplayRemote;
     startUpload: (request: FileUploadRequest) => Promise<{
         file: FileResource;
         upload: unknown;
@@ -19,11 +19,13 @@ export type FileJobClientDeps = {
     remote: FileJobRemote;
     initial?: FileJobStore;
     drain?: StoreDrain;
+    batch?: boolean;
 };
 export declare function createFileJobClient(deps: FileJobClientDeps): {
     store: import("../Observe/store").Store<FileJobStore>;
     ready: Promise<void>;
     seq: () => number;
+    stateMode: () => import("../Observe/store-replay").tStoreReplayMode;
     startUpload: (request: FileUploadRequest) => Promise<{
         file: FileResource;
         upload: unknown;
@@ -40,6 +42,7 @@ export declare function createFileJobClient(deps: FileJobClientDeps): {
         seq: () => number;
         isStale: () => boolean;
         lastTs: () => number;
+        mode: import("../Observe/store-replay").tStoreReplayMode;
     };
 };
 export type FileJobClient = ReturnType<typeof createFileJobClient>;

@@ -2,6 +2,7 @@ import { Listener, NormalizeTuple } from './Listen';
 import { ListenOnReplay, ListenReplayApi, ReplayEvent } from './replay-listen';
 export type ReplayStorage<Z extends any[] = any[]> = {
     putEvent: (ev: ReplayEvent<Z>) => void;
+    putEvents?: (events: readonly ReplayEvent<Z>[]) => void;
     putKeyframe: (kf: ReplayEvent<Z>) => void;
     getKeyframe: (at?: {
         seq?: number;
@@ -14,6 +15,7 @@ export declare function createMemoryReplayStorage<Z extends any[] = any[]>(opts?
     maxKeyframes?: number;
 }): {
     putEvent: (ev: ReplayEvent<Z>) => void;
+    putEvents: (batch: readonly ReplayEvent<Z>[]) => void;
     putKeyframe: (kf: ReplayEvent<Z>) => void;
     getKeyframe: (at?: {
         seq?: number;

@@ -12,6 +12,7 @@
 // ============================================================
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {listen as createListenPair} from '../../src/Common/events/Listen'
+import {Pkt} from '../../src/Common/rcp/rpc-protocol'
 
 const PORT = 4107
 
@@ -36,26 +37,36 @@ async function main() {
     let shapeCount = 0   // Pkt.SHAPE = 8 (shape declaration)
     let cbCount = 0      // Pkt.CB = 2   (full callback tick)
 
+    function countCallbackPacket(packet: any) {
+        if (!Array.isArray(packet)) return
+        if (packet[0] == Pkt.CB_BATCH && Array.isArray(packet[1])) {
+            for (const nested of packet[1]) countCallbackPacket(nested)
+            return
+        }
+        if (packet[0] == Pkt.CBV) cbvCount++
+        else if (packet[0] == Pkt.SHAPE) shapeCount++
+        else if (packet[0] == Pkt.CB) cbCount++
+    }
+
     const srv = await startRealServer({
         port: PORT,
         makeObject,
+        // This oracle targets the legacy SHAPE/CBV layer itself. Universal
+        // binary RPC supersedes it with its own ordered-layout cache.
+        serverOpts: {opt: {binary: false}},
         onServer: (_api, socket) => {
             // wrap the genuine socket.emit BEFORE any tick is sent — the rpc-server
             // adapter calls socket.emit(key, packetArray) at send time, so this sees
             // every outgoing packet and lets us observe compaction on the real wire.
             const orig = socket.emit.bind(socket)
             socket.emit = (key: string, d: any) => {
-                if (Array.isArray(d)) {
-                    if (d[0] === 9) cbvCount++
-                    else if (d[0] === 8) shapeCount++
-                    else if (d[0] === 2) cbCount++
-                }
+                countCallbackPacket(d)
                 return orig(key, d)
             }
         },
     })
 
-    const cli = await startRealClient({port: PORT})
+    const cli = await startRealClient({port: PORT, opt: {binary: false}})
     const api = cli.api
 
     // give the connection a moment so makeObject ran and emit handles are captured

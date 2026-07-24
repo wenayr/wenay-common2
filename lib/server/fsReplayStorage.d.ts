@@ -6,8 +6,9 @@ export type FsReplayStorageOpts = {
     };
 };
 export declare function openFsReplayStorage<Z extends any[] = any[]>(file: string, opts?: FsReplayStorageOpts): {
-    putEvent: (ev: ReplayEvent<Z>) => void;
-    putKeyframe: (kf: ReplayEvent<Z>) => void;
+    putEvent: (event: ReplayEvent<Z>) => void;
+    putEvents: (events: readonly ReplayEvent<Z>[]) => void;
+    putKeyframe: (keyframe: ReplayEvent<Z>) => void;
     getKeyframe: (at?: {
         seq?: number;
         ts?: number;

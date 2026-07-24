@@ -12,6 +12,7 @@ export type ReplayRouteSwitchOpts = Pick<ReplaySubscribeOpts, 'policy' | 'hint'>
     label?: string;
     since?: number;
     reset?: boolean;
+    timeoutMs?: number;
 };
 export type ReplayRouteSubscribeOpts = ReplayRouteSwitchOpts & Pick<ReplaySubscribeOpts, 'onSeq' | 'onError'> & {
     onRoute?: (ev: ReplayRouteEvent) => void;

@@ -152,6 +152,64 @@ createRpcServerAuto(opts)                           // canonical: nested object 
   //   upgrading listen -> replayListen is a declaration-site-only change; replaySubscribe(client.func.key) works as is.
   //   opts.replayOpts {pending?, highWater?, lowWater?, pollMs?} arms the per-connection lag gate on frameLine
   //   (consumer picks policy 'queue'|'frame' at subscribe time); the replay `line` stays ungated for connected queue-policy live delivery.
+  // opts.binary is negotiated independently and defaults on. A correlated Uint8Array probe must round-trip before
+  //   either peer switches application traffic. Peers which both advertise BINARY_SCHEMA select universal
+  //   typed-schema binary v2; a peer advertising only BINARY selects binary v1; peers without BINARY keep legacy
+  //   arrays. CAPS/MAP/auth stay legacy arrays,
+  //   while the v2 PROBE/ACK byte payload exchanges predeclared schema descriptions before application data.
+  //   `binary:false`
+  //   on either side or an old peer keeps every application packet on the unchanged legacy path. ready()/hub connect
+  //   waits for correlated caps and the probe; a byte-blocking adapter selects correlated raw after 250 ms. A late
+  //   ACK upgrades future calls and migrates declared Listen subscriptions without duplicating their consumers.
+  //   The codec exactly preserves undefined, false, true, null, integer/float/-0/NaN/infinities, strings (including
+  //   lone surrogates), BigInt, sparse arrays, plain/null-prototype objects and canonical native values: Date,
+  //   RegExp, Map, Set, ArrayBuffer, DataView and standard TypedArrays. RegExp v1 requires the standard lastIndex=0
+  //   state. Native expandos fail closed where they can be checked without enumerating every binary index; a large
+  //   TypedArray's declared value domain is its exact type plus active bytes, not arbitrary expando properties.
+  //   Callback references have a private binary tag; the old marker strings are ordinary business data in this mode.
+  //   A top-level function result, symbols, cycles, accessors, class instances and non-standard TypedArrays fail
+  //   the one RPC request instead of corrupting the cache. Function-valued properties of an otherwise data result
+  //   are omitted through a rare fallback, matching the legacy JSON projection. Protocol v1 also rejects Float16Array,
+  //   resizable/growable buffers and runtime-new RegExp flags/source constructs which a supported Node 16 peer could
+  //   not reconstruct with the same semantics.
+  //   V2 schema identity contains object prototype + ordered keys (or tuple positions) + physical field types.
+  //   Constants use zero payload bytes, booleans use bitmaps in runs, and integer/float/string/nested lanes carry no
+  //   repeated per-field tags. Homogeneous and segmented arrays use one schema id per run at any nesting depth;
+  //   wide dynamic-key objects (including a 15,000-entry Store snapshot) carry one key dictionary plus typed value runs.
+  //   A string/number/false change selects another schema; it is not a validation error. Rare layouts use the exact
+  //   generic binary escape until their frequency reaches `promotionThreshold` (default 3). Candidate tracking and
+  //   admitted schemas are bounded; only admitted schemas consume the direction-local 1,000-id wire table.
+  //   `opt.binary.predeclared` accepts representative runtime values, recursively extracts descriptions and sends
+  //   only those descriptions in the probe. No representative value is transmitted. Each definition is announced
+  //   once per direction/connection generation; following values carry its short schema id. Dynamic inference
+  //   continues in the remaining table. `maxSchemas`
+  //   controls v2; legacy `maxShapes` remains the v1 setting and is also the v2 default when maxSchemas is absent.
+  //   `{schema:false}` pins v1 for diagnostics/rollout; `binary:false` pins legacy arrays.
+  //   ArrayBuffer, DataView and every supported TypedArray are direct binary leaves: their subtype/range and bytes
+  //   enter the typed lane without first becoming a generic object or a nested binary wrapper.
+  //   Definitions commit only after successful emit/full decode; reconnect, server replacement and rollback reset
+  //   cache/session state. A malformed stateful frame in either direction rejects pending work and negotiates a fresh
+  //   session before any shape reference is reused. Independent logical clients sharing one socket/key receive
+  //   isolated correlated sessions; anonymous pre-correlation caps may enable only historical COMPACT, never another
+  //   client's batch/binary policy.
+  //   Once the correlated byte probe establishes the negotiated socket, application values use the trusted reader:
+  //   framing opcodes, lengths, callback refs and schema ids are interpreted directly without Zod, semantic field
+  //   validation or duplicate/canonical-value scans. With no explicit client `limits`, there is no second result walk;
+  //   opting into tighter client limits adds only a lightweight decoded-value budget walk. The sender classifies the
+  //   actual JS layout before writing; the receiver follows the transmitted physical schema.
+  //   Envelope/session routing, byte boundaries and explicit size limits remain part of framing; the standalone
+  //   codec's checked decode entry remains available for data which did not arrive through that negotiated channel.
+  // opts.callbackBatch is negotiated independently of binary and compact shapes. Default new/new transport batches
+  //   same-microtask callbacks losslessly as Pkt.CB_BATCH (64 items / 64 KiB); RESP, errors and CB_END are ordering
+  //   barriers. Binary batches become one binary attachment; legacy peers retain the JSON packet path. Set false on
+  //   either side for packet-per-callback delivery. Reconnect renegotiates every transport generation. Batch sizing
+  //   walks the value with a counting writer instead of allocating a throw-away frame; an obviously indivisible
+  //   large binary callback is validated and encoded once. These are CPU/allocation fast paths only: wire bytes,
+  //   call-time snapshot semantics, limits and ordering are unchanged.
+  //   The binary value writer encodes UTF-8 into its destination and uses an exact Number varint path for safe
+  //   integers, with BigInt retained for the rare zigzag boundary which cannot be represented exactly as Number.
+  //   Decoding handles the complete +/-MAX_SAFE_INTEGER range without transient BigInt. Boundary/random tests compare
+  //   every emitted integer byte with the original BigInt definition, so this optimization does not add a wire mode.
 createRpcServer(opts)                               // lower-level core
 createRpcServerAutoDetect(opts)                          // + legacy/v2 protocol auto-detection (createRpcServerAutoWithProtocolDetection)
 createRpcServerInProc(...)                          // in-process fast path (no socket)
@@ -195,11 +253,105 @@ matchKeys(a,b) · matchKeysList(a, keys) · deepMapByKeys · deepMapByKeysList
 //   never rebuilt into {0:…,1:…} dicts — raw canvas/video byte payloads are wire-safe and cheap).
 RpcLimits (opt, per server/client): maxDepth 32 · maxKeys 1000 · maxArgs 64 · maxArrayLen 10k
   · maxStringLen 1M · maxCallbacks 100 · maxPathLen 16 · maxBinaryLen 8MB (bytes per binary leaf)
+  // Binary RPC also has non-disableable protocol ceilings: application depth 32 plus four RPC-wrapper levels,
+  //   10k array/Map/Set items, 1k object keys, 1,024 callback refs per complete frame,
+  //   1M string code units/encoded bytes, 8,192-bit BigInt, 16MB per binary leaf, 32MB per complete frame and
+  //   1M decoded value-work units. A result/callback/error outside that envelope fails explicitly in binary instead
+  //   of falling through old marker/JSON encoding, because that could change -0/NaN/sparse data or marker-shaped
+  //   objects. Server results, callback snapshots and error data are checked against server limits before copying or
+  //   binary serialization. The same binary generation remains usable. Client `limits` are checked on the decoded
+  //   application boundary after the protocol-hard bounded decode; omitting them adds no lower policy limit.
+  //   `binary:false` forces legacy throughout.
 // modes: func (proxy) · strict (schema-safe) · pipe (whole chain in one packet) · space (fire-and-forget)
 // legacy (oldCommonsServer.ts, @deprecated forwarders onto oldCommonsServerMini — identical wire):
 //   funcPromiseServer->promiseServer · funcForWebSocket->wsWrapper · funcScreenerClient2->createClientProxy
 //   CreatAPIFacadeServerOld->createAPIFacadeServer ; CreatAPIFacadeClientOld & funcPromiseServer2 kept as-is
 ```
+
+### RPC application wire versions
+
+Negotiation is per socket generation and always chooses the newest mode advertised by both peers.
+The control/bootstrap path remains backward-readable, so a new endpoint does not send an unknown
+application envelope before agreement.
+
+| Wire | Selected when | Application representation | Compatibility role |
+|---|---|---|---|
+| Legacy RPC arrays | either side disables binary, or a peer has no `BINARY` capability | Existing CALL/RESP/PIPE/callback/error arrays and native transport attachments | Unchanged old-client/old-server path and final mixed-peer fallback |
+| RPB/1 | both peers have `BINARY`, but either lacks `BINARY_SCHEMA`; also `{schema:false}` | Versioned byte envelope with exact tagged values and its bounded ordered-layout cache | Binary compatibility bridge for a new peer talking to the previous binary implementation |
+| RPB/2 | both peers have `BINARY_SCHEMA` and the correlated v2 probe succeeds | Universal typed-schema envelope: predeclared and dynamically promoted schemas, field-major typed runs, constants/boolean bitmaps, exact generic escape and direct binary leaves | Current new/new mode; CALL, RESP, PIPE, callbacks, callback batches, errors and Store v6 all use the same codec |
+
+RPB/2 does not run Zod or application-semantic validation over negotiated values. The sender
+classifies the actual JavaScript representation; a different representation selects another schema
+or the exact generic escape. Framing opcodes, byte boundaries, schema ids, callback references and
+explicit resource limits are still decoded because they define the wire itself. Predeclared schemas
+reserve their ids in PROBE/ACK before application traffic; dynamic heavy-hitter promotion fills the
+remaining direction-local table up to 1,000 entries. Definitions are transmitted once per
+generation, then referenced by id. Reconnect or server replacement resets the table and sends the
+prelude again.
+
+### HTTP facade server: static GET/POST mirror
+
+`createHttpFacadeServer` is exported only from `wenay-common2/server`. It receives a caller-owned Express app and
+walks the supplied object once at server setup. Every nested enumerable string-keyed function becomes a route whose
+URL segments match its object path:
+
+```ts
+import express from 'express'
+import {createHttpFacadeServer} from 'wenay-common2/server'
+
+const app = express()
+app.use(express.json())
+
+const facade = {
+    journal: {
+        history: (kind: string, limit: number) => readHistory(kind, limit),
+    },
+}
+
+createHttpFacadeServer({
+    app,
+    object: facade,
+    method: 'get',
+    basePath: '/inspect',
+    middleware: checkAuth,
+})
+
+createHttpFacadeServer({
+    app,
+    object: facade,
+    method: 'post',
+    basePath: '/inspect',
+    middleware: checkAuth,
+})
+```
+
+This registers both `GET /inspect/journal/history` and `POST /inspect/journal/history`. GET reads positional arguments
+from the `args` query as one JSON array. POST accepts `{args: [...]}` or a raw `[...]` JSON body. No `args` means an
+empty argument list. Responses are `{ok: true, value}`; thrown values become `{ok: false, error}` with HTTP 500,
+malformed input is HTTP 400, and `RpcLimits` violations are HTTP 413. `routes()` returns the registered method,
+object path, and URL for inspection.
+
+The existing RPC walk codec restores Date/Map/Set/RegExp/BigInt request values and packs them in results. This is not
+a callback or binary transport: function signatures cannot be discovered at runtime, so callback/Listen-shaped
+functions are registered like every other function and callers are responsible for not invoking them through HTTP.
+Use an explicit download endpoint for bytes. The adapter preserves a function's parent as its invocation context,
+rejects circular facade branches and forbidden RPC keys, and rejects repeated registration of the same app, method,
+and URL. Dynamic keys added after setup do not create new routes; call the factory only after the static facade is ready.
+
+Register this adapter once next to the HTTP server, not inside a Socket.IO `connection` callback. Authentication,
+rate limiting, and network exposure remain ordinary Express middleware concerns. GET routes must stay read-only
+because browsers and intermediaries may cache or prefetch them.
+
+Living stand example: `npm run demo` registers the same safe diagnostics object for both methods and prints the URLs:
+
+```text
+GET  /http-facade/demo/status
+POST /http-facade/demo/echo    {"args":["hello"]}
+```
+
+Both routes require `Authorization: Bearer <token>`. Set `DEMO_HTTP_FACADE_TOKEN` for a stable token; otherwise the
+stand generates one for that run and prints it beside the URLs. Authorization runs before the POST JSON parser. The
+example lives in `demo/server.ts` and deliberately exposes only status/echo rather than the account-scoped RPC facade.
 
 ### RPC dynamic maps: prefer `noStrict` for personal/runtime keys
 Use `noStrict(obj)` for user-scoped or runtime-keyed objects whose children are not a stable API schema: strategy maps, account maps, ORM/DB proxies, per-session private objects. The name is exactly `noStrict`.
@@ -391,6 +543,9 @@ Detailed design and stand assumptions: `doc/ARTIFACT-RUNTIME.md`. Oracle:
 `replay/artifact-runtime.test.ts` (real Socket.IO/RPC owner ACL, no key/URL in Store, short-lived
 open, iframe origin pinning, expiry and storage cleanup). `npm run demo` visibly creates an
 AI-linked counter artifact at `artifact.localhost`, mounts it in the sandboxed iframe, and revokes it.
+The public HTTPS launcher provisions a separate `artifact.<sslip-host>` certificate, pins that origin
+through RPC, and restricts its proxy to `/artifact-open/*`; executable bytes never fall back to the
+application origin.
 
 ## 💬 Conversation — logical channels, versioned blocks and scoped facts
 
@@ -541,7 +696,11 @@ Viewer helpers (`media-view`): the consumer side of any media line (local pair o
 - `attachVideoCanvas(line, canvas, {createBitmap?, onError?})` — per-frame codec/size come from the 40-byte header, canvas resizes to follow; decode overload is busy-skipped (keep-latest, `stats().frames` vs `stats().drawn` shows the gap); `createBitmap` injects a custom decoder (tests, OffscreenCanvas pipelines).
 - `attachAudioPlayer(line, {maxBacklogSec? = 0.35, audioContext?, onError?})` — pcm16/float32 through a sequential playhead; a backlog past `maxBacklogSec` is dropped and the playhead rebases near "now" (live beats lossless; `stats().dropped` counts rebases). `enable()` must come from a user gesture (browser autoplay rules); `audioContext` injects a factory for tests/custom routing.
 - `pipeMediaPublish(line, publish, {stamp? = true, onError?})` — fire-and-forget pipe into an RPC call; the default `Date.now()` stamp is what viewer `stats().ageMs` measures against. Both attach helpers also expose `stats().perSec` (rolling 1s rate).
-- Oracle: `replay/media-view.test.ts`.
+- The canvas path gives an ordinary ArrayBuffer-backed payload directly to `Blob` (SharedArrayBuffer still receives an owned copy), closes every decoded bitmap after draw/error, and ignores an in-flight decode after `off()`. A synchronous publisher does not allocate a Promise; thenables retain asynchronous error routing.
+- Oracles: `replay/media-view.test.ts` and `replay/video-windows-stress.test.ts`. The latter uses
+  real Socket.IO/RPC with five synthetic participants, ten independent video windows, 96-512 KiB
+  frames, ACL/rejoin/latest recovery, slow-render busy-skip and listener-leak teardown without
+  requesting camera or microphone permissions.
 
 Replay/RPC wiring:
 ```ts
@@ -554,7 +713,7 @@ createRpcServerAuto({
     replayOpts: {highWater: 64, lowWater: 8},
 })
 ```
-`replay:true` makes the returned listen a `Replay.replayListen` surface before capture emits into it, so `createRpcServerAuto` brand-detects it and exposes legacy + replay under the same key. Defaults differ by media kind: audio replay is a sacred queue (`history:1024`, no keyframe/frame, do not drop samples); video replay is keep-latest (`history:256`, `current:'last'`, `frame` returns the newest covered frame). Pass `replay:{...}` for custom history/current/frame.
+`replay:true` makes the returned listen a `Replay.replayListen` surface before capture emits into it, so `createRpcServerAuto` brand-detects it and exposes legacy + replay under the same key. Defaults differ by media kind: audio replay is a sacred queue (`history:1024`, no keyframe/frame, do not drop samples); video replay is keep-latest (`history:8`, `current:'last'`, `frame` returns the newest covered frame). Pass `replay:{...}` for custom history/current/frame.
 
 Backpressure rule: audio consumers should use the default queue policy unless the app explicitly accepts loss. Video consumers can use `Replay.replaySubscribe(remote.video, cb, {policy:'frame'})`; a slow socket drains to the latest frame instead of accumulating stale images. The binary frame itself is RPC-safe because `rpc-walk` passes `TypedArray`/`ArrayBuffer` leaves through natively and applies `maxBinaryLen`.
 
@@ -673,7 +832,9 @@ const pushed = Observe.exposeStore(store, {push: true})
 pushed.patches!.on((patch) => {
   Observe.applyStorePatch(mirror, patch)       // exists:false means delete path
 })
-Observe.applyStorePatches(mirror, patches)     // batch variant: apply an array of patches in order
+pushed.patchesBatch!.on((patches) => {
+  Observe.applyStorePatches(mirror, patches)   // one bounded physical envelope; unchanged legacy patches stays available
+})
 
 // Batch-shaped dirty data: one event has dirty mask + snapshot for that mask.
 pushed.changedData!.on(({mask, data}) => {
@@ -686,6 +847,7 @@ const stopPatchSync = await mirror.syncPatches(
   {data: {BTC: true}, meta: {status: true}},
   {current: true, drain: 50},
 )
+// syncPatches prefers patchesBatch and falls back to patches; {batch:false} forces legacy.
 const stopDataSync = await mirror.syncChangedData(
   {data: {BTC: true}, meta: {status: true}},
   {current: true, drain: 50},
@@ -744,6 +906,10 @@ Contract:
 - JSON/RPC transports should use JSON-safe path keys for push channels; `Symbol` paths are local-only even though the in-memory store can address them.
 - Dirty paths are facts about changed object routes: add key, delete key, or deep set. Array mutation dirties the whole array branch; no public splice/index diff is promised.
 - `snapshot()`/`update().get()` walk raw targets (`toRaw`), so a snapshot of a cold store creates no lazy reactive nodes.
+- `cloneStoreValue(value)` exposes that detached Store snapshot clone for boundary adapters; it preserves cycles, rich values and binary views.
+- `listenStorePatches(store)` is the shared settled source behind Replay/push: one absolute patch array per natural Store drain. A bounded `patchesBatch` transport may split that source array.
+- Fresh batch keyframes encode the owned `snapshot()` directly instead of cloning the complete tree a second time. Live/history/frame events remain defensively detached. Snapshot and columnar materialization use direct own-data writes only when the prototype chain has no setter/non-writable collision; otherwise they retain descriptor-based writes, including `__proto__`.
+- Store paths may contain data keys such as `__proto__`, `constructor` and `prototype`: application uses own-property writes, so they do not mutate prototypes. Replicated Map deliberately has a narrower RPC-safe key contract below.
 - Writing a reactive proxy back into state stores its raw value (no reactive-in-reactive).
 - Mirror `sync` pulls are chained sequentially: a slow (stale) response never overwrites a newer one.
 - A slot keeps its proxy identity across an array↔object replace, so `Array.isArray` on a captured proxy reflects the original shape; JSON serialization follows the current value. Use `toRaw()` when the real shape matters.
@@ -773,7 +939,7 @@ withReplayListen(base, {current?, frame?, history?, getSince?, onJournal?, now?,
   //     is retained and still fails on eviction; neither = sacred exact queue — eviction THROWS terminally.
   //   Triggers: reconnect (`since`), client pull (own timer — replaces any server-side interval mode), server gate drain.
   //   The transport sees ONLY seq; entity keys/skip rules live in producer lambdas (hint = opaque per-subscriber pass-through).
-exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?, staleMs?, onStale?, skewMs?, now?, policy?, hint?}) -> off   // wire pair over the EXISTING rpc: line = plain Listen, since/keyframe/frame = plain methods
+exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?, staleMs?, onStale?, skewMs?, now?, policy?, hint?, catchUp?, gapPolicy?, prepareCatchUp?}) -> off   // wire pair over the EXISTING rpc: line = plain Listen, since/keyframe/frame = plain methods
   // NORMAL PATH: createRpcServerAuto exposes replay listens automatically (see rpc section) — exposeReplay stays
   //   as the manual/custom-transport path. replaySubscribe prefers `frame` when the server has it (one round trip,
   //   server picks tail/mini-frame/keyframe; sacred throw -> onError), falls back to since/keyframe on old servers.
@@ -787,6 +953,11 @@ exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?, staleMs?
   //   Hub-managed RPC remotes resume automatically after transient reconnect from off.seq(): live is restored first,
   //   racing envelopes queue, then frame/since catch-up is sorted+deduped. Transport-agnostic remotes without RPC
   //   lifecycle metadata still reconnect by creating a new subscriber with {since: prev.seq()}.
+  // catchUp:'tail' bypasses frame compaction; gapPolicy:'error' rejects an evicted or non-contiguous tail/live jump.
+  // prepareCatchUp({initial,since}) is an advanced async identity gate; {reset:true} requests a fresh keyframe.
+  // Delivery commits seq only after cb succeeds. Any cb exception (including Store materialization, validateBatch or
+  // low-level onBatch) is terminal through onError and leaves off.seq() at the preceding coordinate. onBatch runs
+  // after Store application, so its own exception does not roll the already-applied state back.
 replayRouteSubscribe(remote, cb, {label?, since?, onSeq?, onError?, onRoute?}) -> off & {ready, switch(nextRemote, {label?, since?, reset?, policy?, hint?}), seq(), label(), active()}
   // transport hand-off helper: old route remains live, replacement subscribes+catches up from seq, then old closes; overlap is seq-deduped. Use for relay -> direct and direct -> relay over any ordered ReplayRemote.
   // DELIVERY CONTRACT (guaranteed, not best-effort): the subscriber's cb sees ONE uniform stream —
@@ -868,15 +1039,16 @@ createWebRtcConnector({port, rtc, self, peer, pair, session?, label?, openTimeou
   //   port, waits for the datachannel, returns a replay wire over it. RTCPeerConnection is NOT bundled:
   //   rtc is a runtime factory — browser `() => new RTCPeerConnection(cfg)`, Node werift/node-datachannel,
   //   tests an in-proc fake (RtcPeerConnection/RtcDataChannel are structural types, no lib.dom).
-  //   The replay channel encodes Uint8Array explicitly, preserving Media frames byte-for-byte instead
-  //   of JSON's numeric-key object conversion; native tracks/SFU are optional performance adapters.
+  //   New endpoints negotiate exact binary values plus bounded live batches (64 items / about 64 KiB)
+  //   through ordered text hello/ready; either old side stays on historical JSON/base64 `{t:'ev'}`.
+  //   Rich mixed values and Media frames stay byte-exact. Native tracks/SFU remain optional adapters.
   //   revoke/close signals and channel death (incl. DURING open) fail loudly -> coordinator auto-fallback.
 acceptWebRtcDirect({port, rtc, self, serve, accept?}) -> close()
   // responder side: on offer, negotiates answer/ICE and serves serve(env) (exposeReplay(...) as is) into
   //   the incoming datachannel; accept(env) validates session material and rejects with a loud revoke
   //   (the initiator fails fast, not by timeout). Repeated offer for a pair recreates the session.
   // Public HTTPS/WSS launch and certificate verification -> DEMO-HTTPS.md.
-Peer.createPatchRelayJournal({history?, gap?: 'resume'|'sacred'}) -> {push(env) -> true|false|{seq}, remote, gap, seq(), snapshot(), close()}
+Peer.createPatchRelayJournal({history?, gap?: 'resume'|'sacred'}) -> {push(env), pushBatch(envs), remote, gap, seq(), snapshot(), close()}
   // server-side mirror of an OWNER-sequenced patch line: push() takes the owner's envelopes VERBATIM.
   //   Owner seq space is the point: relay and direct routes share coordinates -> hand-off is a seq resume.
   // CORRECTNESS CONTRACT (gap = the SERVER's data-type decision):
@@ -887,6 +1059,9 @@ Peer.createPatchRelayJournal({history?, gap?: 'resume'|'sacred'}) -> {push(env) 
   //   'sacred': the journal never invents — no folded keyframe, no root-reset, strict contiguity only;
   //     frame() on an evicted tail THROWS. For data where an invented snapshot is unacceptable.
   //   Duplicates (reconnect/repair overlap) are idempotent no-ops. Rejection never corrupts the fold.
+  //   pushBatch validates and commits the complete ordered owner batch before live delivery; throwing/re-entrant
+  //   subscribers cannot interrupt or replace its suffix. createPeerClient uses the host's additive publishBatch in
+  //   binary-aware bounded microtask bursts and falls back to publish(env) on an old host, re-probing each generation.
   //   remote is ReplayRemote-shaped (+ additive `seq()` for publisher resync) and rpc-exposable as is
   //   (line is a REAL Listen — the rpc layer detects listen nodes by registry, a hand-rolled
   //   {on: cb => ...} wrapper would not stream).
@@ -935,14 +1110,107 @@ Peer.createCallManager({port, self, ringTimeoutMs? = 30000, incoming?}) -> {read
   //   layer: on 'active' the app publishes/attaches relay lines itself (Media.attach* viewers).
   //   Oracle: replay/peer-call.test.ts (real Socket.IO/RPC wire, presence + calls + media relay).
 serveReplayChannel(source, channel) <-> channelReplayRemote(channel) -> ReplayRemote
-  // replay wire over ANY ordered string channel (datachannel/MessagePort/worker/pipe): tiny JSON
-  //   sub/req/res protocol, no RPC core — a direct channel lives OUTSIDE the main rpc connection.
+  // replay wire over any ordered channel: tiny JSON sub/req/res remains the compatibility baseline;
+  //   additive sendBinary/onBinaryMessage enables a versioned exact-value byte path for sub, requests,
+  //   responses and live microbatches. It has fresh bounded shape caches per channel and no RPC core —
+  //   a direct channel lives outside the main RPC connection.
   //   Channel close = non-envelope (null) on the line: replay subscribers report onError, never silence.
-  //   ReplayMessageChannel = {send, onMessage, onClose?, close?}; channelFromDataChannel(dc) adapts a
-  //   datachannel (and owns its handlers). Oracle: replay/route-webrtc.test.ts (fake RTC runtime +
-  //   in-proc hub + the same signaling over a real Socket.IO/RPC wire).
-exposeStoreReplay(store, opts?)  <->  syncStoreReplay(mirror, remote, opts?)            // layer B: patch line; keyframe = root patch ({path: [], value: snapshot})
-syncStoreReplayRoute(mirror, remote, opts?) -> off & {ready, switch(nextRemote, opts), seq(), label(), active()}   // same patch fold, but route-replaceable for relay/direct promotion
+  //   ReplayMessageChannel = {send, onMessage, sendBinary?, onBinaryMessage?, onClose?, close?};
+  //   channelFromDataChannel(dc) selects ArrayBuffer delivery and owns its handlers. Oracles:
+  //   replay/replay-channel-binary.test.ts and replay/route-webrtc.test.ts.
+createReplicatedMap<V>({keyOf, initial?, store?, delivery, lineId?, replay?}) -> {api, control}  // high-level keyed collection over layer B, not a parallel journal
+followReplicatedMap(remote, {delivery?, batch?=true, checkpoint?, onBatch?, onStatus?, staleMs?, ...}) -> followed map
+  // PRODUCER: control = set/setMany/delete/deleteMany/replaceAll/get/has/snapshot/flush/close. All input iterables
+  //   are validated before mutation; setMany is one producer/source operation. The root is a plain keyed object with
+  //   enumerable string data properties; Replicated Map alone rejects __proto__, constructor and prototype for its
+  //   RPC-safe root shape. Dotted keys stay one literal top-level key.
+  // DELIVERY: latest removes equal writes and keeps only the final occurrence of a key within one operation;
+  //   keyframe/frame reset is allowed. lossless preserves every accepted set (including same-key/equal repeats) in
+  //   operations order, uses exact tail catch-up, and fails on eviction, non-contiguous seq or producer-line change.
+  //   Deleting an absent key is a no-op in both modes: lossless is a mutation log, not a command-attempt audit log.
+  //   latest.replaceAll(fullSnapshot) scans every candidate key but retains unchanged Store references and clones,
+  //   mutates and publishes only semantic changes. New object identity is irrelevant. When the producer already has
+  //   a dirty-key list, setMany(changes) avoids the full-snapshot scan.
+  // CLIENT: get/has/snapshot/onKey/ready/status/statusChanges/batches/keys/seq()/replayMode()/delivery()/checkpoint()/isStale()/close().
+  //   onBatch receives {delivery,set:[[key,value]],delete:[key],operations:[...]} after one bounded physical envelope
+  //   is materialized. Bounds may split one setMany; maxDelayMs may merge adjacent source operations. Consumer errors
+  //   on the high-level batches/keys/status streams are isolated from replay and reported as asynchronous throws.
+  //   Values returned to callbacks/get/snapshot are detached from both producer state and the retained replay journal.
+  // CHECKPOINT: one object binds snapshot + {lineId,delivery,replayMode,seq}. A naked cursor is deliberately not
+  //   accepted. Same-line resumes use the tail; another latest line resets by keyframe; lossless rejects it loudly.
+  //   Default lineId changes with every fresh journal. Supply lineId only when the exact seq-space is durably restored.
+  // RECONNECT: descriptor/lineId is re-read before catch-up. Legacy Store Replay remotes are accepted only as latest
+  //   and reset safely on reconnect because they have no identity. Lossless requires a Replicated Map descriptor.
+  // DI: initial and store are mutually exclusive; an injected Store is latest-only and keeps listenStorePatches as
+  //   its source. Its root and every initial/touched top-level entry must satisfy the public map shape and
+  //   propertyKey == keyOf(value); an invalid external
+  //   write throws before publication. Writes through the injected Store proxy, including nested writes, are normalized
+  //   as top-level facts and journaled. Owned latest/lossless maps publish explicit operation batches internally.
+  // ADVANCED DEBUG: debug.store is the writable local mirror. Observe it only; writing bypasses remote ownership.
+  // ADVANCED FAILURE: flush() retries a retained journal precommit; repeating an equal latest set and close() also
+  //   flush it. ready settles on terminal failure as the low-level replay ready does; inspect status().state/error.
+  // Oracles: replay/replicated-map.test.ts, replay/replicated-map-socket.test.ts, replay/store-patch-safety.test.ts;
+  // living stand: demo Workboard (map latest / replay batch / seq) including real-socket reconnect.
+exposeStoreReplay(store, {batch?, patchSource?, ...})  <->  syncStoreReplay(mirror, remote, {batch?, validateBatch?, onBatch?, ...}) // layer B: patch line; keyframe = root patch
+  // StoreReplayPatchSource = {on(cb: (patches: readonly StorePatch[]) => void) -> off}.
+  // OPT-IN BATCH: exposeStoreReplay(store, {batch:true}) adds api.replay.batch beside the unchanged legacy surface;
+  //   syncStoreReplay(mirror, api.replay, {batch:true}) negotiates it by presence and falls back to legacy when absent.
+  //   An old client connected to a new server calls only the unchanged replay.line and therefore remains legacy.
+  //   validateBatch(patches, mirror) runs after decode and before ANY Store mutation. Throwing is terminal, reports
+  //   onError and leaves seq unchanged. onBatch runs after one physical envelope is applied; its throw is also terminal
+  //   and leaves seq unchanged, but does not roll the already-applied Store state back.
+  //   patchSource is an advanced absolute-fact feed: Store state must already reflect its complete emitted patch array.
+  //   Application code still sees StorePatch objects. Wire v1 is
+  //   [1,seq,ts,[[path,1,value]|[path,0]|[path,2],...]]; op 2 preserves an explicitly present undefined value.
+  //   New servers expose v1-v6 over the SAME logical line/seq. v2 uses flat [key,value]/[key] set/delete tuples
+  //   and [path,value]/[path] for nested/root patches; v3 adds recursive exact-value escapes.
+  //   v4 groups ordered raw/delete/root runs and consecutive Object.prototype values with the same ordered enumerable
+  //   data-field list into columns only when that structure is smaller. It may derive one field from the Store key.
+  //   The shape is shallow and envelope-local:
+  //   there is no persistent shape cache, cross-envelope dictionary, deep shape comparison or recursive columnization.
+  //   v5 writes that same patch plan to one self-contained Uint8Array. Application code still receives ordinary
+  //   StorePatch/value objects. V6 carries those ordinary logical objects directly through the universal outer
+  //   RPC value path, removing the v5-inner-Uint8Array-inside-RPC-binary copy. RPB/2 can reuse a typed schema for
+  //   them; RPB/1 and legacy arrays remain valid outer transports during rollout. New clients select
+  //   v6 -> v5 -> v4 -> v3 -> v2 -> v1 -> legacy by optional-member presence;
+  //   old clients and servers continue on their newest common member, with no change to the business API.
+  //   v5 preserves null/undefined/booleans, finite and special Numbers (including -0/NaN/infinities),
+  //   strings (including lone surrogates), BigInt up to 8,192 bits,
+  //   dense/sparse arrays, plain and null-prototype objects, valid/invalid Date, RegExp, Map, Set, ArrayBuffer,
+  //   DataView and standard typed arrays in fixed little-endian wire order; Buffer decodes as Uint8Array.
+  //   Cycles, class instances, accessors,
+  //   functions, symbols and custom array properties are rejected instead of being silently changed.
+  //   Defensive v5 limits are depth 32 for the complete binary tree, 10,000 ordinary plan rows,
+  //   a separate envelope-wide 20,000-entry materialized-root budget, 10,000 items per Array/Map/Set,
+  //   and 1,000 keys per nested ordinary/null-prototype object,
+  //   1,000,000 UTF-8 bytes and UTF-16 code units per string, 8,000,000 bytes per binary value and 16,000,000 bytes
+  //   per complete frame. Plain and null-prototype root collections retain their prototype and are split into physical
+  //   shape/raw/delete arrays of at most 10,000 rows; widening root snapshots does not widen ordinary arrays or patches.
+  //   Explicit client RpcLimits clamp these hard ceilings inside the byte envelope. v4 allows value depth 64 with
+  //   the same row/key budgets. The negotiated v5 Store reader trusts value semantics emitted by the paired encoder:
+  //   it reads tags/lengths directly and does not rebuild validation sets or re-check canonical UTF/collection forms.
+  //   Frame magic/version, byte boundaries, explicit size limits and the Store plan remain checked before mutation;
+  //   negotiated RPB/2 likewise uses its trusted reader without Zod or semantic value validation.
+  //   A natural Store drain enters as one source array. maxItems/maxBytes may split it into several physical envelopes;
+  //   maxDelayMs>0 may merge adjacent source arrays. onBatch is once per resulting envelope, not per original drain.
+  //   Batch frame flattens retained envelopes, keeps the last state-changing patch per exact path, and preserves
+  //   delete -> recreate ordering.
+  //   {batch:{maxItems:256,maxBytes:65536,maxDelayMs:0}} defaults: maxItems is hard. Before publication maxBytes is
+  //   conservatively screened and, near the boundary, checked on the complete envelope against the largest packed
+  //   v1-v5 Store representations, including rich-value markers, full UTF-8 and binary attachments. V6 has no
+  //   Store-specific packed representation: the selected outer RPC mode measures its ordinary event. One indivisible
+  //   patch may exceed the configured target but must still fit the v5 hard frame. A combined hard-frame overflow
+  //   is recursively split; invalid values fail before either legacy or batch journal/head/fan-out. maxDelayMs:0
+  //   preserves the natural drain with no extra latency. Set maxDelayMs>0 only to combine adjacent drain windows.
+  //   replayBatch/batchStats/flushPending stay local for inspection. Journal precommit is before head/fan-out;
+  //   failed compact chunks and a non-transactional adapter's uncommitted suffix remain retryable without duplicates.
+  //   Oracles: replay/store-replay-batch.test.ts, replay/store-replay-columnar-binary.test.ts,
+  //   replay/store-replay-batch-socket.test.ts and replay/store-replay-large-stress.test.ts. The stress oracle
+  //   materializes 15,000 records and drives seeded 250-key updates through v1-v6, 0/1/5ms batching, reconnect,
+  //   compact-frame/keyframe recovery and both old-peer directions. Reproducible pre-framing RPC payload/CPU/recovery diagnostic for
+  //   small and large quote batches across every Store generation: `npm run bench:store-replay`.
+syncStoreReplayRoute(mirror, remote, {batch?, validateBatch?, onBatch?, ...}) -> off & {ready, switch(nextRemote, opts), seq(), label(), active(), mode}
+  // Same validation/callback/seq contract as syncStoreReplay, but route-replaceable for relay/direct promotion.
 createStoreReplicaOffers(initial?) -> {control, api}                                    // dynamic registry; api = {list, changes}; subscribe-before-list is handled by createStoreReplicaSet
 createStoreReplicaSet<T>(deps) -> {control, api, close}                                 // layer B.2: self-assembling single-authority Store over arbitrary connection offers
   // OFFER, not connection: {id, priority?, connect() -> {remote, onFail?, close}}. The controller owns
@@ -957,6 +1225,8 @@ createStoreReplicaSet<T>(deps) -> {control, api, close}                         
   //   remote authorityCost + measured local RTT + offer priority. The active route stays until a replacement
   //   wins by hysteresisMs. A path containing the local node is rejected; so a cheap descendant never loops.
   //   Same remote replay space hands off by seq; a different cascade/authority line resets through a keyframe.
+  //   route.batch defaults false because independently re-exposed replicas do not share batch coordinates;
+  //   opt in only when every offered route is another transport to the exact same batch line identity.
   // AUTHORITY: default fork choice is epoch -> leaderId -> authorityLineId (deterministic availability mode).
   //   Automatic promotion is OFF unless autoPromoteMs is supplied. Without an injected elect/accept policy,
   //   disconnected eligible components MAY both write; the higher fork wins when the network heals.
@@ -969,10 +1239,11 @@ createStoreReplicaSet<T>(deps) -> {control, api, close}                         
   //   first usable leader/follower state; api.status/routes/conflicts are the operational observability surface.
   // Oracle: observe/store-replica-set.test.ts; real two-socket cascade:
   //   oracle/realsocket/store-replica-set.spec.ts; browser scenario: npm run demo -> Lab.
-syncStoreReplayEach<T>(remote, cb, opts?) -> off & {store, ready, seq(), isStale(), lastTs()}   // one-call per-key fold over the patch line (mirror + syncStoreReplay + store.each()); most-used surface — full contract + example in wenay-common2.md
+syncStoreReplayEach<T>(remote, cb, opts?) -> off & {store, ready, mode, seq(), isStale(), lastTs()}   // one-call per-key fold over the patch line (mirror + syncStoreReplay + store.each()); most-used surface — full contract + example in wenay-common2.md
 createOfflineStore({key, remote?, initial, storage, version?, debounceMs?, syncOpts?}) -> Promise<OfflineStore<T>>
-  // snapshot-mode persisted mirror: read local {version,seq,snapshot,savedAt}, create a normal Store immediately,
+  // snapshot-mode persisted mirror: read local {version,seq,replayMode,snapshot,savedAt}, create a normal Store immediately,
   // then syncStoreReplay(..., {since: savedSeq}) when remote exists. reconnect(remote) attaches later after offline start.
+  // V1-v6 share one `batch` mode; switching between legacy and batch resets seq and takes a safe keyframe.
 persistStore(store, {key, storage, seq?, debounceMs?}) -> control
   // durable writes are snapshot+seq in one record; flush()/forceFlush(); statusListen emits ready/syncing/offline/stale/saving.
 createMemoryOfflineStorage(initial?) -> OfflineStorage & {dump()}
@@ -987,17 +1258,204 @@ conflateReplay(replay, {pending, highWater, lowWater?, pollMs?, keyOf?, maxKeys?
   //   while lagged keep the LAST envelope per key, drain -> tail of those (ascending seq) instead of a full keyframe;
   //   events must be ABSOLUTE per key (store patches are — use storePatchKey from Observe); keyOf -> null or over maxKeys (1024) -> degrade to keyframe recovery
   //   exposeStoreReplay declares its condensing frame automatically (last patch per exact path) — zero config for stores
-ReplayStorage = {putEvent, putKeyframe, getKeyframe({seq?|ts?}?), getEvents(from, to)}   // layer C: archive behind 4 lambdas (file/DB/anything); createMemoryReplayStorage(caps?) = reference impl
+ReplayStorage = {putEvent, putEvents?, putKeyframe, getKeyframe({seq?|ts?}?), getEvents(from, to)}   // layer C: putEvents is atomic all-or-throw; createMemoryReplayStorage(caps?) = reference impl
 archiveReplay(replay, {storage, everyEvents? = 64, everyMs?}) -> {close, stats}          // event log + keyframe cadence (every N events OR T ms of line-ts, whichever first; frames only ON events)
 openHistory(storage, live?) -> {at({seq?|ts?}?), subscribe(cb, {since?|ts?, onSeq?}) -> off}   // seek + playback, SAME subscriber interface; with live: archive -> live journal -> live handover
   // seamless rewind->live: create the line with getSince reading the same storage («memory outside»); else the gap closes with a keyframe jump (still consistent)
 storeReplayAt(storage, {seq?|ts?}?) -> snapshot | undefined                              // store time machine: bit-exact state at any archived moment (same applyStorePatch mechanism)
 ```
+
+### Store Replay wire generations
+
+Every batch member represents the same logical Store patch line and sequence space. Versions are
+additive optional RPC members, not different public Store APIs: a new client checks member presence
+and chooses `v6 → v5 → v4 → v3 → v2 → v1 → legacy`.
+
+| Store route | Physical form | Main purpose | Mixed-peer behavior |
+|---|---|---|---|
+| Legacy `replay.line` | One ordinary `StorePatch` replay event at a time | Original compatibility surface; no batch member required | Old client + new server remains here; new client + old server falls back here |
+| v1 | Compact op tuples inside a bounded batch envelope | First physical batching generation; preserves explicit `undefined` with its opcode | Selected only when no newer optional member exists |
+| v2 | Flatter top-level and nested/root set/delete tuples | Removes more repeated patch/path structure for ordinary values | Same logical seq; v1 remains available to older clients |
+| v3 | v2 layout plus recursive exact-value escapes | Preserves marker-shaped business data and explicit `undefined` recursively without changing ordinary v2 values | Falls back to v2/v1 when absent |
+| v4 | Envelope-local shallow column plan with raw/delete/root runs and optional derived Store key | Compresses consecutive same-shaped records without a persistent cross-envelope Store cache | Falls back to v3-v1; transport may still use native binary attachments |
+| v5 | Self-contained Store-specific `Uint8Array` over the v4 plan | Exact rich/binary values in one canonical Store byte codec with Store-specific hard limits | Falls back to v4-v1; still remains the newest common route for clients which do not know v6 |
+| v6 | Ordinary `ReplayEvent<[StorePatch[]]>`; no inner Store encoding | Lets the negotiated outer RPC codec own batching and typed layout, avoiding the v5 inner encode/copy; RPB/2 gives the intended fast path | Current new-client/new-server route; it can still ride RPB/1 or legacy application transport, while older clients select v5-v1 or legacy |
+
+No Store version leaks compact tuples, opcodes or bytes into application code. `onBatch`, mirrors and
+Replicated Map receive ordinary keys, values and `StorePatch` objects. The selector is capability
+presence, not a runtime guess from payload bytes.
+
 > Killer property for state/frame lines: a lagging/late/stalled consumer can replace backlog with a state-equivalent frame/keyframe. A sacred queue deliberately does not: its retained tail is exact, and eviction is a terminal error rather than silent loss.
-> Files: `src/Common/events/replay-{listen,wire,conflate,history,index}.ts` + `src/Common/Observe/store-{replay,offline}.ts`;
-> everything is additive (the canonical Listen surface gained only `registerListenOn`/`ListenOnBrand`; exposeStore/mirror untouched).
+> Files: `src/Common/events/replay-{listen,wire,conflate,history,index}.ts` +
+> `src/Common/Observe/{replicated-map,store-replay,store-replay-codec,store-replay-columnar,store-replay-binary,store-offline}.ts`;
+> legacy replay/push members remain available; compact members and negotiation options are additive.
 > Oracles: `npx ts-node replay/<f>.ts` — replay-listen / store-replay / offline-store / socket-replay / offline-store-socket / conflate / conflate-socket / coalesce / history / staleness / canvas-socket (raw bytes) / video-socket.demo;
 > wire coverage also lives in the RPC harness cookbook (`npm run test:rpc`).
+
+The targeted heavy gate is `npm run test:stress`. It runs the 15,000-record Store matrix,
+multi-megabyte CALL/RESP/PIPE and callback/reconnect/legacy RPC matrix, and synthetic multi-window
+video matrix. `npm run test:all` includes the same bounded stress files together with every ordinary
+oracle.
+
+`npm run test:stress:extended` first runs that gate and then a separate deterministic soak profile.
+It scales verified work rather than sleeping for a minimum duration:
+
+- Store: one 15,000-record source/mirror pair receives 419,838 writes through 6,780 drains; v1-v6,
+  legacy, batches from 1 to 2,000 patches, hot-key conflation, rich/1,250-layout values, 0/1/5/20 ms
+  windows and twelve queue/frame/keyframe reconnects must finish at an exact snapshot and seq.
+- RPC: 122,804 logical operations include 24,000 bounded-concurrent tiny calls, 49,152 warm-layout
+  records, 48,000 ordered heterogeneous callbacks, 1,300 layout saturation and 544.86 MiB of binary
+  round-trip blocks from 1 byte through 4 MiB. Counts, checksum, wire kind and cleanup are asserted.
+- Media: 3,138 source frames mix 4 KiB, 64 KiB, 256 KiB and 1 MiB payloads, repeated/changing bodies,
+  JPEG/WebP/PNG metadata and reconnect generations. Three-viewer fan-out verifies 9,416 raw
+  deliveries (1,114.7 MiB), SHA-256/order/latest semantics and complete bitmap/listener/socket cleanup.
+
+Extended files are intentionally excluded from normal `test:all` and `test:stress`. Their printed
+times and RSS are diagnostics, not machine-dependent pass thresholds; the operation, byte, boundary
+and checksum floors are the pass criteria.
+
+### Current Store Replay v1-v6 benchmark inside RPB/2
+
+`npm run bench:store-replay` now compares every Store generation through the same exact callback
+packet, `[Pkt.CB, id, [event]]`, inside a negotiated warm RPB/2 connection. `warm B` is the complete
+RPB payload before Socket.IO/Engine.IO/WebSocket framing, after 20 schema-learning warm-up rounds.
+`full encode` includes the Store generation's transform and outer RPB/2 serialization; `full decode`
+includes outer RPB/2 parsing, callback-value extraction and the Store generation's inverse transform.
+The schema prelude, connection setup, Socket.IO I/O, Store application and network latency are
+reported elsewhere by the benchmark and are deliberately not mixed into these codec CPU columns.
+The CPU columns are `performance.now()` elapsed microseconds per synchronous batch, not hardware
+cycle counters; this table does not measure heap allocation or RSS.
+
+The workload is one logical batch of deterministic quote-shaped patches:
+`{path: ['S' + i], exists: true, value: {c: i + 0.5, t: 1_000_000 + i}}`. Full CPU values are the
+median of seven measured windows after two warm-up windows. Each 50-patch window runs 4,000 complete
+batches; each 700-patch window runs 400. Every measured route is decoded and checked against the
+original patches. These are representative runs on the same AMD Ryzen AI 7 350 host; they are
+diagnostics, not a performance contract.
+
+Node v24.18:
+
+| Store | 50 warm B | 50 full encode, us | 50 full decode, us | 700 warm B | 700 full encode, us | 700 full decode, us | 700 vs v1: B / encode / decode |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| v1 | 871 | 34.81 | 8.94 | 12,522 | 363.84 | 108.89 | baseline |
+| v2 | 821 | 30.86 | 7.80 | 11,822 | 301.91 | 97.15 | -5.6% / -17.0% / -10.8% |
+| v3 | 821 | 31.35 | 7.94 | 11,822 | 333.60 | 96.51 | -5.6% / -8.3% / -11.4% |
+| v4 | 1,079 | 64.35 | 10.14 | 13,976 | 646.21 | 140.87 | +11.6% / +77.6% / +29.4% |
+| v5 | 942 | 56.46 | 10.76 | 13,245 | 485.40 | 119.98 | +5.8% / +33.4% / +10.2% |
+| v6 | 827 | 34.58 | 9.17 | 11,909 | 351.39 | 112.18 | -4.9% / -3.4% / +3.0% |
+
+Bun 1.3.14, 700 patches on the same host:
+
+| Store | warm B | full encode, us | full decode, us | vs v1: B / encode / decode |
+|---|---:|---:|---:|---:|
+| v1 | 12,522 | 319.38 | 167.25 | baseline |
+| v2 | 11,822 | 228.15 | 136.48 | -5.6% / -28.6% / -18.4% |
+| v3 | 11,822 | 259.21 | 136.88 | -5.6% / -18.8% / -18.2% |
+| v4 | 13,976 | 610.32 | 176.07 | +11.6% / +91.1% / +5.3% |
+| v5 | 13,245 | 611.92 | 140.50 | +5.8% / +91.6% / -16.0% |
+| v6 | 11,909 | 199.96 | 166.86 | -4.9% / -37.4% / -0.2% |
+
+For this flat workload, v2 and v3 are tied for the smallest warm payload, and v2 is the fastest
+700-patch decoder in both recorded runtime runs because its Store-specific tuples fit the data
+exactly. V6 is within 87 bytes of v2 at 700 patches, but uses the universal outer schema path and
+removes v5's inner byte envelope. Against v5 in the Node run, v6 used 10.1% fewer bytes, 27.6% less
+full encode CPU and 6.5% less full decode CPU.
+
+Warm bytes are deterministic for this input and build. CPU values are not: runtime JIT state,
+garbage collection, allocator state, power policy and other host load move individual rows. The Bun
+run, for example, made v6 encoding especially fast while its v6 decode stayed roughly tied with v1;
+that runtime-specific ordering should still be reproduced on the deployment host. Large differences
+and repeated direction across runs are useful; sub-10% differences remain provisional.
+
+### Sparse 500-key full-snapshot profile
+
+Set `STORE_REPLAY_BENCH_PROFILE=sparse` to run the focused profile without the Socket.IO matrix:
+
+```powershell
+$env:STORE_REPLAY_BENCH_PROFILE='sparse'
+npm run bench:store-replay
+```
+
+Each `replaceAll` input contains 500 freshly allocated quote objects. Three deterministic waves
+change the first 20, a seeded-random 40 and a seeded-random 50 keys. The real
+`ReplicatedMap.replaceAll(latest)` path compares the full input and emits one v6 event per wave.
+Every event is then transformed independently through Store v1-v6 and a warm RPB/2 callback packet.
+Exact materialized state and the changed key set are checked after every canonical wave.
+
+Representative producer results on the same AMD Ryzen AI 7 350 host:
+
+| Wave | Fresh input values | Emitted patches | Unchanged values not sent | Node v24.18 replaceAll, us | Bun 1.3.14 replaceAll, us |
+|---|---:|---:|---:|---:|---:|
+| first 20 | 500 | 20 | 480 | 354.00 | 326.50 |
+| random 40 | 500 | 40 | 460 | 471.40 | 421.10 |
+| random 50 | 500 | 50 | 450 | 530.10 | 461.00 |
+| total | 1,500 | 110 | 1,390 | — | — |
+
+Object construction happens before the timer because the facade receives an already built source
+snapshot. `replaceAll` CPU includes semantic comparison of 500 keys, cloning only changed values,
+Store mutation and synchronous replay publication. It does not include wire serialization.
+
+Warm RPB/2 totals for the same three packets and 110 changed wire values:
+
+| Store | Total B | Node encode, us | Node decode, us | Bun encode, us | Bun decode, us |
+|---|---:|---:|---:|---:|---:|
+| v1 | 3,702 | 180.81 | 53.09 | 143.85 | 58.80 |
+| v2 | 3,592 | 167.88 | 43.67 | 107.43 | 50.28 |
+| v3 | 3,592 | 177.32 | 50.41 | 108.47 | 45.50 |
+| v4 | 4,275 | 297.80 | 56.70 | 313.18 | 70.49 |
+| v5 | 3,547 | 237.10 | 53.44 | 251.72 | 64.63 |
+| v6 | 3,604 | 173.38 | 44.76 | 105.54 | 53.74 |
+
+These encode/decode columns are per complete three-packet sequence; producer comparison and input
+allocation are outside them. All six generations decode exactly. V6 versus v5 removes 26.9% of
+Node encode CPU and 16.2% of Node decode CPU in this run, but v5 remains 57 bytes smaller. The
+specialized v2/v3 forms are 12 bytes smaller than v6. As in the bulk table, CPU is diagnostic and
+moves between runs; bytes are deterministic.
+
+The 500 object identities do not allocate 500 RPB schemas. Schema admission follows ordered
+layout/types, so this fixture reuses one recurring value layout while each actual key remains data.
+The remaining wire repetition is the literal `path[0]` string in every changed patch. A future
+negotiated RPB/3 can replace recurring key/path strings with a bounded 1,000-entry short-id
+dictionary; on these short `S0..S499` keys, a warm estimate is roughly 300–450 fewer bytes across
+110 patches plus less UTF-8 encode/decode work. It cannot silently change RPB/2 because old decoders
+must keep reading its exact grammar. The other irreducible cost is comparing all 500 values when the
+source supplies only full snapshots; a source revision/hash or `setMany` dirty list is required to
+remove that scan safely.
+
+### Historical Store Replay v4/v5 benchmark boundary
+
+`npm run bench:store-replay` uses deterministic quote-shaped objects and exercises delivery,
+frame recovery and reconnect over real Socket.IO. It measures every compatibility generation both
+without universal RPC binary and, where applicable, inside the outer RPB envelope. The transport
+counter observes the packed payload immediately before `socket.emit`; `engine packets` below are the
+header emit plus its native binary attachments. Event names and Socket.IO, Engine.IO and WebSocket
+framing are excluded. The fixed numbers below predate Store v6 and RPB/2; they are retained only as
+the historical v4/v5 baseline, not as current v6 results.
+
+Representative 700-record result:
+
+| route | bytes | Socket.IO emits | engine packets |
+|---|---:|---:|---:|
+| plain legacy-compatible per-patch | 78,072 | 700 | 700 |
+| compact per-patch | 64,876 | 701 | 701 |
+| callback batch | 65,643 | 11 | 11 |
+| Store v1, raw transport | 25,776 | 1 | 1 |
+| Store v4, raw transport | 14,651 | 1 | 1 |
+| Store v5, raw transport | 13,427 | 3 | 6 |
+| Store v4 inside RPB | 13,379 | 1 | 2 |
+| Store v5 inside RPB | 13,397 | 1 | 2 |
+
+The first gain is physical batching: callback batching changes 700 sends into 11 without changing
+the application values. Store generations then remove repeated patch structure and reduce that to
+one logical batch; v5 needs three raw chunks only because its self-contained frames obey the 256-item
+limit. The outer RPB envelope aggregates those chunks into one emit plus one binary attachment.
+Inside RPB, v4 and v5 differ by only 18 bytes on this workload, so neither should be chosen from this
+single flat table alone. V4 can use less codec CPU for flat columns, while v5 is materially faster on
+some nested and rich-value shapes because it avoids JSON/native-placeholder work. The benchmark
+therefore checks flat, polymorphic, nested, rich and binary values and treats CPU as a relative local
+diagnostic, not a performance contract. Store v6 subsequently removed that inner Store encode/copy
+by handing ordinary logical patches to the outer RPC value codec. Negotiation deliberately follows
+capability version, not a runtime compression guess.
 
 ## 🔁 Observe — coarse reactive object (`Observe`, fact-based)
 > `import { Observe } from "wenay-common2"` → `Observe.reactive(...)`.

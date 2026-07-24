@@ -1,4 +1,6 @@
 // rpc-shape.ts
+
+import {isSafeKey} from './rpc-limits'
 //
 // ============================================================
 // Adaptive compression of SUBSCRIPTION TICKS (dynamic, not static)
@@ -32,7 +34,11 @@ export function createCbShapeServer(threshold = THRESHOLD, maxShapes = MAX_SHAPE
     //   compact  — already standardized: Pkt.CBV(values) only
     function offer(cbId: number, obj: any) {
         const keys = Object.keys(obj)
-        const sig = keys.slice().sort().join("\x00") // order-independent shape signature
+        // Unsafe keys are already stripped by the regular packer. Compacting them would
+        // make SHAPE a second object-construction path with different safety semantics.
+        if (!keys.every(isSafeKey)) return { mode: 'full' as const }
+        // Escaping keeps the signature injective even when a key contains NUL or a delimiter.
+        const sig = JSON.stringify(keys.slice().sort())
         let st = byCb.get(cbId)
         if (!st) { st = { shapes: [], nextId: 0 }; byCb.set(cbId, st) }
         const sh = st.shapes.find(s => s.sig == sig)

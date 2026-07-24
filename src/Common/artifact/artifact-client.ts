@@ -3,12 +3,11 @@
 // =====================================================================
 
 import {createStore, StoreDrain} from '../Observe/store'
-import {syncStoreReplay} from '../Observe/store-replay'
-import {ReplayRemote} from '../events/replay-wire'
+import {StoreReplayRemote, syncStoreReplay} from '../Observe/store-replay'
 import {ArtifactOpenInstruction, ArtifactRecord, ArtifactStore} from './artifact-host'
 
 export type ArtifactRemote = {
-    state: ReplayRemote<any>
+    state: StoreReplayRemote
     open: (artifactId: string) => ArtifactOpenInstruction | Promise<ArtifactOpenInstruction>
     revoke: (artifactId: string) => ArtifactRecord | Promise<ArtifactRecord>
 }
@@ -18,12 +17,14 @@ export type ArtifactClientDeps = {
     remote: ArtifactRemote
     initial?: ArtifactStore
     drain?: StoreDrain
+    /** Prefer compact Store coordinates; false preserves legacy seq values. */
+    batch?: boolean
 }
 
 export function createArtifactClient(deps: ArtifactClientDeps) {
-    const {remote, initial = {artifacts: {}}, drain} = deps
+    const {remote, initial = {artifacts: {}}, drain, batch = true} = deps
     const store = createStore<ArtifactStore>(initial, drain !== undefined ? {drain} : {})
-    const sync = syncStoreReplay(store, remote.state)
+    const sync = syncStoreReplay(store, remote.state, {batch})
 
     async function open(artifactId: string) {
         return remote.open(artifactId)
@@ -38,6 +39,7 @@ export function createArtifactClient(deps: ArtifactClientDeps) {
         store,
         ready: sync.ready,
         seq: sync.seq,
+        stateMode: () => sync.mode,
         open,
         revoke,
         close() { sync() },

@@ -263,6 +263,67 @@ async function main() {
         off()
     }
 
+    console.log('\n[19] writes and deletes treat prototype-sensitive names as Store data')
+    {
+        const objectSetterKey = '__reactive_setter__'
+        const objectLockedKey = '__reactive_locked__'
+        const arraySetterKey = '__reactive_array_setter__'
+        let setterCalls = 0
+        Object.defineProperty(Object.prototype, objectSetterKey, {
+            configurable: true,
+            set() { setterCalls++ },
+        })
+        Object.defineProperty(Object.prototype, objectLockedKey, {
+            configurable: true,
+            value: 'prototype value',
+            writable: false,
+        })
+        Object.defineProperty(Array.prototype, arraySetterKey, {
+            configurable: true,
+            set() { setterCalls++ },
+        })
+        try {
+            const s = reactive<any>({object: {}, array: []}, manual)
+            let hits = 0
+            onUpdate(s, () => hits++)
+            s.object.__proto__ = {local: true}
+            s.object[objectSetterKey] = 'own setter value'
+            s.object[objectLockedKey] = 'own locked value'
+            s.array[arraySetterKey] = 'own array value'
+            flush()
+            const rawObject = toRaw(s.object) as any
+            const rawArray = toRaw(s.array) as any
+            ok(setterCalls == 0, 'new reactive keys invoke no inherited setters')
+            ok(
+                Object.prototype.hasOwnProperty.call(rawObject, '__proto__')
+                && rawObject.__proto__.local == true
+                && Object.getPrototypeOf(rawObject) == Object.prototype,
+                '__proto__ is an own data key and does not replace the target prototype',
+            )
+            ok(
+                rawObject[objectSetterKey] == 'own setter value'
+                && rawObject[objectLockedKey] == 'own locked value'
+                && rawArray[arraySetterKey] == 'own array value',
+                'polluted Object and Array prototype names become ordinary own data',
+            )
+            const beforeDelete = hits
+            delete s.object.toString
+            flush()
+            ok(hits == beforeDelete, 'deleting an inherited key emits no false mutation')
+            delete s.object.__proto__
+            flush()
+            ok(
+                !Object.prototype.hasOwnProperty.call(rawObject, '__proto__')
+                && Object.getPrototypeOf(rawObject) == Object.prototype,
+                'deleting an own prototype-sensitive key preserves the target prototype',
+            )
+        } finally {
+            Reflect.deleteProperty(Object.prototype, objectSetterKey)
+            Reflect.deleteProperty(Object.prototype, objectLockedKey)
+            Reflect.deleteProperty(Array.prototype, arraySetterKey)
+        }
+    }
+
     console.log(`\n${fails == 0 ? 'ALL GREEN' : fails + ' FAILURE(S)'}`)
     process.exit(fails == 0 ? 0 : 1)
 }

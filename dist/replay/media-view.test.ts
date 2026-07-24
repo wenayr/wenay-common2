@@ -93,17 +93,28 @@ async function main() {
     {
         const [emit, line] = listen<[Uint8Array, number]>()
         const drawnImages: any[] = []
+        const errors: unknown[] = []
+        let bitmapCloses = 0
+        let drawFails = false
+        let blobBytes: number[] = []
         const canvas: any = {
             width: 0,
             height: 0,
-            getContext: () => ({drawImage: (img: any) => drawnImages.push(img)}),
+            getContext: () => ({
+                drawImage: (img: any) => {
+                    if (drawFails) throw new Error('draw failed')
+                    drawnImages.push(img)
+                },
+            }),
         }
         let decodeDelay = 0
         const view = attachVideoCanvas(line as any, canvas, {
             createBitmap: async blob => {
                 if (decodeDelay) await delay(decodeDelay)
-                return {size: blob.size, close: () => {}}
+                blobBytes = [...new Uint8Array(await blob.arrayBuffer())]
+                return {size: blob.size, close: () => { bitmapCloses++ }}
             },
+            onError: error => errors.push(error),
         })
 
         emit(videoFrame(1, 640, 480), Date.now() - 100)
@@ -117,16 +128,32 @@ async function main() {
         ok(view.stats().drawn == 1 && view.stats().frames == 2, 'audio frame on a video canvas is counted, not drawn')
 
         decodeDelay = 30
-        emit(videoFrame(3, 1280, 720), Date.now())
+        const mutableFrame = videoFrame(3, 1280, 720)
+        emit(mutableFrame, Date.now())
+        mutableFrame.fill(9)
         emit(videoFrame(4, 1280, 720), Date.now())   // arrives while frame 3 decodes -> skipped
         await delay(60)
         ok(view.stats().frames == 4 && view.stats().drawn == 2, 'busy-skip: overlapping frame dropped, not queued')
         ok(canvas.width == 1280 && canvas.height == 720, 'canvas resized to the new resolution')
+        ok(blobBytes.join(',') == '1,2,3', 'Blob snapshots its payload without a preceding Uint8Array copy')
+        ok(bitmapCloses == 2, 'every successfully decoded bitmap is closed')
 
-        view.off()
+        decodeDelay = 0
+        drawFails = true
         emit(videoFrame(5, 320, 240), Date.now())
         await delay(10)
-        ok(view.stats().frames == 4, 'off() unsubscribes the line')
+        drawFails = false
+        ok(errors.length == 1 && bitmapCloses == 3, 'a draw failure still closes the decoded bitmap')
+
+        decodeDelay = 30
+        emit(videoFrame(6, 320, 240), Date.now())
+        await delay(5)
+        view.off()
+        await delay(40)
+        ok(view.stats().drawn == 2 && bitmapCloses == 4, 'off() suppresses an in-flight draw and closes its bitmap')
+        emit(videoFrame(7, 320, 240), Date.now())
+        await delay(10)
+        ok(view.stats().frames == 6, 'off() unsubscribes the line')
     }
 
     console.log('\n[media-view] publish pipe: stamp + onError')

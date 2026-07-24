@@ -4,6 +4,7 @@ exports.createPeerPacketOffers = createPeerPacketOffers;
 exports.createPeerPacketMesh = createPeerPacketMesh;
 const Listen_1 = require("../events/Listen");
 const MAX_ROUTE_ADVERTISEMENTS = 4096;
+const MAX_PENDING_PACKETS_PER_ROUTE = 64;
 function unsubscribeHandle(handle) {
     if (typeof handle == 'function') {
         handle();
@@ -157,6 +158,9 @@ function createPeerPacketMesh(deps) {
             offFail: null,
             reconnect: null,
             probe: null,
+            pendingPackets: [],
+            handlingPackets: false,
+            packetDrainGeneration: 0,
         };
     }
     function linkCost(entry) {
@@ -355,15 +359,6 @@ function createPeerPacketMesh(deps) {
             packet.path[packet.path.length - 1] == from && new Set(packet.path).size == packet.path.length;
     }
     async function handlePacket(entry, packet) {
-        if (!validPacket(packet, entry.offer.peerId) || packet.path.includes(nodeId)) {
-            stats.invalid++;
-            return;
-        }
-        if (seen.has(seenKey(packet.originId, packet.packetId))) {
-            stats.duplicates++;
-            return;
-        }
-        remember(packet.originId, packet.packetId);
         const arrived = { ...packet, path: [...packet.path, nodeId] };
         const generation = entry.generation;
         if (accept) {
@@ -395,6 +390,42 @@ function createPeerPacketMesh(deps) {
         stats.forwarded++;
         await forward(arrived);
     }
+    async function drainPackets(entry) {
+        if (entry.handlingPackets)
+            return;
+        const drainGeneration = entry.packetDrainGeneration;
+        entry.handlingPackets = true;
+        try {
+            while (!closed && drainGeneration == entry.packetDrainGeneration && entry.pendingPackets.length) {
+                const packet = entry.pendingPackets.shift();
+                await handlePacket(entry, packet);
+            }
+        }
+        finally {
+            if (drainGeneration != entry.packetDrainGeneration)
+                return;
+            entry.handlingPackets = false;
+            if (!closed && entry.pendingPackets.length)
+                void drainPackets(entry);
+        }
+    }
+    function enqueuePacket(entry, packet) {
+        if (!validPacket(packet, entry.offer.peerId) || packet.path.includes(nodeId)) {
+            stats.invalid++;
+            return;
+        }
+        if (seen.has(seenKey(packet.originId, packet.packetId))) {
+            stats.duplicates++;
+            return;
+        }
+        remember(packet.originId, packet.packetId);
+        if (entry.pendingPackets.length >= MAX_PENDING_PACKETS_PER_ROUTE) {
+            stats.rejected++;
+            return;
+        }
+        entry.pendingPackets.push(packet);
+        void drainPackets(entry);
+    }
     function handleMessage(entry, message) {
         if (message == null || typeof message != 'object') {
             stats.invalid++;
@@ -403,7 +434,7 @@ function createPeerPacketMesh(deps) {
         if (message.kind == 'routes')
             handleRoutes(entry, message);
         else if (message.kind == 'packet')
-            void handlePacket(entry, message);
+            enqueuePacket(entry, message);
         else
             stats.invalid++;
     }
@@ -415,6 +446,9 @@ function createPeerPacketMesh(deps) {
         closeSession(entry.session);
         entry.session = null;
         entry.advertisements.clear();
+        entry.pendingPackets.length = 0;
+        entry.packetDrainGeneration++;
+        entry.handlingPackets = false;
         if (entry.probe)
             clearTimeout(entry.probe);
         entry.probe = null;
@@ -474,7 +508,7 @@ function createPeerPacketMesh(deps) {
             }
         }
     }
-    function connectEntry(entry) {
+    function connectEntry(entry, deferPublish = false) {
         if (closed || entry.state == 'connecting' || entry.state == 'open')
             return;
         if (entry.reconnect)
@@ -483,7 +517,8 @@ function createPeerPacketMesh(deps) {
         const generation = ++entry.generation;
         entry.state = 'connecting';
         entry.error = null;
-        publishStatus();
+        if (!deferPublish)
+            publishStatus();
         Promise.resolve().then(function connectPacketRoute() {
             return entry.offer.connect();
         }).then(function openPacketRoute(session) {
@@ -539,18 +574,21 @@ function createPeerPacketMesh(deps) {
             scheduleReconnect(entry);
         });
     }
-    function removeEntry(id) {
+    function removeEntry(id, deferPublish = false) {
         const entry = entries.get(id);
         if (!entry)
-            return;
+            return false;
         entries.delete(id);
         entry.generation++;
         if (entry.reconnect)
             clearTimeout(entry.reconnect);
         clearEntrySession(entry);
         entry.state = 'closed';
-        publishStatus();
-        recomputeRoutes();
+        if (!deferPublish) {
+            publishStatus();
+            recomputeRoutes();
+        }
+        return true;
     }
     function setOffers(next) {
         const replacements = new Map();
@@ -560,18 +598,24 @@ function createPeerPacketMesh(deps) {
                 continue;
             replacements.set(stored.id, stored);
         }
+        let changed = false;
         for (const [id, entry] of entries) {
             const replacement = replacements.get(id);
             if (!replacement || replacement.connect != entry.offer.connect || replacement.peerId != entry.offer.peerId ||
                 replacement.priority != entry.offer.priority)
-                removeEntry(id);
+                changed = removeEntry(id, true) || changed;
         }
         for (const [id, offer] of replacements) {
             if (entries.has(id))
                 continue;
             const entry = createOfferEntry(offer);
             entries.set(id, entry);
-            connectEntry(entry);
+            connectEntry(entry, true);
+            changed = true;
+        }
+        if (changed) {
+            publishStatus();
+            recomputeRoutes();
         }
     }
     async function send(target, payload, opts = {}) {
@@ -630,8 +674,13 @@ function createPeerPacketMesh(deps) {
                 return;
             closed = true;
             unsubscribeHandle(offOfferSource);
+            let changed = false;
             for (const id of Array.from(entries.keys()))
-                removeEntry(id);
+                changed = removeEntry(id, true) || changed;
+            if (changed) {
+                publishStatus();
+                recomputeRoutes();
+            }
             packets.close();
             routeChanges.close();
             statusChanges.close();

@@ -3,7 +3,7 @@
 // =====================================================================
 
 import {createStore, StoreDrain} from '../Observe/store'
-import {syncStoreReplay} from '../Observe/store-replay'
+import {StoreReplayRemote, syncStoreReplay} from '../Observe/store-replay'
 import {listen as createListenPair} from '../events/Listen'
 import {ReplayRemote, replaySubscribe} from '../events/replay-wire'
 import {
@@ -22,7 +22,7 @@ import {
 } from './conversation-host'
 
 export type ConversationRemote = {
-    state: ReplayRemote<any>
+    state: StoreReplayRemote
     events: ReplayRemote<[tConversationEvent]>
     createConversation: (input: ConversationCreateInput) => ConversationCreateResult | Promise<ConversationCreateResult>
     createChannel: (input: ConversationChannelInput) => ConversationChannel | Promise<ConversationChannel>
@@ -35,6 +35,8 @@ export type ConversationClientDeps = {
     remote: ConversationRemote
     initial?: ConversationStore
     drain?: StoreDrain
+    /** Prefer compact Store coordinates; false preserves legacy stateSeq values. */
+    batch?: boolean
 }
 
 function factIdentity(fact: ConversationFact) {
@@ -42,10 +44,10 @@ function factIdentity(fact: ConversationFact) {
 }
 
 export function createConversationClient(deps: ConversationClientDeps) {
-    const {remote, initial = {conversations: {}, channels: {}, messages: {}, facts: {}}, drain} = deps
+    const {remote, initial = {conversations: {}, channels: {}, messages: {}, facts: {}}, drain, batch = true} = deps
     const store = createStore<ConversationStore>(initial, drain !== undefined ? {drain} : {})
     const [emitEvent, events] = createListenPair<[tConversationEvent]>()
-    const stateSync = syncStoreReplay(store, remote.state)
+    const stateSync = syncStoreReplay(store, remote.state, {batch})
     const eventSync = replaySubscribe(remote.events, function forwardEvent(event) { emitEvent(event) })
 
     async function createConversation(input: ConversationCreateInput) {
@@ -124,6 +126,7 @@ export function createConversationClient(deps: ConversationClientDeps) {
         events,
         ready: Promise.all([stateSync.ready, eventSync.ready]).then(function readyAfterReplay() {}),
         stateSeq: stateSync.seq,
+        stateMode: () => stateSync.mode,
         eventSeq: eventSync.seq,
         createConversation,
         createChannel,

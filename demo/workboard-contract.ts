@@ -1,5 +1,4 @@
-import type {ReplayRemote} from '../src/Common/events/replay-wire'
-import type {StorePatch} from '../src/Common/Observe/store'
+import type {ReplicatedMapRemote} from '../src/Common/Observe/replicated-map'
 
 export const workboardStatuses = ['new', 'active', 'done'] as const
 
@@ -49,7 +48,7 @@ export type WorkboardRemoveResult = {
 }
 
 export type WorkboardRemote = {
-    state: ReplayRemote<[StorePatch]>
+    state: ReplicatedMapRemote<WorkboardItem>
     create: (input: WorkboardCreateInput) => WorkboardItem | Promise<WorkboardItem>
     rename: (input: WorkboardRenameInput) => WorkboardItem | Promise<WorkboardItem>
     move: (input: WorkboardMoveInput) => WorkboardItem | Promise<WorkboardItem>

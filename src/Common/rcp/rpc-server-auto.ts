@@ -4,6 +4,7 @@ import { listenSocket, type RpcListenSubscribeOpts } from "./listen-socket";
 import { createRpcServer, type PromiseServerHooks, type RpcLimits, type RpcServerAuth, type RpcOpt } from "./rpc-server";
 import {DeepSocketListen} from "./listen-deep";
 import {SocketTmpl, IS_RPC_LISTEN, RPC_STOP} from "./rpc-protocol";
+import {rpcEndCallback} from './rpc-walk'
 
 type ListenCallbackBase<T extends any[] = any[]> = ReturnType<typeof createListen<T>>;
 
@@ -38,7 +39,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
      *  no throttling. Server side is the best place for back-to-back: extra
      *  emissions are suppressed BEFORE packing/sending to wire. */
     throttle?: number;
-    /** Wire optimizations (contractual): { compact?: false } disables tick compaction. */
+    /** Negotiated wire optimizations. Binary packets, compact shapes and callback batching are enabled by default. */
     opt?: RpcOpt;
     /** Auto-detection of replay lines in facade: 'auto' (default) — by brand; 'force' — plus
      *  structural (lines from foreign module copy without brand); false — disabled, replay-line
@@ -108,7 +109,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                     fired = true;
                     try {
                         z(...a);        // first event → CB
-                        z(RPC_STOP);    // stream end → CB_END
+                        rpcEndCallback(z)
                     }
                     finally {
                         w.off();

@@ -131,6 +131,30 @@ export function packResult(value: any): any {
 
 const _stopRegistry = new WeakMap<Function, () => void>();
 
+export function createRpcCallbackWrapper({
+    id,
+    sender,
+    onEnd,
+    legacyStopSentinel = false,
+}: {
+    id: number
+    sender: (id: number, args: any[]) => void
+    onEnd: (id: number) => void
+    legacyStopSentinel?: boolean
+}) {
+    function rpcCallbackWrapper(...args: any[]) {
+        // Only the JSON-compatible path treats the historical string sentinel as
+        // control. Binary has an out-of-band CB_END and must carry this string as data.
+        if (legacyStopSentinel && args[0] == RPC_STOP) {
+            onEnd(id)
+            return
+        }
+        sender(id, args)
+    }
+    _stopRegistry.set(rpcCallbackWrapper, function endRpcCallbackWrapper() { onEnd(id) })
+    return rpcCallbackWrapper
+}
+
 export function rpcEndCallback(fn: Function) {
     _stopRegistry.get(fn)?.();
 }
@@ -148,12 +172,12 @@ export function unpack(
             if (lim && ++cbCount > lim.maxCallbacks) throw new PayloadLimitError("too many callbacks");
             const id = leaf[FN_MARKER];
             if (typeof id !== "number" || !Number.isFinite(id)) throw new PayloadLimitError("invalid callback id");
-            const wrapper = (...a: any[]) => {
-                if (a[0] == RPC_STOP) { onEnd(id); return; }
-                sender(id, a);
-            };
-            _stopRegistry.set(wrapper, () => onEnd(id));
-            return wrapper;
+            return createRpcCallbackWrapper({
+                id,
+                sender,
+                onEnd,
+                legacyStopSentinel: true,
+            });
         }
         return deserializeLeaf(leaf, undefined, lim);
     }, lim));

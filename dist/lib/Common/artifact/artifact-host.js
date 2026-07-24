@@ -5,6 +5,7 @@ exports.validateOpenInstruction = validateOpenInstruction;
 exports.createArtifactHost = createArtifactHost;
 const store_1 = require("../Observe/store");
 const store_replay_1 = require("../Observe/store-replay");
+const store_projection_1 = require("../Observe/store-projection");
 function copyDescriptor(descriptor) {
     return { ...descriptor };
 }
@@ -78,19 +79,39 @@ function createArtifactHost(deps) {
         }
         return { artifacts };
     }
-    function refreshViews() {
+    function refreshViews(change) {
         if (closed)
             return;
         for (const view of views)
-            view.refresh();
+            view.refresh(change);
     }
     const offStore = store.listenPaths().on(refreshViews);
     function createView(account) {
         const state = (0, store_1.createStore)(project(account), drain !== undefined ? { drain } : {});
-        const replay = (0, store_replay_1.exposeStoreReplay)(state, history !== undefined ? { history } : {});
+        const replay = (0, store_replay_1.exposeStoreReplay)(state, history == undefined ? { batch: true } : { history, batch: true });
+        function refreshProjection(change) {
+            if (policy?.canRead) {
+                (0, store_projection_1.reconcileStoreProjection)(state, project(account));
+                return;
+            }
+            const changed = (0, store_projection_1.collectStoreProjectionChanges)(change, ['artifacts']);
+            if (!changed) {
+                (0, store_projection_1.reconcileStoreProjection)(state, project(account));
+                return;
+            }
+            for (const itemKey of changed.get('artifacts') ?? []) {
+                const id = String(itemKey);
+                const artifact = store.state.artifacts[id];
+                const visible = !!artifact && readable(account, artifact);
+                (0, store_projection_1.reconcileStoreProjectionRecord)(state, 'artifacts', id, {
+                    exists: visible,
+                    ...(visible ? { value: copyArtifact(artifact) } : {}),
+                });
+            }
+        }
         let view;
         view = {
-            refresh() { state.replace(project(account)); },
+            refresh: refreshProjection,
             close() {
                 views.delete(view);
                 replay.close();

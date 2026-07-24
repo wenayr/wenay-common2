@@ -56,7 +56,7 @@ promiseProgress<T>(arr: (Promise<T> | (() => Promise<T>))[]) -> {
 ```
 clone<T>(v: T) -> T            // deep: cycles + Map/Set/Date, rebinds functions      (alias: deepClone)
 shallowClone<T>(v: T) -> T
-isEqual(a, b) -> boolean       // PLAIN object/array trees ONLY; on Map/Set/Date it returns a vacuous `true` — don't use it on them   (alias: deepEqual)
+isEqual(a, b) -> boolean       // deep structural compare; historical loose top-level primitive check + cycles/Date/RegExp/Map/Set/binary views   (alias: deepEqual)
 shallowEqual(a, b) · arrayShallowEqual(a, b) -> boolean      // strict-by-key vs loose-by-index — both kept on purpose
 toImmutable<T>(o: T) -> T      // deep-frozen clone + Mutable:false marker
 JSON_clone<T>(o: T) -> T       // JSON round-trip; DROPS Map/Set (-> {}) and turns Date -> string. NOT a rich clone — use clone() for those
@@ -101,6 +101,24 @@ const:  H1_S D1_S W1_S · M1_MS H1_MS D1_MS W1_MS
 ```
 // SERVER: `object` is the impl tree, `socket` is a {emit,on} transport adapter
 createRpcServerAuto({ socket: {emit, on}, object, socketKey: string, auth?, limits?, maxPerListen?, throttle?, opt?, replay?, replayOpts? }) -> { api, ... }
+  // opt.binary (default negotiated-on): new/new peers use universal typed-schema binary v2 for
+  //   CALL/RESP/PIPE/callbacks/Store; mixed builds keep binary v1 and old peers keep legacy arrays.
+  //   v2 schemas include ordered keys/tuple positions AND physical field types. A recurring layout is defined once,
+  //   then referenced by id; homogeneous rows use typed runs at any nesting depth. Different actual field types
+  //   select another schema or the exact generic fallback—there is no Zod/application-value validation.
+  //   {predeclared:[representativeRuntimeValue,...]} sends descriptions (never sample values) in PROBE/ACK before
+  //   application traffic. Dynamic inference remains active beside them. {maxSchemas?:1000,
+  //   promotionThreshold?:3}; one-off layouts do not consume ids. {schema:false} pins compatible binary v1.
+  //   Each direction owns at most 1,000 schema ids per connection generation: a definition is sent once, then
+  //   later values carry its short id. ArrayBuffer/DataView/TypedArray leaves use direct typed byte lanes rather
+  //   than a generic object wrapper. Reconnect/server replacement starts a fresh table and repeats the prelude.
+  //   ready() waits for correlated caps + probe; a byte-blocking adapter falls back after 250 ms and a late ACK
+  //   upgrades future traffic/recoverable Listen subscriptions. Set false on either side to keep legacy arrays.
+  //   Exact values retain number/string/boolean/null/undefined identity, rich values and binary views.
+  //   Values outside the bounded binary protocol fail that request explicitly, never via a lossy JSON fallback.
+  // opt.callbackBatch (default negotiated-on): losslessly wraps same-microtask callback packets into one send;
+  //   {maxItems:64,maxBytes:65536}, or false for exact packet-per-callback transport. Under binary RPC the logical
+  //   callback batch is encoded as one attachment; legacy peers keep the unchanged JSON CB/CB_BATCH path.
   // replay: false|'auto' (default)|'force' — facade members that are replay lines (replayListen) are exposed
   //   with BOTH surfaces under the SAME key: legacy plain-Listen path byte-for-byte + line/frameLine/since/keyframe/frame.
   //   Upgrading listen -> replayListen is a declaration-site-only change; the facade and clients don't move.
@@ -286,8 +304,10 @@ Artifact.createArtifactMirror({catalog, policy?, open, revoke?}) -> {connection(
   //   open() authorizes locally, then your deps serve bytes (byte cache + local ticket URL);
   //   revoke forwards to the source of truth with the END client's account
 ```
-Demo: `npm run demo:mirror` — an AI artifact created on either instance opens on the other
-(catalog via replay, bytes lazily by hash, each node serves from its own sandbox origin).
+Demo: `npm run demo:mirror -- http://localhost:3101` follows the exact leader URL printed by
+`npm run demo`; omitting the argument keeps the historical `http://localhost:3100` default.
+An AI artifact created on either instance opens on the other (catalog via replay, bytes lazily by
+hash, each node serves from its own sandbox origin).
 
 ## 💬 Conversation — channels, structured messages and facts
 > `import { Conversation } from 'wenay-common2'` or
@@ -414,8 +434,12 @@ me.onRoute(ev => {})                // route transitions for metrics/UI
 Key property: the relay journal stores the owner's envelopes VERBATIM (owner seq space), so a
 relay <-> direct hand-off is a plain seq resume — no uncovered loss or duplicate delivery. Late joiners
 get a keyframe folded server-side even while the owner is offline.
-The same replay datachannel preserves `Media` `Uint8Array` frames byte-for-byte, so a direct route
-can feed existing `Media` Listen/replay consumers; native WebRTC tracks/SFU are optional future
+Owner bursts use additive `publishBatch` (up to 64 items / about 64 KiB) when the host advertises it;
+an old host receives the unchanged `publish(env)` calls. Direct replay channels negotiate the same
+bounded live-message batching and an exact binary value protocol through an ordered `hello`/`ready`
+handshake. Either old endpoint keeps the historical JSON/base64 one-envelope route. The same replay
+datachannel preserves rich mixed values and `Media` `Uint8Array` frames byte-for-byte, so a direct
+route can feed existing `Media` Listen/replay consumers; native WebRTC tracks/SFU are optional future
 performance adapters, not a second media semantic.
 
 > Public WSS/WebRTC demo setup and certificate verification → [`DEMO-HTTPS.md`](DEMO-HTTPS.md).
@@ -525,27 +549,64 @@ store.each(opts?) -> Listen<[key, value, ctx]>                 // changed TOP-LE
   // NOT update(true).onEach: onEach fires per SELECTED path, and mask true selects the root —
   //   ONE call per window with the whole dict (a dev warn points to each())
 store.count() -> number
+Observe.cloneStoreValue<T>(value) -> T                            // detached clone with the same rich/binary/cycle semantics as Store snapshots
+Observe.listenStorePatches(store) -> Listen<[readonly StorePatch[]]> // shared settled patch feed: one source array per Store drain
 
 // network shape: backend exposes snapshots + changed Listen; frontend mirrors selected masks locally
-Observe.exposeStore(store, opts?) -> { get(mask?), set(path,value), replace(path,value), changed, changedPaths, patches?, changedData? }
+Observe.exposeStore(store, {push?: true | {maxItems?, maxBytes?}}?) -> { get(mask?), set(path,value), replace(path,value), changed, changedPaths, patches?, patchesBatch?, changedData? }
 Observe.createStoreMirror(remote, initial, opts?) -> store & { sync(mask, opts?) -> Promise<off>; syncPatches(mask, opts?) -> Promise<off>; syncChangedData(mask, opts?) -> Promise<off> }
 // changedPaths is optional optimization: mirror pulls mask ∩ dirty paths; fallback is changed -> get(mask).
-// Optional push-data mode: exposeStore(store,{push:true}) + syncPatches/syncChangedData; details in rare docs.
+// Optional push-data mode: exposeStore(store,{push:true}) + syncPatches/syncChangedData; new mirrors prefer
+// patchesBatch (bounded physical envelopes, default 256 items / 64 KiB of packed RPC data including binary attachments)
+// and automatically fall back to legacy patches. A large sampled drain may split into several callbacks.
+// Mirrors subscribe before their initial get(), so a concurrent source mutation cannot fall through the gap.
+
+// High-level keyed collection over the same Store Replay stack (normal values in app code; compact tuples stay internal)
+Observe.createReplicatedMap<V, K extends string = string>({keyOf, initial?, store?, delivery: 'latest'|'lossless', replay?})
+  -> {api, control: {set, setMany, delete, deleteMany, replaceAll, get, has, snapshot, flush, close}}
+Observe.followReplicatedMap<V, K>(remote, {onBatch?, onStatus?, onError?, staleMs?, drain?, checkpoint?})
+  -> {get, has, snapshot, onKey, batches, keys, ready, status, statusChanges, seq(), replayMode(), delivery(), checkpoint(), isStale, close, debug: {store}}
+  // `latest`: duplicate keys in one producer operation collapse to their final value; reconnect may reset by keyframe.
+  // `latest.replaceAll(fullSnapshot)` compares every key but clones, mutates and publishes only semantic changes.
+  // Fresh object identity does not force a write. If the source already knows its dirty keys, setMany(changes)
+  // skips the full-snapshot comparison and remains the cheapest producer path.
+  // `lossless`: every accepted set operation stays ordered inside its physical batch; gaps/line changes fail loudly.
+  // An injected store is latest-only; its root is a plain keyed object with enumerable string data properties,
+  // and every top-level key must equal keyOf(value). The facade validates before publish.
+  // debug.store is an ADVANCED writable escape hatch for diagnostics; application writes violate follower ownership.
+  // checkpoint() binds snapshot + lineId + delivery/replayMode/seq, so a naked tail can never create a partial map.
+  // New clients select logical v6 -> v5 -> v4 -> v3 -> v2 -> v1 -> legacy by optional-member presence.
+  // v6 leaves ordinary patch/value objects to universal RPC schema v2; older physical codecs remain fallbacks.
 
 // Sequenced sync (replay line): seq-numbered patch stream — keyframe catch-up, reconnect by seq (tail, not snapshot)
-Observe.exposeStoreReplay(store, {history? = 1024}) -> { api /* spread into the RPC server object */, replay, close }
+Observe.exposeStoreReplay(store, {history? = 1024, batch?, patchSource?}) -> { api /* spread into the RPC server object */, replay, replayBatch?, batchStats?, flushPending, close }
   // the patch line declares its condensing `frame` itself (last patch per exact path) — reconnect tails and
   //   lag recovery arrive as a mini-frame (changed paths only), zero config
-Observe.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?} of api.replay*/, {since?, onSeq?}) -> off
-  // off.ready (catch-up done) · off.seq() (save for reconnect: syncStoreReplay(..., {since: prev.seq()}))
+  // batch:true adds api.replay.batch without changing the legacy line. maxItems/maxBytes may split one source drain;
+  // maxDelayMs>0 may merge adjacent drains. Each resulting bounded envelope owns one seq.
+  // New clients prefer logical batch.v6, then binary v5, columnar-JSON v4, v3, v2 and v1. V6 removes the
+  // inner Store binary envelope: the negotiated outer RPC mode encodes ordinary patches directly; RPB/2 can
+  // reuse their typed schema, while RPB/1/legacy remain valid rollout fallbacks between otherwise new peers.
+  // V4/v5 materialized root keyframes support up to 20,000 keyed entries, chunked into physical plan arrays
+  // of at most 10,000; ordinary patch/value limits are not widened.
+  // Explicit client RpcLimits continue through v5's byte envelope; the internal decoder also keeps hard limits.
+  // An old client connected to a new server keeps using the unchanged replay.line; it never selects or receives batch.
+Observe.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?, batch?} of api.replay*/, {since?, onSeq?, batch?, validateBatch?, onBatch?}) -> off
+  // batch:true negotiates v6 -> v5 -> v4 -> v3 -> v2 -> v1 -> legacy automatically, without changing the business API
+  // an RPC proxy waits for MAP before choosing an optional capability; plain in-process remotes stay synchronous
+  // validateBatch runs after decode and before mutation. onBatch runs once AFTER one physical envelope is applied;
+  // an onBatch throw is terminal, does not roll Store state back, and does not advance the replay seq.
+  // off.ready (catch-up done) · off.mode ('legacy'|'batch') · off.seq() (persist mode + seq together)
   // lagging/late client NEVER gets a backlog: evicted seq -> ONE fresh keyframe + live
   // freshness is an option, not consumer boilerplate: {staleMs, onStale} flags a silent line / stale keyframe (edge-triggered both ways; 🎞️ in rare docs)
-Observe.syncStoreReplayRoute(mirror, remote, {label?}) -> off & {switch(nextRemote, opts), ready, seq(), label(), active()}
+Observe.syncStoreReplayRoute(mirror, remote, {label?, batch?, validateBatch?, onBatch?}) -> off & {switch(nextRemote, opts), ready, seq(), label(), active(), mode}
   // relay/direct promotion and re-interposition: replacement route catches up by seq before the old route closes
-Observe.createStoreFollower<T>({remote, initial?, expose?, staleMs?}) -> {store, status, api, replay, ready, isStale, close}
+  // route validation/callback ordering matches syncStoreReplay; batch routes are pinned to one shared batch seq-space
+  // replica-set therefore keeps canonical legacy routing by default
+Observe.createStoreFollower<T>({remote, initial?, expose?, staleMs?, batch? = true}) -> {store, status, api, replay, ready, isStale, close}
   // server-side mirror instance (leader -> follower -> its own clients): syncStoreReplay INTO a local store
   //   + cascade exposeStoreReplay OVER it — `api` goes into the follower's RPC object like any store line
-  // status = a tiny reactive store {upstream: 'catching-up'|'live'|'offline'|'closed', seq, error} — the
+  // status = a tiny reactive store {upstream: 'catching-up'|'live'|'offline'|'closed', seq, replayMode, error} — the
   //   follower never writes into the mirrored store itself (it must stay byte-equal to the leader)
   // commands are NOT applied locally: forward them to the leader with the END client's (account, requestId)
   //   so idempotency receipts and ordering stay on the single leader (demo: DEMO_MIRROR_OF, doc/target plan)
@@ -569,18 +630,24 @@ Observe.createStoreReplicaSet<T>({storeId, originId, nodeId, lineId?, store?, in
 Observe.diffKeyedState(local, authority) -> {localOnly, authorityOnly, conflicts}
   // split-brain tail after a failover rejoin: localOnly = re-apply candidates (mempool analogy),
   //   conflicts = both sides changed one record (the epoch already chose the winner; the pair is preserved)
-Observe.syncStoreReplayEach<T>(remote, (key, value, ctx) => {}, opts?) -> off & {store, ready, seq(), isStale(), lastTs()}
+Observe.syncStoreReplayEach<T>(remote, (key, value, ctx) => {}, opts?) -> off & {store, ready, mode, seq(), isStale(), lastTs()}
   // one-call remote fold: mirror store + syncStoreReplay + store.each() — the callback fires per CHANGED
   //   top-level key; first delivery = keyframe EXPANDED per key; (key, undefined) = key deleted
   // opts = all replaySubscribe opts (since/onSeq/policy/staleMs/onStale/onError...) + {drain?, initial?}
   // off() tears down BOTH the store sub and the wire sub; direct reads via off.store.state.KEY
   // reconnect: syncStoreReplayEach(remote, cb, {since: prev.seq(), initial: prev.store.snapshot()})
   //   — the tail lands ON TOP of the previous state (a fresh empty mirror would not converge)
+// Built-in AI/Conversation/Artifact/FileJob state fragments enable Store batch automatically (old-server fallback)
+// and reconcile account projections by changed record id, so an unrelated tenant produces no view patches.
+// Their clients expose stateMode(); pass {batch:false} when a persisted legacy stateSeq must keep its coordinate.
+// Safe rollout: expose {batch:true}, enable one consumer with {batch:true}, persist mode+seq together, compare snapshots;
+// rollback is only {batch:false}. The legacy replay member remains present throughout the migration.
+// Living check: `npm run demo` → Store shows the negotiated `replay batch`/`replay legacy` mode beside its live seq.
 // Offline persisted mirror (snapshot mode): local cache first, then replay catch-up by seq
 Observe.createOfflineStore({key, remote?, initial, storage, version?, debounceMs?, syncOpts?}) -> Promise<store & {ready, flush(), close(), status(), statusListen, reconnect(remote)}>
 Observe.persistStore(store, {key, storage, seq?, debounceMs?}) -> {flush, forceFlush, close, setSeq, seq, status, statusListen}
 Observe.createMemoryOfflineStorage(initial?) -> OfflineStorage
-  // persists {version, seq, snapshot, savedAt}; seq is the correctness coordinate, timestamps are UX/freshness only
+  // persists {version, seq, replayMode, snapshot, savedAt}; changing legacy/batch coordinate mode forces a safe keyframe
   // mode:'topLevel' is reserved; first implemented mode is snapshot
 
 // Declarative resource manager above mirror/replay/offline: app chooses what to start, not the store core
@@ -615,9 +682,37 @@ type Rows = Record<string, {qty: number}>
 const rows = Observe.createStore<Rows>({})
 const offRows = rows.each().on((key, row) => { /* row === undefined ? removeRow(key) : upsertRow(key, row) */ })
 
+// usual keyed feed: the facade owns Store, replay journal, mirror, seq, reconnect and cleanup
+type Quote = {s: string; c: string}
+const quotes = Observe.createReplicatedMap<Quote>({
+    keyOf(quote) { return quote.s },
+    initial: seedQuotes,
+    delivery: 'latest',
+})
+const offFeed = quoteFeed.on(quotes.control.setMany)     // one producer operation; wire bounds may split its physical envelopes
+
+// expose `quotes.api` on the server; the client needs one follow call
+const followedQuotes = Observe.followReplicatedMap(api.quotes, {
+    onBatch(change) {
+        updateTable(change.set.map(function quoteToRow([symbol, quote]) {
+            return {symbol, price: +quote.c}
+        }))
+        for (const symbol of change.delete) removeRow(symbol)
+    },
+})
+await followedQuotes.ready
+followedQuotes.get('BTCUSDT')
+followedQuotes.snapshot()
+const offBtc = followedQuotes.onKey('BTCUSDT', onQuote, {current: true})
+const checkpoint = followedQuotes.checkpoint()          // persist atomically; pass back as {checkpoint}
+offBtc()
+followedQuotes.close()
+offFeed()
+quotes.control.close()
+
 // the same per-key contract over the wire — ONE call (mirror store + syncStoreReplay + each)
-const exposed = Observe.exposeStoreReplay(rows, {history: 1024})   // server side: spread exposed.api into the RPC object
-const feed = Observe.syncStoreReplayEach<Rows>(exposed.api.replay, (key, row) => {}, {drain: "micro"})
+const exposed = Observe.exposeStoreReplay(rows, {history: 1024, batch: true}) // adds replay.batch; legacy replay remains
+const feed = Observe.syncStoreReplayEach<Rows>(exposed.api.replay, (key, row) => {}, {batch: true, drain: "micro"})
 await feed.ready                                   // catch-up done: keyframe arrived expanded per key
 feed.store.state                                   // the mirror — direct reads / extra subscriptions
 feed()                                             // tears down the store sub AND the wire sub
@@ -723,15 +818,17 @@ parity, frame equivalence, gate lag sim), plus `replay/conflate-socket.test.ts`,
 import { Observe, Replay, createNodeIdMinter } from "wenay-common2"
 import { openFsReplayStorage } from "wenay-common2/server"
 
-// The persistence PORT is Replay.ReplayStorage {putEvent, putKeyframe, getKeyframe, getEvents}:
+// The persistence PORT is Replay.ReplayStorage {putEvent, putEvents?, putKeyframe, getKeyframe, getEvents}:
 // createMemoryReplayStorage (reference), openFsReplayStorage(file) (node, JSONL append-log,
 // .compact() = atomic [latest keyframe + tail] rewrite), or your DB adapter behind the same lambdas.
 
 Observe.createDurableStoreReplay<T>({storage, initial?, everyEvents? = 64, everyMs?, drain?, expose?})
-    -> {store, api, replay, restored: {seq, fromArchive}, stats, close}
+    -> {store, api, replay, restored: {seq, fromArchive}, stats, retry, close}
   // the line SURVIVES a process restart: state hydrates from [keyframe + deltas], seq numbering
   // continues (firstSeq), a mirror reconnecting with its old seq gets the exact persisted tail
-  // (no keyframe reset), every new patch + cadence keyframes go back into storage.
+  // (no keyframe reset), every new patch + cadence keyframes go back into storage. A capable adapter receives
+  // one atomic all-or-throw putEvents(...) per natural Store drain before head/fan-out. A failed batch is retained;
+  // retry() persists/publishes it once. The FS adapter writes one `b` JSONL record and discards a torn trailing record on open.
   // Leadership/epoch stay upper-layer (follower/replica-set). Oracle: oracle/realsocket/store-durable.spec.ts
 
 // flight recorder — record any replay line, play it back at any pace
@@ -740,6 +837,7 @@ Replay.loadJsonlReplay(lines | text) -> ReplayStorage                           
 Observe.playbackStoreReplay<T>(storage, {speed? = 1 | Infinity, maxStepMs?, drain?, expose?})
     -> {store, api, replay, range: {from, to}, done: Promise, close}
   // re-emits the recorded patch line as an ORDINARY head — mirrors consume it like live;
+  // playback batching is opt-in through expose.batch; recording coordinates remain unchanged
   // random access stays Observe.storeReplayAt(storage, {seq|ts}). Oracle: replay/record-playback.test.ts
 
 // node health — stats() of local primitives aggregated into ONE mirrorable store

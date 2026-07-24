@@ -39,13 +39,13 @@ export type ListenCoreOptions<T = any> = {
     fast?: boolean
     onRemove?: (key: ListenKey) => void
     event?: (type: 'add' | 'remove', count: number, api: ListenCoreApi<T>) => void
-}
+} & ListenDispatchErrorPort
 
 export type ListenOptions<T = any> = {
     event?: (type: 'add' | 'remove', count: number, api: ListenApi<T>) => void
     fast?: boolean
     closeOn?: ListenApi<any>
-}
+} & ListenDispatchErrorPort
 
 export type ListenStoreOptions<T> = ListenOptions<T> & {
     current: ListenCurrentProvider<NormalizeTuple<T>>
@@ -55,15 +55,30 @@ export type ListenOnBrand<Z extends any[] = any[]> = { readonly [LISTEN_ON_BRAND
 
 const listenByOn = new WeakMap<Function, any>()
 
+/** Hidden decorator port: isolate sibling subscribers without widening the Listen facade. */
+export const LISTEN_DISPATCH_ERROR = Symbol.for('wenay-common2.listen.dispatchError')
+export type ListenDispatchErrorPort = {
+    [LISTEN_DISPATCH_ERROR]?: (error: unknown) => void
+}
+
 export function getListenByOn(fn: any) { return typeof fn == 'function' ? listenByOn.get(fn) : undefined }
 export function isListenOn(fn: any): boolean { return typeof fn == 'function' && listenByOn.has(fn) }
 export function registerListenOn(on: Function, api: any) { listenByOn.set(on, api) }
 
 export function createListenCore<T>(options: ListenCoreOptions<T> = {}): ListenCoreApi<T> {
     const {fast = true, onRemove, event} = options
+    const dispatchError = options[LISTEN_DISPATCH_ERROR]
     type Z = NormalizeTuple<T>
     const subs = new Map<ListenKey, Listener<Z>>()
-    let dispatcher: Listener<Z> | null = (...args) => { subs.forEach(cb => cb(...args)) }
+    function dispatch(cb: Listener<Z>, args: Z) {
+        if (!dispatchError) { cb(...args); return }
+        try { cb(...args) }
+        catch (error) { dispatchError(error) }
+    }
+    function dispatchInitial(...args: Z) {
+        for (const cb of subs.values()) dispatch(cb, args)
+    }
+    let dispatcher: Listener<Z> | null = dispatchInitial
     let cached: Listener<Z>[] | null = null
 
     const getArr = () => cached ?? (cached = Array.from(subs.values()))
@@ -72,16 +87,33 @@ export function createListenCore<T>(options: ListenCoreOptions<T> = {}): ListenC
         cached = null
         const size = subs.size
         if (size == 0) { dispatcher = null; return }
-        if (size == 1) { dispatcher = subs.values().next().value!; return }
-        if (size == 2) {
-            const [a, b] = getArr()
-            dispatcher = ((...args) => { a(...args); b(...args) }) as Listener<Z>
+        if (size == 1) {
+            const cb = subs.values().next().value!
+            function dispatchOne(...args: Z) { dispatch(cb, args) }
+            dispatcher = dispatchError ? dispatchOne : cb
             return
         }
-        dispatcher = ((...args) => {
+        if (size == 2) {
+            const [a, b] = getArr()
+            function dispatchPairSafely(...args: Z) {
+                dispatch(a, args)
+                dispatch(b, args)
+            }
+            function dispatchPair(...args: Z) {
+                a(...args)
+                b(...args)
+            }
+            dispatcher = dispatchError ? dispatchPairSafely : dispatchPair
+            return
+        }
+        dispatcher = function dispatchMany(...args: Z) {
             const arr = getArr()
-            for (let i = 0; i < arr.length; i++) arr[i](...args)
-        }) as Listener<Z>
+            if (dispatchError) {
+                for (let i = 0; i < arr.length; i++) dispatch(arr[i], args)
+            } else {
+                for (let i = 0; i < arr.length; i++) arr[i](...args)
+            }
+        }
     }
 
     function removeOne(key: ListenKey) {
@@ -143,12 +175,15 @@ export function createListen<T>(
         closeHooks?.delete(key)
     }
 
+    function forwardRemoveEvent(type: 'add' | 'remove', count: number) {
+        if (type == 'remove') event?.(type, count, api)
+    }
+
     const core = createListenCore<T>({
         fast,
         onRemove: forgetKey,
-        event: event && ((type, count) => {
-            if (type == 'remove') event(type, count, api)
-        }),
+        [LISTEN_DISPATCH_ERROR]: options[LISTEN_DISPATCH_ERROR],
+        event: event ? forwardRemoveEvent : undefined,
     })
 
     const api: ListenApi<T> = {

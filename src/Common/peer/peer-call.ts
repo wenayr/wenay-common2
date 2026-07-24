@@ -164,10 +164,16 @@ export function createCallManager(deps: CallManagerDeps) {
     const readyProbe = 'call-ready:' + self
     let resolveReady: () => void
     const ready = new Promise<void>(r => { resolveReady = r })
+    let readySettled = false
+    function settleReady() {
+        if (readySettled) return
+        readySettled = true
+        resolveReady()
+    }
 
     const offSignals = port.signals.on(function onCallSignal(env: SignalEnvelope) {
         if (closed || env == null || env.to != self) return
-        if (env.pair == readyProbe) { resolveReady(); return }
+        if (env.pair == readyProbe) { settleReady(); return }
         if (env.type == 'ring') { void onRing(env); return }
         const live = calls.get(env.pair)
         if (!live) return
@@ -178,7 +184,7 @@ export function createCallManager(deps: CallManagerDeps) {
 
     // 'close' with a non-route pair is inert for every other consumer of the port
     Promise.resolve(port.send({type: 'close', pair: readyProbe, from: self, to: self}))
-        .then(function onProbeVerdict(v) { if (v == false) resolveReady() }, function onProbeError() { resolveReady() })
+        .then(function onProbeVerdict(v) { if (v == false) settleReady() }, settleReady)
 
     return {
         /** Resolves when the signal subscription is confirmed registered server-side. */
@@ -191,6 +197,7 @@ export function createCallManager(deps: CallManagerDeps) {
         close() {
             if (closed) return
             closed = true
+            settleReady()
             if (typeof offSignals == 'function') offSignals()
             else (offSignals as any)?.off?.()
             for (const c of Array.from(calls.values())) c.finish('closed', true)

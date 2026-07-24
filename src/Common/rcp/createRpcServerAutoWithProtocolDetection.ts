@@ -1,6 +1,6 @@
 import { isListenCallback, createListen, isListenOn, getListenByOn } from "../events/Listen";
 import { listenSocket } from "./listen-socket";
-import { createRpcServer, type PromiseServerHooks, type RpcLimits } from "./rpc-server";
+import { createRpcServer, type PromiseServerHooks, type RpcLimits, type RpcOpt } from "./rpc-server";
 import { DeepSocketListen } from "./listen-deep";
 import { Pkt, type SocketTmpl } from "./rpc-protocol";
 import { promiseServer } from "./oldCommonsServerMini";
@@ -32,6 +32,7 @@ export function createRpcServerAutoDetect<T extends object>({
                                                            hooks,
                                                            disconnectListen,
                                                            limits,
+                                                           opt,
                                                            onProtocolDetect,
                                                        }: {
     socket: SocketTmpl;
@@ -41,6 +42,7 @@ export function createRpcServerAutoDetect<T extends object>({
     hooks?: Omit<PromiseServerHooks<DeepSocketListen<T>>, "resolveTransform">;
     disconnectListen?: ListenCallbackBase<any>;
     limits?: RpcLimits;
+    opt?: RpcOpt;
     onProtocolDetect?: (protocol: 'v2' | 'legacy') => void;
 }) {
     // ── Common cache of Listen multiplexers for both protocols ─────────────
@@ -162,7 +164,8 @@ export function createRpcServerAutoDetect<T extends object>({
      *  and client auth() would hang. Inner createRpcServer handles HELLO itself. */
     function isV2Message(msg: any): boolean {
         if (msg === Pkt.STRICT) return true;
-        if (Array.isArray(msg) && (msg[0] === Pkt.CALL || msg[0] === Pkt.PIPE || msg[0] === Pkt.HELLO)) return true;
+        if (Array.isArray(msg) && (msg[0] === Pkt.CALL || msg[0] === Pkt.PIPE
+            || msg[0] === Pkt.HELLO || msg[0] === Pkt.CAPS)) return true;
         return false;
     }
 
@@ -202,6 +205,7 @@ export function createRpcServerAutoDetect<T extends object>({
             socketKey: key,
             debug,
             limits,
+            opt,
             hooks: {
                 ...hooks,
                 onDispose: () => { unsubscribeAllActive(); hooks?.onDispose?.(); },
@@ -220,7 +224,14 @@ export function createRpcServerAutoDetect<T extends object>({
     // dispose() nullifies activeHandler → router becomes inert (idiom from rpc-server.ts:26-29).
     function handleMessage(msg: any) {
         if (debug) {
-            console.log('[RPC-AUTO-DETECT IN]', typeof msg === 'object' ? JSON.stringify(msg) : msg);
+            const binary = msg instanceof ArrayBuffer || ArrayBuffer.isView(msg)
+            let shown = msg
+            if (binary) shown = `[binary ${msg.byteLength} bytes]`
+            else if (typeof msg == 'object') {
+                try { shown = JSON.stringify(msg) }
+                catch { shown = String(msg) }
+            }
+            console.log('[RPC-AUTO-DETECT IN]', shown)
         }
 
         // ── Fast path: protocol already detected ───────────────

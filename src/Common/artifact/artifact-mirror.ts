@@ -9,8 +9,13 @@
 // Policy is applied AT EACH EDGE: replication of the catalog between nodes is
 // a trusted channel, but the end client sees only their own.
 
-import {createStore, Store, StoreDrain} from '../Observe/store'
+import {createStore, Store, StoreChange, StoreDrain} from '../Observe/store'
 import {exposeStoreReplay} from '../Observe/store-replay'
+import {
+    collectStoreProjectionChanges,
+    reconcileStoreProjection,
+    reconcileStoreProjectionRecord,
+} from '../Observe/store-projection'
 import {
     ArtifactOpenInstruction,
     ArtifactPolicy,
@@ -36,7 +41,7 @@ export type ArtifactMirrorDeps = {
 
 export function createArtifactMirror(deps: ArtifactMirrorDeps) {
     const {catalog, policy, history, drain, now = Date.now} = deps
-    const views = new Set<{refresh: () => void}>()
+    const views = new Set<{refresh: (change: StoreChange) => void, close: () => void}>()
     let closed = false
 
     function readable(account: string, artifact: ArtifactRecord) {
@@ -55,9 +60,9 @@ export function createArtifactMirror(deps: ArtifactMirrorDeps) {
         return {artifacts}
     }
 
-    const offCatalog = catalog.listenPaths().on(function refreshMirrorViews() {
+    const offCatalog = catalog.listenPaths().on(function refreshMirrorViews(change) {
         if (closed) return
-        for (const view of views) view.refresh()
+        for (const view of views) view.refresh(change)
     })
 
     function isExpired(artifact: ArtifactRecord) {
@@ -93,22 +98,39 @@ export function createArtifactMirror(deps: ArtifactMirrorDeps) {
     function connection(account: string) {
         if (closed) throw new Error('artifact mirror closed')
         const state = createStore<ArtifactStore>(project(account), drain !== undefined ? {drain} : {})
-        const replay = exposeStoreReplay(state, history !== undefined ? {history} : {})
-        const view = {refresh: function refreshProjection() { state.replace(project(account)) }}
-        views.add(view)
+        const replay = exposeStoreReplay(state, history == undefined ? {batch: true} : {history, batch: true})
         let connectionClosed = false
+        const view = {
+            refresh: function refreshProjection(change: StoreChange) {
+                // A custom policy may close over tenant membership outside the changed record.
+                if (policy?.canRead) { reconcileStoreProjection(state, project(account)); return }
+                const changed = collectStoreProjectionChanges(change, ['artifacts'])
+                if (!changed) { reconcileStoreProjection(state, project(account)); return }
+                for (const itemKey of changed.get('artifacts') ?? []) {
+                    const id = String(itemKey)
+                    const artifact = catalog.state.artifacts[id]
+                    const visible = !!artifact && readable(account, artifact)
+                    reconcileStoreProjectionRecord(state, 'artifacts', id, {
+                        exists: visible,
+                        ...(visible ? {value: copyArtifact(artifact!)} : {}),
+                    })
+                }
+            },
+            close: function closeConnectionView() {
+                if (connectionClosed) return
+                connectionClosed = true
+                views.delete(view)
+                replay.close()
+            }
+        }
+        views.add(view)
         return {
             fragment: {
                 state: replay.api.replay,
                 open: (artifactId: string) => open(account, artifactId),
                 revoke: (artifactId: string) => revoke(account, artifactId),
             },
-            close() {
-                if (connectionClosed) return
-                connectionClosed = true
-                views.delete(view)
-                replay.close()
-            },
+            close: view.close,
         }
     }
 
@@ -118,6 +140,7 @@ export function createArtifactMirror(deps: ArtifactMirrorDeps) {
             if (closed) return
             closed = true
             offCatalog()
+            for (const view of Array.from(views)) view.close()
             views.clear()
         },
     }

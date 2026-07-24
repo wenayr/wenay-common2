@@ -41,6 +41,12 @@ import { getRpcMemberState, getRpcTransportLifecycle, RPC_TRANSPORT_CONTROL } fr
 import type { DeepSocketListen } from "./listen-deep"
 import { MyError } from "../../toError/myThrow"
 import { createStore, createStoreMirror, exposeStore, exposeStoreReplay, flushReactive, syncStoreReplay } from "../Observe"
+import {runRpcCallbackBatchTests} from './rpc-callback-batch.spec'
+import {runRpcBinaryCodecTests} from './rpc-binary-codec.spec'
+import {runRpcBinarySchemaIntegrationTests} from './rpc-binary-schema-integration.spec'
+import {runRpcBinarySchemaTests} from './rpc-binary-schema.spec'
+import {runRpcBinaryTests} from './rpc-binary.spec'
+import {runRpcBinaryCompatTests} from './rpc-binary-compat.spec'
 
 // --- loopback: emit from one end delivers to on of the other (async, like real socket) ---
 // Each message goes through JSON clone: real transport serializes, and raw Date/Map/BigInt
@@ -1440,6 +1446,12 @@ export async function runHarness() {
         await check("cookbook: throttle — leading+trailing, не все тики", async () => [got[0], got[got.length - 1], got.length < 5], [1, 5, true])
     }
 
+    await runRpcCallbackBatchTests()
+    fails += await runRpcBinaryCodecTests()
+    fails += await runRpcBinarySchemaTests()
+    fails += await runRpcBinarySchemaIntegrationTests()
+    fails += await runRpcBinaryTests()
+    fails += await runRpcBinaryCompatTests()
     console.log(`\n${fails === 0 ? "ALL GREEN ✅" : fails + " FAILURE(S) ❌"}`)
     return fails
 }

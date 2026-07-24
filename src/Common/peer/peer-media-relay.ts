@@ -44,6 +44,7 @@ export function createMediaRelay(deps: MediaRelayDeps) {
     const accounts = new Map<string, AccountLines>()
     // dynamic keyspace: accounts appear at runtime, watchers resolve them by string path
     const watch: Record<string, Record<string, tRelayLine>> = noStrict({})
+    let closed = false
 
     function makeLine(kind: tMediaRelayKind) {
         return kind == 'video'
@@ -55,6 +56,7 @@ export function createMediaRelay(deps: MediaRelayDeps) {
     }
 
     function linesOf(account: string) {
+        if (closed) throw new Error('media relay closed')
         let entry = accounts.get(account)
         if (!entry) {
             entry = {emits: {}, view: noStrict({})}
@@ -145,6 +147,7 @@ export function createMediaRelay(deps: MediaRelayDeps) {
      * that identity is what `canWatch` receives. Without `canWatch` behaves like `watch`.
      */
     function watchOf(watcher: string) {
+        if (closed) throw new Error('media relay closed')
         let cached = watcherViews.get(watcher)
         if (cached) return cached.root
         const owners = new Map<string, Record<string, tRelayLine>>()
@@ -208,8 +211,11 @@ export function createMediaRelay(deps: MediaRelayDeps) {
         accounts: () => Array.from(accounts.keys()),
         dropAccount,
         close() {
+            if (closed) return
+            closed = true
             for (const cache of watcherViews.values()) closeWatcherCache(cache)
             for (const entry of accounts.values()) dropLines(entry)
+            for (const account of Object.keys(watch)) delete watch[account]
             accounts.clear()
             watcherViews.clear()
         },
