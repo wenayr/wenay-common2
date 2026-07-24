@@ -122,9 +122,9 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
     const serverGeneration = nextServerGeneration();
     const maxBinaryShapes = (0, rpc_caps_1.rpcBinaryMaxShapes)(opt);
     const binarySchemaOptions = (0, rpc_caps_1.rpcBinarySchemaOptions)(opt);
-    function schemaBinaryOn(channel) {
+    function trustedBinaryOn(channel) {
         return channel.binary
-            && channel.session.peer?.protocolVersion == rpc_binary_envelope_1.RPC_BINARY_SCHEMA_PROTOCOL_VERSION;
+            && channel.session.peer?.protocolVersion != rpc_binary_envelope_1.RPC_BINARY_PROTOCOL_VERSION;
     }
     function sendBinaryNow(session, packet) {
         if (!session.peer)
@@ -169,9 +169,12 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
         opt: opt?.callbackBatch,
     });
     function createSession(id, peerCaps, binary = true) {
-        const protocolVersion = (0, rpc_caps_1.hasCap)(serverCaps & peerCaps, rpc_caps_1.Caps.BINARY_SCHEMA)
-            ? rpc_binary_envelope_1.RPC_BINARY_SCHEMA_PROTOCOL_VERSION
-            : rpc_binary_envelope_1.RPC_BINARY_PROTOCOL_VERSION;
+        const effectiveCaps = serverCaps & peerCaps;
+        const protocolVersion = (0, rpc_caps_1.hasCap)(effectiveCaps, rpc_caps_1.Caps.BINARY_MSGPACK)
+            ? rpc_binary_envelope_1.RPC_BINARY_MSGPACK_PROTOCOL_VERSION
+            : (0, rpc_caps_1.hasCap)(effectiveCaps, rpc_caps_1.Caps.BINARY_SCHEMA)
+                ? rpc_binary_envelope_1.RPC_BINARY_SCHEMA_PROTOCOL_VERSION
+                : rpc_binary_envelope_1.RPC_BINARY_PROTOCOL_VERSION;
         const peer = binary
             ? (0, rpc_binary_peer_1.createRpcBinaryPeer)({
                 sessionId: id,
@@ -285,7 +288,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
         }
         if (channel.binary && (!callbackBatchOn(channel)
             || (0, rpc_callback_batch_1.callbackBatchDirectBinaryOversize)(cbArgs, opt?.callbackBatch))) {
-            const directArgs = schemaBinaryOn(channel)
+            const directArgs = trustedBinaryOn(channel)
                 ? cbArgs
                 : cbArgs.map(value => (0, rpc_binary_walk_1.validateRpcBinaryResult)(value, lim));
             sendChannel(channel, [rpc_protocol_1.Pkt.CB, cbId, directArgs]);
@@ -316,7 +319,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
             sendChannel(channel, [rpc_protocol_1.Pkt.RESP, reqId, (0, rpc_walk_1.packResult)(value)]);
             return;
         }
-        if (schemaBinaryOn(channel)) {
+        if (trustedBinaryOn(channel)) {
             try {
                 sendChannel(channel, [rpc_protocol_1.Pkt.RESP, reqId, value]);
             }
@@ -711,7 +714,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
                         if (typeof current !== "function")
                             throw new Error("Attempted to call a non-function in pipe");
                         const stepArgs = channel.binary
-                            ? (schemaBinaryOn(channel)
+                            ? (trustedBinaryOn(channel)
                                 ? rpc_binary_walk_1.unpackRpcBinaryArgsTrusted
                                 : rpc_binary_walk_1.unpackRpcBinaryArgs)(step.args, (id, args) => sendCb(channel, id, args), id => sendCbEnd(channel, id), lim)
                             : (0, rpc_walk_1.unpack)(step.args, (id, args) => sendCb(channel, id, args), id => sendCbEnd(channel, id), lim);
@@ -726,7 +729,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
             }
             else {
                 const args = channel.binary
-                    ? (schemaBinaryOn(channel)
+                    ? (trustedBinaryOn(channel)
                         ? rpc_binary_walk_1.unpackRpcBinaryArgsTrusted
                         : rpc_binary_walk_1.unpackRpcBinaryArgs)(rawArgsOrSteps, (id, values) => sendCb(channel, id, values), id => sendCbEnd(channel, id), lim)
                     : (0, rpc_walk_1.unpack)(rawArgsOrSteps, (id, values) => sendCb(channel, id, values), id => sendCbEnd(channel, id), lim);

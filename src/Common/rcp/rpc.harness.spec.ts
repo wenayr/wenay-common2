@@ -47,6 +47,7 @@ import {runRpcBinarySchemaIntegrationTests} from './rpc-binary-schema-integratio
 import {runRpcBinarySchemaTests} from './rpc-binary-schema.spec'
 import {runRpcBinaryTests} from './rpc-binary.spec'
 import {runRpcBinaryCompatTests} from './rpc-binary-compat.spec'
+import {runRpcBinaryMsgpackTests} from './rpc-binary-msgpack.spec'
 
 // --- loopback: emit from one end delivers to on of the other (async, like real socket) ---
 // Each message goes through JSON clone: real transport serializes, and raw Date/Map/BigInt
@@ -1452,6 +1453,7 @@ export async function runHarness() {
     fails += await runRpcBinarySchemaIntegrationTests()
     fails += await runRpcBinaryTests()
     fails += await runRpcBinaryCompatTests()
+    fails += await runRpcBinaryMsgpackTests()
     console.log(`\n${fails === 0 ? "ALL GREEN ✅" : fails + " FAILURE(S) ❌"}`)
     return fails
 }

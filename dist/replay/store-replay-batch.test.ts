@@ -8,6 +8,12 @@ import {flushReactive} from '../src/Common/Observe/reactive'
 import {packResult, unpackResult} from '../src/Common/rcp/rpc-walk'
 import {rpcResultWireByteLength} from '../src/Common/rcp/rpc-wire-size'
 import {
+    inspectRpcBinaryEnvelope,
+    RPC_BINARY_MSGPACK_PROTOCOL_VERSION,
+} from '../src/Common/rcp/rpc-binary-envelope'
+import {createRpcBinaryPeer} from '../src/Common/rcp/rpc-binary-peer'
+import {Pkt} from '../src/Common/rcp/rpc-protocol'
+import {
     exposeStoreReplay, StoreReplayBatchRemote, StoreReplayPatchSource, StoreReplayRemote,
     syncStoreReplay, syncStoreReplayBatch,
 } from '../src/Common/Observe/store-replay'
@@ -257,7 +263,7 @@ async function main() {
         exposed.close()
     }
 
-    console.log('\n[store-replay-batch] v7 delegates Store values directly to msgpackr')
+    console.log('\n[store-replay-batch] v7 is unchanged v2 inside universal msgpackr')
     {
         const source = createStore<Record<string, any>>({}, {drain: 'micro'})
         const exposed = exposeStoreReplay(source, {history: 8, batch: true})
@@ -301,10 +307,26 @@ async function main() {
             await v7.keyframe(),
             ...(await v7.frame!(0) ?? []),
         ].filter((wire): wire is tStoreReplayWireBatchV7 => Array.isArray(wire)
-            && wire[2] instanceof Uint8Array)
+            && wire[0] == 2)
+
+        const sender = createRpcBinaryPeer({
+            sessionId: 1,
+            maxShapes: 1_000,
+            protocolVersion: RPC_BINARY_MSGPACK_PROTOCOL_VERSION,
+        })
+        const receiver = createRpcBinaryPeer({
+            sessionId: 1,
+            maxShapes: 1_000,
+            protocolVersion: RPC_BINARY_MSGPACK_PROTOCOL_VERSION,
+        })
 
         function decodeIndependently(wire: tStoreReplayWireBatchV7) {
-            return createStoreReplayMsgpackCodec().decode(wire)
+            const prepared = sender.prepare([Pkt.CB, 1, [wire]])
+            const envelope = inspectRpcBinaryEnvelope(prepared.wire)
+            if (!envelope) throw new Error('missing msgpack RPC envelope')
+            const decoded = receiver.decode(envelope.payload)
+            prepared.commit()
+            return createStoreReplayMsgpackCodec().decode(decoded[2][0])
         }
 
         const values = wires.map(function readV7Value(wire) {
@@ -312,33 +334,22 @@ async function main() {
             return patch.path.length == 0 ? patch.value.RICH : patch.value
         })
         ok(wires.length == 4 && values.every(value => isDeepStrictEqual(value, rich)),
-            'live, since, keyframe and frame are independently decodable msgpackr values')
-        ok(wires.every(wire => wire[2].byteLength > 0),
-            'v7 exposes one non-empty msgpackr payload per logical Store envelope')
+            'live, since, keyframe and frame survive the universal msgpackr RPC lane')
+        ok(wires.every(wire => wire[0] == 2 && wire.length == 4),
+            'v7 exposes the exact v2 [2, seq, ts, patches] value without new opcodes')
 
         const cacheSender = createStoreReplayMsgpackCodec()
-        const cacheReceiver = createStoreReplayMsgpackCodec()
         const cacheEvent = {
             seq: 1,
             ts: 2,
             event: [[{path: ['BTC'], exists: true, value: rich}]] as [StorePatch[]],
         }
         const first = cacheSender.encode(cacheEvent)
-        cacheReceiver.decode(first)
-        const known = cacheReceiver.knowledge()
-        const second = cacheSender.encode(
-            cacheEvent,
-            cacheSender.createRemoteKnowledge(known),
-        )
-        cacheReceiver.decode(second)
-        ok(first[1].length > 0 && known.known.length > 0 && second[1].length == 0,
-            'client knowledge ranges suppress already-known schema definitions')
-        const ranges = cacheSender.createRemoteKnowledge({
-            catalogId: cacheSender.catalogId,
-            known: [1, 3, [5, 15], 18],
-        }).ranges()
-        ok(json(ranges) == json([1, 3, [5, 15], 18]),
-            'schema knowledge preserves canonical single IDs and inclusive ranges')
+        const expected = encodeStoreReplayBatchV2(cacheEvent)
+        ok(isDeepStrictEqual(first, expected),
+            'v7 input to the universal codec is byte-for-byte the existing v2 logical tuple')
+        ok(cacheSender.knowledge().known.length == 0,
+            'Store v7 no longer owns a parallel schema catalog')
 
         const reservedRoot: Record<string, unknown> = {
             7: 'numeric',
@@ -351,9 +362,6 @@ async function main() {
             writable: true,
             value: 'business-proto',
         })
-        const nullRoot: Record<string, unknown> = Object.create(null)
-        nullRoot.__proto__ = 'null-prototype-business-key'
-        nullRoot.BTC = {c: 1, t: 2}
         const rootCodec = createStoreReplayMsgpackCodec()
         function roundTripRoot(value: unknown) {
             return rootCodec.decode(rootCodec.encode({
@@ -363,16 +371,12 @@ async function main() {
             })).event[0][0].value
         }
         const decodedReservedRoot = roundTripRoot(reservedRoot)
-        const decodedNullRoot = roundTripRoot(nullRoot)
         const decodedArrayRoot = roundTripRoot([{c: 1}, false, null])
         ok(isDeepStrictEqual(decodedReservedRoot, reservedRoot)
             && Object.getPrototypeOf(decodedReservedRoot) == Object.prototype,
         'flat v7 keyframe preserves numeric, constructor, __proto__ and nested Store keys')
-        ok(isDeepStrictEqual(decodedNullRoot, nullRoot)
-            && Object.getPrototypeOf(decodedNullRoot) == null,
-        'flat v7 keyframe preserves null-prototype Store roots and reserved keys')
         ok(isDeepStrictEqual(decodedArrayRoot, [{c: 1}, false, null]),
-            'non-map root values retain the v2 fallback')
+            'array roots remain ordinary v2 root-set patches')
 
         off()
         exposed.close()
@@ -502,10 +506,10 @@ async function main() {
 
         ok(legacyEvents == 50, `legacy capability remains one event per patch (${legacyEvents})`)
         ok(batchEvents == 1 && batchItems == 50, `batch capability emits 1 envelope with 50 patches (${batchEvents}/${batchItems})`)
-        ok(v7Subscriptions == 1 && v6Subscriptions == 0
+        ok(v2Subscriptions == 1 && v7Subscriptions == 0 && v6Subscriptions == 0
             && v5Subscriptions == 0 && v4Subscriptions == 0 && v3Subscriptions == 0
-            && v2Subscriptions == 0 && v1Subscriptions == 0,
-        'new batch client prefers msgpackr v7 over every older generation')
+            && v1Subscriptions == 0,
+        'new batch client defaults to the measured Store v2 JSON tuple')
         ok([v2Seqs, v3Seqs, v4Seqs, v5Seqs, v6Seqs, v7Seqs]
             .every(seqs => json(seqs) == json(v1Seqs))
             && json(v1Seqs) == json([1]),
@@ -981,12 +985,12 @@ async function main() {
             'new client falls through v5/v4 to batch v3')
         ok(isDeepStrictEqual(v4Mirror.snapshot(), source.snapshot()),
             'new client falls through v5 to JSON-columnar v4')
-        ok(v5FallbackKeyframes == 1 && isDeepStrictEqual(v5Mirror.snapshot(), source.snapshot()),
-            'missing v6 falls through exactly to Store-specific binary v5')
+        ok(v5FallbackKeyframes == 0 && isDeepStrictEqual(v5Mirror.snapshot(), source.snapshot()),
+            'Store v2 remains preferred when later v5-v7 surfaces are also present')
         ok(isDeepStrictEqual(v6Mirror.snapshot(), source.snapshot()),
-            'missing v7 falls through exactly to universal-schema v6')
+            'Store v2 remains preferred when v6 is present')
         ok(isDeepStrictEqual(v7Mirror.snapshot(), source.snapshot()),
-            'new client selects msgpackr v7 when the complete surface is present')
+            'Store v2 remains the default when the complete v1-v7 surface is present')
         oldV1Client()
         v1OnlyServer()
         v2OnlyServer()

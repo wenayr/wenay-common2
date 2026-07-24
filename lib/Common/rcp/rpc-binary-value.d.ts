@@ -3,7 +3,8 @@ declare const RPC_BINARY_CALLBACK_REF: unique symbol;
 type tRpcBinaryCallbackRef = {
     [RPC_BINARY_CALLBACK_REF]: number;
 };
-export declare function createRpcBinaryCallbackRef(id: number): tRpcBinaryCallbackRef;
+export declare function RpcBinaryCallbackRefValue(): void;
+export declare function createRpcBinaryCallbackRef(id: number): Readonly<tRpcBinaryCallbackRef>;
 export declare function rpcBinaryCallbackRefId(value: unknown): number | undefined;
 export type BinaryShapeCacheOptions = {
     maxEntries?: number;

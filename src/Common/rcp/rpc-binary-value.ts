@@ -59,16 +59,24 @@ type tRpcBinaryCallbackRef = {
     [RPC_BINARY_CALLBACK_REF]: number
 }
 
+// msgpackr extensions dispatch by prototype. Keeping this private constructor
+// also keeps callback references impossible to collide with business objects.
+export function RpcBinaryCallbackRefValue() {}
+
 export function createRpcBinaryCallbackRef(id: number) {
     if (!Number.isSafeInteger(id) || id < 0) {
         throw new RangeError('rpc binary callback ref: id must be a non-negative safe integer')
     }
-    return Object.freeze({[RPC_BINARY_CALLBACK_REF]: id}) as tRpcBinaryCallbackRef
+    const value = Object.create(RpcBinaryCallbackRefValue.prototype) as tRpcBinaryCallbackRef
+    value[RPC_BINARY_CALLBACK_REF] = id
+    return Object.freeze(value)
 }
 
 export function rpcBinaryCallbackRefId(value: unknown): number | undefined {
     if (value == null || typeof value != 'object') return undefined
-    if (Object.getPrototypeOf(value) != Object.prototype) return undefined
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype != Object.prototype
+        && prototype != RpcBinaryCallbackRefValue.prototype) return undefined
     // Ordinary business objects are overwhelmingly not callback references.
     // Avoid allocating their complete own-key list just to reject the private brand.
     if (!own.call(value, RPC_BINARY_CALLBACK_REF)) return undefined

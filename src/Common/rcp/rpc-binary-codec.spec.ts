@@ -1008,7 +1008,7 @@ function testEnvelopeCanonicalFormatAndValidation() {
     }
 
     const badVersion = probe.slice()
-    badVersion[3] = 3
+    badVersion[3] = 4
     assert.throws(() => inspectRpcBinaryEnvelope(badVersion), /unsupported version/)
 
     const badKind = probe.slice()

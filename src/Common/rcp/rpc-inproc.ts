@@ -150,7 +150,7 @@ export function createRpcInProc<T extends object>({
     /** Passes to server listen layer (throttle streams) when listen:true. */
     throttle?: number
     maxPerListen?: number
-    /** Negotiated wire optimizations. Binary packets, compact shapes and callback batching are enabled by default. */
+    /** Negotiated wire optimizations. Binary packets are opt-in; compact shapes and callback batching default on. */
     opt?: RpcOpt
 }) {
     const [clientSocket, serverSocket] = createInProcSocketPair()

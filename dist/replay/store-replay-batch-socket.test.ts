@@ -38,6 +38,7 @@ type WireStats = {
     v5Frames: number
     rpcBinaryFrames: number
     schemaBinaryFrames: number
+    msgpackBinaryFrames: number
     v5Calls: number
     v6Calls: number
     v7Calls: number
@@ -131,23 +132,31 @@ async function measure(
         v5Frames: 0,
         rpcBinaryFrames: 0,
         schemaBinaryFrames: 0,
+        msgpackBinaryFrames: 0,
         v5Calls: 0,
         v6Calls: 0,
         v7Calls: 0,
     }
     const replay = exposed.api.replay as StoreReplayRemote
     const exposedBatch = replay.batch
-    const replayFacade = exposedBatch
+    const countedBatch = exposedBatch
         ? {
-            ...replay,
-            batch: {
-                ...exposedBatch,
-                v5: countStoreWireCalls(exposedBatch.v5, function countV5Call() { stats.v5Calls++ }),
-                v6: countStoreWireCalls(exposedBatch.v6, function countV6Call() { stats.v6Calls++ }),
-                v7: countStoreWireCalls(exposedBatch.v7, function countV7Call() { stats.v7Calls++ }),
-            },
+            ...exposedBatch,
+            v5: countStoreWireCalls(exposedBatch.v5, function countV5Call() { stats.v5Calls++ }),
+            v6: countStoreWireCalls(exposedBatch.v6, function countV6Call() { stats.v6Calls++ }),
+            v7: countStoreWireCalls(exposedBatch.v7, function countV7Call() { stats.v7Calls++ }),
         }
-        : replay
+        : undefined
+    // V7 is an explicit connection choice now; the ordinary complete surface
+    // deliberately selects V2 first.
+    if (countedBatch && serverBinary && batch) {
+        countedBatch.v2 = undefined
+        countedBatch.v3 = undefined
+        countedBatch.v4 = undefined
+        countedBatch.v5 = undefined
+        countedBatch.v6 = undefined
+    }
+    const replayFacade = countedBatch ? {...replay, batch: countedBatch} : replay
     const app = express()
     const httpServer = createServer(app)
     const ioServer = new SocketIOServer(httpServer, {maxHttpBufferSize: 1e8})
@@ -182,6 +191,9 @@ async function measure(
                         }).length
                         stats.schemaBinaryFrames += binaryLeaves(data).filter(function isSchemaRpcBinary(bytes) {
                             return bytes[0] == 0x52 && bytes[1] == 0x50 && bytes[2] == 0x42 && bytes[3] == 2
+                        }).length
+                        stats.msgpackBinaryFrames += binaryLeaves(data).filter(function isMsgpackRpcBinary(bytes) {
+                            return bytes[0] == 0x52 && bytes[1] == 0x50 && bytes[2] == 0x42 && bytes[3] == 3
                         }).length
                     }
                     socket.emit(key, data)
@@ -328,10 +340,10 @@ async function main() {
     ok(oldTransport.sends >= 50, `old RPC transport sends per patch (${oldTransport.sends})`)
     ok(callbackBatch.sends == 1, `generic callback batching wraps the unchanged legacy line once (${callbackBatch.sends})`)
     ok(batch.sends == 1, `batch sends one physical RPC/Socket.IO message (${batch.sends})`)
-    ok(batch.binaryAttachments == 1 && batch.rpcBinaryFrames == 1 && batch.schemaBinaryFrames == 1
+    ok(batch.binaryAttachments == 1 && batch.rpcBinaryFrames == 1 && batch.msgpackBinaryFrames == 1
         && batch.v5Frames == 0 && batch.v7Calls > 0 && batch.v6Calls == 0 && batch.v5Calls == 0,
-    `Store v7 uses one msgpackr value inside the existing schema-v2 RPC frame `
-        + `(${batch.binaryAttachments}/${batch.schemaBinaryFrames}, routes `
+    `Store v7 sends the exact v2 tuple inside one universal msgpack RPC frame `
+        + `(${batch.binaryAttachments}/${batch.msgpackBinaryFrames}, routes `
         + `${batch.v7Calls}/${batch.v6Calls}/${batch.v5Calls})`)
     ok(oldTransport.binaryAttachments == 0 && callbackBatch.binaryAttachments == 0,
         'explicit binary opt-out preserves JSON transport')
@@ -343,10 +355,10 @@ async function main() {
     ok(largeV7.initialConverged && largeV7.converged && largeV7.reconnected,
         'msgpackr Store v7 converges a 15k keyframe, 250 live updates and 250 reconnect updates')
     ok(largeV7.v7Calls >= 2 && largeV7.v6Calls == 0 && largeV7.v5Calls == 0
-        && largeV7.v5Frames == 0 && largeV7.schemaBinaryFrames >= 2,
-    `15k/reconnect stays on v7 and outer RPB/2 without inner SRB `
+        && largeV7.v5Frames == 0 && largeV7.msgpackBinaryFrames >= 2,
+    `15k/reconnect stays on v7 and universal RPB/3 without inner Store binary `
         + `(${largeV7.v7Calls}/${largeV7.v6Calls}/${largeV7.v5Calls}, `
-        + `${largeV7.schemaBinaryFrames} frames)`)
+        + `${largeV7.msgpackBinaryFrames} frames)`)
     console.log(fails ? `\n${fails} FAILED` : '\nall passed')
     if (fails) process.exit(1)
 }

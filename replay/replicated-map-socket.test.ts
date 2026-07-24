@@ -36,13 +36,11 @@ async function waitFor(label: string, condition: () => boolean) {
 type Item = {
     id: string
     value: number
-    meta?: {explicit: undefined}
     bytes?: Uint8Array
-    placeholder?: {_placeholder: true, num: number}
 }
 type SocketFacade = {map: ReplicatedMapRemote<Item>}
 type WireStats = {
-    rpcV2Frames: number
+    rpcV3Frames: number
     embeddedV5Frames: number
 }
 
@@ -126,7 +124,7 @@ async function startServer(remote: ReplicatedMapRemote<Item>, wireStats: WireSta
                     if (key == 'replicated-map-socket') {
                         for (const bytes of binaryLeaves(data)) {
                             if (bytes[0] == 0x52 && bytes[1] == 0x50
-                                && bytes[2] == 0x42 && bytes[3] == 2) wireStats.rpcV2Frames++
+                                && bytes[2] == 0x42 && bytes[3] == 3) wireStats.rpcV3Frames++
                             if (containsStoreV5(bytes)) wireStats.embeddedV5Frames++
                         }
                     }
@@ -160,10 +158,11 @@ async function main() {
     console.log('\n[replicated-map-socket] RPC facade, batch and reconnect')
     const producer = createReplicatedMap<Item>({
         keyOf(value) { return value.id },
-        initial: [{...item('seed', 0), meta: {explicit: undefined}}],
+        initial: [item('seed', 0)],
         delivery: 'latest',
         replay: {history: 32, batch: {history: 32}},
     })
+    let v2Reads = 0
     let v5Reads = 0
     let v6Reads = 0
     let v7Reads = 0
@@ -172,12 +171,13 @@ async function main() {
         ...producer.api,
         batch: {
             ...producerBatch,
+            v2: countWireReads(producerBatch.v2!, function countV2Read() { v2Reads++ }),
             v5: countWireReads(producerBatch.v5!, function countV5Read() { v5Reads++ }),
             v6: countWireReads(producerBatch.v6!, function countV6Read() { v6Reads++ }),
             v7: countWireReads(producerBatch.v7!, function countV7Read() { v7Reads++ }),
         },
     }
-    const wireStats: WireStats = {rpcV2Frames: 0, embeddedV5Frames: 0}
+    const wireStats: WireStats = {rpcV3Frames: 0, embeddedV5Frames: 0}
     const server = await startServer(measuredRemote, wireStats)
     const hub = createRpcClientHub(
         function connectSocket() {
@@ -209,25 +209,20 @@ async function main() {
         ok(descriptor?.replicatedMap?.delivery == 'latest'
             && follower.replayMode() == 'batch' && follower.delivery() == 'latest',
         'Replicated Map descriptor and compact batch facade pass RPC auto-projection')
-        ok(v7Reads > 0 && v6Reads == 0 && v5Reads == 0,
-            'Replicated Map initial catch-up selects Store Replay v7')
+        ok(v2Reads > 0 && v7Reads == 0 && v6Reads == 0 && v5Reads == 0,
+            'Replicated Map initial catch-up selects the default Store Replay v2')
         ok(follower.get('seed')?.value == 0,
             'initial keyframe crosses the projected real-socket facade')
-        ok(Object.prototype.hasOwnProperty.call(follower.get('seed')?.meta ?? {}, 'explicit'),
-            'nested explicit undefined survives the compact real-socket keyframe')
-
         producer.control.set({
-            ...item('binary-placeholder', 1),
+            ...item('binary-value', 1),
             bytes: new Uint8Array([7, 8, 9]),
-            placeholder: {_placeholder: true, num: 0},
         })
-        await waitFor('binary placeholder business value', function binaryPlaceholderArrived() {
-            return follower!.get('binary-placeholder')?.bytes?.[2] == 9
+        await waitFor('binary business value', function binaryValueArrived() {
+            return follower!.get('binary-value')?.bytes?.[2] == 9
         })
-        const binaryPlaceholder = follower.get('binary-placeholder')!
-        ok(binaryPlaceholder.placeholder?._placeholder == true && binaryPlaceholder.placeholder.num == 0
-            && binaryPlaceholder.bytes instanceof Uint8Array,
-        'Store Replay v7 preserves a business Socket.IO placeholder beside real binary data')
+        const binaryValue = follower.get('binary-value')!
+        ok(binaryValue.bytes instanceof Uint8Array,
+            'Store Replay v2 preserves real binary data through Socket.IO')
 
         batches.length = 0
         snapshots.length = 0
@@ -275,10 +270,10 @@ async function main() {
         ok(JSON.stringify(comparableSnapshot(follower.snapshot()))
             == JSON.stringify(comparableSnapshot(producer.control.snapshot())),
             'reconnected follower converges to the authoritative map')
-        ok(v7Reads >= 2 && v6Reads == 0 && v5Reads == 0 && wireStats.rpcV2Frames > 0
+        ok(v2Reads >= 2 && v7Reads == 0 && v6Reads == 0 && v5Reads == 0 && wireStats.rpcV3Frames == 0
             && wireStats.embeddedV5Frames == 0,
-        `Replicated Map reconnect remains on v7 inside RPB/2 (${v7Reads}/${v6Reads}/${v5Reads}, `
-            + `${wireStats.rpcV2Frames} frames)`)
+        `Replicated Map reconnect remains on v2/JSON without RPB/3 (${v2Reads}/${v7Reads}/${v6Reads}/${v5Reads}, `
+            + `${wireStats.rpcV3Frames} frames)`)
     } finally {
         follower?.close()
         hub.socket?.disconnect?.()

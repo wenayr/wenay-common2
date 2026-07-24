@@ -39,7 +39,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
      *  no throttling. Server side is the best place for back-to-back: extra
      *  emissions are suppressed BEFORE packing/sending to wire. */
     throttle?: number;
-    /** Negotiated wire optimizations. Binary packets, compact shapes and callback batching are enabled by default. */
+    /** Negotiated wire optimizations. Binary packets are opt-in; compact shapes and callback batching default on. */
     opt?: RpcOpt;
     /** Auto-detection of replay lines in facade: 'auto' (default) — by brand; 'force' — plus
      *  structural (lines from foreign module copy without brand); false — disabled, replay-line

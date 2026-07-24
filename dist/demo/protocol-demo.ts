@@ -41,7 +41,7 @@ function capNames(caps: number) {
 function selectedStoreCodec(remote: WorkboardRemote['state'], mode: tStoreReplayMode) {
     if (mode != 'batch' || !rpcMemberAvailable(remote, 'batch')) return 'per-patch legacy'
     const batch = (remote as any).batch
-    for (const version of ['v6', 'v5', 'v4', 'v3', 'v2']) {
+    for (const version of ['v2', 'v7', 'v6', 'v5', 'v4', 'v3']) {
         if (rpcMemberAvailable(batch, version)) return version
     }
     return 'v1'
@@ -185,6 +185,8 @@ export function createProtocolDemo(deps: ProtocolDemoDeps) {
                         `handshake: RPB/${envelope.version} byte probe acknowledged`
                         + (envelope.version == 2
                             ? `; ${schemaPreludeBytes} schema-prelude bytes exchanged before data`
+                            : envelope.version == 3
+                                ? '; complete RPC packets use msgpackr records'
                             : '')
                         + '; application packets are binary',
                     )

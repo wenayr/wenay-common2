@@ -303,6 +303,10 @@ function createStressApi(version = 1) {
 
 type tStressApi = ReturnType<typeof createStressApi>
 
+function stressBinaryOpt(opt?: RpcOpt) {
+    return {...opt, binary: opt?.binary ?? true}
+}
+
 function createFixture(options?: {
     clientOpt?: RpcOpt
     serverOpt?: RpcOpt
@@ -316,14 +320,14 @@ function createFixture(options?: {
     const client = createRpcClient<tStressApi>({
         socket: clientWire.socket,
         socketKey: 'rpc-binary-stress',
-        opt: options?.clientOpt,
+        opt: stressBinaryOpt(options?.clientOpt),
         limits: options?.clientLimits,
     })
     createRpcServer({
         socket: serverWire.socket,
         socketKey: 'rpc-binary-stress',
         object: createStressApi(options?.version),
-        opt: options?.serverOpt,
+        opt: stressBinaryOpt(options?.serverOpt),
         limits: options?.serverLimits,
     })
 
@@ -665,12 +669,14 @@ async function testReconnectKeepsOneLargeCallbackPerGeneration() {
         socketKey: 'rpc-binary-stress-reconnect',
         object: api,
         disconnectListen: transportDisconnect,
+        opt: {binary: true},
     })
     const hub = createRpcClientHub(
         function useLifecycleSocket() {
             return clientSocket
         },
         helper => ({main: helper<typeof api>('rpc-binary-stress-reconnect')}),
+        {opt: {binary: true}},
     )
 
     try {

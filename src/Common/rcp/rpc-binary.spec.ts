@@ -282,17 +282,24 @@ function createFixture(options?: {clientOpt?: RpcOpt; serverOpt?: RpcOpt; limit?
     const [rawClientSocket, rawServerSocket] = createInProcSocketPair()
     const clientWire = observeSocket(rawClientSocket)
     const serverWire = observeSocket(rawServerSocket)
+    function exactBinaryOpt(opt?: RpcOpt): RpcOpt {
+        if (opt?.binary === false) return opt
+        const binary = opt?.binary && typeof opt.binary == 'object'
+            ? opt.binary
+            : {}
+        return {...opt, binary: {...binary, msgpack: false}}
+    }
     const client = createRpcClient<tApi>({
         socket: clientWire.socket,
         socketKey: 'rpc-binary',
-        opt: options?.clientOpt,
+        opt: exactBinaryOpt(options?.clientOpt),
         limit: options?.limit,
     })
     createRpcServer({
         socket: serverWire.socket,
         socketKey: 'rpc-binary',
         object: createApi(),
-        opt: options?.serverOpt,
+        opt: exactBinaryOpt(options?.serverOpt),
     })
 
     function close() {
@@ -746,6 +753,7 @@ async function testMixedClientsOnOneSocketKey() {
     const binaryClient = createRpcClient<tApi>({
         socket: clientWire.socket,
         socketKey: 'shared-rpc-binary',
+        opt: {binary: {msgpack: false}},
     })
     const arrayClient = createRpcClient<tApi>({
         socket: clientWire.socket,
@@ -756,6 +764,7 @@ async function testMixedClientsOnOneSocketKey() {
         socket: serverWire.socket,
         socketKey: 'shared-rpc-binary',
         object: createApi(),
+        opt: {binary: {msgpack: false}},
     })
 
     try {
@@ -789,7 +798,7 @@ async function testMixedClientsOnOneSocketKey() {
 export async function runRpcBinaryTests() {
     let failures = 0
     const tests = [
-        ['default CALL/RESP/PIPE use byte frames', testDefaultBinaryCallResponseAndPipe],
+        ['explicit binary CALL/RESP/PIPE use byte frames', testDefaultBinaryCallResponseAndPipe],
         ['application depth stays exact behind CALL/PIPE/CB_BATCH wrappers',
             testApplicationDepthBehindProtocolWrappers],
         ['binary:false on either peer keeps arrays', testBinaryDisabledOnEitherSide],

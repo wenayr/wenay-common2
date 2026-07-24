@@ -81,26 +81,10 @@ declare function exposeStoreReplayBatch(replay: StoreReplayBatchLine, prepareRea
     v5: StoreReplayWireRemote<tStoreReplayWireBatchV5>;
     v6: StoreReplayWireRemote<ReplayEvent<[readonly StorePatch[]]>>;
     v7: {
-        line: {
-            on(cb: (wire: tStoreReplayWireBatchV7) => void, opts?: {
-                knowledge?: tStoreReplaySchemaKnowledge;
-            }): import("../..").ListenOff;
-            emit: import("../..").Listener<Buffer<ArrayBufferLike>[]>;
-            has(key: import("../..").ListenKey): boolean;
-            off(keyOrCallback: import("../..").ListenKey | import("../..").Listener<Buffer<ArrayBufferLike>[]> | null): void;
-            once(cb: import("../..").Listener<Buffer<ArrayBufferLike>[]>, opts?: {
-                key?: import("../..").ListenKey;
-            }): import("../..").ListenOff;
-            close(): void;
-            count(): number;
-            keys(): import("../..").ListenKey[];
-            isRunning(): boolean;
-            run(): void;
-            onClose(cb: () => void): import("../..").ListenOff;
-        };
-        since: (seq: number, snapshot?: tStoreReplaySchemaKnowledge) => tStoreReplayWireBatchV7[] | null;
-        keyframe: (snapshot?: tStoreReplaySchemaKnowledge) => tStoreReplayWireBatchV7 | null;
-        frame: (seq: number, hint?: unknown, snapshot?: tStoreReplaySchemaKnowledge) => tStoreReplayWireBatchV7[];
+        line: import("../..").ListenApi<tStoreReplayWireBatchV2[]>;
+        since: (seq: number, _snapshot?: tStoreReplaySchemaKnowledge) => tStoreReplayWireBatchV2[] | null;
+        keyframe: (_snapshot?: tStoreReplaySchemaKnowledge) => tStoreReplayWireBatchV2 | null;
+        frame: (seq: number, hint?: unknown, _snapshot?: tStoreReplaySchemaKnowledge) => tStoreReplayWireBatchV2[];
     };
     line: {
         on: (cb: (batch: tStoreReplayWireBatch) => void) => any;

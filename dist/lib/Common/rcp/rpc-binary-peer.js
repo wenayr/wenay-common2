@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createRpcBinaryPeer = createRpcBinaryPeer;
 const rpc_binary_value_1 = require("./rpc-binary-value");
+const rpc_binary_msgpack_1 = require("./rpc-binary-msgpack");
 const rpc_binary_schema_1 = require("./rpc-binary-schema");
 const rpc_binary_envelope_1 = require("./rpc-binary-envelope");
 const rpc_caps_1 = require("./rpc-caps");
@@ -13,51 +14,59 @@ const RPC_BINARY_MAX_VALUE_FRAME_BYTES = rpc_binary_envelope_1.RPC_BINARY_MAX_FR
 const RPC_BINARY_PACKET_DEPTH = 32 + 4;
 function createRpcBinaryPeer({ sessionId, maxShapes, protocolVersion = rpc_binary_envelope_1.RPC_BINARY_PROTOCOL_VERSION, maxSchemas = rpc_caps_1.RPC_BINARY_MAX_SCHEMAS, promotionThreshold = rpc_caps_1.RPC_BINARY_DEFAULT_PROMOTION_THRESHOLD, predeclared = [], }) {
     const schema = protocolVersion == rpc_binary_envelope_1.RPC_BINARY_SCHEMA_PROTOCOL_VERSION;
-    const encoder = schema
-        ? (0, rpc_binary_schema_1.createRpcBinarySchemaCodec)({
-            magic: RPC_BINARY_SCHEMA_VALUE_MAGIC,
-            version: rpc_binary_envelope_1.RPC_BINARY_SCHEMA_PROTOCOL_VERSION,
-            label: 'RPC binary schema value',
-            callbackRefs: true,
-            maxSchemas,
-            promotionThreshold,
-            predeclared,
-            maxDepth: RPC_BINARY_PACKET_DEPTH,
-            maxBinaryBytes: RPC_BINARY_MAX_VALUE_BYTES,
-            maxWireBytes: RPC_BINARY_MAX_VALUE_FRAME_BYTES,
-        })
-        : (0, rpc_binary_value_1.createBinaryValueCodec)({
-            magic: RPC_BINARY_VALUE_MAGIC,
-            version: rpc_binary_envelope_1.RPC_BINARY_PROTOCOL_VERSION,
-            label: 'RPC binary value',
-            callbackRefs: true,
-            shapeCache: { maxEntries: maxShapes },
-            maxDepth: RPC_BINARY_PACKET_DEPTH,
-            maxBinaryBytes: RPC_BINARY_MAX_VALUE_BYTES,
-            maxWireBytes: RPC_BINARY_MAX_VALUE_FRAME_BYTES,
-        });
-    const decoder = schema
-        ? (0, rpc_binary_schema_1.createRpcBinarySchemaCodec)({
-            magic: RPC_BINARY_SCHEMA_VALUE_MAGIC,
-            version: rpc_binary_envelope_1.RPC_BINARY_SCHEMA_PROTOCOL_VERSION,
-            label: 'RPC binary schema value',
-            callbackRefs: true,
-            maxSchemas: rpc_caps_1.RPC_BINARY_MAX_SCHEMAS,
-            promotionThreshold,
-            maxDepth: RPC_BINARY_PACKET_DEPTH,
-            maxBinaryBytes: RPC_BINARY_MAX_VALUE_BYTES,
-            maxWireBytes: RPC_BINARY_MAX_VALUE_FRAME_BYTES,
-        })
-        : (0, rpc_binary_value_1.createBinaryValueCodec)({
-            magic: RPC_BINARY_VALUE_MAGIC,
-            version: rpc_binary_envelope_1.RPC_BINARY_PROTOCOL_VERSION,
-            label: 'RPC binary value',
-            callbackRefs: true,
-            shapeCache: { maxEntries: rpc_caps_1.RPC_BINARY_MAX_SHAPES },
-            maxDepth: RPC_BINARY_PACKET_DEPTH,
-            maxBinaryBytes: RPC_BINARY_MAX_VALUE_BYTES,
-            maxWireBytes: RPC_BINARY_MAX_VALUE_FRAME_BYTES,
-        });
+    const msgpack = protocolVersion == rpc_binary_envelope_1.RPC_BINARY_MSGPACK_PROTOCOL_VERSION;
+    const msgpackCodec = msgpack
+        ? (0, rpc_binary_msgpack_1.createRpcBinaryMsgpackCodec)({ maxWireBytes: RPC_BINARY_MAX_VALUE_FRAME_BYTES })
+        : undefined;
+    const encoder = msgpack
+        ? undefined
+        : schema
+            ? (0, rpc_binary_schema_1.createRpcBinarySchemaCodec)({
+                magic: RPC_BINARY_SCHEMA_VALUE_MAGIC,
+                version: rpc_binary_envelope_1.RPC_BINARY_SCHEMA_PROTOCOL_VERSION,
+                label: 'RPC binary schema value',
+                callbackRefs: true,
+                maxSchemas,
+                promotionThreshold,
+                predeclared,
+                maxDepth: RPC_BINARY_PACKET_DEPTH,
+                maxBinaryBytes: RPC_BINARY_MAX_VALUE_BYTES,
+                maxWireBytes: RPC_BINARY_MAX_VALUE_FRAME_BYTES,
+            })
+            : (0, rpc_binary_value_1.createBinaryValueCodec)({
+                magic: RPC_BINARY_VALUE_MAGIC,
+                version: rpc_binary_envelope_1.RPC_BINARY_PROTOCOL_VERSION,
+                label: 'RPC binary value',
+                callbackRefs: true,
+                shapeCache: { maxEntries: maxShapes },
+                maxDepth: RPC_BINARY_PACKET_DEPTH,
+                maxBinaryBytes: RPC_BINARY_MAX_VALUE_BYTES,
+                maxWireBytes: RPC_BINARY_MAX_VALUE_FRAME_BYTES,
+            });
+    const decoder = msgpack
+        ? undefined
+        : schema
+            ? (0, rpc_binary_schema_1.createRpcBinarySchemaCodec)({
+                magic: RPC_BINARY_SCHEMA_VALUE_MAGIC,
+                version: rpc_binary_envelope_1.RPC_BINARY_SCHEMA_PROTOCOL_VERSION,
+                label: 'RPC binary schema value',
+                callbackRefs: true,
+                maxSchemas: rpc_caps_1.RPC_BINARY_MAX_SCHEMAS,
+                promotionThreshold,
+                maxDepth: RPC_BINARY_PACKET_DEPTH,
+                maxBinaryBytes: RPC_BINARY_MAX_VALUE_BYTES,
+                maxWireBytes: RPC_BINARY_MAX_VALUE_FRAME_BYTES,
+            })
+            : (0, rpc_binary_value_1.createBinaryValueCodec)({
+                magic: RPC_BINARY_VALUE_MAGIC,
+                version: rpc_binary_envelope_1.RPC_BINARY_PROTOCOL_VERSION,
+                label: 'RPC binary value',
+                callbackRefs: true,
+                shapeCache: { maxEntries: rpc_caps_1.RPC_BINARY_MAX_SHAPES },
+                maxDepth: RPC_BINARY_PACKET_DEPTH,
+                maxBinaryBytes: RPC_BINARY_MAX_VALUE_BYTES,
+                maxWireBytes: RPC_BINARY_MAX_VALUE_FRAME_BYTES,
+            });
     let packetHeaderByteLength;
     function schemaPacketDepthBias(packet) {
         if (!schema)
@@ -81,6 +90,14 @@ function createRpcBinaryPeer({ sessionId, maxShapes, protocolVersion = rpc_binar
         return 'packet:' + String(kind);
     }
     function prepare(packet) {
+        if (msgpack) {
+            const payload = msgpackCodec.encode(packet);
+            return {
+                wire: (0, rpc_binary_envelope_1.wrapRpcBinaryPacket)(sessionId, payload, protocolVersion),
+                commit: function commitMsgpackPacket() { },
+                rollback: function rollbackMsgpackPacket() { },
+            };
+        }
         const encoded = schema
             ? encoder
                 .prepareEncodeTrusted(packet, schemaPacketDepthBias(packet), schemaPacketHint(packet))
@@ -102,10 +119,12 @@ function createRpcBinaryPeer({ sessionId, maxShapes, protocolVersion = rpc_binar
         if (packetHeaderByteLength == undefined) {
             packetHeaderByteLength = (0, rpc_binary_envelope_1.encodeRpcBinaryControl)(rpc_binary_envelope_1.RpcBinaryFrame.PROBE, sessionId, protocolVersion).byteLength;
         }
-        const valueByteLength = schema
-            ? encoder
-                .measureEncodeTrusted(packet, schemaPacketDepthBias(packet), schemaPacketHint(packet))
-            : encoder.measureEncode(packet);
+        const valueByteLength = msgpack
+            ? msgpackCodec.measure(packet)
+            : schema
+                ? encoder
+                    .measureEncodeTrusted(packet, schemaPacketDepthBias(packet), schemaPacketHint(packet))
+                : encoder.measureEncode(packet);
         const byteLength = packetHeaderByteLength + valueByteLength;
         if (byteLength > rpc_binary_envelope_1.RPC_BINARY_MAX_FRAME_BYTES) {
             throw new RangeError('RPC binary envelope: frame exceeds binary limit');
@@ -113,7 +132,9 @@ function createRpcBinaryPeer({ sessionId, maxShapes, protocolVersion = rpc_binar
         return byteLength;
     }
     function decode(payload) {
-        return decoder.decodeTrusted(payload);
+        return msgpack
+            ? msgpackCodec.decode(payload)
+            : decoder.decodeTrusted(payload);
     }
     function encodePrelude() {
         return schema
@@ -123,7 +144,7 @@ function createRpcBinaryPeer({ sessionId, maxShapes, protocolVersion = rpc_binar
     function decodePrelude(payload) {
         if (!schema) {
             if (payload.byteLength != 0) {
-                throw new TypeError('RPC binary v1 cannot accept a schema prelude');
+                throw new TypeError('RPC binary protocol cannot accept a schema prelude');
             }
             return;
         }
@@ -131,6 +152,8 @@ function createRpcBinaryPeer({ sessionId, maxShapes, protocolVersion = rpc_binar
         schemaDecoder.decodePrelude(payload);
     }
     function stats() {
+        if (msgpack)
+            return msgpackCodec.stats();
         const sent = encoder.stats();
         const received = decoder.stats();
         if (schema) {
@@ -158,6 +181,10 @@ function createRpcBinaryPeer({ sessionId, maxShapes, protocolVersion = rpc_binar
         };
     }
     function reset() {
+        if (msgpack) {
+            msgpackCodec.reset();
+            return;
+        }
         encoder.reset();
         decoder.reset();
     }

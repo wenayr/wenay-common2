@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RpcBinaryFrame = exports.RPC_BINARY_MAX_FRAME_BYTES = exports.RPC_BINARY_SCHEMA_PROTOCOL_VERSION = exports.RPC_BINARY_PROTOCOL_VERSION = void 0;
+exports.RpcBinaryFrame = exports.RPC_BINARY_MAX_FRAME_BYTES = exports.RPC_BINARY_MSGPACK_PROTOCOL_VERSION = exports.RPC_BINARY_SCHEMA_PROTOCOL_VERSION = exports.RPC_BINARY_PROTOCOL_VERSION = void 0;
 exports.isRpcBinaryEnvelope = isRpcBinaryEnvelope;
 exports.inspectRpcBinaryEnvelope = inspectRpcBinaryEnvelope;
 exports.encodeRpcBinaryControl = encodeRpcBinaryControl;
@@ -8,6 +8,7 @@ exports.wrapRpcBinaryPacket = wrapRpcBinaryPacket;
 const RPC_BINARY_MAGIC = [0x52, 0x50, 0x42];
 exports.RPC_BINARY_PROTOCOL_VERSION = 1;
 exports.RPC_BINARY_SCHEMA_PROTOCOL_VERSION = 2;
+exports.RPC_BINARY_MSGPACK_PROTOCOL_VERSION = 3;
 exports.RPC_BINARY_MAX_FRAME_BYTES = 32_000_000;
 exports.RpcBinaryFrame = {
     PROBE: 0,
@@ -62,7 +63,8 @@ function readSessionId(bytes, start) {
 }
 function supportedVersion(version) {
     return version == exports.RPC_BINARY_PROTOCOL_VERSION
-        || version == exports.RPC_BINARY_SCHEMA_PROTOCOL_VERSION;
+        || version == exports.RPC_BINARY_SCHEMA_PROTOCOL_VERSION
+        || version == exports.RPC_BINARY_MSGPACK_PROTOCOL_VERSION;
 }
 function frameHeader(kind, sessionId, version) {
     if (!Number.isSafeInteger(sessionId) || sessionId <= 0) {

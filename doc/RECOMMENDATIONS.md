@@ -2,6 +2,22 @@
 
 Completed migrations and released work are recorded in `doc/changes/`, not repeated here.
 
+## Current Store/RPC default
+
+Use Store Replay v2 over the ordinary JSON-array RPC lane by default. It is selected first and
+binary RPC is opt-in. V7 is not a per-batch automatic switch: the outer JSON/RPB mode is negotiated
+once for the whole RPC connection. Use v7 only on a dedicated high-frequency connection whose
+batching window consistently coalesces roughly 50 or more changes per physical frame. In the
+current Node/Bun measurements it both reduces wire bytes and wins total codec CPU at 50/250
+changes. Keep v2 for shared/general connections, ordinary one-to-ten-change traffic and the
+project-wide fallback. V3-v6 remain readable for mixed-version compatibility and diagnostics; do
+not select them for new deployments.
+
+Plan removal of Store Replay v3-v6 in the next intentional breaking release. They were not
+redesigned in 1.0.94: their measured speed improvement was not satisfactory enough to justify four
+additional production codecs. Before removal, verify supported consumers advertise/use only v2 or
+v7, publish a deprecation release, and keep legacy `replay.line` as the old-client fallback.
+
 ## Scheduler extraction
 
 `schedule` / `createDrained` in `store.ts` still resemble scheduler logic in `reactive.ts`. This is
@@ -36,7 +52,7 @@ Do not combine these routes without measuring the target deployment:
 | Route | Likely benefit | Complexity / risk | Gate before implementation |
 |---|---:|---|---|
 | Transfer decoded Store patch ownership into the mirror instead of cloning it again | Largest remaining 15k Store CPU/live-tree reduction | High: `onBatch`, retained journal and Store must not share mutable values | Define an internal ownership token and mutation tests before removing any clone |
-| Negotiated RPB/3 route predictor | Repeated calls/callbacks can reuse the schema last seen for the same route and omit repeated schema selection metadata | High: requires a clear packet prefix, rollback-safe SAME/CHANGE state and exact generation/request/callback ownership | Specify the v3 prefix and differential new↔old/reconnect/re-entrant tests before changing the wire |
+| Negotiated RPB/4 route predictor | Repeated calls/callbacks can reuse the schema last seen for the same route and omit repeated schema selection metadata | High: requires a clear packet prefix, rollback-safe SAME/CHANGE state and exact generation/request/callback ownership | Specify the v4 prefix and differential new↔old/reconnect/re-entrant tests before changing the wire |
 | Declare custom policy locality (`record-local` versus `global`) | One changed record across ten 15k-item views measured 5.18 ms on the owner fast path versus 1,239.58 ms with a global custom policy | High: silently assuming locality can expose revoked records | Add an explicit locality contract plus `invalidateAll`/policy revision |
 | Keyed/chunked offline persistence | A 250-record change currently snapshots the complete 15k Store; the in-memory adapter measured 34.82 ms per flush | High: changes durable format, migration and crash recovery | Specify chunk revision, atomic manifest and old-snapshot migration |
 | Parallel StoreManager startup | Three independent 80 ms reads measured 266.9 ms sequentially versus 91.6 ms in parallel | Medium: current failure and side-effect order is observable | Discuss an explicit concurrency option before changing startup behavior |
@@ -45,10 +61,10 @@ Do not combine these routes without measuring the target deployment:
 | Dynamic media fan-out plus transport-aware latest-frame backpressure | Can avoid repeated work when many viewers follow one source | High: changes delivery/retention semantics | Choose queue vs latest per media kind and expose the choice explicitly |
 | Real JPEG/WebP/GPU profiling | Finds browser decode/paint bottlenecks absent from synthetic Node stress | Measurement work, no protocol risk | Run the stand on representative devices before changing codecs or frame policy |
 
-### Future RPB/3 route predictor
+### Future RPB/4 route predictor
 
-This is not part of current RPB/2. RPB/2 deliberately sends a schema definition once and then its
-short id, independently of the RPC route. A safe route predictor needs a newly negotiated RPB/3
+This is not part of current RPB/3. Current RPB/3 deliberately uses independently decodable msgpackr
+frames rather than route-owned state. A safe route predictor needs a newly negotiated RPB/4
 packet layout with a clear prefix: the decoder must know the packet kind and stable route identity
 before it can interpret a compact `SAME` body or a `CHANGE(schemaId, body)` body.
 
@@ -57,12 +73,13 @@ dynamic callback or facade functions alive. Functions are not a wire identity. S
 wire belongs to the route/member identity for CALL/PIPE, the request id for RESP and the callback id
 for CB/CB_BATCH. All predictor state is directional and connection-generation-local, commits only
 after successful send/decode, and resets on reconnect, server replacement or failed stateful decode.
-Until that prefix and lifecycle matrix are specified, keeping RPB/2's explicit schema id is the
+Until that prefix and lifecycle matrix are specified, keeping RPB/3 frames self-contained is the
 smaller and safer implementation.
 
 ### Compression and dictionary routes
 
-The current mode is **binary application RPC**, not a byte-only connection: after the CAPS + byte
+The default mode is JSON-array application RPC. With explicit `binary:true` on both peers, the
+connection becomes **binary application RPC**, not a byte-only connection: after the CAPS + byte
 probe, CALL/RESP/PIPE/callback/error traffic uses the RPB `Uint8Array` envelope, while
 CAPS/MAP/HELLO/bootstrap stays as backward-readable arrays. Socket.IO already transports those byte
 frames without JSON conversion. The same RPB envelope can later ride raw WebSocket, QUIC,

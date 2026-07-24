@@ -20,6 +20,7 @@ import {
 import {
     inspectRpcBinaryEnvelope,
     encodeRpcBinaryControl,
+    RPC_BINARY_MSGPACK_PROTOCOL_VERSION,
     RPC_BINARY_PROTOCOL_VERSION,
     RPC_BINARY_SCHEMA_PROTOCOL_VERSION,
     RpcBinaryFrame,
@@ -180,9 +181,9 @@ function createServer<T extends object>(
     }
     type tSendChannel = {session: tServerSession, binary: boolean}
 
-    function schemaBinaryOn(channel: tSendChannel) {
+    function trustedBinaryOn(channel: tSendChannel) {
         return channel.binary
-            && channel.session.peer?.protocolVersion == RPC_BINARY_SCHEMA_PROTOCOL_VERSION
+            && channel.session.peer?.protocolVersion != RPC_BINARY_PROTOCOL_VERSION
     }
 
     function sendBinaryNow(session: tServerSession, packet: any[]) {
@@ -231,9 +232,12 @@ function createServer<T extends object>(
     })
 
     function createSession(id: number, peerCaps: tCaps, binary = true): tServerSession {
-        const protocolVersion = hasCap(serverCaps & peerCaps, Caps.BINARY_SCHEMA)
-            ? RPC_BINARY_SCHEMA_PROTOCOL_VERSION
-            : RPC_BINARY_PROTOCOL_VERSION
+        const effectiveCaps = serverCaps & peerCaps
+        const protocolVersion = hasCap(effectiveCaps, Caps.BINARY_MSGPACK)
+            ? RPC_BINARY_MSGPACK_PROTOCOL_VERSION
+            : hasCap(effectiveCaps, Caps.BINARY_SCHEMA)
+                ? RPC_BINARY_SCHEMA_PROTOCOL_VERSION
+                : RPC_BINARY_PROTOCOL_VERSION
         const peer = binary
             ? createRpcBinaryPeer({
                 sessionId: id,
@@ -359,7 +363,7 @@ function createServer<T extends object>(
             // direct packet already owns its call-time bytes. Validate limits
             // without first cloning a large media leaf or measuring the frame
             // through a complete throw-away encode.
-            const directArgs = schemaBinaryOn(channel)
+            const directArgs = trustedBinaryOn(channel)
                 ? cbArgs
                 : cbArgs.map(value => validateRpcBinaryResult(value, lim))
             sendChannel(channel, [Pkt.CB, cbId, directArgs])
@@ -394,7 +398,7 @@ function createServer<T extends object>(
             sendChannel(channel, [Pkt.RESP, reqId, packResult(value)])
             return
         }
-        if (schemaBinaryOn(channel)) {
+        if (trustedBinaryOn(channel)) {
             try {
                 sendChannel(channel, [Pkt.RESP, reqId, value])
             } catch (error) {
@@ -807,7 +811,7 @@ function createServer<T extends object>(
                         if (typeof current !== "function") throw new Error("Attempted to call a non-function in pipe");
                         // like in CALL: else Date/Map/BigInt in callback args perish on JSON transport
                         const stepArgs = channel.binary
-                            ? (schemaBinaryOn(channel)
+                            ? (trustedBinaryOn(channel)
                                 ? unpackRpcBinaryArgsTrusted
                                 : unpackRpcBinaryArgs)(
                                 step.args,
@@ -833,7 +837,7 @@ function createServer<T extends object>(
             } else {
                 // --- STANDARD CALL LOGIC ---
                 const args = channel.binary
-                    ? (schemaBinaryOn(channel)
+                    ? (trustedBinaryOn(channel)
                         ? unpackRpcBinaryArgsTrusted
                         : unpackRpcBinaryArgs)(
                         rawArgsOrSteps,

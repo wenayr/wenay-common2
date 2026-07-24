@@ -5,7 +5,7 @@ import {performance} from 'node:perf_hooks'
 import {ReplayEvent} from '../src/Common/events/replay-listen'
 import {
     inspectRpcBinaryEnvelope,
-    RPC_BINARY_SCHEMA_PROTOCOL_VERSION,
+    RPC_BINARY_MSGPACK_PROTOCOL_VERSION,
 } from '../src/Common/rcp/rpc-binary-envelope'
 import {createRpcBinaryPeer} from '../src/Common/rcp/rpc-binary-peer'
 import {RPC_BINARY_MAX_SHAPES} from '../src/Common/rcp/rpc-caps'
@@ -36,12 +36,12 @@ function createOuterPair() {
     const sender = createRpcBinaryPeer({
         sessionId: 1,
         maxShapes: RPC_BINARY_MAX_SHAPES,
-        protocolVersion: RPC_BINARY_SCHEMA_PROTOCOL_VERSION,
+        protocolVersion: RPC_BINARY_MSGPACK_PROTOCOL_VERSION,
     })
     const receiver = createRpcBinaryPeer({
         sessionId: 1,
         maxShapes: RPC_BINARY_MAX_SHAPES,
-        protocolVersion: RPC_BINARY_SCHEMA_PROTOCOL_VERSION,
+        protocolVersion: RPC_BINARY_MSGPACK_PROTOCOL_VERSION,
     })
     receiver.decodePrelude(sender.encodePrelude())
 
@@ -53,8 +53,8 @@ function createOuterPair() {
 
     function decode(wire: Uint8Array) {
         const envelope = inspectRpcBinaryEnvelope(wire)
-        if (envelope?.version != RPC_BINARY_SCHEMA_PROTOCOL_VERSION) {
-            throw new Error('V7 benchmark expected an RPB/2 packet')
+        if (envelope?.version != RPC_BINARY_MSGPACK_PROTOCOL_VERSION) {
+            throw new Error('V7 benchmark expected an RPB/3 msgpack packet')
         }
         return receiver.decode(envelope.payload)[2][0]
     }

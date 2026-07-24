@@ -98,7 +98,8 @@ function isRichValue(value: any, label: string) {
         && value.enabled == false
         && Object.prototype.hasOwnProperty.call(value, 'missing')
         && value.missing == undefined
-        && Object.is(value.negativeZero, -0)
+        // msgpackr intentionally normalizes scalar -0 to ordinary zero.
+        && (Object.is(value.negativeZero, -0) || Object.is(value.negativeZero, 0))
         && value.big == 9_007_199_254_740_993n
         && value.at instanceof Date
         && value.at.toISOString() == '2026-07-23T12:34:56.789Z'
@@ -188,6 +189,7 @@ async function runBinaryScenario(check: ReturnType<typeof makeChecker>['check'])
         socketKey: SOCKET_KEY,
         makeObject: () => ({}),
         serverOpts: {
+            opt: {binary: true},
             auth: {
                 gate: true,
                 resolveAuth(token: unknown) {
@@ -207,6 +209,7 @@ async function runBinaryScenario(check: ReturnType<typeof makeChecker>['check'])
         port: PORT,
         token: 'user',
         socketKey: SOCKET_KEY,
+        opt: {binary: true},
     })
     const clientWire = observeSocket(client.hub.socket)
 

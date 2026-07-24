@@ -167,16 +167,23 @@ function createFixture(options?: {clientOpt?: RpcOpt; serverOpt?: RpcOpt; socket
     const clientWire = observeSocket(rawClientSocket)
     const serverWire = observeSocket(rawServerSocket)
     const socketKey = options?.socketKey ?? 'rpc-schema-integration'
+    function schemaV2Opt(opt?: RpcOpt): RpcOpt {
+        if (opt?.binary === false) return opt
+        const binary = opt?.binary && typeof opt.binary == 'object'
+            ? opt.binary
+            : {}
+        return {...opt, binary: {...binary, msgpack: false}}
+    }
     const client = createRpcClient<tApi>({
         socket: clientWire.socket,
         socketKey,
-        opt: options?.clientOpt,
+        opt: schemaV2Opt(options?.clientOpt),
     })
     createRpcServer({
         socket: serverWire.socket,
         socketKey,
         object: createApi(),
-        opt: options?.serverOpt,
+        opt: schemaV2Opt(options?.serverOpt),
     })
 
     function close() {

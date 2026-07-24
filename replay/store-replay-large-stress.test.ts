@@ -193,20 +193,14 @@ function observeWireRemote(remote: any, codec: tCodec, counts: CodecCounts) {
     return observed
 }
 
-function codecRemote(remote: StoreReplayRemote, highest: tCodec, counts: CodecCounts) {
+function codecRemote(remote: StoreReplayRemote, selected: tCodec, counts: CodecCounts) {
     const source = remote.batch!
     const batch: any = observeWireRemote(source, 'v1', counts)
-    if (highest != 'v1') batch.v2 = observeWireRemote(source.v2!, 'v2', counts)
-    if (highest == 'v3' || highest == 'v4' || highest == 'v5' || highest == 'v6') {
-        batch.v3 = observeWireRemote(source.v3!, 'v3', counts)
+    // Each historical codec is tested through an intentionally isolated
+    // capability surface. A complete new surface correctly selects V2 first.
+    if (selected != 'v1') {
+        batch[selected] = observeWireRemote(source[selected]!, selected, counts)
     }
-    if (highest == 'v4' || highest == 'v5' || highest == 'v6') {
-        batch.v4 = observeWireRemote(source.v4!, 'v4', counts)
-    }
-    if (highest == 'v5' || highest == 'v6') {
-        batch.v5 = observeWireRemote(source.v5!, 'v5', counts)
-    }
-    if (highest == 'v6') batch.v6 = observeWireRemote(source.v6!, 'v6', counts)
     return {...remote, batch} as StoreReplayRemote
 }
 

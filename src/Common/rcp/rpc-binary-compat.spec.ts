@@ -7,23 +7,46 @@
 
 import * as assert from 'node:assert/strict'
 import {listen as createListenPair} from '../events/Listen'
-import {createRpcServerAutoDetect} from './createRpcServerAutoWithProtocolDetection'
-import {createRpcClient} from './rpc-client'
+import {createRpcServerAutoDetect as createRpcServerAutoDetectBase} from './createRpcServerAutoWithProtocolDetection'
+import {createRpcClient as createRpcClientBase} from './rpc-client'
 import {createRpcClientHub} from './rpc-clientHub'
 import {createInProcSocketPair} from './rpc-inproc'
 import {Pkt, type SocketTmpl} from './rpc-protocol'
-import {createRpcServer} from './rpc-server'
-import {createRpcServerAuto} from './rpc-server-auto'
+import {createRpcServer as createRpcServerBase} from './rpc-server'
+import {createRpcServerAuto as createRpcServerAutoBase} from './rpc-server-auto'
 import {rpcEndCallback} from './rpc-walk'
 import {Caps} from './rpc-caps'
 import {
     inspectRpcBinaryEnvelope,
-    RPC_BINARY_SCHEMA_PROTOCOL_VERSION,
+    RPC_BINARY_MSGPACK_PROTOCOL_VERSION,
 } from './rpc-binary-envelope'
 
 type tWireRecords = {
     arrays: any[][]
     binary: Uint8Array[]
+}
+
+// Binary is deliberately opt-in in production. This suite exercises the
+// binary lifecycle, so its local constructors opt in unless a case explicitly
+// requests binary:false.
+function binaryTestOpt(opt: any) {
+    return opt?.binary == undefined ? {...opt, binary: true} : opt
+}
+
+function createRpcClient<T extends object>(deps: any) {
+    return createRpcClientBase<T>({...deps, opt: binaryTestOpt(deps.opt)})
+}
+
+function createRpcServer<T extends object>(deps: any) {
+    return createRpcServerBase<T>({...deps, opt: binaryTestOpt(deps.opt)})
+}
+
+function createRpcServerAuto<T extends object>(deps: any) {
+    return createRpcServerAutoBase<T>({...deps, opt: binaryTestOpt(deps.opt)})
+}
+
+function createRpcServerAutoDetect<T extends object>(deps: any) {
+    return createRpcServerAutoDetectBase<T>({...deps, opt: binaryTestOpt(deps.opt)})
 }
 
 function delay(ms = 0) {
@@ -100,15 +123,15 @@ function hasArrayPacket(records: tWireRecords, opcode: number) {
     return records.arrays.some(packet => packet[0] == opcode)
 }
 
-function assertSchemaBinaryFrames(records: tWireRecords, label: string) {
+function assertNewestBinaryFrames(records: tWireRecords, label: string) {
     assert.ok(records.binary.length > 0, label + ' has binary frames')
     for (const wire of records.binary) {
         const envelope = inspectRpcBinaryEnvelope(wire)
         assert.ok(envelope, label + ' frame has an RPC binary envelope')
         assert.equal(
             envelope.version,
-            RPC_BINARY_SCHEMA_PROTOCOL_VERSION,
-            label + ' renegotiates schema binary v2',
+            RPC_BINARY_MSGPACK_PROTOCOL_VERSION,
+            label + ' renegotiates universal msgpack v3',
         )
     }
 }
@@ -282,6 +305,34 @@ async function testManualOldClientWithNewServer() {
         assert.equal(response?.[2], marker)
         assert.equal(serverWire.records.binary.length, 0)
         assert.ok(hasArrayPacket(serverWire.records, Pkt.RESP))
+    }
+}
+
+async function testDefaultTransportUsesJson() {
+    const [rawClientSocket, rawServerSocket] = createInProcSocketPair()
+    const clientWire = observeSocket(rawClientSocket)
+    const serverWire = observeSocket(rawServerSocket)
+    const client = createRpcClientBase<tEchoApi>({
+        socket: clientWire.socket,
+        socketKey: 'default-json',
+    })
+    createRpcServerBase({
+        socket: serverWire.socket,
+        socketKey: 'default-json',
+        object: createEchoApi(),
+    })
+
+    try {
+        await client.ready()
+        clientWire.reset()
+        serverWire.reset()
+        assert.equal(await client.func.echo('default-json'), 'default-json')
+        assert.equal(clientWire.records.binary.length, 0)
+        assert.equal(serverWire.records.binary.length, 0)
+        assert.ok(hasArrayPacket(clientWire.records, Pkt.CALL))
+        assert.ok(hasArrayPacket(serverWire.records, Pkt.RESP))
+    } finally {
+        client.close('default JSON test complete', {socketAlive: false})
     }
 }
 
@@ -593,6 +644,7 @@ async function testThreeTransportGenerationsResetWithoutDuplicateCallbacks() {
             return clientSocket
         },
         helper => ({main: helper<typeof api>('generation')}),
+        {opt: {binary: true}},
     )
     const initial = hub.connect(null)
     rawServerSocket.emit('connect', 1)
@@ -601,8 +653,8 @@ async function testThreeTransportGenerationsResetWithoutDuplicateCallbacks() {
         return clientWire.records.binary.length > 0
             && serverWire.records.binary.length > 0
     })
-    assertSchemaBinaryFrames(clientWire.records, 'initial client generation')
-    assertSchemaBinaryFrames(serverWire.records, 'initial server generation')
+    assertNewestBinaryFrames(clientWire.records, 'initial client generation')
+    assertNewestBinaryFrames(serverWire.records, 'initial server generation')
 
     async function exerciseFreshSchema(generation: number) {
         const key = 'generation_' + generation
@@ -622,8 +674,8 @@ async function testThreeTransportGenerationsResetWithoutDuplicateCallbacks() {
         }
     }
     await exerciseFreshSchema(0)
-    assertSchemaBinaryFrames(clientWire.records, 'initial client application')
-    assertSchemaBinaryFrames(serverWire.records, 'initial server application')
+    assertNewestBinaryFrames(clientWire.records, 'initial client application')
+    assertNewestBinaryFrames(serverWire.records, 'initial server application')
 
     const received: number[] = []
     ;(hub.facade.main.func.ticks as any).on(function receiveTick(value: number) {
@@ -649,11 +701,11 @@ async function testThreeTransportGenerationsResetWithoutDuplicateCallbacks() {
             return clientWire.records.binary.length > 0
                 && serverWire.records.binary.length > 0
         })
-        assertSchemaBinaryFrames(clientWire.records, 'client generation ' + generation)
-        assertSchemaBinaryFrames(serverWire.records, 'server generation ' + generation)
+        assertNewestBinaryFrames(clientWire.records, 'client generation ' + generation)
+        assertNewestBinaryFrames(serverWire.records, 'server generation ' + generation)
         await exerciseFreshSchema(generation)
-        assertSchemaBinaryFrames(clientWire.records, 'client application generation ' + generation)
-        assertSchemaBinaryFrames(serverWire.records, 'server application generation ' + generation)
+        assertNewestBinaryFrames(clientWire.records, 'client application generation ' + generation)
+        assertNewestBinaryFrames(serverWire.records, 'server application generation ' + generation)
         await waitFor('stream resubscription ' + generation, function streamResubscribed() {
             return server.api.subscriptions().some(item => item.consumers == 1)
         })
@@ -1179,6 +1231,8 @@ export async function runRpcBinaryCompatTests() {
             testNewClientWithManualOldServer],
         ['manual old clients work with a new server (no CAPS / caps 1 / caps 3)',
             testManualOldClientWithNewServer],
+        ['default transport keeps application packets on JSON arrays',
+            testDefaultTransportUsesJson],
         ['JSON-only transport keeps application packets raw',
             testJsonOnlyTransportStaysRaw],
         ['unknown binary bundle version keeps application packets raw',

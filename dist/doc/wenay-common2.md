@@ -101,9 +101,13 @@ const:  H1_S D1_S W1_S · M1_MS H1_MS D1_MS W1_MS
 ```
 // SERVER: `object` is the impl tree, `socket` is a {emit,on} transport adapter
 createRpcServerAuto({ socket: {emit, on}, object, socketKey: string, auth?, limits?, maxPerListen?, throttle?, opt?, replay?, replayOpts? }) -> { api, ... }
-  // opt.binary (default negotiated-on): new/new peers use universal typed-schema binary v2 for
-  //   CALL/RESP/PIPE/callbacks/Store; mixed builds keep binary v1 and old peers keep legacy arrays.
-  //   v2 schemas include ordered keys/tuple positions AND physical field types. A recurring layout is defined once,
+  // opt.binary is OFF by default: ordinary RPC and Store v2 use the measured JSON-array lane.
+  //   Set binary:true explicitly on both peers to negotiate universal msgpackr binary v3 for the complete
+  //   CALL/RESP/PIPE/callback/error/Store packet; mixed builds fall through schema-v2, binary-v1 and legacy arrays.
+  //   V3 applies msgpackr records to the existing logical RPC values instead of introducing route-specific opcodes.
+  //   Each frame is independently decodable; repeated object layouts inside that frame share record definitions.
+  //   {msgpack:false} pins schema-v2. V2 schemas include ordered keys/tuple positions AND physical field types.
+  //   A recurring layout is defined once,
   //   then referenced by id; homogeneous rows use typed runs at any nesting depth. Different actual field types
   //   select another schema or the exact generic fallback—there is no Zod/application-value validation.
   //   {predeclared:[representativeRuntimeValue,...]} sends descriptions (never sample values) in PROBE/ACK before
@@ -112,10 +116,11 @@ createRpcServerAuto({ socket: {emit, on}, object, socketKey: string, auth?, limi
   //   Each direction owns at most 1,000 schema ids per connection generation: a definition is sent once, then
   //   later values carry its short id. ArrayBuffer/DataView/TypedArray leaves use direct typed byte lanes rather
   //   than a generic object wrapper. Reconnect/server replacement starts a fresh table and repeats the prelude.
-  //   ready() waits for correlated caps + probe; a byte-blocking adapter falls back after 250 ms and a late ACK
-  //   upgrades future traffic/recoverable Listen subscriptions. Set false on either side to keep legacy arrays.
-  //   Exact values retain number/string/boolean/null/undefined identity, rich values and binary views.
-  //   Values outside the bounded binary protocol fail that request explicitly, never via a lossy JSON fallback.
+  //   ready() waits for correlated caps + probe only when binary is enabled; a byte-blocking adapter falls back
+  //   after 250 ms and a late ACK upgrades future traffic/recoverable Listen subscriptions.
+  //   V3 retains ordinary primitives, undefined, rich values and binary views. msgpackr normalization applies to
+  //   scalar -0, sparse holes, lone UTF-16 surrogates and null-prototype identity. Function results fail or use
+  //   the existing data-only projection; RPC callback functions keep their private callback-reference extension.
   // opt.callbackBatch (default negotiated-on): losslessly wraps same-microtask callback packets into one send;
   //   {maxItems:64,maxBytes:65536}, or false for exact packet-per-callback transport. Under binary RPC the logical
   //   callback batch is encoded as one attachment; legacy peers keep the unchanged JSON CB/CB_BATCH path.
@@ -575,9 +580,11 @@ Observe.followReplicatedMap<V, K>(remote, {onBatch?, onStatus?, onError?, staleM
   // and every top-level key must equal keyOf(value). The facade validates before publish.
   // debug.store is an ADVANCED writable escape hatch for diagnostics; application writes violate follower ownership.
   // checkpoint() binds snapshot + lineId + delivery/replayMode/seq, so a naked tail can never create a partial map.
-  // New clients select recommended v7 -> v6 -> v5 -> v4 -> v3 -> v2 -> v1 -> legacy by optional-member presence.
-  // v7 packs flat Store key/value batches with msgpackr and a bounded cross-connection shape catalog.
-  // Store keys remain data rather than becoming schemas; older physical codecs remain compatibility fallbacks.
+  // New clients select Store v2 first. It is the measured default for ordinary one-to-ten-change frames.
+  // A dedicated high-frequency RPC connection which consistently coalesces roughly 50+ changes per physical
+  // frame may expose only v7: current Node/Bun measurements show lower total codec CPU and fewer bytes at 50/250.
+  // JSON versus binary is negotiated once per RPC connection, not switched dynamically for each Store batch.
+  // V3-v6 remain readable when v2 is absent for mixed-version compatibility; do not select them for new routes.
 
 // Sequenced sync (replay line): seq-numbered patch stream — keyframe catch-up, reconnect by seq (tail, not snapshot)
 Observe.exposeStoreReplay(store, {history? = 1024, batch?, patchSource?}) -> { api /* spread into the RPC server object */, replay, replayBatch?, batchStats?, flushPending, close }
@@ -585,11 +592,14 @@ Observe.exposeStoreReplay(store, {history? = 1024, batch?, patchSource?}) -> { a
   //   lag recovery arrive as a mini-frame (changed paths only), zero config
   // batch:true adds api.replay.batch without changing the legacy line. maxItems/maxBytes may split one source drain;
   // maxDelayMs>0 may merge adjacent drains. Each resulting bounded envelope owns one seq.
-  // New clients prefer recommended batch.v7, then v6-v1 and legacy. V7 uses one msgpackr Uint8Array inside
-  // negotiated RPB/2, flat top-level set/delete and root-keyframe key/value arrays. Repeated nested value shapes
-  // use a bounded 1,000-entry server catalog; reconnecting clients report known ids as numbers/ranges so definitions
-  // are not repeated. V6 remains a compatibility member and is not the recommended performance route.
-  // V7 preserves ordinary Store data, rich msgpackr values and root plain/null-prototype identity. Scalar -0,
+  // New clients prefer batch.v2. V7 is the explicit large-batch alternative and is exactly the same
+  // [2,seq,ts,patches] logical tuple passed through opt-in RPB/3 msgpackr; it has no new Store opcodes,
+  // catalog or inner Uint8Array. Select it intentionally on a dedicated binary connection whose physical
+  // frames are normally around 50+ changes; V3-v6 remain readable compatibility/diagnostic surfaces.
+  // V2/JSON is optimized for ordinary values. Nested explicit undefined and an exact business object shaped
+  // like a reserved RPC/Socket.IO marker require v3's recursive escape semantics; that extra scan is why v3
+  // is not the CPU default. A patch whose value itself is undefined remains represented by the v2 patch opcode.
+  // V7 preserves ordinary Store data and rich msgpackr values. Scalar -0,
   // sparse holes, lone UTF-16 surrogates and nested null-prototype identity follow msgpackr normalization.
   // Normal thrown RPC errors use the separate RPC error channel and are unaffected by this Store-value note.
   // V4/v5 materialized root keyframes support up to 20,000 keyed entries, chunked into physical plan arrays
@@ -597,7 +607,7 @@ Observe.exposeStoreReplay(store, {history? = 1024, batch?, patchSource?}) -> { a
   // Explicit client RpcLimits continue through v5's byte envelope; the internal decoder also keeps hard limits.
   // An old client connected to a new server keeps using the unchanged replay.line; it never selects or receives batch.
 Observe.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?, batch?} of api.replay*/, {since?, onSeq?, batch?, validateBatch?, onBatch?}) -> off
-  // batch:true negotiates v7 -> v6 -> v5 -> v4 -> v3 -> v2 -> v1 -> legacy automatically; v7 is recommended
+  // batch:true selects v2 first; if v2 is absent it can still read v7/v6/v5/v4/v3/v1 and finally legacy
   // an RPC proxy waits for MAP before choosing an optional capability; plain in-process remotes stay synchronous
   // validateBatch runs after decode and before mutation. onBatch runs once AFTER one physical envelope is applied;
   // an onBatch throw is terminal, does not roll Store state back, and does not advance the replay seq.

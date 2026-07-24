@@ -18,6 +18,7 @@ import {
 import {
     encodeRpcBinaryControl,
     inspectRpcBinaryEnvelope,
+    RPC_BINARY_MSGPACK_PROTOCOL_VERSION,
     RPC_BINARY_PROTOCOL_VERSION,
     RPC_BINARY_SCHEMA_PROTOCOL_VERSION,
     RpcBinaryFrame,
@@ -289,9 +290,9 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         return binaryActive && hasCap(clientCaps & peerServerCaps, Caps.BINARY)
     }
 
-    function schemaBinaryApplicationOn() {
+    function trustedBinaryApplicationOn() {
         return binaryApplicationOn()
-            && binaryPeer.protocolVersion == RPC_BINARY_SCHEMA_PROTOCOL_VERSION
+            && binaryPeer.protocolVersion != RPC_BINARY_PROTOCOL_VERSION
     }
     // ids of canceled requests/callbacks: NOT returned to pool immediately — a late RESP/CB_END
     // from server could steal a newly reused id for a different request
@@ -412,7 +413,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                     // limit violation/corrupt payload in response — reject this request only
                     try {
                         req.ok(binary
-                            ? (schemaBinaryApplicationOn()
+                            ? (trustedBinaryApplicationOn()
                                 ? validateRpcBinaryResultTrusted(msg[2], opts?.limits)
                                 : validateRpcBinaryResult(msg[2], opts?.limits))
                             : unpackResult(msg[2], lim))
@@ -429,7 +430,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 // (previously .map(unpackResult) also passed index as a second argument like lim)
                 try {
                     cbArgs = (msg[2] || []).map((a: any) => binary
-                        ? (schemaBinaryApplicationOn()
+                        ? (trustedBinaryApplicationOn()
                             ? validateRpcBinaryResultTrusted(a, opts?.limits)
                             : validateRpcBinaryResult(a, opts?.limits))
                         : unpackResult(a, lim))
@@ -471,7 +472,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                     keys.forEach(function reconstructShapeValue(k: string, i: number) {
                         if (!isSafeKey(k)) throw new Error('Unsafe compact shape key')
                         obj[k] = binary
-                            ? (schemaBinaryApplicationOn()
+                            ? (trustedBinaryApplicationOn()
                                 ? validateRpcBinaryResultTrusted(vals[i], opts?.limits)
                                 : validateRpcBinaryResult(vals[i], opts?.limits))
                             : unpackResult(vals[i], lim)
@@ -519,12 +520,12 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                     correlatedCapsReady = true
                     if (!binaryActive
                         && hasCap(clientCaps & peerServerCaps, Caps.BINARY)) {
-                        const protocolVersion = hasCap(
-                            clientCaps & peerServerCaps,
-                            Caps.BINARY_SCHEMA,
-                        )
-                            ? RPC_BINARY_SCHEMA_PROTOCOL_VERSION
-                            : RPC_BINARY_PROTOCOL_VERSION
+                        const effectiveCaps = clientCaps & peerServerCaps
+                        const protocolVersion = hasCap(effectiveCaps, Caps.BINARY_MSGPACK)
+                            ? RPC_BINARY_MSGPACK_PROTOCOL_VERSION
+                            : hasCap(effectiveCaps, Caps.BINARY_SCHEMA)
+                                ? RPC_BINARY_SCHEMA_PROTOCOL_VERSION
+                                : RPC_BINARY_PROTOCOL_VERSION
                         binaryPeer = createSessionBinaryPeer(protocolVersion)
                         binaryProbeSent = true
                         socket.emit(key, encodeRpcBinaryControl(
@@ -539,7 +540,11 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                     break
                 }
                 if (sessionId == undefined && generation == undefined) {
-                    peerServerCaps = declared & ~(Caps.BINARY | Caps.BINARY_SCHEMA)
+                    peerServerCaps = declared & ~(
+                        Caps.BINARY
+                        | Caps.BINARY_SCHEMA
+                        | Caps.BINARY_MSGPACK
+                    )
                     notifyBinaryModeChange()
                 }
                 break;
@@ -1600,7 +1605,7 @@ export function createRpcClient<T extends object>({ socket, socketKey: key, limi
      *  In-band auth assumes ONE logical client per socket+key (hub model): two
      *  token clients on one socket would wipe routeCache/authAck of each other on principal change. */
     token?: any;
-    /** Negotiated wire optimizations. Binary packets, compact shapes and callback batching are enabled by default. */
+    /** Negotiated wire optimizations. Binary packets are opt-in; compact shapes and callback batching default on. */
     opt?: RpcOpt;
 }): RpcClientReturn<T> {
     return createClient<T>(socket, key, { limit, limits, dedupeListen, token, opt });

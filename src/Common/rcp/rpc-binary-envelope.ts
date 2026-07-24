@@ -8,11 +8,13 @@ const RPC_BINARY_MAGIC = [0x52, 0x50, 0x42] as const
 // probe fails closed and both peers remain on legacy application packets.
 export const RPC_BINARY_PROTOCOL_VERSION = 1
 export const RPC_BINARY_SCHEMA_PROTOCOL_VERSION = 2
+export const RPC_BINARY_MSGPACK_PROTOCOL_VERSION = 3
 export const RPC_BINARY_MAX_FRAME_BYTES = 32_000_000
 
 export type RpcBinaryProtocolVersion =
     | typeof RPC_BINARY_PROTOCOL_VERSION
     | typeof RPC_BINARY_SCHEMA_PROTOCOL_VERSION
+    | typeof RPC_BINARY_MSGPACK_PROTOCOL_VERSION
 
 export const RpcBinaryFrame = {
     PROBE: 0,
@@ -73,6 +75,7 @@ function readSessionId(bytes: Uint8Array, start: number) {
 function supportedVersion(version: number): version is RpcBinaryProtocolVersion {
     return version == RPC_BINARY_PROTOCOL_VERSION
         || version == RPC_BINARY_SCHEMA_PROTOCOL_VERSION
+        || version == RPC_BINARY_MSGPACK_PROTOCOL_VERSION
 }
 
 function frameHeader(
@@ -112,7 +115,8 @@ export function inspectRpcBinaryEnvelope(wire: unknown) {
     const session = readSessionId(bytes, 5)
     const payload = bytes.subarray(session.position)
     // v2 uses PROBE/PROBE_ACK payloads to exchange predeclared schema
-    // definitions before any application packet. v1 control frames stay byte-identical.
+    // definitions before any application packet. V1 control frames stay byte-identical;
+    // v3 currently has no prelude.
     if (version == RPC_BINARY_PROTOCOL_VERSION
         && kind != RpcBinaryFrame.PACKET
         && payload.byteLength != 0) {

@@ -197,7 +197,9 @@ async function main() {
             return wrapped
         }
 
-        const {v7: _removedV7, ...baseBatch} = rollingExposed.api.replay.batch!
+        // V2 is the production default. Remove it only in this compatibility
+        // fixture so the later-generation fallback/rebind ladder remains covered.
+        const {v2: _removedV2, v7: _removedV7, ...baseBatch} = rollingExposed.api.replay.batch!
         const rollingBatch: any = {
             ...baseBatch,
             v3: codecWire('v3', baseBatch.v3, function v3IsAvailable() { return true }),
@@ -351,8 +353,8 @@ async function main() {
         await flushReactive(routeMirror.state)
 
         ok(route.mode == 'batch', 'batch route selects compact coordinates after MAP')
-        ok(routeBinaryPackets > 0,
-            'in-process RPC preserves the selected v7 binary envelope')
+        ok(routeBinaryPackets == 0,
+            'default in-process RPC keeps the selected Store v2 route on JSON arrays')
         ok(routeErrors.length == 0, 'delayed route schema does not produce a recovery error')
         ok(JSON.stringify(routeMirror.snapshot()) == JSON.stringify(routeSource.snapshot()),
             'deferred route catch-up converges after MAP')
@@ -367,6 +369,7 @@ async function main() {
         const limitedSource = createStore<Record<string, string>>({}, {drain: 'micro'})
         const limitedExposed = exposeStoreReplay(limitedSource, {batch: true})
         const {
+            v2: _removedV2FromV5, v3: _removedV3FromV5, v4: _removedV4FromV5,
             v6: _removedV6, v7: _removedV7, ...limitedV5Batch
         } = limitedExposed.api.replay.batch!
         const limitedV5Replay = {...limitedExposed.api.replay, batch: limitedV5Batch}

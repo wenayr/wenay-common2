@@ -152,16 +152,22 @@ createRpcServerAuto(opts)                           // canonical: nested object 
   //   upgrading listen -> replayListen is a declaration-site-only change; replaySubscribe(client.func.key) works as is.
   //   opts.replayOpts {pending?, highWater?, lowWater?, pollMs?} arms the per-connection lag gate on frameLine
   //   (consumer picks policy 'queue'|'frame' at subscribe time); the replay `line` stays ungated for connected queue-policy live delivery.
-  // opts.binary is negotiated independently and defaults on. A correlated Uint8Array probe must round-trip before
-  //   either peer switches application traffic. Peers which both advertise BINARY_SCHEMA select universal
-  //   typed-schema binary v2; a peer advertising only BINARY selects binary v1; peers without BINARY keep legacy
-  //   arrays. CAPS/MAP/auth stay legacy arrays,
+  // opts.binary is negotiated independently and defaults off. Without an explicit binary option, application
+  //   traffic stays on JSON arrays. With binary:true on both peers, a correlated Uint8Array probe must round-trip
+  //   before either peer switches application traffic. Peers which both advertise BINARY_MSGPACK select universal
+  //   msgpackr binary v3; otherwise BINARY_SCHEMA selects typed-schema v2, BINARY selects v1, and peers without
+  //   BINARY keep legacy arrays. CAPS/MAP/auth stay legacy arrays,
   //   while the v2 PROBE/ACK byte payload exchanges predeclared schema descriptions before application data.
-  //   `binary:false`
+  //   `{msgpack:false}` pins schema-v2, `{schema:false}` pins v1; absent/false binary
   //   on either side or an old peer keeps every application packet on the unchanged legacy path. ready()/hub connect
   //   waits for correlated caps and the probe; a byte-blocking adapter selects correlated raw after 250 ms. A late
   //   ACK upgrades future calls and migrates declared Listen subscriptions without duplicating their consumers.
-  //   The codec exactly preserves undefined, false, true, null, integer/float/-0/NaN/infinities, strings (including
+  //   RPB/3 encodes the complete existing RPC packet with msgpackr records, so CALL, RESP, PIPE, callbacks,
+  //   callback batches, errors and Store use one implementation. Frames are independently decodable and reuse
+  //   record definitions for repeated layouts inside a frame; there is no route-specific or cross-message catalog.
+  //   It preserves ordinary primitives, undefined, NaN/infinities, BigInt, rich values and binary views. Scalar -0,
+  //   sparse holes, lone UTF-16 surrogates and null-prototype identity follow msgpackr normalization.
+  //   RPB/2 and RPB/1 exactly preserve undefined, false, true, null, integer/float/-0/NaN/infinities, strings (including
   //   lone surrogates), BigInt, sparse arrays, plain/null-prototype objects and canonical native values: Date,
   //   RegExp, Map, Set, ArrayBuffer, DataView and standard TypedArrays. RegExp v1 requires the standard lastIndex=0
   //   state. Native expandos fail closed where they can be checked without enumerating every binary index; a large
@@ -184,7 +190,7 @@ createRpcServerAuto(opts)                           // canonical: nested object 
   //   once per direction/connection generation; following values carry its short schema id. Dynamic inference
   //   continues in the remaining table. `maxSchemas`
   //   controls v2; legacy `maxShapes` remains the v1 setting and is also the v2 default when maxSchemas is absent.
-  //   `{schema:false}` pins v1 for diagnostics/rollout; `binary:false` pins legacy arrays.
+  //   `{msgpack:false}` pins v2; `{schema:false}` pins v1; `binary:false` pins legacy arrays.
   //   ArrayBuffer, DataView and every supported TypedArray are direct binary leaves: their subtype/range and bytes
   //   enter the typed lane without first becoming a generic object or a nested binary wrapper.
   //   Definitions commit only after successful emit/full decode; reconnect, server replacement and rollback reset
@@ -193,8 +199,8 @@ createRpcServerAuto(opts)                           // canonical: nested object 
   //   isolated correlated sessions; anonymous pre-correlation caps may enable only historical COMPACT, never another
   //   client's batch/binary policy.
   //   Once the correlated byte probe establishes the negotiated socket, application values use the trusted reader:
-  //   framing opcodes, lengths, callback refs and schema ids are interpreted directly without Zod, semantic field
-  //   validation or duplicate/canonical-value scans. With no explicit client `limits`, there is no second result walk;
+  //   framing, msgpack values, callback refs and (for v2) schema ids are interpreted directly without Zod, semantic
+  //   field validation or duplicate/canonical-value scans. With no explicit client `limits`, there is no second result walk;
   //   opting into tighter client limits adds only a lightweight decoded-value budget walk. The sender classifies the
   //   actual JS layout before writing; the receiver follows the transmitted physical schema.
   //   Envelope/session routing, byte boundaries and explicit size limits remain part of framing; the standalone
@@ -278,9 +284,12 @@ application envelope before agreement.
 |---|---|---|---|
 | Legacy RPC arrays | either side disables binary, or a peer has no `BINARY` capability | Existing CALL/RESP/PIPE/callback/error arrays and native transport attachments | Unchanged old-client/old-server path and final mixed-peer fallback |
 | RPB/1 | both peers have `BINARY`, but either lacks `BINARY_SCHEMA`; also `{schema:false}` | Versioned byte envelope with exact tagged values and its bounded ordered-layout cache | Binary compatibility bridge for a new peer talking to the previous binary implementation |
-| RPB/2 | both peers have `BINARY_SCHEMA` and the correlated v2 probe succeeds | Universal typed-schema envelope: predeclared and dynamically promoted schemas, field-major typed runs, constants/boolean bitmaps, exact generic escape and direct binary leaves | Current new/new mode; CALL, RESP, PIPE, callbacks, callback batches, errors and Store v6 all use the same codec |
+| RPB/2 | both peers have `BINARY_SCHEMA` but not `BINARY_MSGPACK`, or `{msgpack:false}` | Universal typed-schema envelope: predeclared and dynamically promoted schemas, field-major typed runs, constants/boolean bitmaps, exact generic escape and direct binary leaves | Exact compatibility mode for the previous new/new implementation |
+| RPB/3 | both peers have `BINARY_MSGPACK` | The complete existing RPC packet encoded once by msgpackr records into one byte envelope | Current new/new mode; CALL, RESP, PIPE, callbacks, callback batches, errors and Store v7 share one codec |
 
-RPB/2 does not run Zod or application-semantic validation over negotiated values. The sender
+RPB/3 and RPB/2 do not run Zod or application-semantic validation over negotiated values. RPB/3
+uses independently decodable frames, with record definitions shared inside each complete packet.
+RPB/2 retains its connection-generation schema table. In that mode, the sender
 classifies the actual JavaScript representation; a different representation selects another schema
 or the exact generic escape. Framing opcodes, byte boundaries, schema ids, callback references and
 explicit resource limits are still decoded because they define the wire itself. Predeclared schemas
@@ -1170,11 +1179,11 @@ exposeStoreReplay(store, {batch?, patchSource?, ...})  <->  syncStoreReplay(mirr
   //   there is no persistent shape cache, cross-envelope dictionary, deep shape comparison or recursive columnization.
   //   v5 writes that same patch plan to one self-contained Uint8Array. Application code still receives ordinary
   //   StorePatch/value objects. V6 carries those ordinary logical objects directly through the universal outer
-  //   RPC value path, removing the v5-inner-Uint8Array-inside-RPC-binary copy. RPB/2 can reuse a typed schema for
-  //   them; RPB/1 and legacy arrays remain valid outer transports during rollout. V7 instead packs flat Store
-  //   key/value batches with msgpackr, shares up to 1,000 nested value shapes through a server-owned catalog and
-  //   accepts client-known id/range summaries on live and recovery reads. New clients select recommended
-  //   v7 -> v6 -> v5 -> v4 -> v3 -> v2 -> v1 -> legacy by optional-member presence;
+  //   RPC value path, removing the v5-inner-Uint8Array-inside-RPC-binary copy. V7 reuses the exact v2
+  //   [2,seq,ts,patches] value without adding Store opcodes, a Store schema catalog or an inner byte wrapper.
+  //   Universal RPB/3 applies msgpackr once to the complete RPC packet, so Store, calls, responses, errors and
+  //   callbacks share the same serializer. RPB/2, RPB/1 and legacy remain transport fallbacks. New clients select
+  //   v2 first; when v2 is absent they can still read v7/v6/v5/v4/v3/v1 and finally legacy;
   //   old clients and servers continue on their newest common member, with no change to the business API.
   //   v5 preserves null/undefined/booleans, finite and special Numbers (including -0/NaN/infinities),
   //   strings (including lone surrogates), BigInt up to 8,192 bits,
@@ -1192,7 +1201,7 @@ exposeStoreReplay(store, {batch?, patchSource?, ...})  <->  syncStoreReplay(mirr
   //   the same row/key budgets. The negotiated v5 Store reader trusts value semantics emitted by the paired encoder:
   //   it reads tags/lengths directly and does not rebuild validation sets or re-check canonical UTF/collection forms.
   //   Frame magic/version, byte boundaries, explicit size limits and the Store plan remain checked before mutation;
-  //   negotiated RPB/2 likewise uses its trusted reader without Zod or semantic value validation.
+  //   negotiated RPB/3 and RPB/2 likewise use trusted readers without Zod or semantic value validation.
   //   A natural Store drain enters as one source array. maxItems/maxBytes may split it into several physical envelopes;
   //   maxDelayMs>0 may merge adjacent source arrays. onBatch is once per resulting envelope, not per original drain.
   //   Batch frame flattens retained envelopes, keeps the last state-changing patch per exact path, and preserves
@@ -1208,9 +1217,9 @@ exposeStoreReplay(store, {batch?, patchSource?, ...})  <->  syncStoreReplay(mirr
   //   failed compact chunks and a non-transactional adapter's uncommitted suffix remain retryable without duplicates.
   //   Oracles: replay/store-replay-batch.test.ts, replay/store-replay-columnar-binary.test.ts,
   //   replay/store-replay-batch-socket.test.ts and replay/store-replay-large-stress.test.ts. The stress oracle
-  //   materializes 15,000 records and drives seeded 250-key updates through v1-v6, 0/1/5ms batching, reconnect,
+  //   materializes 15,000 records and drives seeded 250-key updates through v1-v7, 0/1/5ms batching, reconnect,
   //   compact-frame/keyframe recovery and both old-peer directions. The focused release diagnostic compares only
-  //   legacy JSON, v2 JSON and recommended v7 binary at 1/10/50/250 updates and a 15,000-key keyframe:
+  //   legacy JSON, recommended v2 JSON and experimental v7 binary at 1/10/50/250 updates and a 15,000-key keyframe:
   //   `npm run bench:store-replay:v7`.
 syncStoreReplayRoute(mirror, remote, {batch?, validateBatch?, onBatch?, ...}) -> off & {ready, switch(nextRemote, opts), seq(), label(), active(), mode}
   // Same validation/callback/seq contract as syncStoreReplay, but route-replaceable for relay/direct promotion.
@@ -1271,23 +1280,31 @@ storeReplayAt(storage, {seq?|ts?}?) -> snapshot | undefined                     
 ### Store Replay wire generations
 
 Every batch member represents the same logical Store patch line and sequence space. Versions are
-additive optional RPC members, not different public Store APIs: a new client checks member presence
-and chooses recommended `v7 → v6 → v5 → v4 → v3 → v2 → v1 → legacy`.
+additive optional RPC members, not different public Store APIs. The measured default is v2.
+A dedicated high-frequency RPC connection whose batching window consistently produces roughly 50
+or more changes per physical frame may deliberately expose v7 instead. JSON versus RPB/3 is
+negotiated once per RPC connection; it is not selected again from each Store batch size. When v2
+is absent, the reader can still consume the compatibility members and finally v1/legacy.
 
 | Store route | Physical form | Main purpose | Mixed-peer behavior |
 |---|---|---|---|
 | Legacy `replay.line` | One ordinary `StorePatch` replay event at a time | Original compatibility surface; no batch member required | Old client + new server remains here; new client + old server falls back here |
 | v1 | Compact op tuples inside a bounded batch envelope | First physical batching generation; preserves explicit `undefined` with its opcode | Selected only when no newer optional member exists |
-| v2 | Flatter top-level and nested/root set/delete tuples | Removes more repeated patch/path structure for ordinary values | Same logical seq; v1 remains available to older clients |
+| v2 | Flatter top-level and nested/root set/delete tuples over JSON arrays | Lowest measured CPU on the common ordinary-value path | Preferred whenever available; nested explicit `undefined` and exact RPC/Socket marker-shaped business objects need v3 semantics |
 | v3 | v2 layout plus recursive exact-value escapes | Preserves marker-shaped business data and explicit `undefined` recursively without changing ordinary v2 values | Falls back to v2/v1 when absent |
 | v4 | Envelope-local shallow column plan with raw/delete/root runs and optional derived Store key | Compresses consecutive same-shaped records without a persistent cross-envelope Store cache | Falls back to v3-v1; transport may still use native binary attachments |
 | v5 | Self-contained Store-specific `Uint8Array` over the v4 plan | Exact rich/binary values in one canonical Store byte codec with Store-specific hard limits | Falls back to v4-v1; still remains the newest common route for clients which do not know v6 |
-| v6 | Ordinary `ReplayEvent<[StorePatch[]]>`; no inner Store encoding | Historical universal-RPB experiment retained for mixed-version compatibility | Not recommended for performance; newer clients select v7 and older clients retain their existing ladder |
-| v7 | Flat set/delete/root key-value arrays encoded by msgpackr inside RPB/2 | Recommended route: one binary payload, bounded shared nested-value shapes and client-known schema ranges; dynamic Store keys remain values | New/new selects v7; missing v7 falls through without changing the business API |
+| v6 | Ordinary `ReplayEvent<[StorePatch[]]>`; no inner Store encoding | Historical universal-RPB experiment retained for diagnostics | Read only when v2 is absent |
+| v7 | The unchanged v2 `[2,seq,ts,patches]` value inside opt-in universal RPB/3 msgpackr | Explicit high-frequency/large-batch connection; no second Store transform, opcodes, catalog or inner bytes | Select deliberately on a dedicated binary connection whose physical frames are normally around 50+ changes; does not displace v2 merely by existing |
 
 No Store version leaks compact tuples, opcodes or bytes into application code. `onBatch`, mirrors and
 Replicated Map receive ordinary keys, values and `StorePatch` objects. The selector is capability
 presence, not a runtime guess from payload bytes.
+
+V3-v6 are planned for removal in the next intentional breaking release. They were not redesigned
+for 1.0.94 because their measured speed improvement was not satisfactory relative to the code and
+compatibility surface they add. Removal is gated by one deprecation release and verification that
+supported consumers negotiate only v2 or v7; legacy `replay.line` remains the old-client fallback.
 
 > Killer property for state/frame lines: a lagging/late/stalled consumer can replace backlog with a state-equivalent frame/keyframe. A sacred queue deliberately does not: its retained tail is exact, and eviction is a terminal error rather than silent loss.
 > Files: `src/Common/events/replay-{listen,wire,conflate,history,index}.ts` +
@@ -1325,27 +1342,54 @@ every decoded patch against the source. Update rows use one legacy message per p
 for v2/v7; the keyframe is one message for every route. CPU is the median of seven windows after two
 warm-up windows. Exact timings remain host diagnostics.
 
-Representative Node v24.18 results from the 1.0.93 release:
+Fresh results on the same host, with encode and decode reported separately:
 
-| Workload | Route | Messages | Warm bytes | Encode, us | Decode, us | Total, us |
+Node v24.18:
+
+| Workload | Route | Messages | Bytes | Encode, us | Decode, us | Total, us |
 |---|---|---:|---:|---:|---:|---:|
-| 1 update | legacy JSON | 1 | 127 | 0.32 | 0.56 | 0.88 |
-| 1 update | v2 JSON | 1 | 79 | 0.27 | 0.45 | 0.72 |
-| 1 update | v7 binary | 1 | 55 | 33.03 | 2.00 | 35.03 |
-| 50 updates | legacy JSON | 50 | 6,456 | 25.94 | 45.94 | 71.88 |
-| 50 updates | v2 JSON | 1 | 3,183 | 10.88 | 20.17 | 31.06 |
-| 50 updates | v7 binary | 1 | 1,430 | 42.71 | 6.44 | 49.15 |
-| 250 updates | legacy JSON | 250 | 32,657 | 129.97 | 237.71 | 367.68 |
-| 250 updates | v2 JSON | 1 | 16,034 | 51.23 | 93.58 | 144.80 |
-| 250 updates | v7 binary | 1 | 7,031 | 73.90 | 21.91 | 95.81 |
-| 15k keyframe | legacy JSON | 1 | 513,960 | 4,784.82 | 4,803.38 | 9,588.20 |
-| 15k keyframe | v2 JSON | 1 | 513,914 | 4,878.52 | 4,829.54 | 9,708.06 |
-| 15k keyframe | v7 binary | 1 | 330,032 | 3,950.30 | 3,429.48 | 7,379.78 |
+| 1 update | legacy JSON | 1 | 127 | 0.41 | 0.60 | 1.01 |
+| 1 update | **v2 JSON** | 1 | 79 | **0.27** | **0.45** | **0.72** |
+| 1 update | v7 binary | 1 | **64** | 0.70 | 0.52 | 1.22 |
+| 10 updates | legacy JSON | 10 | 1,276 | 3.46 | 6.02 | 9.48 |
+| 10 updates | **v2 JSON** | 1 | 643 | **1.45** | 2.67 | **4.12** |
+| 10 updates | v7 binary | 1 | **325** | 2.07 | **2.14** | 4.21 |
+| 50 updates | legacy JSON | 50 | 6,456 | 17.25 | 29.76 | 47.01 |
+| 50 updates | v2 JSON | 1 | 3,183 | 7.18 | 12.69 | 19.87 |
+| 50 updates | v7 binary | 1 | **1,487** | **6.43** | **4.82** | **11.25** |
+| 250 updates | legacy JSON | 250 | 32,657 | 86.74 | 151.41 | 238.15 |
+| 250 updates | v2 JSON | 1 | 16,034 | 34.55 | 63.13 | 97.68 |
+| 250 updates | v7 binary | 1 | **7,288** | **27.91** | **17.24** | **45.15** |
+| 15k keyframe | legacy JSON | 1 | 513,960 | 3,135.06 | 4,738.97 | 7,874.03 |
+| 15k keyframe | **v2 JSON** | 1 | 513,914 | **3,128.91** | 4,213.64 | **7,342.56** |
+| 15k keyframe | v7 binary | 1 | **330,030** | 5,412.45 | **2,834.69** | 8,247.15 |
 
-V2 JSON remains the lowest-CPU route for tiny Node batches. V7 is recommended for replicated
-collections because it consistently reduces bytes, collapses physical sends, wins at the intended
-250-change and large-keyframe workloads, and retains its shared value-shape knowledge across
-reconnects. The selector remains capability-based rather than guessing from payload size.
+Bun 1.3.14:
+
+| Workload | Route | Messages | Bytes | Encode, us | Decode, us | Total, us |
+|---|---|---:|---:|---:|---:|---:|
+| 1 update | legacy JSON | 1 | 127 | 0.21 | 0.45 | 0.66 |
+| 1 update | **v2 JSON** | 1 | 79 | **0.19** | **0.40** | **0.59** |
+| 1 update | v7 binary | 1 | **64** | 0.64 | 0.80 | 1.43 |
+| 10 updates | legacy JSON | 10 | 1,276 | 2.06 | 4.64 | 6.70 |
+| 10 updates | **v2 JSON** | 1 | 643 | **1.16** | **2.15** | **3.31** |
+| 10 updates | v7 binary | 1 | **325** | 1.64 | 2.52 | 4.15 |
+| 50 updates | legacy JSON | 50 | 6,456 | 10.39 | 25.27 | 35.67 |
+| 50 updates | v2 JSON | 1 | 3,183 | **5.14** | 12.10 | 17.23 |
+| 50 updates | v7 binary | 1 | **1,487** | 5.52 | **6.23** | **11.75** |
+| 250 updates | legacy JSON | 250 | 32,657 | 52.72 | 128.32 | 181.05 |
+| 250 updates | v2 JSON | 1 | 16,034 | 38.04 | 66.78 | 104.81 |
+| 250 updates | v7 binary | 1 | **7,288** | **27.52** | **24.54** | **52.06** |
+| 15k keyframe | legacy JSON | 1 | 513,960 | **889.76** | 2,841.58 | 3,731.34 |
+| 15k keyframe | **v2 JSON** | 1 | 513,914 | 909.70 | **2,734.35** | **3,644.05** |
+| 15k keyframe | v7 binary | 1 | **330,030** | 1,214.13 | 2,781.76 | 3,995.90 |
+
+V2 JSON is therefore the default. It wins the dominant one-event and ten-event paths on both
+runtimes and also wins the complete 15k keyframe CPU result. V7 is the deliberate high-frequency
+mode for a dedicated connection where batching consistently produces roughly 50 or more changes per
+physical frame: at the measured 50/250 updates it both reduces bytes and wins total codec CPU. It
+is not selected automatically or per batch. Enable binary RPC and expose v7 explicitly only on
+that measured connection.
 
 ### Historical Store Replay v1-v6 benchmark inside RPB/2
 

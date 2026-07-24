@@ -3,6 +3,7 @@ export declare const Caps: {
     readonly CB_BATCH: number;
     readonly BINARY: number;
     readonly BINARY_SCHEMA: number;
+    readonly BINARY_MSGPACK: number;
 };
 export type tCaps = number;
 export declare const CAPS_ALL: tCaps;
@@ -18,6 +19,7 @@ export type RpcOpt = {
     };
     binary?: boolean | {
         schema?: boolean;
+        msgpack?: boolean;
         maxShapes?: number;
         maxSchemas?: number;
         promotionThreshold?: number;

@@ -124,7 +124,7 @@ export type StoreReplayBatchRemote = StoreReplayWireRemote<tStoreReplayWireBatch
      * The negotiated universal RPC schema codec owns its physical representation.
      */
     v6?: StoreReplayBatchV6Remote
-    /** Same logical replay/seq-space, encoded directly by msgpackr records. */
+    /** Exact v2 logical tuple; the universal RPC lane owns its msgpackr representation. */
     v7?: StoreReplayBatchV7Remote
 }
 
@@ -529,48 +529,33 @@ function exposeStoreReplayBatchV7(replay: StoreReplayBatchLine, prepareRead: () 
     })
     replay.line.onClose(function closePreparedStoreReplayV7Line() { preparedLine.close() })
 
-    const line = {
-        ...preparedLine,
-        on(
-            cb: (wire: tStoreReplayWireBatchV7) => void,
-            opts: {knowledge?: tStoreReplaySchemaKnowledge} = {},
-        ) {
-            const knowledge = codec.createRemoteKnowledge(opts.knowledge)
-            return preparedLine.on(function encodeStoreReplayV7Live(payload) {
-                cb(codec.wire(payload, knowledge))
-            }, opts as any)
-        },
-    }
-
-    function since(seq: number, snapshot?: tStoreReplaySchemaKnowledge) {
+    function since(seq: number, _snapshot?: tStoreReplaySchemaKnowledge) {
         prepareRead()
-        const knowledge = codec.createRemoteKnowledge(snapshot)
         return replay.getSince(seq)?.map(function encodeStoreReplayV7Tail(event) {
-            return codec.encode(cloneStoreReplayBatchEvent(event), knowledge)
+            return codec.encode(cloneStoreReplayBatchEvent(event))
         }) ?? null
     }
 
-    function keyframe(snapshot?: tStoreReplaySchemaKnowledge) {
+    function keyframe(_snapshot?: tStoreReplaySchemaKnowledge) {
         prepareRead()
         const event = replay.keyframe()
         if (!event) return null
-        return codec.encode(event, codec.createRemoteKnowledge(snapshot))
+        return codec.encode(event)
     }
 
     function frame(
         seq: number,
         hint?: unknown,
-        snapshot?: tStoreReplaySchemaKnowledge,
+        _snapshot?: tStoreReplaySchemaKnowledge,
     ) {
         prepareRead()
-        const knowledge = codec.createRemoteKnowledge(snapshot)
         return replay.frame(seq, hint).map(function encodeStoreReplayV7Frame(event) {
-            return codec.encode(cloneStoreReplayBatchEvent(event), knowledge)
+            return codec.encode(cloneStoreReplayBatchEvent(event))
         })
     }
 
     return {
-        line,
+        line: preparedLine,
         since,
         keyframe,
         frame,
@@ -715,12 +700,15 @@ function decodeStoreReplayRemote(remote: StoreReplayBatchRemote) {
     let activeRemote: ReplayRemote<[StorePatch[]]> | null = null
 
     function selectedCodec(): tCodec {
+        // V2 is the measured default for the common small-update path. A dedicated
+        // binary RPC connection with consistently large physical batches may
+        // expose V7 instead; compatibility members never displace V2 by existing.
+        if (rpcMemberAvailable(remote, 'v2')) return 'v2'
         if (rpcMemberAvailable(remote, 'v7')) return 'v7'
         if (rpcMemberAvailable(remote, 'v6')) return 'v6'
         if (rpcMemberAvailable(remote, 'v5')) return 'v5'
         if (rpcMemberAvailable(remote, 'v4')) return 'v4'
         if (rpcMemberAvailable(remote, 'v3')) return 'v3'
-        if (rpcMemberAvailable(remote, 'v2')) return 'v2'
         return 'v1'
     }
 
@@ -734,7 +722,6 @@ function decodeStoreReplayRemote(remote: StoreReplayBatchRemote) {
                 remote.v7!,
                 wire => msgpack.decode(wire as tStoreReplayWireBatchV7),
                 remote,
-                msgpack.knowledge,
             )
         } else if (codec == 'v6') {
             activeRemote = decodeStoreReplayWireRemote(

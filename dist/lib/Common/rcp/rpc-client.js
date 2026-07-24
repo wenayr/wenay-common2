@@ -165,9 +165,9 @@ function createClient(socket, key, opts) {
     function binaryApplicationOn() {
         return binaryActive && (0, rpc_caps_1.hasCap)(clientCaps & peerServerCaps, rpc_caps_1.Caps.BINARY);
     }
-    function schemaBinaryApplicationOn() {
+    function trustedBinaryApplicationOn() {
         return binaryApplicationOn()
-            && binaryPeer.protocolVersion == rpc_binary_envelope_1.RPC_BINARY_SCHEMA_PROTOCOL_VERSION;
+            && binaryPeer.protocolVersion != rpc_binary_envelope_1.RPC_BINARY_PROTOCOL_VERSION;
     }
     const zombies = new Set();
     const retire = (id) => { zombies.add(id); };
@@ -290,7 +290,7 @@ function createClient(socket, key, opts) {
                 else {
                     try {
                         req.ok(binary
-                            ? (schemaBinaryApplicationOn()
+                            ? (trustedBinaryApplicationOn()
                                 ? (0, rpc_binary_walk_1.validateRpcBinaryResultTrusted)(msg[2], opts?.limits)
                                 : (0, rpc_binary_walk_1.validateRpcBinaryResult)(msg[2], opts?.limits))
                             : (0, rpc_walk_1.unpackResult)(msg[2], lim));
@@ -308,7 +308,7 @@ function createClient(socket, key, opts) {
                 let cbArgs;
                 try {
                     cbArgs = (msg[2] || []).map((a) => binary
-                        ? (schemaBinaryApplicationOn()
+                        ? (trustedBinaryApplicationOn()
                             ? (0, rpc_binary_walk_1.validateRpcBinaryResultTrusted)(a, opts?.limits)
                             : (0, rpc_binary_walk_1.validateRpcBinaryResult)(a, opts?.limits))
                         : (0, rpc_walk_1.unpackResult)(a, lim));
@@ -365,7 +365,7 @@ function createClient(socket, key, opts) {
                         if (!(0, rpc_limits_1.isSafeKey)(k))
                             throw new Error('Unsafe compact shape key');
                         obj[k] = binary
-                            ? (schemaBinaryApplicationOn()
+                            ? (trustedBinaryApplicationOn()
                                 ? (0, rpc_binary_walk_1.validateRpcBinaryResultTrusted)(vals[i], opts?.limits)
                                 : (0, rpc_binary_walk_1.validateRpcBinaryResult)(vals[i], opts?.limits))
                             : (0, rpc_walk_1.unpackResult)(vals[i], lim);
@@ -420,9 +420,12 @@ function createClient(socket, key, opts) {
                     correlatedCapsReady = true;
                     if (!binaryActive
                         && (0, rpc_caps_1.hasCap)(clientCaps & peerServerCaps, rpc_caps_1.Caps.BINARY)) {
-                        const protocolVersion = (0, rpc_caps_1.hasCap)(clientCaps & peerServerCaps, rpc_caps_1.Caps.BINARY_SCHEMA)
-                            ? rpc_binary_envelope_1.RPC_BINARY_SCHEMA_PROTOCOL_VERSION
-                            : rpc_binary_envelope_1.RPC_BINARY_PROTOCOL_VERSION;
+                        const effectiveCaps = clientCaps & peerServerCaps;
+                        const protocolVersion = (0, rpc_caps_1.hasCap)(effectiveCaps, rpc_caps_1.Caps.BINARY_MSGPACK)
+                            ? rpc_binary_envelope_1.RPC_BINARY_MSGPACK_PROTOCOL_VERSION
+                            : (0, rpc_caps_1.hasCap)(effectiveCaps, rpc_caps_1.Caps.BINARY_SCHEMA)
+                                ? rpc_binary_envelope_1.RPC_BINARY_SCHEMA_PROTOCOL_VERSION
+                                : rpc_binary_envelope_1.RPC_BINARY_PROTOCOL_VERSION;
                         binaryPeer = createSessionBinaryPeer(protocolVersion);
                         binaryProbeSent = true;
                         socket.emit(key, (0, rpc_binary_envelope_1.encodeRpcBinaryControl)(rpc_binary_envelope_1.RpcBinaryFrame.PROBE, binarySessionId, protocolVersion, binaryPeer.encodePrelude()));
@@ -432,7 +435,9 @@ function createClient(socket, key, opts) {
                     break;
                 }
                 if (sessionId == undefined && generation == undefined) {
-                    peerServerCaps = declared & ~(rpc_caps_1.Caps.BINARY | rpc_caps_1.Caps.BINARY_SCHEMA);
+                    peerServerCaps = declared & ~(rpc_caps_1.Caps.BINARY
+                        | rpc_caps_1.Caps.BINARY_SCHEMA
+                        | rpc_caps_1.Caps.BINARY_MSGPACK);
                     notifyBinaryModeChange();
                 }
                 break;

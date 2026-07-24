@@ -3,10 +3,12 @@
 // =====================================================================
 
 import {createBinaryValueCodec} from './rpc-binary-value'
+import {createRpcBinaryMsgpackCodec} from './rpc-binary-msgpack'
 import {createRpcBinarySchemaCodec} from './rpc-binary-schema'
 import {
     encodeRpcBinaryControl,
     RPC_BINARY_MAX_FRAME_BYTES,
+    RPC_BINARY_MSGPACK_PROTOCOL_VERSION,
     RPC_BINARY_PROTOCOL_VERSION,
     RPC_BINARY_SCHEMA_PROTOCOL_VERSION,
     RpcBinaryFrame,
@@ -44,7 +46,13 @@ export function createRpcBinaryPeer({
     predeclared?: readonly unknown[]
 }) {
     const schema = protocolVersion == RPC_BINARY_SCHEMA_PROTOCOL_VERSION
-    const encoder = schema
+    const msgpack = protocolVersion == RPC_BINARY_MSGPACK_PROTOCOL_VERSION
+    const msgpackCodec = msgpack
+        ? createRpcBinaryMsgpackCodec({maxWireBytes: RPC_BINARY_MAX_VALUE_FRAME_BYTES})
+        : undefined
+    const encoder = msgpack
+        ? undefined
+        : schema
         ? createRpcBinarySchemaCodec({
             magic: RPC_BINARY_SCHEMA_VALUE_MAGIC,
             version: RPC_BINARY_SCHEMA_PROTOCOL_VERSION,
@@ -70,7 +78,9 @@ export function createRpcBinaryPeer({
     // The option controls only what this peer emits. A receiver must accept every
     // cache id allowed by the protocol; otherwise unequal local tuning desynchronizes
     // the stream after the first shape outside the smaller budget.
-    const decoder = schema
+    const decoder = msgpack
+        ? undefined
+        : schema
         ? createRpcBinarySchemaCodec({
             magic: RPC_BINARY_SCHEMA_VALUE_MAGIC,
             version: RPC_BINARY_SCHEMA_PROTOCOL_VERSION,
@@ -118,6 +128,14 @@ export function createRpcBinaryPeer({
     }
 
     function prepare(packet: any[]) {
+        if (msgpack) {
+            const payload = msgpackCodec!.encode(packet)
+            return {
+                wire: wrapRpcBinaryPacket(sessionId, payload, protocolVersion),
+                commit: function commitMsgpackPacket() {},
+                rollback: function rollbackMsgpackPacket() {},
+            }
+        }
         const encoded = schema
             ? (encoder as ReturnType<typeof createRpcBinarySchemaCodec>)
                 .prepareEncodeTrusted(
@@ -125,7 +143,7 @@ export function createRpcBinaryPeer({
                     schemaPacketDepthBias(packet),
                     schemaPacketHint(packet),
                 )
-            : encoder.prepareEncode(packet)
+            : encoder!.prepareEncode(packet)
         try {
             const wire = wrapRpcBinaryPacket(sessionId, encoded.wire, protocolVersion)
             return {
@@ -147,14 +165,16 @@ export function createRpcBinaryPeer({
                 protocolVersion,
             ).byteLength
         }
-        const valueByteLength = schema
+        const valueByteLength = msgpack
+            ? msgpackCodec!.measure(packet)
+            : schema
             ? (encoder as ReturnType<typeof createRpcBinarySchemaCodec>)
                 .measureEncodeTrusted(
                     packet,
                     schemaPacketDepthBias(packet),
                     schemaPacketHint(packet),
                 )
-            : encoder.measureEncode(packet)
+            : encoder!.measureEncode(packet)
         const byteLength = packetHeaderByteLength + valueByteLength
         if (byteLength > RPC_BINARY_MAX_FRAME_BYTES) {
             throw new RangeError('RPC binary envelope: frame exceeds binary limit')
@@ -163,7 +183,9 @@ export function createRpcBinaryPeer({
     }
 
     function decode(payload: Uint8Array) {
-        return decoder.decodeTrusted(payload)
+        return msgpack
+            ? msgpackCodec!.decode(payload)
+            : decoder!.decodeTrusted(payload)
     }
 
     function encodePrelude() {
@@ -175,7 +197,7 @@ export function createRpcBinaryPeer({
     function decodePrelude(payload: Uint8Array) {
         if (!schema) {
             if (payload.byteLength != 0) {
-                throw new TypeError('RPC binary v1 cannot accept a schema prelude')
+                throw new TypeError('RPC binary protocol cannot accept a schema prelude')
             }
             return
         }
@@ -184,8 +206,9 @@ export function createRpcBinaryPeer({
     }
 
     function stats() {
-        const sent = encoder.stats()
-        const received = decoder.stats()
+        if (msgpack) return msgpackCodec!.stats() as any
+        const sent = encoder!.stats()
+        const received = decoder!.stats()
         if (schema) {
             const schemaSent = sent as ReturnType<
                 ReturnType<typeof createRpcBinarySchemaCodec>['stats']
@@ -218,8 +241,12 @@ export function createRpcBinaryPeer({
     }
 
     function reset() {
-        encoder.reset()
-        decoder.reset()
+        if (msgpack) {
+            msgpackCodec!.reset()
+            return
+        }
+        encoder!.reset()
+        decoder!.reset()
     }
 
     return {
