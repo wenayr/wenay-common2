@@ -106,10 +106,25 @@ export function createRpcBinaryPeer({
         return 0
     }
 
+    function schemaPacketHint(packet: any[]) {
+        const kind = packet[0]
+        if (kind == Pkt.CALL || kind == Pkt.PIPE) {
+            return kind + ':ref:' + String(packet[2])
+        }
+        if (kind == Pkt.CB || kind == Pkt.CB_END) {
+            return kind + ':callback:' + String(packet[1])
+        }
+        return 'packet:' + String(kind)
+    }
+
     function prepare(packet: any[]) {
         const encoded = schema
             ? (encoder as ReturnType<typeof createRpcBinarySchemaCodec>)
-                .prepareEncodeTrusted(packet, schemaPacketDepthBias(packet))
+                .prepareEncodeTrusted(
+                    packet,
+                    schemaPacketDepthBias(packet),
+                    schemaPacketHint(packet),
+                )
             : encoder.prepareEncode(packet)
         try {
             const wire = wrapRpcBinaryPacket(sessionId, encoded.wire, protocolVersion)
@@ -134,7 +149,11 @@ export function createRpcBinaryPeer({
         }
         const valueByteLength = schema
             ? (encoder as ReturnType<typeof createRpcBinarySchemaCodec>)
-                .measureEncodeTrusted(packet, schemaPacketDepthBias(packet))
+                .measureEncodeTrusted(
+                    packet,
+                    schemaPacketDepthBias(packet),
+                    schemaPacketHint(packet),
+                )
             : encoder.measureEncode(packet)
         const byteLength = packetHeaderByteLength + valueByteLength
         if (byteLength > RPC_BINARY_MAX_FRAME_BYTES) {

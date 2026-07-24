@@ -197,7 +197,7 @@ async function main() {
             return wrapped
         }
 
-        const baseBatch = rollingExposed.api.replay.batch!
+        const {v7: _removedV7, ...baseBatch} = rollingExposed.api.replay.batch!
         const rollingBatch: any = {
             ...baseBatch,
             v3: codecWire('v3', baseBatch.v3, function v3IsAvailable() { return true }),
@@ -352,7 +352,7 @@ async function main() {
 
         ok(route.mode == 'batch', 'batch route selects compact coordinates after MAP')
         ok(routeBinaryPackets > 0,
-            'in-process RPC preserves the selected v6 schema-binary envelope')
+            'in-process RPC preserves the selected v7 binary envelope')
         ok(routeErrors.length == 0, 'delayed route schema does not produce a recovery error')
         ok(JSON.stringify(routeMirror.snapshot()) == JSON.stringify(routeSource.snapshot()),
             'deferred route catch-up converges after MAP')
@@ -366,7 +366,9 @@ async function main() {
     {
         const limitedSource = createStore<Record<string, string>>({}, {drain: 'micro'})
         const limitedExposed = exposeStoreReplay(limitedSource, {batch: true})
-        const {v6: _removedV6, ...limitedV5Batch} = limitedExposed.api.replay.batch!
+        const {
+            v6: _removedV6, v7: _removedV7, ...limitedV5Batch
+        } = limitedExposed.api.replay.batch!
         const limitedV5Replay = {...limitedExposed.api.replay, batch: limitedV5Batch}
         const [limitedClientSocket, limitedServerSocket] = createInProcSocketPair()
         createRpcServerAuto({

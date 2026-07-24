@@ -20,10 +20,17 @@ type ListenCallbackResult<T extends any[] = any[]> = ReturnType<typeof createLis
 // Here only TYPE: at listen-socket layer on returns at runtime
 // makeOff(wait, off) (see below), and callability is materialized by it.
 export type SubscriptionHandle = Off<void, { off: () => void; unsubscribe: () => void; removeCallback: () => void }>
-export type RpcListenSubscribeOpts = {current?: boolean}
+export type RpcListenSubscribeOpts = {
+    current?: true
+    knowledge?: unknown
+}
 
 function wireSubscribeOpts(opts: RpcListenSubscribeOpts | undefined) {
-    return opts?.current == true ? {current: true as const} : undefined
+    if (!opts) return undefined
+    const result: RpcListenSubscribeOpts = {}
+    if (opts.current == true) result.current = true
+    if (opts.knowledge != undefined) result.knowledge = opts.knowledge
+    return Object.keys(result).length ? result : undefined
 }
 // ===================================================================
 // Utility: throttle with trailing-latest (leading + trailing-latest)
@@ -79,7 +86,10 @@ export function listenSocket<Z extends any[] = any[]>(
 ) {
     const { stop, status, paramsModify, throttle } = d ?? {};
     const closeOn = d?.closeOn;
-    const subscribe = (cb: Listener<any>, opts?: {cbClose?: () => void, current?: true}) => e.on(cb as any, opts as any);
+    const subscribe = (
+        cb: Listener<any>,
+        opts?: {cbClose?: () => void, current?: true, knowledge?: unknown},
+    ) => e.on(cb as any, opts as any);
     const subscribeClose = closeOn && ((cb: () => void) => closeOn.on(cb));
 
     let last: Listener<Z> | null = null;

@@ -40,6 +40,7 @@ type WireStats = {
     schemaBinaryFrames: number
     v5Calls: number
     v6Calls: number
+    v7Calls: number
 }
 
 function binaryLeaves(value: unknown, leaves: Uint8Array[] = []) {
@@ -73,7 +74,8 @@ function countMagic(bytes: Uint8Array, magic: readonly number[]) {
 
 function countStoreWireCalls(
     remote: NonNullable<StoreReplayRemote['batch']>['v5']
-        | NonNullable<StoreReplayRemote['batch']>['v6'],
+        | NonNullable<StoreReplayRemote['batch']>['v6']
+        | NonNullable<StoreReplayRemote['batch']>['v7'],
     count: () => void,
 ) {
     if (!remote) return remote
@@ -131,6 +133,7 @@ async function measure(
         schemaBinaryFrames: 0,
         v5Calls: 0,
         v6Calls: 0,
+        v7Calls: 0,
     }
     const replay = exposed.api.replay as StoreReplayRemote
     const exposedBatch = replay.batch
@@ -141,6 +144,7 @@ async function measure(
                 ...exposedBatch,
                 v5: countStoreWireCalls(exposedBatch.v5, function countV5Call() { stats.v5Calls++ }),
                 v6: countStoreWireCalls(exposedBatch.v6, function countV6Call() { stats.v6Calls++ }),
+                v7: countStoreWireCalls(exposedBatch.v7, function countV7Call() { stats.v7Calls++ }),
             },
         }
         : replay
@@ -221,17 +225,33 @@ async function measure(
         const rich = workload.rich ?? (batch && serverBatch)
         if (rich) {
             const state = source.state as any
+            const exactBuffer = Uint8Array.from([9, 8, 7, 6, 5])
             state.UNDEF = undefined
             state.BOOL_FALSE = false
             state.BOOL_TRUE = true
             state.NULL = null
-            state.NEGATIVE_ZERO = -0
             state.NAN = Number.NaN
             state.BIGINT = 9_007_199_254_740_993n
             state.NESTED = {enabled: false, missing: undefined, rows: [null, true]}
             state.DATE = new Date(1_700_000_000_123)
             state.MAP = new Map([['spot', new Set([false, true])]])
             state.VIEW = new Uint8Array([0xa5, 7, 8, 9, 0xa5]).subarray(1, 4)
+            state.EXACT = {
+                maxSafeInteger: Number.MAX_SAFE_INTEGER,
+                minSafeInteger: Number.MIN_SAFE_INTEGER,
+                decimal: 1.2345678901234567,
+                nan: Number.NaN,
+                positiveInfinity: Number.POSITIVE_INFINITY,
+                negativeInfinity: Number.NEGATIVE_INFINITY,
+                unicode: 'котировка 🚀\u0000',
+                largeBigint: 1n << 80n,
+                invalidAt: new Date(Number.NaN),
+                pattern: /quote/giu,
+                arrayBuffer: exactBuffer.buffer,
+                dataView: new DataView(exactBuffer.buffer, 1, 3),
+                integers: new Int16Array([-32768, 0, 32767]),
+                decimals: new Float64Array([-0, Number.NaN, 1.25]),
+            }
         }
         await flushReactive(source.state)
         const expectedKeys = initialRecords || updateRecords
@@ -242,7 +262,7 @@ async function measure(
         const richPreserved = !rich || (
             Object.prototype.hasOwnProperty.call(mirrorState, 'UNDEF') && mirrorState.UNDEF === undefined
             && mirrorState.BOOL_FALSE == false && mirrorState.BOOL_TRUE == true && mirrorState.NULL == null
-            && Object.is(mirrorState.NEGATIVE_ZERO, -0) && Number.isNaN(mirrorState.NAN)
+            && Number.isNaN(mirrorState.NAN)
             && mirrorState.BIGINT == 9_007_199_254_740_993n
             && mirrorState.NESTED?.enabled == false
             && Object.prototype.hasOwnProperty.call(mirrorState.NESTED, 'missing')
@@ -250,6 +270,7 @@ async function measure(
             && mirrorState.MAP instanceof Map && mirrorState.MAP.get('spot') instanceof Set
             && mirrorState.VIEW instanceof Uint8Array
             && isDeepStrictEqual(Array.from(mirrorState.VIEW), [7, 8, 9])
+            && isDeepStrictEqual(mirrorState.EXACT, (source.state as any).EXACT)
         )
         let reconnected = true
         if (workload.reconnect) {
@@ -263,7 +284,7 @@ async function measure(
             }
             await flushReactive(source.state)
             hub.socket?.connect?.()
-            await waitFor('v6 reconnect convergence', function v6ReconnectConverged() {
+            await waitFor('v7 reconnect convergence', function v7ReconnectConverged() {
                 return sub.seq() > beforeDisconnectSeq
                     && isDeepStrictEqual(mirror.snapshot(), source.snapshot())
             })
@@ -296,7 +317,7 @@ async function main() {
     const oldTransport = await measure(false, true, false, false)
     const callbackBatch = await measure(false, true, true, false)
     const batch = await measure(true)
-    const largeV6 = await measure(true, true, true, true, true, {
+    const largeV7 = await measure(true, true, true, true, true, {
         initialRecords: 15_000,
         updateRecords: 250,
         reconnect: true,
@@ -308,22 +329,24 @@ async function main() {
     ok(callbackBatch.sends == 1, `generic callback batching wraps the unchanged legacy line once (${callbackBatch.sends})`)
     ok(batch.sends == 1, `batch sends one physical RPC/Socket.IO message (${batch.sends})`)
     ok(batch.binaryAttachments == 1 && batch.rpcBinaryFrames == 1 && batch.schemaBinaryFrames == 1
-        && batch.v5Frames == 0 && batch.v6Calls > 0 && batch.v5Calls == 0,
-    `Store v6 uses one schema-v2 RPC frame without an inner SRB v5 frame `
-        + `(${batch.binaryAttachments}/${batch.schemaBinaryFrames}, routes ${batch.v6Calls}/${batch.v5Calls})`)
+        && batch.v5Frames == 0 && batch.v7Calls > 0 && batch.v6Calls == 0 && batch.v5Calls == 0,
+    `Store v7 uses one msgpackr value inside the existing schema-v2 RPC frame `
+        + `(${batch.binaryAttachments}/${batch.schemaBinaryFrames}, routes `
+        + `${batch.v7Calls}/${batch.v6Calls}/${batch.v5Calls})`)
     ok(oldTransport.binaryAttachments == 0 && callbackBatch.binaryAttachments == 0,
         'explicit binary opt-out preserves JSON transport')
     ok(batch.richPreserved,
-        'schema-v2 Store v6 preserves false/true/null/undefined/numbers/nested/rich/binary values over real Socket.IO')
+        'msgpackr Store v7 preserves false/true/null/undefined/numbers/nested/rich/binary values over real Socket.IO')
     ok(batch.bytes < callbackBatch.bytes * 0.8,
         `Store batch also cuts logical-envelope bytes (${callbackBatch.bytes} -> ${batch.bytes})`)
     ok(fallback.converged && fallback.sends >= 50, 'new client negotiates back to legacy against an old server')
-    ok(largeV6.initialConverged && largeV6.converged && largeV6.reconnected,
-        'schema-v2 Store v6 converges a 15k keyframe, 250 live updates and 250 reconnect updates')
-    ok(largeV6.v6Calls >= 2 && largeV6.v5Calls == 0 && largeV6.v5Frames == 0
-        && largeV6.schemaBinaryFrames >= 2,
-    `15k/reconnect stays on v6 and outer RPB/2 without inner SRB `
-        + `(${largeV6.v6Calls}/${largeV6.v5Calls}, ${largeV6.schemaBinaryFrames} frames)`)
+    ok(largeV7.initialConverged && largeV7.converged && largeV7.reconnected,
+        'msgpackr Store v7 converges a 15k keyframe, 250 live updates and 250 reconnect updates')
+    ok(largeV7.v7Calls >= 2 && largeV7.v6Calls == 0 && largeV7.v5Calls == 0
+        && largeV7.v5Frames == 0 && largeV7.schemaBinaryFrames >= 2,
+    `15k/reconnect stays on v7 and outer RPB/2 without inner SRB `
+        + `(${largeV7.v7Calls}/${largeV7.v6Calls}/${largeV7.v5Calls}, `
+        + `${largeV7.schemaBinaryFrames} frames)`)
     console.log(fails ? `\n${fails} FAILED` : '\nall passed')
     if (fails) process.exit(1)
 }

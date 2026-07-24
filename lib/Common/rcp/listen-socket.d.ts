@@ -7,7 +7,8 @@ export type SubscriptionHandle = Off<void, {
     removeCallback: () => void;
 }>;
 export type RpcListenSubscribeOpts = {
-    current?: boolean;
+    current?: true;
+    knowledge?: unknown;
 };
 export declare function listenSocket<Z extends any[] = any[]>(e: ListenCallbackResult<Z>, d?: {
     readonly status?: () => boolean;

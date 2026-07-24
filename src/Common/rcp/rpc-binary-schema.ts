@@ -150,6 +150,12 @@ type tCandidate = {
     sequence: number
 }
 
+type tSchemaHint = string | number
+
+type tHintPlan =
+    | {tag: 'schema', schema: tSchema}
+    | {tag: 'run', schema: tSchema}
+
 type tEncodeCounters = {
     promotions: number
     definitions: number
@@ -176,6 +182,7 @@ type tEncodeTransaction = {
     candidateRemovals: Set<string>
     definitionIds: Set<number>
     announcedIds: Set<number>
+    hintChanges: Map<tSchemaHint, tHintPlan>
     sequence: number
     counters: tEncodeCounters
 }
@@ -201,6 +208,12 @@ type tRootPlan =
     | {tag: 'arrayBuffer', value: ArrayBuffer}
     | {tag: 'dataView', value: DataView}
     | {tag: 'typedArray', value: ArrayBufferView, entry: tTypedArrayEntry}
+
+type tEncodeGeneric = (
+    value: unknown,
+    depth: number,
+    hint?: tSchemaHint,
+) => Uint8Array
 
 export type RpcBinarySchemaCodecOptions = {
     magic: readonly number[] | Uint8Array
@@ -1082,7 +1095,6 @@ function fieldMatchesValue(
                 && !Object.is(value, -0)
         case FIELD_KIND.FLOAT64:
             return typeof value == 'number'
-                && (!Number.isSafeInteger(value) || Object.is(value, -0))
         case FIELD_KIND.STRING:
             return typeof value == 'string'
         case FIELD_KIND.BIGINT:
@@ -1172,7 +1184,6 @@ function trustedFieldMatchesValue(
                 && !Object.is(value, -0)
         case FIELD_KIND.FLOAT64:
             return typeof value == 'number'
-                && (!Number.isSafeInteger(value) || Object.is(value, -0))
         case FIELD_KIND.STRING:
             return typeof value == 'string'
         case FIELD_KIND.BIGINT:
@@ -1515,6 +1526,7 @@ function commitEncodeTransaction(
     registry: tRegistry,
     candidates: Map<string, tCandidate>,
     announced: Set<number>,
+    hints: Map<tSchemaHint, tHintPlan>,
     transaction: tEncodeTransaction,
 ) {
     for (const schema of transaction.staged) {
@@ -1527,6 +1539,7 @@ function commitEncodeTransaction(
         if (!registry.bySignature.has(signature)) candidates.set(signature, candidate)
     }
     for (const id of transaction.announcedIds) announced.add(id)
+    for (const [hint, plan] of transaction.hintChanges) hints.set(hint, plan)
 }
 
 function schemaById(
@@ -1718,13 +1731,18 @@ function fieldValue(schema: tSchema, value: object, index: number) {
         : (value as Record<string, unknown>)[schema.fields[index].key!]
 }
 
+function nestedSchemaHint(schema: tSchema, fieldIndex: number) {
+    return -1 - schema.id * (MAX_FIELDS + 1) - fieldIndex
+}
+
 function writeGeneric(
     writer: tByteWriter,
     value: unknown,
     depth: number,
-    encodeGeneric: (value: unknown, depth: number) => Uint8Array,
+    encodeGeneric: tEncodeGeneric,
+    hint?: tSchemaHint,
 ) {
-    const wire = encodeGeneric(value, depth)
+    const wire = encodeGeneric(value, depth, hint)
     writer.writeVarUintNumber(wire.byteLength)
     writer.writeBytes(wire)
 }
@@ -1782,7 +1800,7 @@ function writeSchemaPayload(
     value: object,
     registry: tRegistry,
     staged: tSchema[],
-    encodeGeneric: (value: unknown, depth: number) => Uint8Array,
+    encodeGeneric: tEncodeGeneric,
     counters: tEncodeCounters,
     depth: number,
 ) {
@@ -1840,7 +1858,13 @@ function writeSchemaPayload(
                 break
             }
             case FIELD_KIND.GENERIC:
-                writeGeneric(writer, current, depth + 1, encodeGeneric)
+                writeGeneric(
+                    writer,
+                    current,
+                    depth + 1,
+                    encodeGeneric,
+                    nestedSchemaHint(schema, index),
+                )
                 counters.generic++
                 break
             default:
@@ -1855,7 +1879,7 @@ function writeSchemaRunPayload(
     rows: object[],
     registry: tRegistry,
     staged: tSchema[],
-    encodeGeneric: (value: unknown, depth: number) => Uint8Array,
+    encodeGeneric: tEncodeGeneric,
     counters: tEncodeCounters,
     depth: number,
 ) {
@@ -1958,6 +1982,7 @@ function writeSchemaRunPayload(
                         fieldValue(schema, row, fieldIndex),
                         depth + 1,
                         encodeGeneric,
+                        nestedSchemaHint(schema, fieldIndex),
                     )
                     counters.generic++
                 }
@@ -1966,6 +1991,256 @@ function writeSchemaRunPayload(
                 fail('unknown schema field kind')
         }
     }
+}
+
+function trustedSchemaKeysMatch(schema: tSchema, value: object) {
+    if (schema.kind == SCHEMA_KIND.TUPLE) {
+        if (!Array.isArray(value) || value.length != schema.fields.length) return false
+        const keys = Object.keys(value)
+        if (keys.length != value.length) return false
+        for (let index = 0; index < keys.length; index++) {
+            if (keys[index] != String(index)) return false
+        }
+        return true
+    }
+    if (Array.isArray(value)) return false
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype != (schema.prototype == 0 ? Object.prototype : null)) return false
+    const keys = Object.keys(value)
+    if (keys.length != schema.fields.length) return false
+    for (let index = 0; index < keys.length; index++) {
+        if (keys[index] != schema.fields[index].key) return false
+    }
+    return true
+}
+
+function allObjectRows(value: unknown[]): value is object[] {
+    for (let index = 0; index < value.length; index++) {
+        const row = value[index]
+        if (row == null || typeof row != 'object') return false
+    }
+    return true
+}
+
+function writeTrustedScalarField(
+    writer: tByteWriter,
+    schema: tSchema,
+    field: tSchemaField,
+    fieldIndex: number,
+    current: unknown,
+    encodeGeneric: tEncodeGeneric,
+    counters: tEncodeCounters,
+    depth: number,
+    config: tResolvedOptions,
+) {
+    counters.typedFields++
+    switch (field.kind) {
+        case FIELD_KIND.UNDEFINED:
+            return current === undefined
+        case FIELD_KIND.NULL:
+            return current === null
+        case FIELD_KIND.BOOLEAN:
+            if (typeof current != 'boolean') return false
+            writer.writeU8(current ? 1 : 0)
+            return true
+        case FIELD_KIND.INTEGER:
+            if (typeof current != 'number'
+                || !Number.isSafeInteger(current)
+                || Object.is(current, -0)) {
+                return false
+            }
+            writeInteger(writer, current)
+            return true
+        case FIELD_KIND.FLOAT64:
+            if (typeof current != 'number') return false
+            writer.writeFloat64(current)
+            return true
+        case FIELD_KIND.STRING:
+            if (typeof current != 'string') return false
+            writeString(writer, current)
+            return true
+        case FIELD_KIND.BIGINT:
+            if (typeof current != 'bigint') return false
+            writeBigInt(writer, current)
+            return true
+        case FIELD_KIND.DATE:
+            if (!isSafeDate(current)) return false
+            writer.writeFloat64(Date.prototype.getTime.call(current))
+            return true
+        case FIELD_KIND.ARRAY_BUFFER: {
+            const binary = directBinaryField(current, config)
+            if (binary?.kind != FIELD_KIND.ARRAY_BUFFER) return false
+            writeDirectBinary(writer, new Uint8Array(current as ArrayBuffer))
+            return true
+        }
+        case FIELD_KIND.DATA_VIEW: {
+            const binary = directBinaryField(current, config)
+            if (binary?.kind != FIELD_KIND.DATA_VIEW) return false
+            writeDirectBinary(writer, activeBinaryBytes(current as DataView))
+            return true
+        }
+        case FIELD_KIND.TYPED_ARRAY: {
+            const binary = directBinaryField(current, config)
+            if (binary?.kind != FIELD_KIND.TYPED_ARRAY
+                || binary.binaryCode != field.binaryCode) {
+                return false
+            }
+            const entry = typedArrayEntryByCode(field.binaryCode!)
+            if (!entry) fail('unknown typed-array code')
+            writeTypedArray(writer, current as ArrayBufferView, entry)
+            return true
+        }
+        case FIELD_KIND.GENERIC:
+            if (genericKindOf(current, config.callbackRefs) != field.genericKind) return false
+            writeGeneric(
+                writer,
+                current,
+                depth + 1,
+                encodeGeneric,
+                nestedSchemaHint(schema, fieldIndex),
+            )
+            counters.generic++
+            return true
+        default:
+            return false
+    }
+}
+
+function writeTrustedSchemaPayload(
+    writer: tByteWriter,
+    schema: tSchema,
+    value: object,
+    registry: tRegistry,
+    staged: tSchema[],
+    encodeGeneric: tEncodeGeneric,
+    counters: tEncodeCounters,
+    depth: number,
+    config: tResolvedOptions,
+): boolean {
+    if (depth > config.maxDepth || !trustedSchemaKeysMatch(schema, value)) return false
+    for (let index = 0; index < schema.fields.length; index++) {
+        const field = schema.fields[index]
+        const current = fieldValue(schema, value, index)
+        if (field.kind == FIELD_KIND.NESTED) {
+            if (current == null || typeof current != 'object') return false
+            const nested = schemaById(registry, staged, field.schemaId!)
+            if (!nested) fail('nested schema id is missing')
+            if (!writeTrustedSchemaPayload(
+                writer,
+                nested,
+                current as object,
+                registry,
+                staged,
+                encodeGeneric,
+                counters,
+                depth + 1,
+                config,
+            )) {
+                return false
+            }
+            continue
+        }
+        if (!writeTrustedScalarField(
+            writer,
+            schema,
+            field,
+            index,
+            current,
+            encodeGeneric,
+            counters,
+            depth,
+            config,
+        )) {
+            return false
+        }
+    }
+    return true
+}
+
+function writeTrustedSchemaRunPayload(
+    writer: tByteWriter,
+    schema: tSchema,
+    rows: object[],
+    registry: tRegistry,
+    staged: tSchema[],
+    encodeGeneric: tEncodeGeneric,
+    counters: tEncodeCounters,
+    depth: number,
+    config: tResolvedOptions,
+): boolean {
+    if (depth > config.maxDepth) return false
+    for (const row of rows) {
+        if (!trustedSchemaKeysMatch(schema, row)) return false
+    }
+    for (let fieldIndex = 0; fieldIndex < schema.fields.length; fieldIndex++) {
+        const field = schema.fields[fieldIndex]
+        if (field.kind == FIELD_KIND.UNDEFINED || field.kind == FIELD_KIND.NULL) {
+            counters.typedFields += rows.length
+            for (const row of rows) {
+                const current = fieldValue(schema, row, fieldIndex)
+                if (field.kind == FIELD_KIND.UNDEFINED
+                    ? current !== undefined
+                    : current !== null) {
+                    return false
+                }
+            }
+            continue
+        }
+        if (field.kind == FIELD_KIND.BOOLEAN) {
+            counters.typedFields += rows.length
+            for (let start = 0; start < rows.length; start += 8) {
+                let bitmap = 0
+                const end = Math.min(rows.length, start + 8)
+                for (let rowIndex = start; rowIndex < end; rowIndex++) {
+                    const current = fieldValue(schema, rows[rowIndex], fieldIndex)
+                    if (typeof current != 'boolean') return false
+                    if (current) bitmap |= 1 << (rowIndex - start)
+                }
+                writer.writeU8(bitmap)
+            }
+            continue
+        }
+        if (field.kind == FIELD_KIND.NESTED) {
+            const nested = schemaById(registry, staged, field.schemaId!)
+            if (!nested) fail('nested schema id is missing')
+            const nestedRows = new Array<object>(rows.length)
+            for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+                const current = fieldValue(schema, rows[rowIndex], fieldIndex)
+                if (current == null || typeof current != 'object') return false
+                nestedRows[rowIndex] = current as object
+            }
+            if (!writeTrustedSchemaRunPayload(
+                writer,
+                nested,
+                nestedRows,
+                registry,
+                staged,
+                encodeGeneric,
+                counters,
+                depth + 1,
+                config,
+            )) {
+                return false
+            }
+            continue
+        }
+        for (const row of rows) {
+            if (!writeTrustedScalarField(
+                writer,
+                schema,
+                field,
+                fieldIndex,
+                fieldValue(schema, row, fieldIndex),
+                encodeGeneric,
+                counters,
+                depth,
+                config,
+            )) {
+                return false
+            }
+        }
+    }
+    return true
 }
 
 function defineDecodedField(target: object, key: string, value: unknown) {
@@ -2246,7 +2521,7 @@ function planRoot(
     announced: Set<number>,
     transaction: tEncodeTransaction,
     config: tResolvedOptions,
-    encodeGeneric: (value: unknown, depth: number) => Uint8Array,
+    encodeGeneric: tEncodeGeneric,
     depth: number,
     trustedInput: boolean,
 ): tRootPlan {
@@ -2402,7 +2677,7 @@ function writeRoot(
     plan: tRootPlan,
     registry: tRegistry,
     transaction: tEncodeTransaction,
-    encodeGeneric: (value: unknown, depth: number) => Uint8Array,
+    encodeGeneric: tEncodeGeneric,
     depth: number,
 ) {
     switch (plan.tag) {
@@ -2912,6 +3187,7 @@ export function createRpcBinarySchemaCodec(options: RpcBinarySchemaCodecOptions)
     let decodeRegistry = createRegistry()
     let candidates = new Map<string, tCandidate>()
     let announced = new Set<number>()
+    let hints = new Map<tSchemaHint, tHintPlan>()
     let pendingEncode: object | undefined
     let generation = 0
     let sequence = 0
@@ -2927,6 +3203,7 @@ export function createRpcBinarySchemaCodec(options: RpcBinarySchemaCodecOptions)
             candidateRemovals: new Set(),
             definitionIds: new Set(),
             announcedIds: new Set(),
+            hintChanges: new Map(),
             sequence,
             counters: createEncodeCounters(),
         }
@@ -2958,32 +3235,13 @@ export function createRpcBinarySchemaCodec(options: RpcBinarySchemaCodecOptions)
         compoundStack = new Set<object>(),
         depth = 0,
         trustedInput = false,
+        trustedHint?: tSchemaHint,
     ) {
-        const plan = planRoot(
-            value,
-            encodeRegistry,
-            candidates,
-            announced,
-            transaction,
-            config,
-            encodeFallbackPayload,
-            depth,
-            trustedInput,
-        )
-        const writer = createByteWriter(config.maxWireBytes)
-        writeHeader(writer, config, FRAME_KIND.DATA)
-        const definitionIds = Array.from(transaction.definitionIds)
-            .filter(id => !alreadyIncluded.has(id))
-            .sort((a, b) => a - b)
-        writer.writeVarUintNumber(definitionIds.length)
-        for (const id of definitionIds) {
-            const schema = schemaById(encodeRegistry, transaction.staged, id)
-            if (!schema) fail('schema definition id is missing')
-            writeSchemaDefinition(writer, schema)
-        }
-        transaction.counters.definitions += definitionIds.length
-
-        function encodeNestedGeneric(value: unknown, nestedDepth: number) {
+        function encodeNestedGeneric(
+            value: unknown,
+            nestedDepth: number,
+            nestedHint?: tSchemaHint,
+        ) {
             const objectValue = value != null && typeof value == 'object'
                 ? value
                 : undefined
@@ -3003,6 +3261,9 @@ export function createRpcBinarySchemaCodec(options: RpcBinarySchemaCodecOptions)
                             compoundStack,
                             nestedDepth,
                             trustedInput,
+                            nestedHint == undefined
+                                ? undefined
+                                : String(nestedHint) + ':dictionary',
                         )
                         const dictionaryWriter = createByteWriter(config.maxWireBytes)
                         dictionaryWriter.writeU8(GENERIC_PAYLOAD.DICTIONARY)
@@ -3021,6 +3282,7 @@ export function createRpcBinarySchemaCodec(options: RpcBinarySchemaCodecOptions)
                     compoundStack,
                     nestedDepth,
                     trustedInput,
+                    nestedHint,
                 )
                 const nestedWriter = createByteWriter(config.maxWireBytes, dataWire.byteLength + 1)
                 nestedWriter.writeU8(GENERIC_PAYLOAD.DATA)
@@ -3031,6 +3293,107 @@ export function createRpcBinarySchemaCodec(options: RpcBinarySchemaCodecOptions)
             }
         }
 
+        function currentDefinitionIds() {
+            return Array.from(transaction.definitionIds)
+                .filter(id => !alreadyIncluded.has(id))
+                .sort((a, b) => a - b)
+        }
+
+        function createDataWriter(definitionIds: number[]) {
+            const writer = createByteWriter(config.maxWireBytes)
+            writeHeader(writer, config, FRAME_KIND.DATA)
+            writer.writeVarUintNumber(definitionIds.length)
+            for (const id of definitionIds) {
+                const schema = schemaById(encodeRegistry, transaction.staged, id)
+                if (!schema) fail('schema definition id is missing')
+                writeSchemaDefinition(writer, schema)
+            }
+            return writer
+        }
+
+        function stageHint(plan: tHintPlan) {
+            if (trustedHint == undefined) return
+            if (!hints.has(trustedHint)
+                && !transaction.hintChanges.has(trustedHint)
+                && hints.size + transaction.hintChanges.size >= config.maxSchemas) {
+                return
+            }
+            transaction.hintChanges.set(trustedHint, plan)
+        }
+
+        if (trustedInput && trustedHint != undefined) {
+            const hinted = transaction.hintChanges.get(trustedHint) || hints.get(trustedHint)
+            if (hinted) {
+                collectDefinition(encodeRegistry, announced, transaction, hinted.schema)
+                const definitionIds = currentDefinitionIds()
+                const writer = createDataWriter(definitionIds)
+                const counters = createEncodeCounters()
+                let matched = false
+                if (hinted.tag == 'schema'
+                    && value != null && typeof value == 'object') {
+                    writer.writeU8(ROOT_TAG.SCHEMA)
+                    writer.writeVarUintNumber(hinted.schema.id)
+                    counters.references++
+                    matched = writeTrustedSchemaPayload(
+                        writer,
+                        hinted.schema,
+                        value as object,
+                        encodeRegistry,
+                        transaction.staged,
+                        encodeNestedGeneric,
+                        counters,
+                        depth,
+                        config,
+                    )
+                } else if (hinted.tag == 'run'
+                    && Array.isArray(value) && value.length >= 2) {
+                    if (allObjectRows(value)) {
+                        const rows = value
+                        writer.writeU8(ROOT_TAG.RUN)
+                        writer.writeVarUintNumber(hinted.schema.id)
+                        writer.writeVarUintNumber(rows.length)
+                        counters.references++
+                        counters.runs++
+                        counters.rows += rows.length
+                        matched = writeTrustedSchemaRunPayload(
+                            writer,
+                            hinted.schema,
+                            rows,
+                            encodeRegistry,
+                            transaction.staged,
+                            encodeNestedGeneric,
+                            counters,
+                            depth + 1,
+                            config,
+                        )
+                    }
+                }
+                if (matched) {
+                    transaction.counters.definitions += definitionIds.length
+                    addEncodeCounters(transaction.counters, counters)
+                    return writer.finish()
+                }
+            }
+        }
+
+        const plan = planRoot(
+            value,
+            encodeRegistry,
+            candidates,
+            announced,
+            transaction,
+            config,
+            encodeFallbackPayload,
+            depth,
+            trustedInput,
+        )
+        if (plan.tag == 'schema') {
+            stageHint({tag: 'schema', schema: plan.schema})
+        } else if (plan.tag == 'run') {
+            stageHint({tag: 'run', schema: plan.schema})
+        }
+        const definitionIds = currentDefinitionIds()
+        const writer = createDataWriter(definitionIds)
         writeRoot(
             writer,
             plan,
@@ -3039,6 +3402,7 @@ export function createRpcBinarySchemaCodec(options: RpcBinarySchemaCodecOptions)
             encodeNestedGeneric,
             depth,
         )
+        transaction.counters.definitions += definitionIds.length
         return writer.finish()
     }
 
@@ -3046,6 +3410,7 @@ export function createRpcBinarySchemaCodec(options: RpcBinarySchemaCodecOptions)
         value: unknown,
         rootDepth: number,
         trustedInput: boolean,
+        trustedHint?: tSchemaHint,
     ) {
         if (pendingEncode) {
             throw new Error(config.label + ': prepared encode must be committed or rolled back')
@@ -3059,6 +3424,7 @@ export function createRpcBinarySchemaCodec(options: RpcBinarySchemaCodecOptions)
                 new Set(),
                 rootDepth,
                 trustedInput,
+                trustedHint,
             )
             const preparedGeneration = generation
             const token = {}
@@ -3072,7 +3438,7 @@ export function createRpcBinarySchemaCodec(options: RpcBinarySchemaCodecOptions)
                 }
                 settled = true
                 pendingEncode = undefined
-                commitEncodeTransaction(encodeRegistry, candidates, announced, transaction)
+                commitEncodeTransaction(encodeRegistry, candidates, announced, hints, transaction)
                 sequence = transaction.sequence
                 addEncodeCounters(encodeCounters, transaction.counters)
                 encodedBytes += wire.byteLength
@@ -3094,14 +3460,19 @@ export function createRpcBinarySchemaCodec(options: RpcBinarySchemaCodecOptions)
         return prepareEncodeMode(value, rootDepth, false)
     }
 
-    function prepareEncodeTrusted(value: unknown, rootDepth = 0) {
-        return prepareEncodeMode(value, rootDepth, true)
+    function prepareEncodeTrusted(
+        value: unknown,
+        rootDepth = 0,
+        trustedHint?: tSchemaHint,
+    ) {
+        return prepareEncodeMode(value, rootDepth, true, trustedHint)
     }
 
     function measureEncodeMode(
         value: unknown,
         rootDepth: number,
         trustedInput: boolean,
+        trustedHint?: tSchemaHint,
     ) {
         if (pendingEncode) {
             throw new Error(config.label + ': prepared encode must be committed or rolled back')
@@ -3114,6 +3485,7 @@ export function createRpcBinarySchemaCodec(options: RpcBinarySchemaCodecOptions)
                 new Set(),
                 rootDepth,
                 trustedInput,
+                trustedHint,
             ).byteLength
         } catch (error) {
             return labeledError(config.label, error)
@@ -3124,8 +3496,12 @@ export function createRpcBinarySchemaCodec(options: RpcBinarySchemaCodecOptions)
         return measureEncodeMode(value, rootDepth, false)
     }
 
-    function measureEncodeTrusted(value: unknown, rootDepth = 0) {
-        return measureEncodeMode(value, rootDepth, true)
+    function measureEncodeTrusted(
+        value: unknown,
+        rootDepth = 0,
+        trustedHint?: tSchemaHint,
+    ) {
+        return measureEncodeMode(value, rootDepth, true, trustedHint)
     }
 
     function encode(value: unknown, rootDepth = 0) {
@@ -3289,6 +3665,7 @@ export function createRpcBinarySchemaCodec(options: RpcBinarySchemaCodecOptions)
         decodeRegistry = createRegistry()
         candidates = new Map()
         announced = new Set()
+        hints = new Map()
         sequence = 0
         encodeCounters = createEncodeCounters()
         decodeCounters = createDecodeCounters()

@@ -1,3 +1,4 @@
+type tSchemaHint = string | number;
 export type RpcBinarySchemaCodecOptions = {
     magic: readonly number[] | Uint8Array;
     version: number;
@@ -17,13 +18,13 @@ export declare function createRpcBinarySchemaCodec(options: RpcBinarySchemaCodec
         commit: () => void;
         rollback: () => void;
     };
-    prepareEncodeTrusted: (value: unknown, rootDepth?: number) => {
+    prepareEncodeTrusted: (value: unknown, rootDepth?: number, trustedHint?: tSchemaHint) => {
         wire: Uint8Array<ArrayBuffer>;
         commit: () => void;
         rollback: () => void;
     };
     measureEncode: (value: unknown, rootDepth?: number) => number;
-    measureEncodeTrusted: (value: unknown, rootDepth?: number) => number;
+    measureEncodeTrusted: (value: unknown, rootDepth?: number, trustedHint?: tSchemaHint) => number;
     decode: (wire: unknown) => any;
     decodeTrusted: (wire: unknown) => any;
     stats: () => {
@@ -52,3 +53,4 @@ export declare function createRpcBinarySchemaCodec(options: RpcBinarySchemaCodec
     decodePrelude: (payload: unknown) => undefined;
 };
 export type RpcBinarySchemaCodec = ReturnType<typeof createRpcBinarySchemaCodec>;
+export {};

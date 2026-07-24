@@ -18,6 +18,10 @@ import {
     storeReplayBatchJsonBytes, storeReplayBatchV2JsonBytes, storeReplayBatchV3JsonBytes,
     storeReplayPatchMaxWireBytes,
 } from '../src/Common/Observe/store-replay-codec'
+import {
+    createStoreReplayMsgpackCodec,
+    type tStoreReplayWireBatchV7,
+} from '../src/Common/Observe/store-replay-msgpack'
 
 let fails = 0
 function ok(condition: any, message: string) {
@@ -253,6 +257,127 @@ async function main() {
         exposed.close()
     }
 
+    console.log('\n[store-replay-batch] v7 delegates Store values directly to msgpackr')
+    {
+        const source = createStore<Record<string, any>>({}, {drain: 'micro'})
+        const exposed = exposeStoreReplay(source, {history: 8, batch: true})
+        const v7 = exposed.api.replay.batch!.v7!
+        const liveWires: tStoreReplayWireBatchV7[] = []
+        const off = v7.line.on(function collectV7Live(wire) { liveWires.push(wire) })
+        const exactBuffer = Uint8Array.from([9, 8, 7, 6, 5])
+        const rich = {
+            disabled: false,
+            enabled: true,
+            empty: null,
+            optional: undefined,
+            integer: 42,
+            decimal: 42.5,
+            maxSafeInteger: Number.MAX_SAFE_INTEGER,
+            minSafeInteger: Number.MIN_SAFE_INTEGER,
+            nan: Number.NaN,
+            positiveInfinity: Number.POSITIVE_INFINITY,
+            negativeInfinity: Number.NEGATIVE_INFINITY,
+            text: 'BTCUSDT',
+            unicode: 'котировка 🚀\u0000',
+            bigint: 9_007_199_254_740_993n,
+            largeBigint: 1n << 80n,
+            at: new Date(1_700_000_000_123),
+            invalidAt: new Date(Number.NaN),
+            pattern: /quote/giu,
+            labels: new Map([['desk', new Set(['spot', 'fast'])]]),
+            bytes: new Uint8Array([7, 8, 9]),
+            arrayBuffer: exactBuffer.buffer,
+            dataView: new DataView(exactBuffer.buffer, 1, 3),
+            integers: new Int16Array([-32768, 0, 32767]),
+            decimals: new Float64Array([-0, Number.NaN, 1.25]),
+            nested: [{side: 'buy', price: 1.25}, {side: 'sell', price: 1.5}],
+        }
+        source.state.RICH = rich
+        await flushReactive(source.state)
+
+        const wires = [
+            liveWires[0],
+            ...(await v7.since(0) ?? []),
+            await v7.keyframe(),
+            ...(await v7.frame!(0) ?? []),
+        ].filter((wire): wire is tStoreReplayWireBatchV7 => Array.isArray(wire)
+            && wire[2] instanceof Uint8Array)
+
+        function decodeIndependently(wire: tStoreReplayWireBatchV7) {
+            return createStoreReplayMsgpackCodec().decode(wire)
+        }
+
+        const values = wires.map(function readV7Value(wire) {
+            const patch = decodeIndependently(wire).event[0][0]
+            return patch.path.length == 0 ? patch.value.RICH : patch.value
+        })
+        ok(wires.length == 4 && values.every(value => isDeepStrictEqual(value, rich)),
+            'live, since, keyframe and frame are independently decodable msgpackr values')
+        ok(wires.every(wire => wire[2].byteLength > 0),
+            'v7 exposes one non-empty msgpackr payload per logical Store envelope')
+
+        const cacheSender = createStoreReplayMsgpackCodec()
+        const cacheReceiver = createStoreReplayMsgpackCodec()
+        const cacheEvent = {
+            seq: 1,
+            ts: 2,
+            event: [[{path: ['BTC'], exists: true, value: rich}]] as [StorePatch[]],
+        }
+        const first = cacheSender.encode(cacheEvent)
+        cacheReceiver.decode(first)
+        const known = cacheReceiver.knowledge()
+        const second = cacheSender.encode(
+            cacheEvent,
+            cacheSender.createRemoteKnowledge(known),
+        )
+        cacheReceiver.decode(second)
+        ok(first[1].length > 0 && known.known.length > 0 && second[1].length == 0,
+            'client knowledge ranges suppress already-known schema definitions')
+        const ranges = cacheSender.createRemoteKnowledge({
+            catalogId: cacheSender.catalogId,
+            known: [1, 3, [5, 15], 18],
+        }).ranges()
+        ok(json(ranges) == json([1, 3, [5, 15], 18]),
+            'schema knowledge preserves canonical single IDs and inclusive ranges')
+
+        const reservedRoot: Record<string, unknown> = {
+            7: 'numeric',
+            constructor: 'business-constructor',
+            nested: {enabled: false},
+        }
+        Object.defineProperty(reservedRoot, '__proto__', {
+            configurable: true,
+            enumerable: true,
+            writable: true,
+            value: 'business-proto',
+        })
+        const nullRoot: Record<string, unknown> = Object.create(null)
+        nullRoot.__proto__ = 'null-prototype-business-key'
+        nullRoot.BTC = {c: 1, t: 2}
+        const rootCodec = createStoreReplayMsgpackCodec()
+        function roundTripRoot(value: unknown) {
+            return rootCodec.decode(rootCodec.encode({
+                seq: 1,
+                ts: 2,
+                event: [[{path: [], exists: true, value}]] as [StorePatch[]],
+            })).event[0][0].value
+        }
+        const decodedReservedRoot = roundTripRoot(reservedRoot)
+        const decodedNullRoot = roundTripRoot(nullRoot)
+        const decodedArrayRoot = roundTripRoot([{c: 1}, false, null])
+        ok(isDeepStrictEqual(decodedReservedRoot, reservedRoot)
+            && Object.getPrototypeOf(decodedReservedRoot) == Object.prototype,
+        'flat v7 keyframe preserves numeric, constructor, __proto__ and nested Store keys')
+        ok(isDeepStrictEqual(decodedNullRoot, nullRoot)
+            && Object.getPrototypeOf(decodedNullRoot) == null,
+        'flat v7 keyframe preserves null-prototype Store roots and reserved keys')
+        ok(isDeepStrictEqual(decodedArrayRoot, [{c: 1}, false, null]),
+            'non-map root values retain the v2 fallback')
+
+        off()
+        exposed.close()
+    }
+
     console.log('\n[store-replay-batch] explicit patch source keeps its mutation facts')
     {
         const store = createStore<Quotes>({}, {drain: 'micro'})
@@ -300,6 +425,8 @@ async function main() {
         const v4Seqs: number[] = []
         const v5Seqs: number[] = []
         const v6Seqs: number[] = []
+        const v7Seqs: number[] = []
+        const v7Codec = createStoreReplayMsgpackCodec()
         const appliedBatchSizes: number[] = []
         const offLegacy = exposed.replay.line.on(function countLegacy() { legacyEvents++ })
         const offBatch = exposed.replayBatch!.line.on(function countBatch(event) {
@@ -316,12 +443,16 @@ async function main() {
         const offV6Wire = remote.batch!.v6!.line.on(function countV6Seq(event) {
             v6Seqs.push(event.seq)
         })
+        const offV7Wire = remote.batch!.v7!.line.on(function countV7Seq(wire) {
+            v7Seqs.push(v7Codec.decode(wire).seq)
+        })
         let v1Subscriptions = 0
         let v2Subscriptions = 0
         let v3Subscriptions = 0
         let v4Subscriptions = 0
         let v5Subscriptions = 0
         let v6Subscriptions = 0
+        let v7Subscriptions = 0
         const batchRemote = remote.batch!
         const preferredRemote: StoreReplayRemote = {
             ...remote,
@@ -348,6 +479,10 @@ async function main() {
                     ...batchRemote.v6!,
                     line: {on(cb) { v6Subscriptions++; return batchRemote.v6!.line.on(cb) }},
                 },
+                v7: {
+                    ...batchRemote.v7!,
+                    line: {on(cb) { v7Subscriptions++; return batchRemote.v7!.line.on(cb) }},
+                },
             },
         }
         const sync = syncStoreReplay(mirror, preferredRemote, {
@@ -367,12 +502,14 @@ async function main() {
 
         ok(legacyEvents == 50, `legacy capability remains one event per patch (${legacyEvents})`)
         ok(batchEvents == 1 && batchItems == 50, `batch capability emits 1 envelope with 50 patches (${batchEvents}/${batchItems})`)
-        ok(v6Subscriptions == 1 && v5Subscriptions == 0 && v4Subscriptions == 0 && v3Subscriptions == 0
+        ok(v7Subscriptions == 1 && v6Subscriptions == 0
+            && v5Subscriptions == 0 && v4Subscriptions == 0 && v3Subscriptions == 0
             && v2Subscriptions == 0 && v1Subscriptions == 0,
-        'new batch client prefers universal-schema v6 over every older generation')
-        ok([v2Seqs, v3Seqs, v4Seqs, v5Seqs, v6Seqs].every(seqs => json(seqs) == json(v1Seqs))
+        'new batch client prefers msgpackr v7 over every older generation')
+        ok([v2Seqs, v3Seqs, v4Seqs, v5Seqs, v6Seqs, v7Seqs]
+            .every(seqs => json(seqs) == json(v1Seqs))
             && json(v1Seqs) == json([1]),
-        'v1-v6 expose the same logical batch seq-space')
+        'v1-v7 expose the same logical batch seq-space')
         ok(json(appliedBatchSizes) == json([50]), 'batch consumer receives one array callback for the window')
         ok(isDeepStrictEqual(mirror.snapshot(), source.snapshot()), 'batch client converges to the source')
         ok(exposed.batchStats!().emittedBatches == 1, 'local stats expose physical batch amplification')
@@ -396,6 +533,7 @@ async function main() {
         offV4Wire()
         offV5Wire()
         offV6Wire()
+        offV7Wire()
         sync()
         exposed.close()
     }
@@ -762,22 +900,27 @@ async function main() {
         const remote = exposed.api.replay as StoreReplayRemote
         const {
             v2: _removedV2, v3: _removedV3, v4: _removedV4, v5: _removedV5, v6: _removedV6,
+            v7: _removedV7,
             ...v1Batch
         } = remote.batch!
         const {
             v3: _removedV3FromV2, v4: _removedV4FromV2, v5: _removedV5FromV2,
-            v6: _removedV6FromV2,
+            v6: _removedV6FromV2, v7: _removedV7FromV2,
             ...v2Batch
         } = remote.batch!
         const {
             v4: _removedV4FromV3, v5: _removedV5FromV3, v6: _removedV6FromV3,
+            v7: _removedV7FromV3,
             ...v3Batch
         } = remote.batch!
         const {
-            v5: _removedV5FromV4, v6: _removedV6FromV4,
+            v5: _removedV5FromV4, v6: _removedV6FromV4, v7: _removedV7FromV4,
             ...v4Batch
         } = remote.batch!
-        const {v6: _removedV6FromV5, ...v5Batch} = remote.batch!
+        const {
+            v6: _removedV6FromV5, v7: _removedV7FromV5, ...v5Batch
+        } = remote.batch!
+        const {v7: _removedV7FromV6, ...v6Batch} = remote.batch!
         let v5FallbackKeyframes = 0
         const countedV5Batch = {
             ...v5Batch,
@@ -809,8 +952,11 @@ async function main() {
         const v5Server = syncStoreReplay(v5Mirror, {...remote, batch: countedV5Batch}, {batch: true})
         await v5Server.ready
         const v6Mirror = createStore<Quotes>({}, {drain: 'micro'})
-        const v6Server = syncStoreReplay(v6Mirror, remote, {batch: true})
+        const v6Server = syncStoreReplay(v6Mirror, {...remote, batch: v6Batch}, {batch: true})
         await v6Server.ready
+        const v7Mirror = createStore<Quotes>({}, {drain: 'micro'})
+        const v7Server = syncStoreReplay(v7Mirror, remote, {batch: true})
+        await v7Server.ready
 
         source.state.BTC = {c: 10, t: 1}
         source.state.ETH = {c: 20, t: 1}
@@ -822,6 +968,7 @@ async function main() {
         await flushReactive(v4Mirror.state)
         await flushReactive(v5Mirror.state)
         await flushReactive(v6Mirror.state)
+        await flushReactive(v7Mirror.state)
         const v1Keyframe = await v1Batch.keyframe()
 
         ok(v1Keyframe?.[0] == 1 && isDeepStrictEqual(oldMirror.snapshot(), source.snapshot()),
@@ -837,7 +984,9 @@ async function main() {
         ok(v5FallbackKeyframes == 1 && isDeepStrictEqual(v5Mirror.snapshot(), source.snapshot()),
             'missing v6 falls through exactly to Store-specific binary v5')
         ok(isDeepStrictEqual(v6Mirror.snapshot(), source.snapshot()),
-            'new client selects universal-schema v6 when the complete surface is present')
+            'missing v7 falls through exactly to universal-schema v6')
+        ok(isDeepStrictEqual(v7Mirror.snapshot(), source.snapshot()),
+            'new client selects msgpackr v7 when the complete surface is present')
         oldV1Client()
         v1OnlyServer()
         v2OnlyServer()
@@ -845,6 +994,7 @@ async function main() {
         v4OnlyServer()
         v5Server()
         v6Server()
+        v7Server()
         exposed.close()
     }
 

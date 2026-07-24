@@ -36,6 +36,11 @@ import {
     storeReplayBatchMaxWireMetrics, storeReplayPatchMaxWireMetrics,
 } from './store-replay-codec'
 import {STORE_REPLAY_BINARY_MAX_WIRE_BYTES} from './store-replay-binary'
+import {
+    createStoreReplayMsgpackCodec,
+    type tStoreReplaySchemaKnowledge,
+    type tStoreReplayWireBatchV7,
+} from './store-replay-msgpack'
 
 export type StoreReplayBatchOpts = Pick<ReplayListenOptions<[readonly StorePatch[]]>,
     'history' | 'getSince' | 'onJournal' | 'onJournalBatch' | 'now' | 'firstSeq'> & {
@@ -76,6 +81,35 @@ export type StoreReplayBatchV4Remote = StoreReplayWireRemote<tStoreReplayWireBat
 export type StoreReplayBatchV5Remote = StoreReplayWireRemote<tStoreReplayWireBatchV5>
 export type StoreReplayBatchV6Remote =
     StoreReplayWireRemote<ReplayEvent<[readonly StorePatch[]]>>
+export type StoreReplayBatchV7Remote = {
+    line: {
+        on(
+            cb: (batch: tStoreReplayWireBatchV7) => void,
+            opts?: {knowledge?: tStoreReplaySchemaKnowledge},
+        ): any
+    }
+    since(
+        seq: number,
+        knowledge?: tStoreReplaySchemaKnowledge,
+    ): Promise<tStoreReplayWireBatchV7[] | null | undefined>
+        | tStoreReplayWireBatchV7[] | null | undefined
+    keyframe(
+        knowledge?: tStoreReplaySchemaKnowledge,
+    ): Promise<tStoreReplayWireBatchV7 | null | undefined>
+        | tStoreReplayWireBatchV7 | null | undefined
+    frame?(
+        seq: number,
+        hint?: unknown,
+        knowledge?: tStoreReplaySchemaKnowledge,
+    ): Promise<tStoreReplayWireBatchV7[] | null | undefined>
+        | tStoreReplayWireBatchV7[] | null | undefined
+    frameLine?: {
+        on(
+            cb: (batch: tStoreReplayWireBatchV7) => void,
+            opts?: {knowledge?: tStoreReplaySchemaKnowledge},
+        ): any
+    }
+}
 export type StoreReplayBatchRemote = StoreReplayWireRemote<tStoreReplayWireBatch> & {
     /** Same logical replay/seq-space, encoded with packed v2 tuples. */
     v2?: StoreReplayBatchV2Remote
@@ -90,6 +124,8 @@ export type StoreReplayBatchRemote = StoreReplayWireRemote<tStoreReplayWireBatch
      * The negotiated universal RPC schema codec owns its physical representation.
      */
     v6?: StoreReplayBatchV6Remote
+    /** Same logical replay/seq-space, encoded directly by msgpackr records. */
+    v7?: StoreReplayBatchV7Remote
 }
 
 export type StoreReplayRemote = ReplayRemote<[StorePatch]> & {batch?: StoreReplayBatchRemote}
@@ -486,6 +522,61 @@ function exposeStoreReplayBatchV6(replay: StoreReplayBatchLine, prepareRead: () 
     )
 }
 
+function exposeStoreReplayBatchV7(replay: StoreReplayBatchLine, prepareRead: () => void) {
+    const codec = createStoreReplayMsgpackCodec()
+    const [, preparedLine] = mapListen(replay.line, function prepareStoreReplayV7Live(event) {
+        return [codec.prepare(cloneStoreReplayBatchEvent(event))]
+    })
+    replay.line.onClose(function closePreparedStoreReplayV7Line() { preparedLine.close() })
+
+    const line = {
+        ...preparedLine,
+        on(
+            cb: (wire: tStoreReplayWireBatchV7) => void,
+            opts: {knowledge?: tStoreReplaySchemaKnowledge} = {},
+        ) {
+            const knowledge = codec.createRemoteKnowledge(opts.knowledge)
+            return preparedLine.on(function encodeStoreReplayV7Live(payload) {
+                cb(codec.wire(payload, knowledge))
+            }, opts as any)
+        },
+    }
+
+    function since(seq: number, snapshot?: tStoreReplaySchemaKnowledge) {
+        prepareRead()
+        const knowledge = codec.createRemoteKnowledge(snapshot)
+        return replay.getSince(seq)?.map(function encodeStoreReplayV7Tail(event) {
+            return codec.encode(cloneStoreReplayBatchEvent(event), knowledge)
+        }) ?? null
+    }
+
+    function keyframe(snapshot?: tStoreReplaySchemaKnowledge) {
+        prepareRead()
+        const event = replay.keyframe()
+        if (!event) return null
+        return codec.encode(event, codec.createRemoteKnowledge(snapshot))
+    }
+
+    function frame(
+        seq: number,
+        hint?: unknown,
+        snapshot?: tStoreReplaySchemaKnowledge,
+    ) {
+        prepareRead()
+        const knowledge = codec.createRemoteKnowledge(snapshot)
+        return replay.frame(seq, hint).map(function encodeStoreReplayV7Frame(event) {
+            return codec.encode(cloneStoreReplayBatchEvent(event), knowledge)
+        })
+    }
+
+    return {
+        line,
+        since,
+        keyframe,
+        frame,
+    }
+}
+
 function exposeStoreReplayBatch(replay: StoreReplayBatchLine, prepareRead: () => void) {
     return {
         ...exposeStoreReplayWire(replay, encodeStoreReplayBatch, prepareRead),
@@ -494,6 +585,7 @@ function exposeStoreReplayBatch(replay: StoreReplayBatchLine, prepareRead: () =>
         v4: exposeStoreReplayBatchV4(replay, prepareRead),
         v5: exposeStoreReplayBatchV5(replay, prepareRead),
         v6: exposeStoreReplayBatchV6(replay, prepareRead),
+        v7: exposeStoreReplayBatchV7(replay, prepareRead),
     }
 }
 
@@ -501,6 +593,7 @@ function subscribeDecodedReplayLine<W>(
     line: StoreReplayWireRemote<W>['line'],
     decode: (wire: W | unknown) => ReplayEvent<[StorePatch[]]>,
     cb: (event: ReplayEvent<[StorePatch[]]>) => void,
+    opts?: unknown,
 ) {
     let upstream: any
     let upstreamStopped = false
@@ -540,7 +633,7 @@ function subscribeDecodedReplayLine<W>(
         catch (error) { failDecode(error) }
     }
 
-    try { upstream = line.on(decodeLiveStoreReplay) }
+    try { upstream = (line.on as any)(decodeLiveStoreReplay, opts) }
     catch (error) { failDecode(error) }
     if (failed) stopUpstream()
 
@@ -559,6 +652,7 @@ function decodeStoreReplayWireRemote<W>(
     remote: StoreReplayWireRemote<W>,
     decode: (wire: W | unknown) => ReplayEvent<[StorePatch[]]>,
     lifecycleSource: any = remote,
+    knowledge?: () => unknown,
 ): ReplayRemote<[StorePatch[]]> {
     function decodeEvents(events: W[] | null | undefined) {
         if (events == null) return events
@@ -569,13 +663,18 @@ function decodeStoreReplayWireRemote<W>(
         return decode(event)
     }
     function subscribeLine(cb: (event: ReplayEvent<[StorePatch[]]>) => void) {
-        return subscribeDecodedReplayLine(remote.line, decode, cb)
+        return subscribeDecodedReplayLine(
+            remote.line,
+            decode,
+            cb,
+            knowledge ? {knowledge: knowledge()} : undefined,
+        )
     }
     async function since(seq: number) {
-        return decodeEvents(await remote.since(seq))
+        return decodeEvents(await (remote.since as any)(seq, knowledge?.()))
     }
     async function keyframe() {
-        return decodeEvent(await remote.keyframe())
+        return decodeEvent(await (remote.keyframe as any)(knowledge?.()))
     }
     const decoded: ReplayRemote<[StorePatch[]]> = {
         line: {on: subscribeLine},
@@ -584,12 +683,17 @@ function decodeStoreReplayWireRemote<W>(
     }
     if (rpcMemberAvailable(remote, 'frame')) {
         decoded.frame = async function decodeFrame(seq, hint) {
-            return decodeEvents(await remote.frame!(seq, hint))
+            return decodeEvents(await (remote.frame as any)(seq, hint, knowledge?.()))
         }
     }
     if (rpcMemberAvailable(remote, 'frameLine')) {
         function subscribeFrameLine(cb: (event: ReplayEvent<[StorePatch[]]>) => void) {
-            return subscribeDecodedReplayLine(remote.frameLine!, decode, cb)
+            return subscribeDecodedReplayLine(
+                remote.frameLine!,
+                decode,
+                cb,
+                knowledge ? {knowledge: knowledge()} : undefined,
+            )
         }
         decoded.frameLine = {
             on: subscribeFrameLine,
@@ -602,7 +706,7 @@ function decodeStoreReplayWireRemote<W>(
 }
 
 function decodeStoreReplayRemote(remote: StoreReplayBatchRemote) {
-    type tCodec = 'v1' | 'v2' | 'v3' | 'v4' | 'v5' | 'v6'
+    type tCodec = 'v1' | 'v2' | 'v3' | 'v4' | 'v5' | 'v6' | 'v7'
 
     const lifecycle = getRpcTransportLifecycle(remote)
     const schemaReady = getRpcSchemaReady(remote)
@@ -611,6 +715,7 @@ function decodeStoreReplayRemote(remote: StoreReplayBatchRemote) {
     let activeRemote: ReplayRemote<[StorePatch[]]> | null = null
 
     function selectedCodec(): tCodec {
+        if (rpcMemberAvailable(remote, 'v7')) return 'v7'
         if (rpcMemberAvailable(remote, 'v6')) return 'v6'
         if (rpcMemberAvailable(remote, 'v5')) return 'v5'
         if (rpcMemberAvailable(remote, 'v4')) return 'v4'
@@ -623,7 +728,15 @@ function decodeStoreReplayRemote(remote: StoreReplayBatchRemote) {
         const codec = selectedCodec()
         if (activeRemote && activeCodec == codec) return activeRemote
         activeCodec = codec
-        if (codec == 'v6') {
+        if (codec == 'v7') {
+            const msgpack = createStoreReplayMsgpackCodec()
+            activeRemote = decodeStoreReplayWireRemote(
+                remote.v7!,
+                wire => msgpack.decode(wire as tStoreReplayWireBatchV7),
+                remote,
+                msgpack.knowledge,
+            )
+        } else if (codec == 'v6') {
             activeRemote = decodeStoreReplayWireRemote(
                 remote.v6!,
                 event => event as ReplayEvent<[StorePatch[]]>,

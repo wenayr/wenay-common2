@@ -4,6 +4,7 @@ import { type ReplayExpose, type ReplayRemote, type ReplaySubscribeOpts } from '
 import { type ReplayRouteSubscribeOpts, type ReplayRouteSwitchOpts } from '../events/replay-route';
 import { type ReplayStorage } from '../events/replay-history';
 import { type tStoreReplayWireBatch, type tStoreReplayWireBatchV2, type tStoreReplayWireBatchV3, type tStoreReplayWireBatchV4, type tStoreReplayWireBatchV5 } from './store-replay-codec';
+import { type tStoreReplaySchemaKnowledge, type tStoreReplayWireBatchV7 } from './store-replay-msgpack';
 export type StoreReplayBatchOpts = Pick<ReplayListenOptions<[readonly StorePatch[]]>, 'history' | 'getSince' | 'onJournal' | 'onJournalBatch' | 'now' | 'firstSeq'> & {
     maxItems?: number;
     maxBytes?: number;
@@ -33,12 +34,28 @@ export type StoreReplayBatchV3Remote = StoreReplayWireRemote<tStoreReplayWireBat
 export type StoreReplayBatchV4Remote = StoreReplayWireRemote<tStoreReplayWireBatchV4>;
 export type StoreReplayBatchV5Remote = StoreReplayWireRemote<tStoreReplayWireBatchV5>;
 export type StoreReplayBatchV6Remote = StoreReplayWireRemote<ReplayEvent<[readonly StorePatch[]]>>;
+export type StoreReplayBatchV7Remote = {
+    line: {
+        on(cb: (batch: tStoreReplayWireBatchV7) => void, opts?: {
+            knowledge?: tStoreReplaySchemaKnowledge;
+        }): any;
+    };
+    since(seq: number, knowledge?: tStoreReplaySchemaKnowledge): Promise<tStoreReplayWireBatchV7[] | null | undefined> | tStoreReplayWireBatchV7[] | null | undefined;
+    keyframe(knowledge?: tStoreReplaySchemaKnowledge): Promise<tStoreReplayWireBatchV7 | null | undefined> | tStoreReplayWireBatchV7 | null | undefined;
+    frame?(seq: number, hint?: unknown, knowledge?: tStoreReplaySchemaKnowledge): Promise<tStoreReplayWireBatchV7[] | null | undefined> | tStoreReplayWireBatchV7[] | null | undefined;
+    frameLine?: {
+        on(cb: (batch: tStoreReplayWireBatchV7) => void, opts?: {
+            knowledge?: tStoreReplaySchemaKnowledge;
+        }): any;
+    };
+};
 export type StoreReplayBatchRemote = StoreReplayWireRemote<tStoreReplayWireBatch> & {
     v2?: StoreReplayBatchV2Remote;
     v3?: StoreReplayBatchV3Remote;
     v4?: StoreReplayBatchV4Remote;
     v5?: StoreReplayBatchV5Remote;
     v6?: StoreReplayBatchV6Remote;
+    v7?: StoreReplayBatchV7Remote;
 };
 export type StoreReplayRemote = ReplayRemote<[StorePatch]> & {
     batch?: StoreReplayBatchRemote;
@@ -63,6 +80,28 @@ declare function exposeStoreReplayBatch(replay: StoreReplayBatchLine, prepareRea
     v4: StoreReplayWireRemote<tStoreReplayWireBatchV4>;
     v5: StoreReplayWireRemote<tStoreReplayWireBatchV5>;
     v6: StoreReplayWireRemote<ReplayEvent<[readonly StorePatch[]]>>;
+    v7: {
+        line: {
+            on(cb: (wire: tStoreReplayWireBatchV7) => void, opts?: {
+                knowledge?: tStoreReplaySchemaKnowledge;
+            }): import("../..").ListenOff;
+            emit: import("../..").Listener<Buffer<ArrayBufferLike>[]>;
+            has(key: import("../..").ListenKey): boolean;
+            off(keyOrCallback: import("../..").ListenKey | import("../..").Listener<Buffer<ArrayBufferLike>[]> | null): void;
+            once(cb: import("../..").Listener<Buffer<ArrayBufferLike>[]>, opts?: {
+                key?: import("../..").ListenKey;
+            }): import("../..").ListenOff;
+            close(): void;
+            count(): number;
+            keys(): import("../..").ListenKey[];
+            isRunning(): boolean;
+            run(): void;
+            onClose(cb: () => void): import("../..").ListenOff;
+        };
+        since: (seq: number, snapshot?: tStoreReplaySchemaKnowledge) => tStoreReplayWireBatchV7[] | null;
+        keyframe: (snapshot?: tStoreReplaySchemaKnowledge) => tStoreReplayWireBatchV7 | null;
+        frame: (seq: number, hint?: unknown, snapshot?: tStoreReplaySchemaKnowledge) => tStoreReplayWireBatchV7[];
+    };
     line: {
         on: (cb: (batch: tStoreReplayWireBatch) => void) => any;
     };

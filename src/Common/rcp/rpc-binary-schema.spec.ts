@@ -1148,6 +1148,79 @@ function testTrustedEncodeMatchesStrictWireAndKeepsKindChangesExact() {
     assertExactValue(receiver.decode(variantPrepared.wire), variants)
 }
 
+function testTrustedHintDetectsRemainingKeysAndWidensNumbers() {
+    const sender = createTestCodec({maxSchemas: 32, promotionThreshold: 1})
+    const receiver = createTestCodec({maxSchemas: 32, promotionThreshold: 1})
+    const hint = 'callback:quotes'
+
+    function send(value: unknown) {
+        const prepared = sender.prepareEncodeTrusted(value, 0, hint)
+        prepared.commit()
+        const decoded = receiver.decode(prepared.wire)
+        assertExactValue(decoded, value)
+        return decoded
+    }
+
+    send({symbol: 'BTCUSDT', price: 10.5})
+    const floatSchemas = sender.stats().encodeSchemas
+
+    send({symbol: 'BTCUSDT', price: 11})
+    assert.equal(
+        sender.stats().encodeSchemas,
+        floatSchemas,
+        'FLOAT64 hint accepts later integer numbers without another schema',
+    )
+
+    const extra = {symbol: 'BTCUSDT', price: 12, volume: 7}
+    send(extra)
+    assert.ok(
+        sender.stats().encodeSchemas > floatSchemas,
+        'an extra enumerable key creates another schema instead of disappearing',
+    )
+
+    const reordered = {price: 13, symbol: 'BTCUSDT'}
+    const reorderedDecoded = send(reordered)
+    assert.deepEqual(
+        Object.keys(reorderedDecoded as object),
+        Object.keys(reordered),
+        'a changed key order stays explicit and exact',
+    )
+
+    const runHint = 'callback:quote-run'
+    const rows = [
+        {symbol: 'A', price: 1.5},
+        {symbol: 'B', price: 2.5},
+        {symbol: 'C', price: 3.5},
+    ]
+    const firstRun = sender.prepareEncodeTrusted(rows, 0, runHint)
+    firstRun.commit()
+    assertExactValue(receiver.decode(firstRun.wire), rows)
+
+    const changedRows = [
+        {symbol: 'A', price: 4},
+        {symbol: 'B', price: 5, volume: 2},
+        {symbol: 'C', price: 6},
+    ]
+    const changedRun = sender.prepareEncodeTrusted(changedRows, 0, runHint)
+    changedRun.commit()
+    assertExactValue(
+        receiver.decode(changedRun.wire),
+        changedRows,
+        'a remaining key in one hinted run row is retained',
+    )
+
+    const sparseRows = new Array<unknown>(3)
+    sparseRows[0] = {symbol: 'A', price: 7}
+    sparseRows[2] = {symbol: 'C', price: 8}
+    const sparseRun = sender.prepareEncodeTrusted(sparseRows, 0, runHint)
+    sparseRun.commit()
+    assertExactValue(
+        receiver.decode(sparseRun.wire),
+        sparseRows,
+        'a sparse array leaves the hinted run and retains its hole',
+    )
+}
+
 export async function runRpcBinarySchemaTests() {
     let failures = 0
     const tests = [
@@ -1199,6 +1272,8 @@ export async function runRpcBinarySchemaTests() {
             testDirectionsCanLearnDifferentSchemaSequences],
         ['trusted RPC encode matches strict wire and preserves kind changes',
             testTrustedEncodeMatchesStrictWireAndKeepsKindChangesExact],
+        ['trusted hints retain remaining keys and widen number fields',
+            testTrustedHintDetectsRemainingKeysAndWidensNumbers],
     ] as const
 
     console.log('\n--- universal typed-schema binary codec ---')

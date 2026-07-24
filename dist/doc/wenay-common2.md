@@ -575,8 +575,9 @@ Observe.followReplicatedMap<V, K>(remote, {onBatch?, onStatus?, onError?, staleM
   // and every top-level key must equal keyOf(value). The facade validates before publish.
   // debug.store is an ADVANCED writable escape hatch for diagnostics; application writes violate follower ownership.
   // checkpoint() binds snapshot + lineId + delivery/replayMode/seq, so a naked tail can never create a partial map.
-  // New clients select logical v6 -> v5 -> v4 -> v3 -> v2 -> v1 -> legacy by optional-member presence.
-  // v6 leaves ordinary patch/value objects to universal RPC schema v2; older physical codecs remain fallbacks.
+  // New clients select recommended v7 -> v6 -> v5 -> v4 -> v3 -> v2 -> v1 -> legacy by optional-member presence.
+  // v7 packs flat Store key/value batches with msgpackr and a bounded cross-connection shape catalog.
+  // Store keys remain data rather than becoming schemas; older physical codecs remain compatibility fallbacks.
 
 // Sequenced sync (replay line): seq-numbered patch stream — keyframe catch-up, reconnect by seq (tail, not snapshot)
 Observe.exposeStoreReplay(store, {history? = 1024, batch?, patchSource?}) -> { api /* spread into the RPC server object */, replay, replayBatch?, batchStats?, flushPending, close }
@@ -584,15 +585,19 @@ Observe.exposeStoreReplay(store, {history? = 1024, batch?, patchSource?}) -> { a
   //   lag recovery arrive as a mini-frame (changed paths only), zero config
   // batch:true adds api.replay.batch without changing the legacy line. maxItems/maxBytes may split one source drain;
   // maxDelayMs>0 may merge adjacent drains. Each resulting bounded envelope owns one seq.
-  // New clients prefer logical batch.v6, then binary v5, columnar-JSON v4, v3, v2 and v1. V6 removes the
-  // inner Store binary envelope: the negotiated outer RPC mode encodes ordinary patches directly; RPB/2 can
-  // reuse their typed schema, while RPB/1/legacy remain valid rollout fallbacks between otherwise new peers.
+  // New clients prefer recommended batch.v7, then v6-v1 and legacy. V7 uses one msgpackr Uint8Array inside
+  // negotiated RPB/2, flat top-level set/delete and root-keyframe key/value arrays. Repeated nested value shapes
+  // use a bounded 1,000-entry server catalog; reconnecting clients report known ids as numbers/ranges so definitions
+  // are not repeated. V6 remains a compatibility member and is not the recommended performance route.
+  // V7 preserves ordinary Store data, rich msgpackr values and root plain/null-prototype identity. Scalar -0,
+  // sparse holes, lone UTF-16 surrogates and nested null-prototype identity follow msgpackr normalization.
+  // Normal thrown RPC errors use the separate RPC error channel and are unaffected by this Store-value note.
   // V4/v5 materialized root keyframes support up to 20,000 keyed entries, chunked into physical plan arrays
   // of at most 10,000; ordinary patch/value limits are not widened.
   // Explicit client RpcLimits continue through v5's byte envelope; the internal decoder also keeps hard limits.
   // An old client connected to a new server keeps using the unchanged replay.line; it never selects or receives batch.
 Observe.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?, batch?} of api.replay*/, {since?, onSeq?, batch?, validateBatch?, onBatch?}) -> off
-  // batch:true negotiates v6 -> v5 -> v4 -> v3 -> v2 -> v1 -> legacy automatically, without changing the business API
+  // batch:true negotiates v7 -> v6 -> v5 -> v4 -> v3 -> v2 -> v1 -> legacy automatically; v7 is recommended
   // an RPC proxy waits for MAP before choosing an optional capability; plain in-process remotes stay synchronous
   // validateBatch runs after decode and before mutation. onBatch runs once AFTER one physical envelope is applied;
   // an onBatch throw is terminal, does not roll Store state back, and does not advance the replay seq.

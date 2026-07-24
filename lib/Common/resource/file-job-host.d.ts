@@ -159,6 +159,28 @@ export declare function createFileJobHost(deps: FileJobHostDeps): {
                             on: (cb: (batch: import("../events/replay-listen").ReplayEvent<[readonly import("../Observe/store").StorePatch[]]>) => void) => any;
                         } | undefined;
                     };
+                    v7: {
+                        line: {
+                            on(cb: (wire: import("../Observe/store-replay-msgpack").tStoreReplayWireBatchV7) => void, opts?: {
+                                knowledge?: import("../Observe/store-replay-msgpack").tStoreReplaySchemaKnowledge;
+                            }): import("../..").ListenOff;
+                            emit: import("../..").Listener<Buffer<ArrayBufferLike>[]>;
+                            has(key: import("../..").ListenKey): boolean;
+                            off(keyOrCallback: import("../..").ListenKey | import("../..").Listener<Buffer<ArrayBufferLike>[]> | null): void;
+                            once(cb: import("../..").Listener<Buffer<ArrayBufferLike>[]>, opts?: {
+                                key?: import("../..").ListenKey;
+                            }): import("../..").ListenOff;
+                            close(): void;
+                            count(): number;
+                            keys(): import("../..").ListenKey[];
+                            isRunning(): boolean;
+                            run(): void;
+                            onClose(cb: () => void): import("../..").ListenOff;
+                        };
+                        since: (seq: number, snapshot?: import("../Observe/store-replay-msgpack").tStoreReplaySchemaKnowledge) => import("../Observe/store-replay-msgpack").tStoreReplayWireBatchV7[] | null;
+                        keyframe: (snapshot?: import("../Observe/store-replay-msgpack").tStoreReplaySchemaKnowledge) => import("../Observe/store-replay-msgpack").tStoreReplayWireBatchV7 | null;
+                        frame: (seq: number, hint?: unknown, snapshot?: import("../Observe/store-replay-msgpack").tStoreReplaySchemaKnowledge) => import("../Observe/store-replay-msgpack").tStoreReplayWireBatchV7[];
+                    };
                     line: {
                         on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatch) => void) => any;
                     };
@@ -254,6 +276,28 @@ export declare function createFileJobHost(deps: FileJobHostDeps): {
                         frameLine?: {
                             on: (cb: (batch: import("../events/replay-listen").ReplayEvent<[readonly import("../Observe/store").StorePatch[]]>) => void) => any;
                         } | undefined;
+                    };
+                    v7: {
+                        line: {
+                            on(cb: (wire: import("../Observe/store-replay-msgpack").tStoreReplayWireBatchV7) => void, opts?: {
+                                knowledge?: import("../Observe/store-replay-msgpack").tStoreReplaySchemaKnowledge;
+                            }): import("../..").ListenOff;
+                            emit: import("../..").Listener<Buffer<ArrayBufferLike>[]>;
+                            has(key: import("../..").ListenKey): boolean;
+                            off(keyOrCallback: import("../..").ListenKey | import("../..").Listener<Buffer<ArrayBufferLike>[]> | null): void;
+                            once(cb: import("../..").Listener<Buffer<ArrayBufferLike>[]>, opts?: {
+                                key?: import("../..").ListenKey;
+                            }): import("../..").ListenOff;
+                            close(): void;
+                            count(): number;
+                            keys(): import("../..").ListenKey[];
+                            isRunning(): boolean;
+                            run(): void;
+                            onClose(cb: () => void): import("../..").ListenOff;
+                        };
+                        since: (seq: number, snapshot?: import("../Observe/store-replay-msgpack").tStoreReplaySchemaKnowledge) => import("../Observe/store-replay-msgpack").tStoreReplayWireBatchV7[] | null;
+                        keyframe: (snapshot?: import("../Observe/store-replay-msgpack").tStoreReplaySchemaKnowledge) => import("../Observe/store-replay-msgpack").tStoreReplayWireBatchV7 | null;
+                        frame: (seq: number, hint?: unknown, snapshot?: import("../Observe/store-replay-msgpack").tStoreReplaySchemaKnowledge) => import("../Observe/store-replay-msgpack").tStoreReplayWireBatchV7[];
                     };
                     line: {
                         on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatch) => void) => any;

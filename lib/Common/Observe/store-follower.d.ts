@@ -101,6 +101,28 @@ export declare function createStoreFollower<T extends object>(deps: StoreFollowe
                         on: (cb: (batch: import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]>) => void) => any;
                     } | undefined;
                 };
+                v7: {
+                    line: {
+                        on(cb: (wire: import("./store-replay-msgpack").tStoreReplayWireBatchV7) => void, opts?: {
+                            knowledge?: import("./store-replay-msgpack").tStoreReplaySchemaKnowledge;
+                        }): import("../..").ListenOff;
+                        emit: import("../..").Listener<Buffer<ArrayBufferLike>[]>;
+                        has(key: import("../..").ListenKey): boolean;
+                        off(keyOrCallback: import("../..").ListenKey | import("../..").Listener<Buffer<ArrayBufferLike>[]> | null): void;
+                        once(cb: import("../..").Listener<Buffer<ArrayBufferLike>[]>, opts?: {
+                            key?: import("../..").ListenKey;
+                        }): import("../..").ListenOff;
+                        close(): void;
+                        count(): number;
+                        keys(): import("../..").ListenKey[];
+                        isRunning(): boolean;
+                        run(): void;
+                        onClose(cb: () => void): import("../..").ListenOff;
+                    };
+                    since: (seq: number, snapshot?: import("./store-replay-msgpack").tStoreReplaySchemaKnowledge) => import("./store-replay-msgpack").tStoreReplayWireBatchV7[] | null;
+                    keyframe: (snapshot?: import("./store-replay-msgpack").tStoreReplaySchemaKnowledge) => import("./store-replay-msgpack").tStoreReplayWireBatchV7 | null;
+                    frame: (seq: number, hint?: unknown, snapshot?: import("./store-replay-msgpack").tStoreReplaySchemaKnowledge) => import("./store-replay-msgpack").tStoreReplayWireBatchV7[];
+                };
                 line: {
                     on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatch) => void) => any;
                 };
@@ -196,6 +218,28 @@ export declare function createStoreFollower<T extends object>(deps: StoreFollowe
                     frameLine?: {
                         on: (cb: (batch: import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]>) => void) => any;
                     } | undefined;
+                };
+                v7: {
+                    line: {
+                        on(cb: (wire: import("./store-replay-msgpack").tStoreReplayWireBatchV7) => void, opts?: {
+                            knowledge?: import("./store-replay-msgpack").tStoreReplaySchemaKnowledge;
+                        }): import("../..").ListenOff;
+                        emit: import("../..").Listener<Buffer<ArrayBufferLike>[]>;
+                        has(key: import("../..").ListenKey): boolean;
+                        off(keyOrCallback: import("../..").ListenKey | import("../..").Listener<Buffer<ArrayBufferLike>[]> | null): void;
+                        once(cb: import("../..").Listener<Buffer<ArrayBufferLike>[]>, opts?: {
+                            key?: import("../..").ListenKey;
+                        }): import("../..").ListenOff;
+                        close(): void;
+                        count(): number;
+                        keys(): import("../..").ListenKey[];
+                        isRunning(): boolean;
+                        run(): void;
+                        onClose(cb: () => void): import("../..").ListenOff;
+                    };
+                    since: (seq: number, snapshot?: import("./store-replay-msgpack").tStoreReplaySchemaKnowledge) => import("./store-replay-msgpack").tStoreReplayWireBatchV7[] | null;
+                    keyframe: (snapshot?: import("./store-replay-msgpack").tStoreReplaySchemaKnowledge) => import("./store-replay-msgpack").tStoreReplayWireBatchV7 | null;
+                    frame: (seq: number, hint?: unknown, snapshot?: import("./store-replay-msgpack").tStoreReplaySchemaKnowledge) => import("./store-replay-msgpack").tStoreReplayWireBatchV7[];
                 };
                 line: {
                     on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatch) => void) => any;

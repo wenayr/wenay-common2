@@ -1162,7 +1162,7 @@ exposeStoreReplay(store, {batch?, patchSource?, ...})  <->  syncStoreReplay(mirr
   //   patchSource is an advanced absolute-fact feed: Store state must already reflect its complete emitted patch array.
   //   Application code still sees StorePatch objects. Wire v1 is
   //   [1,seq,ts,[[path,1,value]|[path,0]|[path,2],...]]; op 2 preserves an explicitly present undefined value.
-  //   New servers expose v1-v6 over the SAME logical line/seq. v2 uses flat [key,value]/[key] set/delete tuples
+  //   New servers expose v1-v7 over the SAME logical line/seq. v2 uses flat [key,value]/[key] set/delete tuples
   //   and [path,value]/[path] for nested/root patches; v3 adds recursive exact-value escapes.
   //   v4 groups ordered raw/delete/root runs and consecutive Object.prototype values with the same ordered enumerable
   //   data-field list into columns only when that structure is smaller. It may derive one field from the Store key.
@@ -1171,8 +1171,10 @@ exposeStoreReplay(store, {batch?, patchSource?, ...})  <->  syncStoreReplay(mirr
   //   v5 writes that same patch plan to one self-contained Uint8Array. Application code still receives ordinary
   //   StorePatch/value objects. V6 carries those ordinary logical objects directly through the universal outer
   //   RPC value path, removing the v5-inner-Uint8Array-inside-RPC-binary copy. RPB/2 can reuse a typed schema for
-  //   them; RPB/1 and legacy arrays remain valid outer transports during rollout. New clients select
-  //   v6 -> v5 -> v4 -> v3 -> v2 -> v1 -> legacy by optional-member presence;
+  //   them; RPB/1 and legacy arrays remain valid outer transports during rollout. V7 instead packs flat Store
+  //   key/value batches with msgpackr, shares up to 1,000 nested value shapes through a server-owned catalog and
+  //   accepts client-known id/range summaries on live and recovery reads. New clients select recommended
+  //   v7 -> v6 -> v5 -> v4 -> v3 -> v2 -> v1 -> legacy by optional-member presence;
   //   old clients and servers continue on their newest common member, with no change to the business API.
   //   v5 preserves null/undefined/booleans, finite and special Numbers (including -0/NaN/infinities),
   //   strings (including lone surrogates), BigInt up to 8,192 bits,
@@ -1207,8 +1209,9 @@ exposeStoreReplay(store, {batch?, patchSource?, ...})  <->  syncStoreReplay(mirr
   //   Oracles: replay/store-replay-batch.test.ts, replay/store-replay-columnar-binary.test.ts,
   //   replay/store-replay-batch-socket.test.ts and replay/store-replay-large-stress.test.ts. The stress oracle
   //   materializes 15,000 records and drives seeded 250-key updates through v1-v6, 0/1/5ms batching, reconnect,
-  //   compact-frame/keyframe recovery and both old-peer directions. Reproducible pre-framing RPC payload/CPU/recovery diagnostic for
-  //   small and large quote batches across every Store generation: `npm run bench:store-replay`.
+  //   compact-frame/keyframe recovery and both old-peer directions. The focused release diagnostic compares only
+  //   legacy JSON, v2 JSON and recommended v7 binary at 1/10/50/250 updates and a 15,000-key keyframe:
+  //   `npm run bench:store-replay:v7`.
 syncStoreReplayRoute(mirror, remote, {batch?, validateBatch?, onBatch?, ...}) -> off & {ready, switch(nextRemote, opts), seq(), label(), active(), mode}
   // Same validation/callback/seq contract as syncStoreReplay, but route-replaceable for relay/direct promotion.
 createStoreReplicaOffers(initial?) -> {control, api}                                    // dynamic registry; api = {list, changes}; subscribe-before-list is handled by createStoreReplicaSet
@@ -1243,7 +1246,7 @@ syncStoreReplayEach<T>(remote, cb, opts?) -> off & {store, ready, mode, seq(), i
 createOfflineStore({key, remote?, initial, storage, version?, debounceMs?, syncOpts?}) -> Promise<OfflineStore<T>>
   // snapshot-mode persisted mirror: read local {version,seq,replayMode,snapshot,savedAt}, create a normal Store immediately,
   // then syncStoreReplay(..., {since: savedSeq}) when remote exists. reconnect(remote) attaches later after offline start.
-  // V1-v6 share one `batch` mode; switching between legacy and batch resets seq and takes a safe keyframe.
+  // V1-v7 share one `batch` mode; switching between legacy and batch resets seq and takes a safe keyframe.
 persistStore(store, {key, storage, seq?, debounceMs?}) -> control
   // durable writes are snapshot+seq in one record; flush()/forceFlush(); statusListen emits ready/syncing/offline/stale/saving.
 createMemoryOfflineStorage(initial?) -> OfflineStorage & {dump()}
@@ -1269,7 +1272,7 @@ storeReplayAt(storage, {seq?|ts?}?) -> snapshot | undefined                     
 
 Every batch member represents the same logical Store patch line and sequence space. Versions are
 additive optional RPC members, not different public Store APIs: a new client checks member presence
-and chooses `v6 → v5 → v4 → v3 → v2 → v1 → legacy`.
+and chooses recommended `v7 → v6 → v5 → v4 → v3 → v2 → v1 → legacy`.
 
 | Store route | Physical form | Main purpose | Mixed-peer behavior |
 |---|---|---|---|
@@ -1279,7 +1282,8 @@ and chooses `v6 → v5 → v4 → v3 → v2 → v1 → legacy`.
 | v3 | v2 layout plus recursive exact-value escapes | Preserves marker-shaped business data and explicit `undefined` recursively without changing ordinary v2 values | Falls back to v2/v1 when absent |
 | v4 | Envelope-local shallow column plan with raw/delete/root runs and optional derived Store key | Compresses consecutive same-shaped records without a persistent cross-envelope Store cache | Falls back to v3-v1; transport may still use native binary attachments |
 | v5 | Self-contained Store-specific `Uint8Array` over the v4 plan | Exact rich/binary values in one canonical Store byte codec with Store-specific hard limits | Falls back to v4-v1; still remains the newest common route for clients which do not know v6 |
-| v6 | Ordinary `ReplayEvent<[StorePatch[]]>`; no inner Store encoding | Lets the negotiated outer RPC codec own batching and typed layout, avoiding the v5 inner encode/copy; RPB/2 gives the intended fast path | Current new-client/new-server route; it can still ride RPB/1 or legacy application transport, while older clients select v5-v1 or legacy |
+| v6 | Ordinary `ReplayEvent<[StorePatch[]]>`; no inner Store encoding | Historical universal-RPB experiment retained for mixed-version compatibility | Not recommended for performance; newer clients select v7 and older clients retain their existing ladder |
+| v7 | Flat set/delete/root key-value arrays encoded by msgpackr inside RPB/2 | Recommended route: one binary payload, bounded shared nested-value shapes and client-known schema ranges; dynamic Store keys remain values | New/new selects v7; missing v7 falls through without changing the business API |
 
 No Store version leaks compact tuples, opcodes or bytes into application code. `onBatch`, mirrors and
 Replicated Map receive ordinary keys, values and `StorePatch` objects. The selector is capability
@@ -1314,7 +1318,36 @@ Extended files are intentionally excluded from normal `test:all` and `test:stres
 times and RSS are diagnostics, not machine-dependent pass thresholds; the operation, byte, boundary
 and checksum floors are the pass criteria.
 
-### Current Store Replay v1-v6 benchmark inside RPB/2
+### Current focused legacy / v2 JSON / v7 binary benchmark
+
+Run `npm run bench:store-replay:v7`. It compares the complete callback value pipeline and verifies
+every decoded patch against the source. Update rows use one legacy message per patch and one message
+for v2/v7; the keyframe is one message for every route. CPU is the median of seven windows after two
+warm-up windows. Exact timings remain host diagnostics.
+
+Representative Node v24.18 results from the 1.0.93 release:
+
+| Workload | Route | Messages | Warm bytes | Encode, us | Decode, us | Total, us |
+|---|---|---:|---:|---:|---:|---:|
+| 1 update | legacy JSON | 1 | 127 | 0.32 | 0.56 | 0.88 |
+| 1 update | v2 JSON | 1 | 79 | 0.27 | 0.45 | 0.72 |
+| 1 update | v7 binary | 1 | 55 | 33.03 | 2.00 | 35.03 |
+| 50 updates | legacy JSON | 50 | 6,456 | 25.94 | 45.94 | 71.88 |
+| 50 updates | v2 JSON | 1 | 3,183 | 10.88 | 20.17 | 31.06 |
+| 50 updates | v7 binary | 1 | 1,430 | 42.71 | 6.44 | 49.15 |
+| 250 updates | legacy JSON | 250 | 32,657 | 129.97 | 237.71 | 367.68 |
+| 250 updates | v2 JSON | 1 | 16,034 | 51.23 | 93.58 | 144.80 |
+| 250 updates | v7 binary | 1 | 7,031 | 73.90 | 21.91 | 95.81 |
+| 15k keyframe | legacy JSON | 1 | 513,960 | 4,784.82 | 4,803.38 | 9,588.20 |
+| 15k keyframe | v2 JSON | 1 | 513,914 | 4,878.52 | 4,829.54 | 9,708.06 |
+| 15k keyframe | v7 binary | 1 | 330,032 | 3,950.30 | 3,429.48 | 7,379.78 |
+
+V2 JSON remains the lowest-CPU route for tiny Node batches. V7 is recommended for replicated
+collections because it consistently reduces bytes, collapses physical sends, wins at the intended
+250-change and large-keyframe workloads, and retains its shared value-shape knowledge across
+reconnects. The selector remains capability-based rather than guessing from payload size.
+
+### Historical Store Replay v1-v6 benchmark inside RPB/2
 
 `npm run bench:store-replay` now compares every Store generation through the same exact callback
 packet, `[Pkt.CB, id, [event]]`, inside a negotiated warm RPB/2 connection. `warm B` is the complete

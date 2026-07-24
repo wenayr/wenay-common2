@@ -166,6 +166,7 @@ async function main() {
     })
     let v5Reads = 0
     let v6Reads = 0
+    let v7Reads = 0
     const producerBatch = producer.api.batch!
     const measuredRemote = {
         ...producer.api,
@@ -173,6 +174,7 @@ async function main() {
             ...producerBatch,
             v5: countWireReads(producerBatch.v5!, function countV5Read() { v5Reads++ }),
             v6: countWireReads(producerBatch.v6!, function countV6Read() { v6Reads++ }),
+            v7: countWireReads(producerBatch.v7!, function countV7Read() { v7Reads++ }),
         },
     }
     const wireStats: WireStats = {rpcV2Frames: 0, embeddedV5Frames: 0}
@@ -207,8 +209,8 @@ async function main() {
         ok(descriptor?.replicatedMap?.delivery == 'latest'
             && follower.replayMode() == 'batch' && follower.delivery() == 'latest',
         'Replicated Map descriptor and compact batch facade pass RPC auto-projection')
-        ok(v6Reads > 0 && v5Reads == 0,
-            'Replicated Map initial catch-up selects Store Replay v6 instead of inner SRB v5')
+        ok(v7Reads > 0 && v6Reads == 0 && v5Reads == 0,
+            'Replicated Map initial catch-up selects Store Replay v7')
         ok(follower.get('seed')?.value == 0,
             'initial keyframe crosses the projected real-socket facade')
         ok(Object.prototype.hasOwnProperty.call(follower.get('seed')?.meta ?? {}, 'explicit'),
@@ -225,7 +227,7 @@ async function main() {
         const binaryPlaceholder = follower.get('binary-placeholder')!
         ok(binaryPlaceholder.placeholder?._placeholder == true && binaryPlaceholder.placeholder.num == 0
             && binaryPlaceholder.bytes instanceof Uint8Array,
-        'schema-v2 v6 preserves a business Socket.IO placeholder beside real binary data')
+        'Store Replay v7 preserves a business Socket.IO placeholder beside real binary data')
 
         batches.length = 0
         snapshots.length = 0
@@ -273,9 +275,9 @@ async function main() {
         ok(JSON.stringify(comparableSnapshot(follower.snapshot()))
             == JSON.stringify(comparableSnapshot(producer.control.snapshot())),
             'reconnected follower converges to the authoritative map')
-        ok(v6Reads >= 2 && v5Reads == 0 && wireStats.rpcV2Frames > 0
+        ok(v7Reads >= 2 && v6Reads == 0 && v5Reads == 0 && wireStats.rpcV2Frames > 0
             && wireStats.embeddedV5Frames == 0,
-        `Replicated Map reconnect remains on v6 inside RPB/2 (${v6Reads}/${v5Reads}, `
+        `Replicated Map reconnect remains on v7 inside RPB/2 (${v7Reads}/${v6Reads}/${v5Reads}, `
             + `${wireStats.rpcV2Frames} frames)`)
     } finally {
         follower?.close()

@@ -70,10 +70,20 @@ function createRpcBinaryPeer({ sessionId, maxShapes, protocolVersion = rpc_binar
             return 2;
         return 0;
     }
+    function schemaPacketHint(packet) {
+        const kind = packet[0];
+        if (kind == rpc_protocol_1.Pkt.CALL || kind == rpc_protocol_1.Pkt.PIPE) {
+            return kind + ':ref:' + String(packet[2]);
+        }
+        if (kind == rpc_protocol_1.Pkt.CB || kind == rpc_protocol_1.Pkt.CB_END) {
+            return kind + ':callback:' + String(packet[1]);
+        }
+        return 'packet:' + String(kind);
+    }
     function prepare(packet) {
         const encoded = schema
             ? encoder
-                .prepareEncodeTrusted(packet, schemaPacketDepthBias(packet))
+                .prepareEncodeTrusted(packet, schemaPacketDepthBias(packet), schemaPacketHint(packet))
             : encoder.prepareEncode(packet);
         try {
             const wire = (0, rpc_binary_envelope_1.wrapRpcBinaryPacket)(sessionId, encoded.wire, protocolVersion);
@@ -94,7 +104,7 @@ function createRpcBinaryPeer({ sessionId, maxShapes, protocolVersion = rpc_binar
         }
         const valueByteLength = schema
             ? encoder
-                .measureEncodeTrusted(packet, schemaPacketDepthBias(packet))
+                .measureEncodeTrusted(packet, schemaPacketDepthBias(packet), schemaPacketHint(packet))
             : encoder.measureEncode(packet);
         const byteLength = packetHeaderByteLength + valueByteLength;
         if (byteLength > rpc_binary_envelope_1.RPC_BINARY_MAX_FRAME_BYTES) {
