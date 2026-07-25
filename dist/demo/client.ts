@@ -38,8 +38,6 @@ type World = {
 const tab = sessionStorage.getItem('demo-tab')
     ?? Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12)
 sessionStorage.setItem('demo-tab', tab)
-const legacyServerProfile = new URLSearchParams(location.search).get('rpc') == 'legacy-server'
-if (location.search) history.replaceState(null, '', location.pathname)
 let me = ''
 
 const el = (id: string) => document.getElementById(id)!
@@ -66,7 +64,7 @@ type PeerView = ReturnType<PeerClient['peer']>
 
 async function main() {
     const shell = setupAppShell({root: document})
-    const protocol = createProtocolDemo({element: el, log, legacyServer: legacyServerProfile})
+    const protocol = createProtocolDemo({element: el, log})
     const replicaMesh = setupReplicaSetDemo({element: el, log})
     const contractRuntime = setupContractRuntimeDemo({element: el, log})
     const packetMesh = setupPacketMeshDemo({element: el, log})
@@ -77,10 +75,7 @@ async function main() {
         // Start with polling so an HTTP-only tunnel/proxy can carry RPC, then
         // Socket.IO upgrades to WebSocket whenever the external route permits it.
         () => protocol.attach(io({
-            auth: {
-                tab,
-                rpcProfile: legacyServerProfile ? 'legacy-server' : 'current',
-            },
+            auth: {tab},
         })),
         r => ({app: r<any>('app')}) as const,
         {opt: demoRpcOpt},
@@ -183,9 +178,9 @@ async function main() {
         }
     }
     void showInstanceBadge()
-    const legacyServerTime = await clients.app.func.serverTime()
-    protocol.reportLegacyCall(legacyServerTime)
-    log('rpc connected; existing serverTime() = ' + legacyServerTime)
+    const serverTime = await clients.app.func.serverTime()
+    protocol.reportServerTime(serverTime)
+    log('rpc connected; serverTime() = ' + serverTime)
     const workboard = createWorkboardClient({
         remote: clients.app.func.workboard as unknown as WorkboardRemote,
         drain: 'micro',

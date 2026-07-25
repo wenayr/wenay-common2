@@ -3,7 +3,7 @@
 // =====================================================================
 // Decorator over ListenApi in the form of withStoreListen. One pattern for
 // everything: keyframe + events S+1…K = exact state at K (I/P-frames, WAL,
-// market data). Design: REPLAY-PLAN.md; oracles: replay/ (sandbox).
+// market data). Public reference: doc/wenay-common2*.md; oracles: replay/.
 //
 // Invariants:
 // - seq — coordinate, time — attribute: each journal event = {seq, ts, event}.

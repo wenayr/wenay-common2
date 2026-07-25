@@ -23,7 +23,7 @@ export type OfflineStorage = {
 export type OfflineStoreRecord<T extends object> = {
     version: number
     seq: number
-    /** Sequence coordinates are not interchangeable between legacy and compact replay lines. */
+    /** Store Replay V2 sequence coordinate persisted with the snapshot. */
     replayMode?: tStoreReplayMode
     snapshot: T
     savedAt: number

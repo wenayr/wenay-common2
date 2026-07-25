@@ -850,7 +850,7 @@ npx tsx observe/store-mirror.example.ts
 > Keyframe + seq-numbered deltas + recovery via a fresh keyframe — one pattern for store sync,
 > ticks and video-like frame streams. `import { Replay } from "wenay-common2"` or
 > `import { ... } from "wenay-common2/replay"`; the store pair lives in `Observe`.
-> Design: `REPLAY-PLAN.md`; oracles: `replay/` (import the canonical `src/` modules).
+> Public surface: the replay sections below; executable behavior: `replay/` oracles importing the canonical `src/` modules.
 ```
 withReplayListen(base, {current?, frame?, history?, getSince?, onJournal?, now?, staleMs?, onStale?}) · replayListen   // layer A: journal {seq, ts, event}; on(cb, {since, onSeq}); head()/getSince()/keyframe()/hasKeyframe · isStale()/lastTs()
   // FRAME MODEL — one method, two sources, three triggers. frame(sinceSeq, hint?) -> envelopes bringing a consumer
@@ -867,7 +867,7 @@ withReplayListen(base, {current?, frame?, history?, getSince?, onJournal?, now?,
 exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?, staleMs?, onStale?, skewMs?, now?, policy?, hint?, catchUp?, gapPolicy?, prepareCatchUp?}) -> off   // wire pair over the EXISTING rpc: line = plain Listen, since/keyframe/frame = plain methods
   // NORMAL PATH: createRpcServerAuto exposes replay listens automatically (see rpc section) — exposeReplay stays
   //   as the manual/custom-transport path. replaySubscribe prefers `frame` when the server has it (one round trip,
-  //   server picks tail/mini-frame/keyframe; sacred throw -> onError), falls back to since/keyframe on old servers.
+  //   server picks tail/mini-frame/keyframe; sacred throw -> onError), uses since/keyframe when frame is unavailable.
   //   policy: 'queue' (default — ungated connected live line) | 'frame' (subscribes frameLine when present: on lag
   //   the server may drop and recover via a state-equivalent frame(lastSent)). Catch-up is shared by both policies
   //   and may use a producer mini-frame/keyframe, so a covered raw seq jump is not a logical data gap. A non-envelope

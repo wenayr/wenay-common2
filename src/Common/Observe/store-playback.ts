@@ -21,7 +21,7 @@ export type StorePlaybackOpts = {
     /** Cap for a single inter-event pause, ms (long recorded silences fast-forward). */
     maxStepMs?: number
     drain?: StoreDrain
-    /** Passed through to the playback head (describe/history/now/batch). */
+    /** Passed through to the playback head. */
     expose?: Pick<StoreReplayOpts, 'describe' | 'history' | 'now' | 'maxItems' | 'maxBytes' | 'maxDelayMs'>
 }
 

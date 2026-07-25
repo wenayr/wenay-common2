@@ -85,7 +85,7 @@ Possible one-time adapters, only after measurement:
 
 - `MediaStreamTrackProcessor` or `VideoFrame` capture when `ImageCapture.grabFrame()` is the ceiling;
 - native WebRTC tracks/SFU when JPEG-over-RPC bandwidth or decode is the ceiling;
-- tighter replay frames, binary batching or delta formats when transport framing is the ceiling.
+- tighter replay frame scheduling or domain-specific deltas when transport framing is the ceiling.
 
 Do not optimize all three layers at once: that destroys the measurement.
 

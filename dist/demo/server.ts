@@ -1,4 +1,4 @@
-// Demo stand server: the Peer SDK next to a legacy rpc key, static page hosting.
+// Demo stand server: the Peer SDK, application RPC facade and static page hosting.
 // Run: npm run demo  ->  open the two printed URLs in two tabs.
 import express, {type NextFunction, type Request, type Response} from 'express'
 import {randomUUID} from 'crypto'
@@ -13,7 +13,6 @@ import {createAiRunHost} from '../src/Common/ai/ai-index'
 import {createArtifactHost} from '../src/Common/artifact/artifact-index'
 import {createConversationHost} from '../src/Common/conversation/conversation-index'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
-import {Pkt} from '../src/Common/rcp/rpc-protocol'
 import {createHttpFacadeServer} from '../src/server/httpFacadeServer'
 import {io as ioClient} from 'socket.io-client'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
@@ -33,7 +32,7 @@ let port = portStart
 // DEMO_MIRROR_OF=http://localhost:3100 turns this instance into a follower: the
 // workboard store is mirrored from the leader over the ordinary replay wire and
 // commands are forwarded with the end client's account — receipts and ordering
-// stay on the leader (single point of order, see doc/target/store-sync-directions.md).
+// stay on the leader as the single point of order.
 const mirrorOf = process.env.DEMO_MIRROR_OF?.trim() || null
 // Mirror participants get their own letter namespace (person-za, person-zb, ...)
 // so the shared board never shows two different people as the same "Participant A".
@@ -97,32 +96,6 @@ const configuredArtifactOrigin = process.env.DEMO_ARTIFACT_ORIGIN
     ? configuredOrigin(process.env.DEMO_ARTIFACT_ORIGIN, 'DEMO_ARTIFACT_ORIGIN')
     : null
 const configuredAppOrigins = readConfiguredAppOrigins()
-
-// The compatibility link makes a new client meet the exact wire behavior of an
-// old server: CAPS is unknown in both directions, while MAP/CALL/RESP stay intact.
-function createDemoRpcSocket(socket: any, emulateLegacyServer = false) {
-    function isCaps(data: unknown) {
-        return Array.isArray(data) && data[0] == Pkt.CAPS
-    }
-
-    return {
-        emit(key: string, data: unknown) {
-            if (!emulateLegacyServer || !isCaps(data)) socket.emit(key, data)
-        },
-        on(key: string, cb: (data: unknown) => void) {
-            socket.on(key, function receiveDemoRpcPacket(data: unknown) {
-                if (!emulateLegacyServer || !isCaps(data)) cb(data)
-            })
-        },
-    }
-}
-
-function legacyWorkboardFragment(fragment: any) {
-    const state = fragment?.state
-    if (state == null || typeof state != 'object') return fragment
-    const {batch: _batch, ...legacyState} = state
-    return {...fragment, state: legacyState}
-}
 
 function artifactOrigin() {
     return configuredArtifactOrigin ?? 'http://artifact.localhost:' + port
@@ -945,7 +918,6 @@ ioServer.on('connection', function onDemoConnection(socket) {
         return
     }
     const account = participantAccount(tab)
-    const emulateLegacyServer = socket.handshake.auth?.rpcProfile == 'legacy-server'
     const peer = host.connection(account)
     const resource = files.connection(account)
     const aiRun = ai.connection(account)
@@ -954,9 +926,6 @@ ioServer.on('connection', function onDemoConnection(socket) {
     const conversation = conversations.connection(account)
     const workboardConnection = upstreamLink ? null : workboard.connection(account)
     const workboardFragment = upstreamLink ? upstreamLink.fragmentFor(account) : workboardConnection!.fragment
-    const workboardRpcFragment = emulateLegacyServer
-        ? legacyWorkboardFragment(workboardFragment)
-        : workboardFragment
     const [disconnect, disconnectListen] = listen<[]>()
     socket.on('disconnect', function closeDemoResources() {
         disconnect()
@@ -968,10 +937,10 @@ ioServer.on('connection', function onDemoConnection(socket) {
         workboardConnection?.close()
     })
     createRpcServerAuto({
-        socket: createDemoRpcSocket(socket, emulateLegacyServer),
+        socket,
         socketKey: 'app',
         object: {
-            // legacy key on the SAME connection — the SDK does not displace old code
+            // Stable application method beside the SDK fragments on the same connection.
             serverTime: () => new Date().toISOString(),
             // Deployment owns ICE/TURN credentials; the SDK only receives an rtc factory.
             demo: {
@@ -986,7 +955,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
             ai: aiRun.fragment,
             artifacts: artifact.fragment,
             conversation: conversation.fragment,
-            workboard: limitCommands(account, workboardRpcFragment, ['create', 'rename', 'move', 'assign', 'remove']),
+            workboard: limitCommands(account, workboardFragment, ['create', 'rename', 'move', 'assign', 'remove']),
             media: {
                 publish: media.publishOf(account),
                 // policy-gated view: THIS connection's account is what canWatch receives
@@ -996,7 +965,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
         disconnectListen,
         opt: demoRpcOpt,
     })
-    console.log(`[demo] ${account} connected${emulateLegacyServer ? ' (legacy-server RPC profile)' : ''}`)
+    console.log(`[demo] ${account} connected`)
 })
 
 function listenOn(port: number) {

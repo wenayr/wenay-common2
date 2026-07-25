@@ -35,10 +35,11 @@ Where it goes next: [`demo/`](demo/) is the full runnable stand (`npm run demo`)
 
 - Brief API cheat sheet: [`doc/wenay-common2.md`](doc/wenay-common2.md)
 - Extended API cheat sheet: [`doc/wenay-common2-rare.md`](doc/wenay-common2-rare.md)
-- Public raw-IP/hostname HTTPS demo and certificates: [`doc/DEMO-HTTPS.md`](doc/DEMO-HTTPS.md)
-- AI run protocol: [`doc/AI-RUN-PROTOCOL.md`](doc/AI-RUN-PROTOCOL.md)
-- Conversation runtime: [`doc/CONVERSATION-RUNTIME.md`](doc/CONVERSATION-RUNTIME.md)
-- Versioned contract runtime: [`doc/CONTRACT-RUNTIME.md`](doc/CONTRACT-RUNTIME.md)
+- Runtime protocols: [`AI`](doc/AI-RUN-PROTOCOL.md) · [`Artifact`](doc/ARTIFACT-RUNTIME.md) ·
+  [`Conversation`](doc/CONVERSATION-RUNTIME.md) · [`Contract`](doc/CONTRACT-RUNTIME.md)
+- Public HTTPS/WSS stand and certificates: [`doc/DEMO-HTTPS.md`](doc/DEMO-HTTPS.md)
+- Project direction: [`intent`](doc/INTENT.md) · [`recommendations`](doc/RECOMMENDATIONS.md) ·
+  [`conditional roadmap`](doc/ROADMAP.md)
 - Naming migrations: [`doc/NAMING_RENAMES.md`](doc/NAMING_RENAMES.md)
 - Recent changes: [`doc/changes/`](doc/changes/)
 - Project rules for AI/code maintenance: [`CLAUDE.md`](CLAUDE.md)

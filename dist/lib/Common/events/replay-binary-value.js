@@ -53,7 +53,7 @@ const REPLAY_BINARY_CALLBACK_REF = Symbol('replay-binary-callback-ref');
 function ReplayBinaryCallbackRefValue() { }
 function createReplayBinaryCallbackRef(id) {
     if (!Number.isSafeInteger(id) || id < 0) {
-        throw new RangeError('rpc binary callback ref: id must be a non-negative safe integer');
+        throw new RangeError('replay binary callback ref: id must be a non-negative safe integer');
     }
     const value = Object.create(ReplayBinaryCallbackRefValue.prototype);
     value[REPLAY_BINARY_CALLBACK_REF] = id;

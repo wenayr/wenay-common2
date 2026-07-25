@@ -11,7 +11,6 @@ import type {WorkboardRemote} from './workboard-contract'
 type ProtocolDemoDeps = {
     element: (id: string) => HTMLElement
     log: (line: string) => void
-    legacyServer: boolean
 }
 
 type tWireDirection = 'client' | 'server'
@@ -38,11 +37,9 @@ export function createProtocolDemo(deps: ProtocolDemoDeps) {
     const mode = deps.element('protocolMode')
     const clientStage = deps.element('protocolClient')
     const serverStage = deps.element('protocolServer')
-    const probeStage = deps.element('protocolProbe')
     const storeStage = deps.element('protocolStore')
     const transportStage = deps.element('protocolTransport')
     const traffic = deps.element('protocolTraffic')
-    const compatibility = deps.element('protocolCompatibility') as HTMLAnchorElement
 
     let socketTransport = 'connecting'
     let clientCaps: number | null = null
@@ -53,16 +50,9 @@ export function createProtocolDemo(deps: ProtocolDemoDeps) {
     let applicationPackets = 0
     let controlPackets = 0
     let storeSummary = 'waiting for Store schema'
-    let legacyCallSummary = 'existing API call pending'
+    let serverTimeSummary = 'serverTime call pending'
     let loggedClientCaps = false
     let loggedServerCaps = false
-
-    compatibility.href = deps.legacyServer
-        ? location.pathname
-        : location.pathname + '?rpc=legacy-server'
-    compatibility.textContent = deps.legacyServer
-        ? 'Open current JSON peer'
-        : 'Open current client ↔ legacy-server fallback'
 
     function render() {
         mode.textContent = mapSeen ? 'JSON-array RPC active' : 'negotiating…'
@@ -74,14 +64,11 @@ export function createProtocolDemo(deps: ProtocolDemoDeps) {
                 + (sessionId == null ? '' : ` · session ${sessionId}`)
 
         serverStage.textContent = serverCaps == null
-            ? mapSeen && deps.legacyServer
-                ? 'no CAPS · old-server behavior confirmed'
-                : 'waiting for server CAPS'
+            ? 'waiting for server CAPS'
             : `CAPS ${serverCaps}: ${capNames(serverCaps)}`
                 + (serverGeneration == null ? '' : ` · generation ${serverGeneration}`)
 
-        probeStage.textContent = 'No binary probe · application packets use JSON arrays'
-        storeStage.textContent = `${storeSummary} · ${legacyCallSummary}`
+        storeStage.textContent = `${storeSummary} · ${serverTimeSummary}`
         transportStage.textContent = `Socket.IO ${socketTransport}`
         traffic.textContent = `Application traffic: ${applicationPackets} JSON-array packet(s)`
             + ` · ${controlPackets} bootstrap/control array(s)`
@@ -155,11 +142,11 @@ export function createProtocolDemo(deps: ProtocolDemoDeps) {
         render()
     }
 
-    function reportLegacyCall(serverTime: string) {
-        legacyCallSummary = `existing serverTime() OK at ${serverTime.slice(11, 19)}`
+    function reportServerTime(serverTime: string) {
+        serverTimeSummary = `serverTime OK at ${serverTime.slice(11, 19)}`
         render()
     }
 
     render()
-    return {attach, reportStore, reportLegacyCall}
+    return {attach, reportStore, reportServerTime}
 }

@@ -60,10 +60,7 @@
     .protocolTitle > span:first-child { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
     #protocolMode { padding: 4px 8px; border-radius: 999px; background: var(--warning-soft); color: var(--warning); font-size: 11px; white-space: nowrap; }
     #protocolMode[data-state="live"] { background: var(--success-soft); color: var(--success); }
-    #protocolMode[data-state="fallback"] { background: var(--relay-soft); color: var(--relay); }
-    #protocolCompatibility { color: var(--accent); font-size: 11px; font-weight: 700; text-decoration: none; }
-    #protocolCompatibility:hover { text-decoration: underline; }
-    .protocolStages { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+    .protocolStages { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
     .protocolStage { min-width: 0; padding: 8px 10px; border-radius: 9px; background: var(--surface-soft); }
     .protocolStage strong, .protocolStage span { display: block; }
     .protocolStage strong { font-size: 11px; }
@@ -353,7 +350,6 @@
                 <strong id="protocolMode" data-state="connecting">negotiating…</strong>
                 <span id="protocolTransport" class="pageMeta">Socket.IO connecting</span>
             </div>
-            <a id="protocolCompatibility" target="_blank" rel="noopener"></a>
         </div>
         <div class="protocolStages">
             <div class="protocolStage">
@@ -365,15 +361,11 @@
                 <span id="protocolServer">waiting for server CAPS</span>
             </div>
             <div class="protocolStage">
-                <strong>3 · Binary proof</strong>
-                <span id="protocolProbe">waiting for intersected capabilities</span>
-            </div>
-            <div class="protocolStage">
-                <strong>4 · Store + old API</strong>
+                <strong>3 · Store Replay V2</strong>
                 <span id="protocolStore">waiting for Store schema</span>
             </div>
         </div>
-        <p id="protocolTraffic">Application traffic is waiting. CAPS/MAP stay readable for old-peer bootstrap.</p>
+        <p id="protocolTraffic">Application traffic is waiting for the JSON-array RPC wire.</p>
     </section>
 
     <div class="presenceBar">

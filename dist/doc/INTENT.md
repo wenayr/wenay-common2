@@ -2,10 +2,9 @@
 
 ## What this is
 
-A personal, open-source common/transport library, matured over many years. The published `1.x`
-line is really a **second generation** ("version 1" the number, version 2 the design) — the earlier
-generation and its plan/history docs were deliberately removed; the canonical surface today is
-`doc/wenay-common2.md` (brief) + `doc/wenay-common2-rare.md` (full reference).
+A personal, open-source common/transport library, matured over many years. Version `2.x` makes the
+second-generation design explicit: JSON-array RPC, Store Replay V2 and the canonical public surface
+in `doc/wenay-common2.md` (brief) plus `doc/wenay-common2-rare.md` (full reference).
 
 The current stack is a small distributed-state runtime: a typed RPC core, an `Observe` reactive
 store, a universal replay layer (`seq` + keyframe + deltas), a policy-gated route coordinator
@@ -33,5 +32,5 @@ carries its readable source.
 - **Direction if picked up again:** concrete consumer adapters and showcase flows that exercise the
   stable contract/Store/transport layers. Everything else waits for a real need.
 
-This file is the durable record of that intent. It is not a worklist; the forward backlog (kept for
-reference, not commitment) lives in `doc/ROADMAP.md` and `doc/target/`.
+This file is the durable record of that intent. It is not a worklist; conditional future work lives
+in `doc/ROADMAP.md`, while current engineering guidance lives in `doc/RECOMMENDATIONS.md`.

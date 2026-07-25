@@ -24,7 +24,7 @@ export type DurableStoreReplayDeps<T extends object> = {
     /** ...or every T ms along the event ts line — whichever comes first. */
     everyMs?: number
     drain?: StoreDrain
-    /** Line options passed through to exposeStoreReplay (describe/onJournal/now/batch).
+    /** Line options passed through to exposeStoreReplay.
      *  history/getSince/firstSeq are owned by the durable head itself. */
     expose?: Pick<StoreReplayOpts, 'describe' | 'onJournal' | 'now' | 'maxItems' | 'maxBytes' | 'maxDelayMs'>
 }

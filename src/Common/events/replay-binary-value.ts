@@ -64,7 +64,7 @@ export function ReplayBinaryCallbackRefValue() {}
 
 export function createReplayBinaryCallbackRef(id: number) {
     if (!Number.isSafeInteger(id) || id < 0) {
-        throw new RangeError('rpc binary callback ref: id must be a non-negative safe integer')
+        throw new RangeError('replay binary callback ref: id must be a non-negative safe integer')
     }
     const value = Object.create(ReplayBinaryCallbackRefValue.prototype) as tReplayBinaryCallbackRef
     value[REPLAY_BINARY_CALLBACK_REF] = id

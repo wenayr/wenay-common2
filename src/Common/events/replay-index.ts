@@ -4,7 +4,7 @@
 // One pattern for any state streams: keyframe + numbered deltas +
 // recovery with fresh keyframe (I/P-frames, WAL, market data).
 // Store-integration (exposeStoreReplay/syncStoreReplay/storeReplayAt) — in
-// Observe (next to store). Design: REPLAY-PLAN.md; oracles: replay/.
+// Observe (next to store). Public reference: doc/wenay-common2*.md; oracles: replay/.
 
 export * from './replay-listen'
 export * from './replay-wire'

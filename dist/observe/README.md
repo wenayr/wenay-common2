@@ -214,7 +214,7 @@ Layers on top of it (documented in `wenay-common2.md` / `wenay-common2-rare.md`)
   catch-up, reconnect by seq, per-client conflation, archived history with
   time-travel. Exported as `Replay` (generic line) and via `Observe`
   (`exposeStoreReplay` / `syncStoreReplay` / `storeReplayAt`); oracles in `replay/`,
-  status in `replay/PLAN.md`.
+  with the current contract in `replay/README.md` and the public API docs.
 
 ## Run
 
