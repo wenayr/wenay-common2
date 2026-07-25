@@ -166,7 +166,7 @@ export function createFileJobHost(deps: FileJobHostDeps) {
 
     function createView(account: string) {
         const state = createStore<FileJobStore>(project(account), drain !== undefined ? {drain} : {})
-        const replay = exposeStoreReplay(state, history == undefined ? {batch: true} : {history, batch: true})
+        const replay = exposeStoreReplay(state, history == undefined ? {} : {history})
         function refreshJob(id: string) {
             const job = store.state.jobs[id]
             const visible = !!job && !!state.state.files[job.fileId]

@@ -9,14 +9,14 @@
 // Leadership/epoch stay an upper-layer concern (follower/replica-set policies);
 // this module owns exactly one property: the LINE survives the process.
 
-import {createStore, StoreDrain, StorePatch, applyStorePatch, listenStorePatches} from './store'
+import {createStore, StoreDrain, StorePatch, applyStorePatches, listenStorePatches} from './store'
 import {exposeStoreReplay, StoreReplayOpts} from './store-replay'
 import {openHistory, ReplayStorage} from '../events/replay-history'
 import {ReplayEvent} from '../events/replay-listen'
 
 export type DurableStoreReplayDeps<T extends object> = {
     /** Persistence port: memory reference impl, fs impl (wenay-common2/server), or your DB adapter. */
-    storage: ReplayStorage<[StorePatch]>
+    storage: ReplayStorage<[readonly StorePatch[]]>
     /** State when the archive is empty (first boot). */
     initial?: T
     /** Keyframe cadence: every N events (archiveReplay default 64). */
@@ -26,7 +26,7 @@ export type DurableStoreReplayDeps<T extends object> = {
     drain?: StoreDrain
     /** Line options passed through to exposeStoreReplay (describe/onJournal/now/batch).
      *  history/getSince/firstSeq are owned by the durable head itself. */
-    expose?: Pick<StoreReplayOpts, 'describe' | 'onJournal' | 'now' | 'batch'>
+    expose?: Pick<StoreReplayOpts, 'describe' | 'onJournal' | 'now' | 'maxItems' | 'maxBytes' | 'maxDelayMs'>
 }
 
 export function createDurableStoreReplay<T extends object>(deps: DurableStoreReplayDeps<T>) {
@@ -37,7 +37,7 @@ export function createDurableStoreReplay<T extends object>(deps: DurableStoreRep
     let state = (deps.initial ?? {}) as T
     if (envelopes) {
         const scratch = createStore<any>({})
-        for (const ev of envelopes) applyStorePatch(scratch, ev.event[0])
+        for (const ev of envelopes) applyStorePatches(scratch, ev.event[0])
         state = scratch.snapshot() as T
         restoredSeq = envelopes[envelopes.length - 1].seq
     }
@@ -52,28 +52,19 @@ export function createDurableStoreReplay<T extends object>(deps: DurableStoreRep
 
     // === line: numbering continues; since() is served from the SAME storage ===
     let lineHead = () => restoredSeq
-    const {batch: requestedBatch = true, onJournal: userOnJournal, ...exposeOpts} = deps.expose ?? {}
+    const {onJournal: userOnJournal, ...exposeOpts} = deps.expose ?? {}
     const bulkPut = storage.putEvents
-    function persistEvent(ev: ReplayEvent<[StorePatch]>) {
+    function persistEvent(ev: ReplayEvent<[readonly StorePatch[]]>) {
         userOnJournal?.(ev)
         storage.putEvent(ev)
         events++
     }
-    function persistBatch(batch: readonly ReplayEvent<[StorePatch]>[]) {
+    function persistBatch(batch: readonly ReplayEvent<[readonly StorePatch[]]>[]) {
         bulkPut!(batch)
         events += batch.length
     }
-    // A batch contains at least one legacy patch, so its old head can never exceed
-    // the persisted legacy head. Starting there makes an old coordinate either an
-    // exact continuation boundary or an evicted/future value that resets by keyframe.
-    const safeBatch = requestedBatch ? {
-        ...(requestedBatch === true ? {} : requestedBatch),
-        getSince: undefined,
-        firstSeq: restoredSeq,
-    } : false
     const exposed = exposeStoreReplay(store, {
         ...exposeOpts,
-        batch: safeBatch,
         firstSeq: restoredSeq,
         onJournal: bulkPut ? userOnJournal : persistEvent,
         onJournalBatch: bulkPut ? persistBatch : undefined,

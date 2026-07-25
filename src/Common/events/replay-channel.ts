@@ -12,8 +12,7 @@
 import {ReplayRemote} from './replay-wire'
 import {utf8ByteLength} from '../wire-size'
 import {getRpcSchemaReady, hasRpcMemberLookup, rpcMemberAvailable} from './transport-lifecycle'
-import {createBinaryValueCodec} from '../rcp/rpc-binary-value'
-import {RPC_BINARY_MAX_SHAPES} from '../rcp/rpc-caps'
+import {createBinaryValueCodec} from './replay-binary-value'
 
 const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 const REPLAY_BYTES = '__wenayReplayBytes'
@@ -29,6 +28,7 @@ const REPLAY_BINARY_VERSION = 1
 const REPLAY_BINARY_MAX_VALUE_BYTES = 8_000_000
 const REPLAY_BINARY_MAX_WIRE_BYTES = 16_000_000
 const REPLAY_BINARY_DEPTH = 36
+const REPLAY_BINARY_MAX_SHAPES = 1_000
 const REPLAY_BINARY_MESSAGE = {
     SUB: 0,
     REQ: 1,
@@ -53,7 +53,7 @@ function createReplayBinaryCodec(label: string, shapeCache: boolean) {
         // A direct Replay channel has no RPC callback-id resolver. Functions and
         // private callback references therefore keep the legacy JSON fallback.
         callbackRefs: false,
-        shapeCache: shapeCache ? {maxEntries: RPC_BINARY_MAX_SHAPES} : false,
+        shapeCache: shapeCache ? {maxEntries: REPLAY_BINARY_MAX_SHAPES} : false,
         maxDepth: REPLAY_BINARY_DEPTH,
         maxBinaryBytes: REPLAY_BINARY_MAX_VALUE_BYTES,
         maxWireBytes: REPLAY_BINARY_MAX_WIRE_BYTES,

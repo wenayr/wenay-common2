@@ -1,10 +1,9 @@
 import { type Store, type StorePatch, type StoreDrain, type StoreEachCtx } from './store';
-import { replayListen, type ReplayListenOptions, type ReplayEvent } from '../events/replay-listen';
-import { type ReplayExpose, type ReplayRemote, type ReplaySubscribeOpts } from '../events/replay-wire';
+import { type ReplayListenOptions, type ReplayEvent } from '../events/replay-listen';
+import { type ReplaySubscribeOpts } from '../events/replay-wire';
 import { type ReplayRouteSubscribeOpts, type ReplayRouteSwitchOpts } from '../events/replay-route';
 import { type ReplayStorage } from '../events/replay-history';
-import { type tStoreReplayWireBatch, type tStoreReplayWireBatchV2, type tStoreReplayWireBatchV3, type tStoreReplayWireBatchV4, type tStoreReplayWireBatchV5 } from './store-replay-codec';
-import { type tStoreReplaySchemaKnowledge, type tStoreReplayWireBatchV7 } from './store-replay-msgpack';
+import { type tStoreReplayWireBatchV2 } from './store-replay-codec';
 export type StoreReplayBatchOpts = Pick<ReplayListenOptions<[readonly StorePatch[]]>, 'history' | 'getSince' | 'onJournal' | 'onJournalBatch' | 'now' | 'firstSeq'> & {
     maxItems?: number;
     maxBytes?: number;
@@ -13,9 +12,8 @@ export type StoreReplayBatchOpts = Pick<ReplayListenOptions<[readonly StorePatch
 export type StoreReplayPatchSource = {
     on(cb: (patches: readonly StorePatch[]) => void): () => void;
 };
-export type StoreReplayOpts = Pick<ReplayListenOptions<[StorePatch]>, 'history' | 'getSince' | 'onJournal' | 'onJournalBatch' | 'now' | 'firstSeq'> & {
+export type StoreReplayOpts = StoreReplayBatchOpts & {
     describe?: Record<string, any>;
-    batch?: boolean | StoreReplayBatchOpts;
     patchSource?: StoreReplayPatchSource;
 };
 type StoreReplayWireRemote<W> = {
@@ -29,84 +27,33 @@ type StoreReplayWireRemote<W> = {
         on: (cb: (batch: W) => void) => any;
     };
 };
-export type StoreReplayBatchV2Remote = StoreReplayWireRemote<tStoreReplayWireBatchV2>;
-export type StoreReplayBatchV3Remote = StoreReplayWireRemote<tStoreReplayWireBatchV3>;
-export type StoreReplayBatchV4Remote = StoreReplayWireRemote<tStoreReplayWireBatchV4>;
-export type StoreReplayBatchV5Remote = StoreReplayWireRemote<tStoreReplayWireBatchV5>;
-export type StoreReplayBatchV6Remote = StoreReplayWireRemote<ReplayEvent<[readonly StorePatch[]]>>;
-export type StoreReplayBatchV7Remote = {
-    line: {
-        on(cb: (batch: tStoreReplayWireBatchV7) => void, opts?: {
-            knowledge?: tStoreReplaySchemaKnowledge;
-        }): any;
-    };
-    since(seq: number, knowledge?: tStoreReplaySchemaKnowledge): Promise<tStoreReplayWireBatchV7[] | null | undefined> | tStoreReplayWireBatchV7[] | null | undefined;
-    keyframe(knowledge?: tStoreReplaySchemaKnowledge): Promise<tStoreReplayWireBatchV7 | null | undefined> | tStoreReplayWireBatchV7 | null | undefined;
-    frame?(seq: number, hint?: unknown, knowledge?: tStoreReplaySchemaKnowledge): Promise<tStoreReplayWireBatchV7[] | null | undefined> | tStoreReplayWireBatchV7[] | null | undefined;
-    frameLine?: {
-        on(cb: (batch: tStoreReplayWireBatchV7) => void, opts?: {
-            knowledge?: tStoreReplaySchemaKnowledge;
-        }): any;
-    };
+export type StoreReplayBatchRemote = StoreReplayWireRemote<tStoreReplayWireBatchV2>;
+export type StoreReplayRemote = StoreReplayBatchRemote & {
+    describe?: () => Record<string, any> | Promise<Record<string, any>>;
 };
-export type StoreReplayBatchRemote = StoreReplayWireRemote<tStoreReplayWireBatch> & {
-    v2?: StoreReplayBatchV2Remote;
-    v3?: StoreReplayBatchV3Remote;
-    v4?: StoreReplayBatchV4Remote;
-    v5?: StoreReplayBatchV5Remote;
-    v6?: StoreReplayBatchV6Remote;
-    v7?: StoreReplayBatchV7Remote;
-};
-export type StoreReplayRemote = ReplayRemote<[StorePatch]> & {
-    batch?: StoreReplayBatchRemote;
-};
-export type tStoreReplayMode = 'legacy' | 'batch';
+export type tStoreReplayMode = 'v2';
 export type StoreReplaySyncOpts<T extends object = any> = ReplaySubscribeOpts & {
-    batch?: boolean;
     onBatch?: (patches: readonly StorePatch[], store: Store<T>) => void;
     validateBatch?: (patches: readonly StorePatch[], store: Store<T>) => void;
 };
 export type StoreReplayRouteOpts<T extends object = any> = ReplayRouteSubscribeOpts & {
-    batch?: boolean;
     onBatch?: (patches: readonly StorePatch[], store: Store<T>) => void;
     validateBatch?: (patches: readonly StorePatch[], store: Store<T>) => void;
 };
-export declare function storeReplayMode(remote: StoreReplayRemote, preferBatch?: boolean): tStoreReplayMode;
-export declare function storePatchKey(patch: StorePatch): string | null;
-type StoreReplayBatchLine = ReturnType<typeof replayListen<[readonly StorePatch[]]>>[1];
-declare function exposeStoreReplayBatch(replay: StoreReplayBatchLine, prepareRead: () => void): {
-    v2: StoreReplayWireRemote<tStoreReplayWireBatchV2>;
-    v3: StoreReplayWireRemote<tStoreReplayWireBatchV3>;
-    v4: StoreReplayWireRemote<tStoreReplayWireBatchV4>;
-    v5: StoreReplayWireRemote<tStoreReplayWireBatchV5>;
-    v6: StoreReplayWireRemote<ReplayEvent<[readonly StorePatch[]]>>;
-    v7: {
-        line: import("../..").ListenApi<tStoreReplayWireBatchV2[]>;
-        since: (seq: number, _snapshot?: tStoreReplaySchemaKnowledge) => tStoreReplayWireBatchV2[] | null;
-        keyframe: (_snapshot?: tStoreReplaySchemaKnowledge) => tStoreReplayWireBatchV2 | null;
-        frame: (seq: number, hint?: unknown, _snapshot?: tStoreReplaySchemaKnowledge) => tStoreReplayWireBatchV2[];
-    };
-    line: {
-        on: (cb: (batch: tStoreReplayWireBatch) => void) => any;
-    };
-    since: (seq: number) => tStoreReplayWireBatch[] | Promise<tStoreReplayWireBatch[] | null | undefined> | null | undefined;
-    keyframe: () => tStoreReplayWireBatch | Promise<tStoreReplayWireBatch | null | undefined> | null | undefined;
-    frame?: ((seq: number, hint?: unknown) => tStoreReplayWireBatch[] | Promise<tStoreReplayWireBatch[] | null | undefined> | null | undefined) | undefined;
-    frameLine?: {
-        on: (cb: (batch: tStoreReplayWireBatch) => void) => any;
-    } | undefined;
-};
+export declare function storeReplayMode(): tStoreReplayMode;
 export declare function exposeStoreReplay<T extends object>(store: Store<T>, opts?: StoreReplayOpts): {
     api: {
-        replay: (ReplayExpose<[StorePatch]> & {
-            batch?: ReturnType<typeof exposeStoreReplayBatch>;
-        }) | {
+        replay: StoreReplayWireRemote<tStoreReplayWireBatchV2> | {
             describe: () => Record<string, any>;
-            line: import("../..").ListenApi<[ReplayEvent<[StorePatch]>]>;
-            since: (seq: number) => ReplayEvent<[StorePatch]>[] | null;
-            keyframe: () => ReplayEvent<[StorePatch]> | null;
-            frame: (sinceSeq: number, hint?: unknown) => ReplayEvent<[StorePatch]>[];
-            batch?: ReturnType<typeof exposeStoreReplayBatch>;
+            line: {
+                on: (cb: (batch: tStoreReplayWireBatchV2) => void) => any;
+            };
+            since: (seq: number) => tStoreReplayWireBatchV2[] | Promise<tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
+            keyframe: () => tStoreReplayWireBatchV2 | Promise<tStoreReplayWireBatchV2 | null | undefined> | null | undefined;
+            frame?: ((seq: number, hint?: unknown) => tStoreReplayWireBatchV2[] | Promise<tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
+            frameLine?: {
+                on: (cb: (batch: tStoreReplayWireBatchV2) => void) => any;
+            } | undefined;
         };
         get(): T;
         get<M extends import("./store").StoreMask<T>>(mask: M): import("./store").StorePick<T, M>;
@@ -116,31 +63,6 @@ export declare function exposeStoreReplay<T extends object>(store: Store<T>, opt
         changedPaths: any;
     };
     replay: {
-        emit: import("../..").Listener<[StorePatch]>;
-        emitBatch: (events: readonly [StorePatch][]) => void;
-        head: () => number;
-        isStale: () => boolean;
-        lastTs: () => number;
-        close: () => void;
-        getSince: (seq: number) => ReplayEvent<[StorePatch]>[] | undefined;
-        line: import("../..").ListenApi<[ReplayEvent<[StorePatch]>]>;
-        hasKeyframe: boolean;
-        keyframe: () => ReplayEvent<[StorePatch]> | undefined;
-        frame: (sinceSeq: number, hint?: unknown) => ReplayEvent<[StorePatch]>[];
-        on: import("../events/replay-listen").ListenOnReplay<[StorePatch]>;
-        once: (cb: import("../..").Listener<[StorePatch]>, opts?: {
-            key?: string | symbol;
-            current?: import("../..").ListenCurrent<[StorePatch]> | undefined;
-        }) => () => void;
-        has(key: import("../..").ListenKey): boolean;
-        off(keyOrCallback: import("../..").ListenKey | import("../..").Listener<[StorePatch]> | null): void;
-        count(): number;
-        keys(): import("../..").ListenKey[];
-        isRunning(): boolean;
-        run(): void;
-        onClose(cb: () => void): import("../..").ListenOff;
-    };
-    replayBatch: {
         getSince(seq: number): ReplayEvent<[readonly StorePatch[]]>[] | undefined;
         keyframe(): ReplayEvent<[readonly StorePatch[]]> | undefined;
         frame(seq: number, hint?: unknown): ReplayEvent<[readonly StorePatch[]]>[];
@@ -164,14 +86,14 @@ export declare function exposeStoreReplay<T extends object>(store: Store<T>, opt
         isRunning(): boolean;
         run(): void;
         onClose(cb: () => void): import("../..").ListenOff;
-    } | undefined;
-    batchStats: (() => {
+    };
+    batchStats: () => {
         sourceBatches: number;
         sourcePatches: number;
         emittedBatches: number;
         emittedPatches: number;
         estimatedBytes: number;
-    }) | undefined;
+    };
     flushPending: () => void;
     close: () => void;
 };
@@ -186,7 +108,7 @@ export declare function syncStoreReplay<T extends object>(store: Store<T>, remot
     seq: () => number;
     isStale: () => boolean;
     lastTs: () => number;
-    mode: tStoreReplayMode;
+    mode: "v2";
 };
 export declare function syncStoreReplayRoute<T extends object>(store: Store<T>, remote: StoreReplayRemote, opts?: StoreReplayRouteOpts<T>): (() => void) & {
     ready: Promise<void>;
@@ -194,7 +116,7 @@ export declare function syncStoreReplayRoute<T extends object>(store: Store<T>, 
     seq: () => number;
     label: () => string | undefined;
     active: () => boolean;
-    mode: tStoreReplayMode;
+    mode: "v2";
 };
 export declare function syncStoreReplayEach<T extends object>(remote: StoreReplayRemote, cb: (key: string, value: T[keyof T] | undefined, ctx: StoreEachCtx) => void, opts?: StoreReplaySyncOpts<T> & {
     drain?: StoreDrain;
@@ -208,7 +130,7 @@ export declare function syncStoreReplayEach<T extends object>(remote: StoreRepla
 }) & {
     readonly mode: tStoreReplayMode;
 };
-export declare function storeReplayAt<T extends object>(storage: ReplayStorage<[StorePatch]>, at?: {
+export declare function storeReplayAt<T extends object>(storage: ReplayStorage<[readonly StorePatch[]]>, at?: {
     seq?: number;
     ts?: number;
 }): T | undefined;

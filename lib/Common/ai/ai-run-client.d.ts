@@ -15,14 +15,13 @@ export type AiRunClientDeps = {
     remote: AiRunRemote;
     initial?: AiRunStore;
     drain?: StoreDrain;
-    batch?: boolean;
 };
 export declare function createAiRunClient(deps: AiRunClientDeps): {
     store: import("../Observe/store").Store<AiRunStore>;
     events: import("../events/Listen").ListenApi<[AiRunEvent]>;
     ready: Promise<void>;
     stateSeq: () => number;
-    stateMode: () => import("../Observe/store-replay").tStoreReplayMode;
+    stateMode: () => "v2";
     eventSeq: () => number;
     capabilities: () => Promise<AiCapability[]>;
     createRun: (request: AiRunRequest) => Promise<AiRun>;

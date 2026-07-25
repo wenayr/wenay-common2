@@ -39,7 +39,7 @@ Acceptance before promotion into public API:
 - unauthorized documents and updates remain invisible;
 - a compacted snapshot plus later updates reconstructs the same document;
 - awareness disappears after disconnect without modifying document history;
-- real Socket.IO/RPC binary transport is covered by an oracle.
+- real Socket.IO transport, including native binary attachments on JSON RPC, is covered by an oracle.
 
 ## 2. Predicted Store — candidate
 

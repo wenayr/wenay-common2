@@ -2,18 +2,34 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createPeerClient = createPeerClient;
 const store_1 = require("../Observe/store");
-const store_replay_1 = require("../Observe/store-replay");
 const replay_wire_1 = require("../events/replay-wire");
+const replay_listen_1 = require("../events/replay-listen");
 const transport_lifecycle_1 = require("../events/transport-lifecycle");
 const route_coordinator_1 = require("../events/route-coordinator");
 const route_signal_webrtc_1 = require("../events/route-signal-webrtc");
 const peer_publish_batch_1 = require("./peer-publish-batch");
 const peer_remote_compat_1 = require("./peer-remote-compat");
+function exposePeerPatchReplay(store, history) {
+    const [emit, replay] = (0, replay_listen_1.replayListen)({
+        history: history ?? 1024,
+        current: function currentPeerPatch() {
+            return [{ path: [], exists: true, value: store.snapshot() }];
+        },
+    });
+    const offStore = (0, store_1.listenStorePatches)(store).on(function publishPeerPatches(patches) {
+        replay.emitBatch(patches.map(patch => [patch]));
+    });
+    function close() {
+        offStore();
+        replay.close();
+    }
+    return { replay, close };
+}
 function createPeerClient(deps) {
     const { remote, account, initial, rtc, session, accept, policy, peerInitial = () => ({}), history, drain, journal = 'resume', onPublishError, } = deps;
     const repair = deps.repair ?? 'tail';
     const store = (0, store_1.createStore)(initial, drain !== undefined ? { drain } : {});
-    const exposed = (0, store_replay_1.exposeStoreReplay)(store, history !== undefined ? { history } : {});
+    const exposed = exposePeerPatchReplay(store, history);
     let repairing = null;
     let closed = false;
     function peerClientClosedError() {

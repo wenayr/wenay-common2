@@ -1,8 +1,8 @@
 // =====================================================================
-// Exact binary value codec — self-contained rich values
+// Direct Replay channel binary value codec — self-contained rich values
 // =====================================================================
 
-import {resolveLimits, type RpcLimits} from './rpc-limits'
+import {resolveLimits, type RpcLimits} from '../rcp/rpc-limits'
 
 const DEFAULT_MAX_DEPTH = 32
 const MAX_CODEC_DEPTH = 64
@@ -53,37 +53,36 @@ const VALUE_TAG = {
     OBJECT_SHAPE_REF: 21,
 } as const
 
-const RPC_BINARY_CALLBACK_REF = Symbol('rpc-binary-callback-ref')
+const REPLAY_BINARY_CALLBACK_REF = Symbol('replay-binary-callback-ref')
 
-type tRpcBinaryCallbackRef = {
-    [RPC_BINARY_CALLBACK_REF]: number
+type tReplayBinaryCallbackRef = {
+    [REPLAY_BINARY_CALLBACK_REF]: number
 }
 
-// msgpackr extensions dispatch by prototype. Keeping this private constructor
-// also keeps callback references impossible to collide with business objects.
-export function RpcBinaryCallbackRefValue() {}
+// A private prototype keeps callback references distinct from ordinary business objects.
+export function ReplayBinaryCallbackRefValue() {}
 
-export function createRpcBinaryCallbackRef(id: number) {
+export function createReplayBinaryCallbackRef(id: number) {
     if (!Number.isSafeInteger(id) || id < 0) {
         throw new RangeError('rpc binary callback ref: id must be a non-negative safe integer')
     }
-    const value = Object.create(RpcBinaryCallbackRefValue.prototype) as tRpcBinaryCallbackRef
-    value[RPC_BINARY_CALLBACK_REF] = id
+    const value = Object.create(ReplayBinaryCallbackRefValue.prototype) as tReplayBinaryCallbackRef
+    value[REPLAY_BINARY_CALLBACK_REF] = id
     return Object.freeze(value)
 }
 
-export function rpcBinaryCallbackRefId(value: unknown): number | undefined {
+export function replayBinaryCallbackRefId(value: unknown): number | undefined {
     if (value == null || typeof value != 'object') return undefined
     const prototype = Object.getPrototypeOf(value)
     if (prototype != Object.prototype
-        && prototype != RpcBinaryCallbackRefValue.prototype) return undefined
+        && prototype != ReplayBinaryCallbackRefValue.prototype) return undefined
     // Ordinary business objects are overwhelmingly not callback references.
     // Avoid allocating their complete own-key list just to reject the private brand.
-    if (!own.call(value, RPC_BINARY_CALLBACK_REF)) return undefined
+    if (!own.call(value, REPLAY_BINARY_CALLBACK_REF)) return undefined
     const keys = Reflect.ownKeys(value)
     // This is an identity-only private brand; coercing a foreign key is never valid.
-    if (keys.length != 1 || keys[0] !== RPC_BINARY_CALLBACK_REF) return undefined
-    const id = (value as tRpcBinaryCallbackRef)[RPC_BINARY_CALLBACK_REF]
+    if (keys.length != 1 || keys[0] !== REPLAY_BINARY_CALLBACK_REF) return undefined
+    const id = (value as tReplayBinaryCallbackRef)[REPLAY_BINARY_CALLBACK_REF]
     return Number.isSafeInteger(id) && id >= 0 ? id : undefined
 }
 
@@ -141,7 +140,7 @@ const utf8Decoder = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true})
 const trustedUtf8Decoder = new TextDecoder('utf-8', {ignoreBOM: true})
 const own = Object.prototype.hasOwnProperty
 const trustedBinaryLeaves = new WeakSet<object>()
-const ARRAY_HOLE = Symbol('store-replay-binary-array-hole')
+const ARRAY_HOLE = Symbol('replay-binary-array-hole')
 const MAX_SAFE_INTEGER_VARUINT_BYTES = 8
 const SAFE_INTEGER_ZIGZAG_HIGH_FACTOR = 2 ** 48
 const MAX_BIGINT_MAGNITUDE = (1n << BigInt(MAX_BIGINT_BITS)) - 1n
@@ -182,7 +181,7 @@ const sharedArrayBufferGrowableGetter = typeof SharedArrayBufferConstructor == '
  * Binary codecs create clean TypedArrays themselves. Making them non-extensible
  * preserves that fact, so a later nested codec can skip enumerating every index.
  */
-export function trustRpcBinaryLeaf<T extends ArrayBufferView>(value: T) {
+export function trustReplayBinaryLeaf<T extends ArrayBufferView>(value: T) {
     Object.preventExtensions(value)
     trustedBinaryLeaves.add(value)
     return value
@@ -263,7 +262,7 @@ function rejectOwnNativeShadows(
     }
 }
 
-export function rpcBinaryNativeOwnStateError(
+export function replayBinaryNativeOwnStateError(
     value: object,
     kind: 'Date' | 'RegExp' | 'Map' | 'Set' | 'ArrayBuffer' | 'DataView' | 'TypedArray',
     typedArrayItems?: number,
@@ -315,10 +314,10 @@ export function rpcBinaryNativeOwnStateError(
 
 function validateNativeOwnState(
     value: object,
-    kind: Parameters<typeof rpcBinaryNativeOwnStateError>[1],
+    kind: Parameters<typeof replayBinaryNativeOwnStateError>[1],
     typedArrayItems?: number,
 ) {
-    const error = rpcBinaryNativeOwnStateError(value, kind, typedArrayItems)
+    const error = replayBinaryNativeOwnStateError(value, kind, typedArrayItems)
     if (error) binaryError(error)
 }
 
@@ -389,7 +388,7 @@ function hasRegExpDuplicateNamedGroups(source: string) {
     return false
 }
 
-export function rpcBinaryRegExpV1Error(source: string, flags: string) {
+export function replayBinaryRegExpError(source: string, flags: string) {
     if (!REGEXP_V1_FLAGS.test(flags)) {
         return 'RegExp flags are unsupported or non-canonical in protocol v1'
     }
@@ -400,7 +399,7 @@ export function rpcBinaryRegExpV1Error(source: string, flags: string) {
 }
 
 function validateRegExpV1(source: string, flags: string) {
-    const error = rpcBinaryRegExpV1Error(source, flags)
+    const error = replayBinaryRegExpError(source, flags)
     if (error) binaryError(error)
     return flags
 }
@@ -1193,7 +1192,7 @@ const writeValue: tWriteValue = function writeBinaryValue(writer, value, depth, 
         writer.writeVarUint(magnitude)
         return
     }
-    const callbackRef = rpcBinaryCallbackRefId(value)
+    const callbackRef = replayBinaryCallbackRefId(value)
     if (callbackRef != undefined) {
         if (!context.config.callbackRefs) binaryError('callback references are disabled')
         if (++context.callbackRefs > MAX_CALLBACK_REFS_PER_VALUE) {
@@ -1536,7 +1535,7 @@ const readValue: tReadValue = function readBinaryValue(
             'callback reference',
             Number.MAX_SAFE_INTEGER,
         )
-        return createRpcBinaryCallbackRef(id)
+        return createReplayBinaryCallbackRef(id)
     }
     if (tag == VALUE_TAG.DATE) return new Date(reader.readFloat64())
     if (tag == VALUE_TAG.REGEXP) {
@@ -1651,7 +1650,7 @@ const readValue: tReadValue = function readBinaryValue(
         }
         const copy = copyTypedArrayEndianAdjusted(payload, entry.bytesPerElement)
         try {
-            return trustRpcBinaryLeaf(new entry.Constructor(copy.buffer))
+            return trustReplayBinaryLeaf(new entry.Constructor(copy.buffer))
         } catch {
             return binaryError('cannot construct typed array')
         }
@@ -1748,7 +1747,7 @@ function readTrustedValue(
         return negative ? -magnitude : magnitude
     }
     if (tag == VALUE_TAG.CALLBACK_REF) {
-        return createRpcBinaryCallbackRef(reader.readVarUintNumberTrusted())
+        return createReplayBinaryCallbackRef(reader.readVarUintNumberTrusted())
     }
     if (tag == VALUE_TAG.DATE) return new Date(reader.readFloat64())
     if (tag == VALUE_TAG.REGEXP) {
@@ -1864,7 +1863,7 @@ function readTrustedValue(
             entry.bytesPerElement,
         )
         try {
-            return trustRpcBinaryLeaf(new entry.Constructor(copy.buffer))
+            return trustReplayBinaryLeaf(new entry.Constructor(copy.buffer))
         } catch {
             return binaryError('cannot construct typed array')
         }
@@ -2031,7 +2030,7 @@ export function createBinaryValueCodec(options: BinaryValueCodecOptions) {
                 : undefined
             const writer = createByteWriter(config.maxWireBytes)
             writeEncodedValue(writer, value, shapes)
-            const wire = trustRpcBinaryLeaf(writer.finish())
+            const wire = trustReplayBinaryLeaf(writer.finish())
             const preparedGeneration = generation
             let settled = false
             const token = {}

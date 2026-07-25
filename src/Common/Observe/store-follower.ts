@@ -38,8 +38,6 @@ export type StoreFollowerDeps<T extends object> = {
     expose?: StoreReplayOpts
     /** Upstream staleness threshold, ms — passed to replay subscription as staleMs. */
     staleMs?: number
-    /** Prefer the compact upstream capability (default true); old leaders fall back to legacy. */
-    batch?: boolean
     /** Epoch of the upstream leader (fork-choice on failover): promote() returns epoch + 1. */
     epoch?: number
 }
@@ -52,7 +50,7 @@ function errorText(error: unknown) {
 export function createStoreFollower<T extends object>(deps: StoreFollowerDeps<T>) {
     const store = createStore<T>((deps.initial ?? {}) as T)
     const status = createStore<FollowerStatus>({
-        upstream: 'catching-up', seq: -1, replayMode: 'legacy', epoch: deps.epoch ?? 0, error: null,
+        upstream: 'catching-up', seq: -1, replayMode: 'v2', epoch: deps.epoch ?? 0, error: null,
     })
 
     function setUpstream(next: tFollowerUpstream) {
@@ -63,7 +61,6 @@ export function createStoreFollower<T extends object>(deps: StoreFollowerDeps<T>
 
     // ============== mirroring: leader → local store ==============
     const sub = syncStoreReplay(store, deps.remote, {
-        batch: deps.batch ?? true,
         onSeq: function trackUpstreamSeq(seq) {
             status.state.seq = seq
             status.state.replayMode = sub.mode
@@ -87,7 +84,7 @@ export function createStoreFollower<T extends object>(deps: StoreFollowerDeps<T>
 
     // ============== cascade: the same store — replay source for own clients ==============
     const exposeOpts = deps.expose ?? {}
-    const exposed = exposeStoreReplay(store, {...exposeOpts, batch: exposeOpts.batch ?? true})
+    const exposed = exposeStoreReplay(store, exposeOpts)
 
     // ============== manual promotion (failover, phase 4 of plan) ==============
     // Mirroring stops, state remains as is, and the CASCADE

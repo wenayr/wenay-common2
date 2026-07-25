@@ -68,7 +68,7 @@ export declare function persistStore<T extends object>(store: Store<T>, opts: Pe
     close: () => void;
     setSeq: (nextSeq: number) => void;
     setReplayMode: (nextMode: tStoreReplayMode) => boolean;
-    replayMode: () => tStoreReplayMode;
+    replayMode: () => "v2";
     seq: () => number;
     status: () => OfflineStoreStatus;
     statusListen: {

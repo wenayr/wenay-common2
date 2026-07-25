@@ -8,6 +8,7 @@ const store_1 = require("./store");
 const store_replay_1 = require("./store-replay");
 const transport_lifecycle_1 = require("../events/transport-lifecycle");
 const store_follower_1 = require("./store-follower");
+const store_replay_codec_1 = require("./store-replay-codec");
 function errorText(error) {
     if (typeof error?.message == 'string')
         return error.message;
@@ -48,7 +49,9 @@ function sameAuthority(a, b) {
         a.authorityLineId == b.authorityLineId;
 }
 function keyframeState(value) {
-    const patch = value?.event?.[0];
+    if (value == null)
+        return null;
+    const patch = (0, store_replay_codec_1.decodeStoreReplayBatchV2)(value).event[0][0];
     if (!patch || patch.path.length || !patch.exists || patch.value == null || typeof patch.value != 'object')
         return null;
     return patch.value;
@@ -118,7 +121,7 @@ function createStoreReplicaSet(deps) {
     const hysteresisMs = deps.route?.hysteresisMs ?? 8;
     const store = deps.store ?? (0, store_1.createStore)((deps.initial ?? {}));
     const exposeOpts = deps.expose ?? {};
-    const exposed = (0, store_replay_1.exposeStoreReplay)(store, { ...exposeOpts, batch: exposeOpts.batch ?? true });
+    const exposed = (0, store_replay_1.exposeStoreReplay)(store, exposeOpts);
     const offers = new Map();
     const [emitDescriptor, descriptorChanges] = (0, Listen_1.listen)();
     const [emitConflict, conflictListen] = (0, Listen_1.listen)();
@@ -546,7 +549,7 @@ function createStoreReplicaSet(deps) {
         return { detectedAt: now(), local: localDescriptor, authority: next, localState, authorityState, diff };
     }
     function trackAuthoritySeq(seq) {
-        if (activeDescriptor?.lineId == activeDescriptor?.authorityLineId && upstreamSub?.mode == 'legacy')
+        if (activeDescriptor?.lineId == activeDescriptor?.authorityLineId)
             authoritySeq = seq;
         else
             authoritySeq = Math.max(authoritySeq, activeDescriptor?.authoritySeq ?? -1);
@@ -589,7 +592,6 @@ function createStoreReplicaSet(deps) {
             if (!upstreamSub) {
                 created = true;
                 upstreamSub = (0, store_replay_1.syncStoreReplayRoute)(store, session.remote.replay, {
-                    batch: deps.route?.batch ?? false,
                     label: entry.offer.id,
                     since: -1,
                     reset: true,

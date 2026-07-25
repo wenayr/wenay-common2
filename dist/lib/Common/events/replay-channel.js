@@ -4,8 +4,7 @@ exports.serveReplayChannel = serveReplayChannel;
 exports.channelReplayRemote = channelReplayRemote;
 const wire_size_1 = require("../wire-size");
 const transport_lifecycle_1 = require("./transport-lifecycle");
-const rpc_binary_value_1 = require("../rcp/rpc-binary-value");
-const rpc_caps_1 = require("../rcp/rpc-caps");
+const replay_binary_value_1 = require("./replay-binary-value");
 const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const REPLAY_BYTES = '__wenayReplayBytes';
 const REPLAY_LIVE_BATCH = 1;
@@ -20,6 +19,7 @@ const REPLAY_BINARY_VERSION = 1;
 const REPLAY_BINARY_MAX_VALUE_BYTES = 8_000_000;
 const REPLAY_BINARY_MAX_WIRE_BYTES = 16_000_000;
 const REPLAY_BINARY_DEPTH = 36;
+const REPLAY_BINARY_MAX_SHAPES = 1_000;
 const REPLAY_BINARY_MESSAGE = {
     SUB: 0,
     REQ: 1,
@@ -34,12 +34,12 @@ const REPLAY_BINARY_METHOD = {
     frame: 2,
 };
 function createReplayBinaryCodec(label, shapeCache) {
-    return (0, rpc_binary_value_1.createBinaryValueCodec)({
+    return (0, replay_binary_value_1.createBinaryValueCodec)({
         magic: REPLAY_BINARY_MAGIC,
         version: REPLAY_BINARY_VERSION,
         label,
         callbackRefs: false,
-        shapeCache: shapeCache ? { maxEntries: rpc_caps_1.RPC_BINARY_MAX_SHAPES } : false,
+        shapeCache: shapeCache ? { maxEntries: REPLAY_BINARY_MAX_SHAPES } : false,
         maxDepth: REPLAY_BINARY_DEPTH,
         maxBinaryBytes: REPLAY_BINARY_MAX_VALUE_BYTES,
         maxWireBytes: REPLAY_BINARY_MAX_WIRE_BYTES,

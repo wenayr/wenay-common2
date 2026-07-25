@@ -35,8 +35,6 @@ export type ConversationClientDeps = {
     remote: ConversationRemote
     initial?: ConversationStore
     drain?: StoreDrain
-    /** Prefer compact Store coordinates; false preserves legacy stateSeq values. */
-    batch?: boolean
 }
 
 function factIdentity(fact: ConversationFact) {
@@ -44,10 +42,10 @@ function factIdentity(fact: ConversationFact) {
 }
 
 export function createConversationClient(deps: ConversationClientDeps) {
-    const {remote, initial = {conversations: {}, channels: {}, messages: {}, facts: {}}, drain, batch = true} = deps
+    const {remote, initial = {conversations: {}, channels: {}, messages: {}, facts: {}}, drain} = deps
     const store = createStore<ConversationStore>(initial, drain !== undefined ? {drain} : {})
     const [emitEvent, events] = createListenPair<[tConversationEvent]>()
-    const stateSync = syncStoreReplay(store, remote.state, {batch})
+    const stateSync = syncStoreReplay(store, remote.state)
     const eventSync = replaySubscribe(remote.events, function forwardEvent(event) { emitEvent(event) })
 
     async function createConversation(input: ConversationCreateInput) {

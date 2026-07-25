@@ -9,9 +9,9 @@
 // direct connector; peer(account) -> a mirrored store that survives any route
 // change (relay <-> direct share the owner's seq space by construction).
 
-import {applyStorePatch, createStore, StoreDrain, StorePatch} from '../Observe/store'
-import {exposeStoreReplay} from '../Observe/store-replay'
+import {applyStorePatch, createStore, listenStorePatches, Store, StoreDrain, StorePatch} from '../Observe/store'
 import {exposeReplay, ReplayRemote} from '../events/replay-wire'
+import {replayListen} from '../events/replay-listen'
 import {getRpcMemberState, getRpcSchemaReady, getRpcTransportLifecycle} from '../events/transport-lifecycle'
 import {createRouteCoordinator, RouteConnector, RoutePolicy, tConnectorState} from '../events/route-coordinator'
 import {acceptWebRtcDirect, createWebRtcConnector, RtcPeerConnection, SignalEnvelope, SignalPort} from '../events/route-signal-webrtc'
@@ -76,6 +76,23 @@ export type PeerClientDeps<T extends object, J extends tRelayGap = 'resume'> = {
     drain?: StoreDrain
 }
 
+function exposePeerPatchReplay<T extends object>(store: Store<T>, history?: number) {
+    const [emit, replay] = replayListen<[StorePatch]>({
+        history: history ?? 1024,
+        current: function currentPeerPatch() {
+            return [{path: [], exists: true, value: store.snapshot()}]
+        },
+    })
+    const offStore = listenStorePatches(store).on(function publishPeerPatches(patches) {
+        replay.emitBatch(patches.map(patch => [patch] as [StorePatch]))
+    })
+    function close() {
+        offStore()
+        replay.close()
+    }
+    return {replay, close}
+}
+
 export function createPeerClient<T extends object, J extends tRelayGap = 'resume'>(deps: PeerClientDeps<T, J>) {
     const {
         remote, account, initial, rtc, session, accept, policy,
@@ -86,7 +103,7 @@ export function createPeerClient<T extends object, J extends tRelayGap = 'resume
 
     // ============== own state: a plain store, published as a patch line ==============
     const store = createStore<T>(initial, drain !== undefined ? {drain} : {})
-    const exposed = exposeStoreReplay(store, history !== undefined ? {history} : {})
+    const exposed = exposePeerPatchReplay(store, history)
 
     // -------- rejection-driven repair: the relay's {seq: N} verdict IS the repair
     // request. One repair at a time; envelopes racing past it get re-rejected with

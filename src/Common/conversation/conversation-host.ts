@@ -434,7 +434,7 @@ export function createConversationHost(deps: ConversationHostDeps = {}) {
 
     function createView(account: string) {
         const state = createStore<ConversationStore>(project(account), drain !== undefined ? {drain} : {})
-        const stateReplay = exposeStoreReplay(state, history == undefined ? {batch: true} : {history, batch: true})
+        const stateReplay = exposeStoreReplay(state, history == undefined ? {} : {history})
         const [emitViewEvent, events] = replayListen<[tConversationEvent]>({
             current: () => [syncEvent(account)],
             history: history ?? 1024,

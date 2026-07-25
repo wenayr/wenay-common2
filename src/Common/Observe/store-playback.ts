@@ -10,7 +10,7 @@
 // storeReplayAt stays the random-access companion (state at one point);
 // this is the motion-picture companion (the whole line, at your pace).
 
-import {createStore, StoreDrain, StorePatch, applyStorePatch} from './store'
+import {createStore, StoreDrain, StorePatch, applyStorePatches} from './store'
 import {exposeStoreReplay, StoreReplayOpts} from './store-replay'
 import {ReplayEvent} from '../events/replay-listen'
 import {openHistory, ReplayStorage} from '../events/replay-history'
@@ -22,15 +22,18 @@ export type StorePlaybackOpts = {
     maxStepMs?: number
     drain?: StoreDrain
     /** Passed through to the playback head (describe/history/now/batch). */
-    expose?: Pick<StoreReplayOpts, 'describe' | 'history' | 'now' | 'batch'>
+    expose?: Pick<StoreReplayOpts, 'describe' | 'history' | 'now' | 'maxItems' | 'maxBytes' | 'maxDelayMs'>
 }
 
-export function playbackStoreReplay<T extends object>(storage: ReplayStorage<[StorePatch]>, opts: StorePlaybackOpts = {}) {
+export function playbackStoreReplay<T extends object>(
+    storage: ReplayStorage<[readonly StorePatch[]]>,
+    opts: StorePlaybackOpts = {},
+) {
     const {speed = 1, maxStepMs, drain} = opts
     // oldest reconstructible point: keyframe covering the first stored event, else latest keyframe
     const all = storage.getEvents(0, Infinity)
     let base = storage.getKeyframe(all.length ? {seq: all[0].seq - 1} : {})
-    let tail: ReplayEvent<[StorePatch]>[]
+    let tail: ReplayEvent<[readonly StorePatch[]]>[]
     if (base) tail = all.filter(ev => ev.seq > base!.seq)
     else {
         const envs = openHistory(storage).at({})
@@ -38,7 +41,7 @@ export function playbackStoreReplay<T extends object>(storage: ReplayStorage<[St
         tail = envs?.slice(1) ?? []
     }
     const store = createStore<T>({} as T, drain !== undefined ? {drain} : {})
-    if (base) applyStorePatch(store, base.event[0])
+    if (base) applyStorePatches(store, base.event[0])
     const exposed = exposeStoreReplay(store, {...(opts.expose ?? {}), firstSeq: base?.seq ?? 0})
     let closed = false
     let timer: any = null
@@ -50,7 +53,7 @@ export function playbackStoreReplay<T extends object>(storage: ReplayStorage<[St
         timer = null
         while (!closed && index < tail.length) {
             const ev = tail[index++]
-            applyStorePatch(store, ev.event[0])
+            applyStorePatches(store, ev.event[0])
             if (index >= tail.length) break
             const gap = Math.max(0, tail[index].ts - ev.ts) / speed
             const wait = maxStepMs != null ? Math.min(gap, maxStepMs) : gap

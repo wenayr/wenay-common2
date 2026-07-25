@@ -14,7 +14,7 @@
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import {applyStorePatch, createStore, StorePatch} from '../src/Common/Observe/store'
+import {applyStorePatch, applyStorePatches, createStore, StorePatch} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {replayListen, ReplayEvent} from '../src/Common/events/replay-index'
 import {archiveReplay, createMemoryReplayStorage, openHistory, ReplayStorage} from '../src/Common/events/replay-index'
@@ -196,7 +196,7 @@ async function main() {
         // mirror entirely from archive + live tail
         const mirror = createStore<World>({units: {}, tick: -1})
         const h = openHistory(storage, exposed.replay)
-        h.subscribe(function applyToMirror(patch) { applyStorePatch(mirror, patch) })
+        h.subscribe(function applyToMirror(patches) { applyStorePatches(mirror, patches) })
         ok(json(mirror.state) == json(backend.snapshot()), 'mirror rebuilt from the archive matches the backend')
         backend.state.tick = 31
         await flushReactive(backend.state)

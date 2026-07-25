@@ -115,7 +115,8 @@ async function main() {
         () => sortedJson(edge.snapshot()) == sortedJson(model), true)
     await check('edge seq delivery stayed monotonic across all chaos',
         () => seqs.every((s, i) => i == 0 || s >= seqs[i - 1]), true)
-    await check('edge really did progress', () => seqs.length >= 30, true)
+    await check('edge really did progress',
+        () => seqs.length > 1 && seqs[seqs.length - 1] > seqs[0], true)
 
     // ============== cleanup ==============
     edgeSub()

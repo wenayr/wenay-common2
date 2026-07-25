@@ -8,10 +8,7 @@ import type {DeepSocketListen} from './listen-deep'
 import {
     getRpcMemberState, getRpcSchemaReady, hasRpcMemberLookup, rpcMemberAvailable, RPC_TRANSPORT_CONTROL,
 } from '../events/transport-lifecycle'
-import {
-    callbackBatchDirectBinaryOversize,
-    createCallbackPacketBatcher,
-} from './rpc-callback-batch'
+import {createCallbackPacketBatcher} from './rpc-callback-batch'
 
 function createLoopback(): [SocketTmpl, SocketTmpl] {
     const a: Record<string, ((data: any) => void)[]> = {}
@@ -167,26 +164,6 @@ async function testBinaryPacketBypass() {
     await delay()
 
     assert.deepEqual(sent, [first, binary, last])
-}
-
-function testDirectBinaryOversizeLowerBound() {
-    assert.equal(callbackBatchDirectBinaryOversize([new Uint8Array(64 * 1024)]), true)
-    assert.equal(callbackBatchDirectBinaryOversize([new Uint8Array(60 * 1024)]), false)
-    assert.equal(
-        callbackBatchDirectBinaryOversize(
-            [new Uint8Array(1024)],
-            {maxItems: 64, maxBytes: 1024},
-        ),
-        true,
-    )
-    assert.equal(
-        callbackBatchDirectBinaryOversize(
-            [{nested: new Uint8Array(1024)}],
-            {maxItems: 64, maxBytes: 1024},
-        ),
-        false,
-        'the cheap lower bound stays conservative for nested business values',
-    )
 }
 
 async function testPersistentServerReconnectCaps() {
@@ -528,7 +505,6 @@ export async function runRpcCallbackBatchTests() {
     await testByteBound()
     await testUtf8ByteBound()
     await testBinaryPacketBypass()
-    testDirectBinaryOversizeLowerBound()
     await testPersistentServerReconnectCaps()
     await testSchemaReadyWithSynchronousMap()
     await testSchemaReadyOfflineThenConnect()

@@ -1,6 +1,5 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.callbackBatchDirectBinaryOversize = callbackBatchDirectBinaryOversize;
 exports.createCallbackPacketBatcher = createCallbackPacketBatcher;
 const rpc_protocol_1 = require("./rpc-protocol");
 const wire_size_1 = require("../wire-size");
@@ -21,16 +20,6 @@ function resolveCallbackBatchLimits(opt) {
         maxBytes: bounded(configured?.maxBytes, DEFAULT_MAX_BYTES, 256, MAX_BYTES),
     };
 }
-function callbackBatchDirectBinaryOversize(values, opt) {
-    const maximumLeafBytes = resolveCallbackBatchLimits(opt).maxBytes - BATCH_WIRE_OVERHEAD;
-    for (const value of values) {
-        if (value instanceof ArrayBuffer && value.byteLength > maximumLeafBytes)
-            return true;
-        if (ArrayBuffer.isView(value) && value.byteLength > maximumLeafBytes)
-            return true;
-    }
-    return false;
-}
 function packetBytes(packet) {
     return (0, wire_size_1.jsonUtf8ByteLength)(packet);
 }
@@ -46,7 +35,7 @@ function containsBinary(value, seen = new Set()) {
     }
     return false;
 }
-function createCallbackPacketBatcher({ send, opt, acceptBinary = false, measure, }) {
+function createCallbackPacketBatcher({ send, opt, }) {
     const limits = resolveCallbackBatchLimits(opt);
     let packets = [];
     let bytes = BATCH_WIRE_OVERHEAD;
@@ -74,12 +63,12 @@ function createCallbackPacketBatcher({ send, opt, acceptBinary = false, measure,
         });
     }
     function enqueue(packet) {
-        if (!acceptBinary && containsBinary(packet)) {
+        if (containsBinary(packet)) {
             flush();
             send(packet);
             return;
         }
-        const size = measure ? measure(packet) : packetBytes(packet);
+        const size = packetBytes(packet);
         const previousSeparator = packets.length == 0 ? 0 : 1;
         if (packets.length > 0 && (packets.length >= limits.maxItems || bytes + previousSeparator + size > limits.maxBytes))
             flush();

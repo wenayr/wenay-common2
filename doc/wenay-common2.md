@@ -101,29 +101,12 @@ const:  H1_S D1_S W1_S · M1_MS H1_MS D1_MS W1_MS
 ```
 // SERVER: `object` is the impl tree, `socket` is a {emit,on} transport adapter
 createRpcServerAuto({ socket: {emit, on}, object, socketKey: string, auth?, limits?, maxPerListen?, throttle?, opt?, replay?, replayOpts? }) -> { api, ... }
-  // opt.binary is OFF by default: ordinary RPC and Store v2 use the measured JSON-array lane.
-  //   Set binary:true explicitly on both peers to negotiate universal msgpackr binary v3 for the complete
-  //   CALL/RESP/PIPE/callback/error/Store packet; mixed builds fall through schema-v2, binary-v1 and legacy arrays.
-  //   V3 applies msgpackr records to the existing logical RPC values instead of introducing route-specific opcodes.
-  //   Each frame is independently decodable; repeated object layouts inside that frame share record definitions.
-  //   {msgpack:false} pins schema-v2. V2 schemas include ordered keys/tuple positions AND physical field types.
-  //   A recurring layout is defined once,
-  //   then referenced by id; homogeneous rows use typed runs at any nesting depth. Different actual field types
-  //   select another schema or the exact generic fallback—there is no Zod/application-value validation.
-  //   {predeclared:[representativeRuntimeValue,...]} sends descriptions (never sample values) in PROBE/ACK before
-  //   application traffic. Dynamic inference remains active beside them. {maxSchemas?:1000,
-  //   promotionThreshold?:3}; one-off layouts do not consume ids. {schema:false} pins compatible binary v1.
-  //   Each direction owns at most 1,000 schema ids per connection generation: a definition is sent once, then
-  //   later values carry its short id. ArrayBuffer/DataView/TypedArray leaves use direct typed byte lanes rather
-  //   than a generic object wrapper. Reconnect/server replacement starts a fresh table and repeats the prelude.
-  //   ready() waits for correlated caps + probe only when binary is enabled; a byte-blocking adapter falls back
-  //   after 250 ms and a late ACK upgrades future traffic/recoverable Listen subscriptions.
-  //   V3 retains ordinary primitives, undefined, rich values and binary views. msgpackr normalization applies to
-  //   scalar -0, sparse holes, lone UTF-16 surrogates and null-prototype identity. Function results fail or use
-  //   the existing data-only projection; RPC callback functions keep their private callback-reference extension.
+  // Application traffic uses the JSON-array RPC wire. Date/Map/Set/RegExp/BigInt use the existing
+  // marker projection; ArrayBuffer/DataView/TypedArray leaves remain native transport attachments.
+  // opt controls only JSON-wire compact subscription shapes and callback batching.
   // opt.callbackBatch (default negotiated-on): losslessly wraps same-microtask callback packets into one send;
-  //   {maxItems:64,maxBytes:65536}, or false for exact packet-per-callback transport. Under binary RPC the logical
-  //   callback batch is encoded as one attachment; legacy peers keep the unchanged JSON CB/CB_BATCH path.
+  //   {maxItems:64,maxBytes:65536}, or false for exact packet-per-callback transport. Native binary leaves
+  //   bypass the JSON batch wrapper and keep their direct transport-attachment path.
   // replay: false|'auto' (default)|'force' — facade members that are replay lines (replayListen) are exposed
   //   with BOTH surfaces under the SAME key: legacy plain-Listen path byte-for-byte + line/frameLine/since/keyframe/frame.
   //   Upgrading listen -> replayListen is a declaration-site-only change; the facade and clients don't move.
@@ -580,45 +563,25 @@ Observe.followReplicatedMap<V, K>(remote, {onBatch?, onStatus?, onError?, staleM
   // and every top-level key must equal keyOf(value). The facade validates before publish.
   // debug.store is an ADVANCED writable escape hatch for diagnostics; application writes violate follower ownership.
   // checkpoint() binds snapshot + lineId + delivery/replayMode/seq, so a naked tail can never create a partial map.
-  // New clients select Store v2 first. It is the measured default for ordinary one-to-ten-change frames.
-  // A dedicated high-frequency RPC connection which consistently coalesces roughly 50+ changes per physical
-  // frame may expose only v7: current Node/Bun measurements show lower total codec CPU and fewer bytes at 50/250.
-  // JSON versus binary is negotiated once per RPC connection, not switched dynamically for each Store batch.
-  // V3-v6 remain readable when v2 is absent for mixed-version compatibility; do not select them for new routes.
+  // Store Replay V2 is the only batch wire and travels through the JSON-array RPC lane.
 
 // Sequenced sync (replay line): seq-numbered patch stream — keyframe catch-up, reconnect by seq (tail, not snapshot)
-Observe.exposeStoreReplay(store, {history? = 1024, batch?, patchSource?}) -> { api /* spread into the RPC server object */, replay, replayBatch?, batchStats?, flushPending, close }
-  // the patch line declares its condensing `frame` itself (last patch per exact path) — reconnect tails and
-  //   lag recovery arrive as a mini-frame (changed paths only), zero config
-  // batch:true adds api.replay.batch without changing the legacy line. maxItems/maxBytes may split one source drain;
-  // maxDelayMs>0 may merge adjacent drains. Each resulting bounded envelope owns one seq.
-  // New clients prefer batch.v2. V7 is the explicit large-batch alternative and is exactly the same
-  // [2,seq,ts,patches] logical tuple passed through opt-in RPB/3 msgpackr; it has no new Store opcodes,
-  // catalog or inner Uint8Array. Select it intentionally on a dedicated binary connection whose physical
-  // frames are normally around 50+ changes; V3-v6 remain readable compatibility/diagnostic surfaces.
-  // V2/JSON is optimized for ordinary values. Nested explicit undefined and an exact business object shaped
-  // like a reserved RPC/Socket.IO marker require v3's recursive escape semantics; that extra scan is why v3
-  // is not the CPU default. A patch whose value itself is undefined remains represented by the v2 patch opcode.
-  // V7 preserves ordinary Store data and rich msgpackr values. Scalar -0,
-  // sparse holes, lone UTF-16 surrogates and nested null-prototype identity follow msgpackr normalization.
-  // Normal thrown RPC errors use the separate RPC error channel and are unaffected by this Store-value note.
-  // V4/v5 materialized root keyframes support up to 20,000 keyed entries, chunked into physical plan arrays
-  // of at most 10,000; ordinary patch/value limits are not widened.
-  // Explicit client RpcLimits continue through v5's byte envelope; the internal decoder also keeps hard limits.
-  // An old client connected to a new server keeps using the unchanged replay.line; it never selects or receives batch.
-Observe.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?, batch?} of api.replay*/, {since?, onSeq?, batch?, validateBatch?, onBatch?}) -> off
-  // batch:true selects v2 first; if v2 is absent it can still read v7/v6/v5/v4/v3/v1 and finally legacy
-  // an RPC proxy waits for MAP before choosing an optional capability; plain in-process remotes stay synchronous
+Observe.exposeStoreReplay(store, {history? = 1024, maxItems?, maxBytes?, maxDelayMs?, patchSource?}) -> { api /* spread into the RPC server object */, replay, batchStats, flushPending, close }
+  // api.replay is the sole Store Replay V2 facade. There is no legacy single-patch route or negotiation.
+  // maxItems/maxBytes may split one source drain; maxDelayMs>0 may merge adjacent drains.
+  // Each resulting bounded V2 envelope owns one seq.
+  // A patch whose value itself is undefined remains represented by the V2 patch opcode.
+Observe.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?} of api.replay*/, {since?, onSeq?, validateBatch?, onBatch?}) -> off
+  // an RPC proxy waits for MAP before starting the V2 line; plain in-process remotes stay synchronous
   // validateBatch runs after decode and before mutation. onBatch runs once AFTER one physical envelope is applied;
   // an onBatch throw is terminal, does not roll Store state back, and does not advance the replay seq.
-  // off.ready (catch-up done) · off.mode ('legacy'|'batch') · off.seq() (persist mode + seq together)
+  // off.ready (catch-up done) · off.mode ('v2') · off.seq()
   // lagging/late client NEVER gets a backlog: evicted seq -> ONE fresh keyframe + live
   // freshness is an option, not consumer boilerplate: {staleMs, onStale} flags a silent line / stale keyframe (edge-triggered both ways; 🎞️ in rare docs)
-Observe.syncStoreReplayRoute(mirror, remote, {label?, batch?, validateBatch?, onBatch?}) -> off & {switch(nextRemote, opts), ready, seq(), label(), active(), mode}
+Observe.syncStoreReplayRoute(mirror, remote, {label?, validateBatch?, onBatch?}) -> off & {switch(nextRemote, opts), ready, seq(), label(), active(), mode}
   // relay/direct promotion and re-interposition: replacement route catches up by seq before the old route closes
-  // route validation/callback ordering matches syncStoreReplay; batch routes are pinned to one shared batch seq-space
-  // replica-set therefore keeps canonical legacy routing by default
-Observe.createStoreFollower<T>({remote, initial?, expose?, staleMs?, batch? = true}) -> {store, status, api, replay, ready, isStale, close}
+  // route validation/callback ordering matches syncStoreReplay; every route uses the V2 seq-space
+Observe.createStoreFollower<T>({remote, initial?, expose?, staleMs?}) -> {store, status, api, replay, ready, isStale, close}
   // server-side mirror instance (leader -> follower -> its own clients): syncStoreReplay INTO a local store
   //   + cascade exposeStoreReplay OVER it — `api` goes into the follower's RPC object like any store line
   // status = a tiny reactive store {upstream: 'catching-up'|'live'|'offline'|'closed', seq, replayMode, error} — the
@@ -652,17 +615,15 @@ Observe.syncStoreReplayEach<T>(remote, (key, value, ctx) => {}, opts?) -> off & 
   // off() tears down BOTH the store sub and the wire sub; direct reads via off.store.state.KEY
   // reconnect: syncStoreReplayEach(remote, cb, {since: prev.seq(), initial: prev.store.snapshot()})
   //   — the tail lands ON TOP of the previous state (a fresh empty mirror would not converge)
-// Built-in AI/Conversation/Artifact/FileJob state fragments enable Store batch automatically (old-server fallback)
-// and reconcile account projections by changed record id, so an unrelated tenant produces no view patches.
-// Their clients expose stateMode(); pass {batch:false} when a persisted legacy stateSeq must keep its coordinate.
-// Safe rollout: expose {batch:true}, enable one consumer with {batch:true}, persist mode+seq together, compare snapshots;
-// rollback is only {batch:false}. The legacy replay member remains present throughout the migration.
-// Living check: `npm run demo` → Store shows the negotiated `replay batch`/`replay legacy` mode beside its live seq.
+// Built-in AI/Conversation/Artifact/FileJob state fragments use Store Replay V2 and reconcile account
+// projections by changed record id, so an unrelated tenant produces no view patches.
+// Their clients expose stateMode(), which is always 'v2' in 2.x.
+// Living check: `npm run demo` → Store shows `replay v2` beside its live seq.
 // Offline persisted mirror (snapshot mode): local cache first, then replay catch-up by seq
 Observe.createOfflineStore({key, remote?, initial, storage, version?, debounceMs?, syncOpts?}) -> Promise<store & {ready, flush(), close(), status(), statusListen, reconnect(remote)}>
 Observe.persistStore(store, {key, storage, seq?, debounceMs?}) -> {flush, forceFlush, close, setSeq, seq, status, statusListen}
 Observe.createMemoryOfflineStorage(initial?) -> OfflineStorage
-  // persists {version, seq, replayMode, snapshot, savedAt}; changing legacy/batch coordinate mode forces a safe keyframe
+  // persists {version, seq, replayMode:'v2', snapshot, savedAt}; older coordinates force a safe keyframe
   // mode:'topLevel' is reserved; first implemented mode is snapshot
 
 // Declarative resource manager above mirror/replay/offline: app chooses what to start, not the store core
@@ -726,8 +687,8 @@ offFeed()
 quotes.control.close()
 
 // the same per-key contract over the wire — ONE call (mirror store + syncStoreReplay + each)
-const exposed = Observe.exposeStoreReplay(rows, {history: 1024, batch: true}) // adds replay.batch; legacy replay remains
-const feed = Observe.syncStoreReplayEach<Rows>(exposed.api.replay, (key, row) => {}, {batch: true, drain: "micro"})
+const exposed = Observe.exposeStoreReplay(rows, {history: 1024})
+const feed = Observe.syncStoreReplayEach<Rows>(exposed.api.replay, (key, row) => {}, {drain: "micro"})
 await feed.ready                                   // catch-up done: keyframe arrived expanded per key
 feed.store.state                                   // the mirror — direct reads / extra subscriptions
 feed()                                             // tears down the store sub AND the wire sub

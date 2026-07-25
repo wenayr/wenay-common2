@@ -19,13 +19,12 @@ export type FileJobClientDeps = {
     remote: FileJobRemote;
     initial?: FileJobStore;
     drain?: StoreDrain;
-    batch?: boolean;
 };
 export declare function createFileJobClient(deps: FileJobClientDeps): {
     store: import("../Observe/store").Store<FileJobStore>;
     ready: Promise<void>;
     seq: () => number;
-    stateMode: () => import("../Observe/store-replay").tStoreReplayMode;
+    stateMode: () => "v2";
     startUpload: (request: FileUploadRequest) => Promise<{
         file: FileResource;
         upload: unknown;
@@ -42,7 +41,7 @@ export declare function createFileJobClient(deps: FileJobClientDeps): {
         seq: () => number;
         isStale: () => boolean;
         lastTs: () => number;
-        mode: import("../Observe/store-replay").tStoreReplayMode;
+        mode: "v2";
     };
 };
 export type FileJobClient = ReturnType<typeof createFileJobClient>;

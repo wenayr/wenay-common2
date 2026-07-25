@@ -9,6 +9,7 @@ import {
 } from '../src/Common/Observe'
 import {createTransportLifecycle, RPC_TRANSPORT_LIFECYCLE} from '../src/Common/events/transport-lifecycle'
 import * as storeProjection from '../src/Common/Observe/store-projection'
+import {decodeStoreReplayBatchV2, encodeStoreReplayBatchV2} from '../src/Common/Observe/store-replay-codec'
 
 let fails = 0
 
@@ -135,10 +136,8 @@ function createManualMapRemote<V>(delivery: 'latest' | 'lossless' = 'latest') {
     } as unknown as ReplicatedMapRemote<V>
 
     function emit(patches: readonly StorePatch[]) {
-        for (const patch of patches) {
-            const event = {seq: ++seq, ts: Date.now(), event: [patch]}
-            for (const listener of [...listeners]) listener(event)
-        }
+        const event = encodeStoreReplayBatchV2({seq: ++seq, ts: Date.now(), event: [patches]})
+        for (const listener of [...listeners]) listener(event)
     }
 
     return {remote, emit}
@@ -215,7 +214,7 @@ async function main() {
             'initial keyframe becomes the latest snapshot')
         ok(follower.status().state == 'live' && follower.status().ready,
             'ready resolves with a live/ready status')
-        ok(follower.status().delivery == 'latest' && follower.status().replayMode == 'batch',
+        ok(follower.status().delivery == 'latest' && follower.status().replayMode == 'v2',
             'descriptor negotiates latest delivery over compact batch replay')
         ok(statuses[0]?.state == 'connecting' && statuses.some(status => status.state == 'live' && status.ready),
             'status stream reports connecting and live states')
@@ -347,7 +346,6 @@ async function main() {
         const latest = createReplicatedMap<ProbeRow>({
             keyOf(value) { return value.id },
             delivery: 'latest',
-            replay: {batch: false},
         })
         latest.control.setMany(latestValues)
         latestValues[latestValues.length - 1].payload[0] = -1
@@ -366,7 +364,6 @@ async function main() {
         const lossless = createReplicatedMap<ProbeRow>({
             keyOf(value) { return value.id },
             delivery: 'lossless',
-            replay: {batch: false},
         })
         lossless.control.setMany(losslessValues)
         ok(losslessReads.every(reads => reads > 0),
@@ -374,7 +371,7 @@ async function main() {
         lossless.control.close()
 
         const manual = createManualMapRemote<Row>()
-        const follower = followReplicatedMap(manual.remote, {batch: false})
+        const follower = followReplicatedMap(manual.remote)
         await follower.ready
 
         const originalClone = storeProjection.cloneStoreProjectionValue
@@ -435,7 +432,6 @@ async function main() {
             keyOf(value) { return value.id },
             initial: freshSnapshot(),
             delivery: 'latest',
-            replay: {batch: false},
         })
         let published = 0
         const offLine = producer.api.line.on(function countPublishedSnapshotDelta() { published++ })
@@ -460,7 +456,7 @@ async function main() {
                 const next = freshSnapshot()
                 producer.control.replaceAll(next)
 
-                ok(projectedClones == changedCount * 2 && published == changedCount,
+                ok(projectedClones == changedCount * 2 && published == 1,
                     `a fresh 500-key snapshot with ${changedCount} changes clones only Store/wire values `
                     + `and publishes exactly ${changedCount} patches`)
                 next[0].quote.bid = -1
@@ -477,7 +473,7 @@ async function main() {
     console.log('\n[replicated-map] latest key tracking scans only root reseeds')
     {
         const manual = createManualMapRemote<Row>()
-        const follower = followReplicatedMap(manual.remote, {batch: false})
+        const follower = followReplicatedMap(manual.remote)
         await follower.ready
         const rawState = toRaw(follower.debug.store.state)
         const nativeOwnKeys = Reflect.ownKeys
@@ -568,9 +564,8 @@ async function main() {
             keyOf(value) { return value.id },
             initial: [oneCycle],
             delivery: 'latest',
-            replay: {batch: false},
         })
-        const cycleFollower = followReplicatedMap(cycleProducer.api, {batch: false})
+        const cycleFollower = followReplicatedMap(cycleProducer.api)
         await cycleFollower.ready
         const twoCycle: CycleRow = {id: 'CYCLE'}
         const cycleTail: CycleRow = {id: 'nested'}
@@ -736,13 +731,14 @@ async function main() {
             keyOf(value) { return value.id },
             delivery: 'latest',
         })
-        const offWire = isolated.api.line.on(function mutateDeliveredWire(event) {
-            event.event[0].path[0] = 'CORRUPT'
-            event.event[0].value.n = 999
+        const offWire = isolated.api.line.on(function mutateDeliveredWire(wire) {
+            const event = decodeStoreReplayBatchV2(wire)
+            event.event[0][0].path[0] = 'CORRUPT'
+            event.event[0][0].value.n = 999
         })
         isolated.control.set(row('SAFE', 3))
-        const honestTail = await isolated.api.since(0)
-        ok(honestTail?.[0].event[0].path[0] == 'SAFE' && honestTail[0].event[0].value.n == 3
+        const honestTail = decodeStoreReplayBatchV2((await isolated.api.since(0))![0])
+        ok(honestTail.event[0][0].path[0] == 'SAFE' && honestTail.event[0][0].value.n == 3
             && isolated.control.get('SAFE')?.n == 3,
         'wire consumers receive detached patches and cannot mutate the retained journal or authority')
         offWire()
@@ -754,7 +750,7 @@ async function main() {
         const producer = createReplicatedMap<string>({
             keyOf(value) { return value.slice(0, 1) },
             delivery: 'lossless',
-            replay: {history: 1, batch: {history: 1}},
+            replay: {history: 1},
         })
         producer.control.set('A:1')
         producer.control.set('B:1')
@@ -766,7 +762,7 @@ async function main() {
             delivery: 'lossless',
             checkpoint: {
                 snapshot: {},
-                cursor: {lineId, delivery: 'lossless', replayMode: 'batch', seq: 0},
+                cursor: {lineId, delivery: 'lossless', replayMode: 'v2', seq: 0},
             },
             onError(error) { errors.push(error) },
         })
@@ -775,41 +771,26 @@ async function main() {
         ok(follower.status().state == 'error' && errors.length == 1
             && String(errors[0]).includes('gap policy forbids keyframe reset'),
         'lossless follower rejects an evicted tail instead of accepting a keyframe')
-        ok(follower.status().replayMode == 'batch',
+        ok(follower.status().replayMode == 'v2',
             'terminal status records the negotiated replay mode even before any sequence is delivered')
 
         follower.close()
         producer.control.close()
     }
 
-    console.log('\n[replicated-map] lossless cursor coordinate mismatch is terminal')
+    console.log('\n[replicated-map] lossless cursor line mismatch is terminal')
     {
         const producer = createReplicatedMap<string>({
             keyOf(value) { return value.slice(0, 1) },
             delivery: 'lossless',
         })
         const lineId = (await producer.api.describe()).replicatedMap.lineId
-        const errors: unknown[] = []
-        const follower = followReplicatedMap(producer.api, {
-            checkpoint: {
-                snapshot: {},
-                cursor: {lineId, delivery: 'lossless', replayMode: 'legacy', seq: 0},
-            },
-            onError(error) { errors.push(error) },
-        })
-        await follower.ready
-
-        ok(follower.status().state == 'error' && errors.length == 1
-            && String(errors[0]).includes('cannot translate a legacy cursor to batch'),
-        'lossless resume never reuses a seq from another wire coordinate space')
-
-        follower.close()
 
         const lineErrors: unknown[] = []
         const foreign = followReplicatedMap(producer.api, {
             checkpoint: {
                 snapshot: {},
-                cursor: {lineId: lineId + '-other', delivery: 'lossless', replayMode: 'batch', seq: 0},
+                cursor: {lineId: lineId + '-other', delivery: 'lossless', replayMode: 'v2', seq: 0},
             },
             onError(error) { lineErrors.push(error) },
         })
@@ -901,7 +882,6 @@ async function main() {
         })
         const raceErrors: unknown[] = []
         const raced = followReplicatedMap(createDescriptorRaceRemote(raceA.api, raceB.api), {
-            batch: false,
             delivery: 'lossless',
             onError(error) { raceErrors.push(error) },
         })
@@ -933,7 +913,7 @@ async function main() {
             },
         } as ReplicatedMapRemote<Row>
         Object.defineProperty(generationRemote, RPC_TRANSPORT_LIFECYCLE, {value: generationLifecycle.api})
-        const generationFollower = followReplicatedMap(generationRemote, {batch: false})
+        const generationFollower = followReplicatedMap(generationRemote)
         generationLifecycle.control.disconnect('descriptor generation changed')
         generationLifecycle.control.connect()
         rejectOldDescriptor(new Error('old generation failed late'))
@@ -964,7 +944,6 @@ async function main() {
             },
         } as unknown as ReplicatedMapRemote<Row>
         const malformed = followReplicatedMap(malformedRemote, {
-            batch: false,
             onError(error) { malformedErrors.push(error) },
         })
         await malformed.ready
@@ -993,7 +972,7 @@ async function main() {
                     return [{seq: 0, ts: 1, event: [{path: [], exists: true, value: root}] as [StorePatch]}]
                 },
             } as ReplicatedMapRemote<Row>
-            const hiddenRootFollower = followReplicatedMap(hiddenRootRemote, {batch: false})
+            const hiddenRootFollower = followReplicatedMap(hiddenRootRemote)
             await hiddenRootFollower.ready
             ok(hiddenRootFollower.status().state == 'error' && hiddenRootFollower.seq() == -1
                 && Reflect.ownKeys(hiddenRootFollower.snapshot()).length == 0,
@@ -1014,7 +993,6 @@ async function main() {
             },
         } as ReplicatedMapRemote<Row>
         const policyFollower = followReplicatedMap(policyRemote, {
-            batch: false,
             validateBatch(_patches, store) {
                 customValidations++
                 customValidationSawCleanStore = json(store.state) == '{}'
@@ -1035,7 +1013,6 @@ async function main() {
             since() { return [] },
         } as ReplicatedMapRemote<Row>
         const throwing = followReplicatedMap(throwingRemote, {
-            batch: false,
             onError(error) { subscriptionErrors.push(error) },
         })
         await throwing.ready
@@ -1046,7 +1023,7 @@ async function main() {
         const producer = createReplicatedMap<Row>({keyOf(value) { return value.id }, delivery: 'latest'})
         const follower = followReplicatedMap(producer.api)
         await follower.ready
-        const wireLine = producer.api.batch!.v3!.line as any
+        const wireLine = producer.api.line as any
         ok(wireLine.count() == 1, 'local compact line observes the active follower before cleanup')
         producer.control.close()
         await delay(0)
@@ -1068,7 +1045,7 @@ async function main() {
             delivery: 'latest',
         })
         const latestRoute = createSwitchableMapRemote(latestA.api)
-        const latestFollower = followReplicatedMap(latestRoute.remote, {batch: false})
+        const latestFollower = followReplicatedMap(latestRoute.remote)
         await latestFollower.ready
         latestRoute.switchTo(latestB.api)
         await delay(10)
@@ -1096,7 +1073,6 @@ async function main() {
         const losslessRoute = createSwitchableMapRemote(losslessA.api)
         const reconnectErrors: unknown[] = []
         const losslessFollower = followReplicatedMap(losslessRoute.remote, {
-            batch: false,
             onError(error) { reconnectErrors.push(error) },
         })
         await losslessFollower.ready
@@ -1114,7 +1090,7 @@ async function main() {
         losslessB.control.close()
     }
 
-    console.log('\n[replicated-map] old legacy Store Replay remote fallback')
+    console.log('\n[replicated-map] descriptorless Store Replay V2 remote')
     {
         const source = createStore<Record<string, Row>>({OLD: row('OLD', 1)})
         const exposed = exposeStoreReplay(source)
@@ -1125,7 +1101,7 @@ async function main() {
                 delivery: 'latest',
                 checkpoint: {
                     snapshot: {WRONG: row('WRONG', 9)},
-                    cursor: {lineId: 'another-line', delivery: 'latest', replayMode: 'batch', seq: 999},
+                    cursor: {lineId: 'another-line', delivery: 'latest', replayMode: 'v2', seq: 999},
                 },
                 onBatch(change) { batches.push(change) },
             },
@@ -1133,11 +1109,11 @@ async function main() {
         await follower.ready
         await settle(follower)
 
-        ok(follower.status().state == 'live' && follower.status().replayMode == 'legacy'
+        ok(follower.status().state == 'live' && follower.status().replayMode == 'v2'
             && follower.delivery() == 'latest',
-        'old remote without descriptor or batch endpoint negotiates legacy latest mode')
+        'descriptorless V2 remote uses explicitly requested latest delivery')
         ok(json(follower.snapshot()) == json({OLD: row('OLD', 1)}),
-            'latest mode resets a foreign batch cursor and receives a safe legacy keyframe')
+            'latest mode resets a foreign cursor and receives a safe V2 keyframe')
 
         batches.length = 0
         source.state.NEXT = row('NEXT', 2)
@@ -1145,7 +1121,7 @@ async function main() {
         await settle(follower)
 
         ok(follower.has('NEXT') && follower.get('NEXT')?.n == 2 && batches.length == 1,
-            'legacy fallback continues receiving live changes')
+            'descriptorless V2 remote continues receiving live changes')
 
         follower.close()
         exposed.close()

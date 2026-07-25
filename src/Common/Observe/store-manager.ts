@@ -255,8 +255,7 @@ export function createStoreManager<const R extends ManagedStoreResources>(resour
                     const r = resource as ManagedReplayResource<any>
                     store ??= createStore(r.initial, r.storeOpts)
                     attemptStore = store
-                    const syncOpts = r.syncOpts ?? {}
-                    const sub = syncStoreReplay(store, r.remote, {...syncOpts, batch: syncOpts.batch ?? true})
+                    const sub = syncStoreReplay(store, r.remote, r.syncOpts)
                     attemptStop = once(sub)
                     requireCurrent()
                     stopSync = attemptStop

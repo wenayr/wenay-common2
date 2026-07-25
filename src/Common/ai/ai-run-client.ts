@@ -31,15 +31,13 @@ export type AiRunClientDeps = {
     remote: AiRunRemote
     initial?: AiRunStore
     drain?: StoreDrain
-    /** Prefer compact Store coordinates; false preserves legacy stateSeq values. */
-    batch?: boolean
 }
 
 export function createAiRunClient(deps: AiRunClientDeps) {
-    const {remote, initial = {runs: {}, approvals: {}, inputs: {}}, drain, batch = true} = deps
+    const {remote, initial = {runs: {}, approvals: {}, inputs: {}}, drain} = deps
     const store = createStore<AiRunStore>(initial, drain !== undefined ? {drain} : {})
     const [emitEvent, events] = createListenPair<[AiRunEvent]>()
-    const stateSync = syncStoreReplay(store, remote.state, {batch})
+    const stateSync = syncStoreReplay(store, remote.state)
     const eventSync = replaySubscribe(remote.events, function forwardEvent(event) { emitEvent(event) })
 
     async function capabilities() {

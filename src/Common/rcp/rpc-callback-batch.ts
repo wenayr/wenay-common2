@@ -17,10 +17,6 @@ type tCallbackPacket = any[]
 type CallbackPacketBatcherDeps = {
     send: (packet: any[]) => void
     opt?: RpcOpt['callbackBatch']
-    /** The outer transport frame owns binary leaves, so they stay batchable. */
-    acceptBinary?: boolean
-    /** Non-mutating encoded-size estimate for an outer binary frame. */
-    measure?: (packet: any[]) => number
 }
 
 function resolveCallbackBatchLimits(opt?: RpcOpt['callbackBatch']) {
@@ -33,18 +29,6 @@ function resolveCallbackBatchLimits(opt?: RpcOpt['callbackBatch']) {
         maxItems: bounded(configured?.maxItems, DEFAULT_MAX_ITEMS, 2, MAX_ITEMS),
         maxBytes: bounded(configured?.maxBytes, DEFAULT_MAX_BYTES, 256, MAX_BYTES),
     }
-}
-
-export function callbackBatchDirectBinaryOversize(
-    values: readonly unknown[],
-    opt?: RpcOpt['callbackBatch'],
-) {
-    const maximumLeafBytes = resolveCallbackBatchLimits(opt).maxBytes - BATCH_WIRE_OVERHEAD
-    for (const value of values) {
-        if (value instanceof ArrayBuffer && value.byteLength > maximumLeafBytes) return true
-        if (ArrayBuffer.isView(value) && value.byteLength > maximumLeafBytes) return true
-    }
-    return false
 }
 
 function packetBytes(packet: tCallbackPacket) {
@@ -64,8 +48,6 @@ function containsBinary(value: any, seen = new Set<object>()): boolean {
 export function createCallbackPacketBatcher({
     send,
     opt,
-    acceptBinary = false,
-    measure,
 }: CallbackPacketBatcherDeps) {
     const limits = resolveCallbackBatchLimits(opt)
     let packets: tCallbackPacket[] = []
@@ -95,14 +77,14 @@ export function createCallbackPacketBatcher({
     }
 
     function enqueue(packet: tCallbackPacket) {
-        if (!acceptBinary && containsBinary(packet)) {
+        if (containsBinary(packet)) {
             // Socket.IO represents every binary leaf as a separate attachment. Keeping
             // binary callbacks direct avoids huge multi-attachment parser frames.
             flush()
             send(packet)
             return
         }
-        const size = measure ? measure(packet) : packetBytes(packet)
+        const size = packetBytes(packet)
         const previousSeparator = packets.length == 0 ? 0 : 1
         if (packets.length > 0 && (packets.length >= limits.maxItems || bytes + previousSeparator + size > limits.maxBytes)) flush()
         if (size + BATCH_WIRE_OVERHEAD > limits.maxBytes) {

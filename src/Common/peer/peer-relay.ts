@@ -23,7 +23,6 @@ import {listen, LISTEN_DISPATCH_ERROR} from '../events/Listen'
 import {ReplayEvent} from '../events/replay-listen'
 import {ReplayRemote} from '../events/replay-wire'
 import {applyStorePatch, applyStorePatches, createStore, StorePatch} from '../Observe/store'
-import {storePatchKey} from '../Observe/store-replay'
 import {
     PEER_PUBLISH_BATCH_MAX_BYTES,
     PEER_PUBLISH_BATCH_MAX_ITEMS,
@@ -38,13 +37,18 @@ export type tRelayGap = 'resume' | 'sacred'
 export type RelayPushResult = boolean | {seq: number}
 
 // last patch per exact path — same condensation rule as exposeStoreReplay's frame
+function storePatchKey(patch: StorePatch) {
+    for (const key of patch.path) if (typeof key == 'symbol') return null
+    return JSON.stringify(patch.path)
+}
+
 function condensePatchTail(tail: PatchEnvelope[]) {
     const held = new Map<string, PatchEnvelope>()
     for (const ev of tail) {
-        const k = storePatchKey(ev.event[0])
-        if (k == null) return tail
-        held.delete(k)
-        held.set(k, ev)
+        const key = storePatchKey(ev.event[0])
+        if (key == null) return tail
+        held.delete(key)
+        held.set(key, ev)
     }
     return Array.from(held.values())
 }

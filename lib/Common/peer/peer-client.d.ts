@@ -1,4 +1,4 @@
-import { StoreDrain, StorePatch } from '../Observe/store';
+import { Store, StoreDrain, StorePatch } from '../Observe/store';
 import { ReplayRemote } from '../events/replay-wire';
 import { RoutePolicy } from '../events/route-coordinator';
 import { RtcPeerConnection, SignalEnvelope } from '../events/route-signal-webrtc';
@@ -42,10 +42,10 @@ export type PeerClientDeps<T extends object, J extends tRelayGap = 'resume'> = {
     drain?: StoreDrain;
 };
 export declare function createPeerClient<T extends object, J extends tRelayGap = 'resume'>(deps: PeerClientDeps<T, J>): {
-    store: import("../Observe/store").Store<T>;
+    store: Store<T>;
     peer: (other: string) => {
         account: string;
-        store: import("../Observe/store").Store<T>;
+        store: Store<T>;
         ready: Promise<void>;
         seq: () => number;
         route: () => string;

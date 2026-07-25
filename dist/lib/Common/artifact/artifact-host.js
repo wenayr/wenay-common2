@@ -88,7 +88,7 @@ function createArtifactHost(deps) {
     const offStore = store.listenPaths().on(refreshViews);
     function createView(account) {
         const state = (0, store_1.createStore)(project(account), drain !== undefined ? { drain } : {});
-        const replay = (0, store_replay_1.exposeStoreReplay)(state, history == undefined ? { batch: true } : { history, batch: true });
+        const replay = (0, store_replay_1.exposeStoreReplay)(state, history == undefined ? {} : { history });
         function refreshProjection(change) {
             if (policy?.canRead) {
                 (0, store_projection_1.reconcileStoreProjection)(state, project(account));

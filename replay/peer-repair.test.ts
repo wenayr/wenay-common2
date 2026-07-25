@@ -3,7 +3,7 @@
 // repair in createPeerClient ('tail' | 'keyframe'), sacred eviction, resync().
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {applyStorePatch, createStore, StorePatch} from '../src/Common/Observe/store'
-import {syncStoreReplay} from '../src/Common/Observe/store-replay'
+import {replaySubscribe} from '../src/Common/events/replay-wire'
 import {createPatchRelayJournal, createPeerClient, PatchEnvelope, PeerRemote} from '../src/Common/peer/peer-index'
 
 let fails = 0
@@ -107,7 +107,9 @@ async function main() {
         ok(json(j.snapshot()) == json(a.store.snapshot()), 'relay converged with the owner')
         // ring integrity: a late joiner can fold the line from any covered coordinate
         const late = createStore<World>({n: -1}, {drain: 'micro'})
-        const sub = syncStoreReplay(late, j.remote)
+        const sub = replaySubscribe(j.remote, function applyLatePeerPatch(patch) {
+            applyStorePatch(late, patch)
+        })
         await sub.ready
         ok(json(late.state) == json(a.store.snapshot()), 'late joiner folds a truthful state after repair')
         ok(errors.length == 0, 'no publish errors on the happy repair path')

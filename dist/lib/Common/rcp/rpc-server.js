@@ -9,12 +9,9 @@ const rpc_protocol_1 = require("./rpc-protocol");
 const rpc_path_1 = require("./rpc-path");
 const rpc_caps_1 = require("./rpc-caps");
 const rpc_callback_batch_1 = require("./rpc-callback-batch");
-const rpc_binary_envelope_1 = require("./rpc-binary-envelope");
-const rpc_binary_peer_1 = require("./rpc-binary-peer");
-const rpc_binary_walk_1 = require("./rpc-binary-walk");
 const myThrow_1 = require("../../toError/myThrow");
 const SERVERS = new WeakMap();
-const MAX_BINARY_SESSIONS = 16;
+const MAX_CLIENT_SESSIONS = 16;
 let serverGenerationCounter = 0;
 function nextServerGeneration() {
     if (serverGenerationCounter >= Number.MAX_SAFE_INTEGER) {
@@ -120,99 +117,22 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
     }
     const serverCaps = (0, rpc_caps_1.optToCaps)(opt);
     const serverGeneration = nextServerGeneration();
-    const maxBinaryShapes = (0, rpc_caps_1.rpcBinaryMaxShapes)(opt);
-    const binarySchemaOptions = (0, rpc_caps_1.rpcBinarySchemaOptions)(opt);
-    function trustedBinaryOn(channel) {
-        return channel.binary
-            && channel.session.peer?.protocolVersion != rpc_binary_envelope_1.RPC_BINARY_PROTOCOL_VERSION;
-    }
-    function sendBinaryNow(session, packet) {
-        if (!session.peer)
-            throw new Error('RPC binary session is not initialized');
-        session.binaryQueue.push({
-            packet: session.binarySending
-                ? (0, rpc_binary_walk_1.snapshotRpcBinaryResult)(packet)
-                : packet,
-        });
-        if (session.binarySending)
-            return;
-        session.binarySending = true;
-        let index = 0;
-        try {
-            while (index < session.binaryQueue.length) {
-                const next = session.binaryQueue[index++];
-                let prepared;
-                try {
-                    prepared = session.peer.prepare(next.packet);
-                    if (detached) {
-                        prepared.rollback();
-                        session.binaryQueue.length = 0;
-                        return;
-                    }
-                    socket.emit(key, prepared.wire);
-                    prepared.commit();
-                }
-                catch (error) {
-                    prepared?.rollback();
-                    session.binaryQueue.length = 0;
-                    throw error;
-                }
-            }
-            session.binaryQueue.length = 0;
-        }
-        finally {
-            session.binarySending = false;
-        }
-    }
     const rawCallbackBatch = (0, rpc_callback_batch_1.createCallbackPacketBatcher)({
         send: sendRaw,
         opt: opt?.callbackBatch,
     });
-    function createSession(id, peerCaps, binary = true) {
-        const effectiveCaps = serverCaps & peerCaps;
-        const protocolVersion = (0, rpc_caps_1.hasCap)(effectiveCaps, rpc_caps_1.Caps.BINARY_MSGPACK)
-            ? rpc_binary_envelope_1.RPC_BINARY_MSGPACK_PROTOCOL_VERSION
-            : (0, rpc_caps_1.hasCap)(effectiveCaps, rpc_caps_1.Caps.BINARY_SCHEMA)
-                ? rpc_binary_envelope_1.RPC_BINARY_SCHEMA_PROTOCOL_VERSION
-                : rpc_binary_envelope_1.RPC_BINARY_PROTOCOL_VERSION;
-        const peer = binary
-            ? (0, rpc_binary_peer_1.createRpcBinaryPeer)({
-                sessionId: id,
-                maxShapes: maxBinaryShapes,
-                protocolVersion,
-                ...binarySchemaOptions,
-            })
-            : undefined;
-        let session;
-        const binaryBatch = peer
-            ? (0, rpc_callback_batch_1.createCallbackPacketBatcher)({
-                send: function sendBinaryCallbackBatch(packet) {
-                    sendBinaryNow(session, packet);
-                },
-                opt: opt?.callbackBatch,
-                acceptBinary: true,
-                measure: packet => session?.binarySending
-                    ? Number.MAX_SAFE_INTEGER
-                    : peer.measure(packet),
-            })
-            : undefined;
-        session = {
+    function createSession(id, peerCaps) {
+        return {
             id,
             peerCaps,
-            peer,
-            probeReceived: false,
             rawBatch: rawCallbackBatch,
-            binaryBatch,
-            binarySending: false,
-            binaryQueue: [],
         };
-        return session;
     }
-    const legacySession = createSession(0, 0, false);
+    const legacySession = createSession(0, 0);
     const sessions = new Map();
     const sessionByClient = new Map();
     const clientBySession = new Map();
-    const legacyChannel = { session: legacySession, binary: false };
+    const legacyChannel = { session: legacySession };
     function removeSession(sessionId) {
         const session = sessions.get(sessionId);
         if (session)
@@ -226,25 +146,17 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
     }
     function flushSession(session) {
         session.rawBatch.flush();
-        session.binaryBatch?.flush();
-        session.lastCallbackBinary = undefined;
     }
     function flushAllSessions() {
         flushSession(legacySession);
         for (const session of sessions.values())
             flushSession(session);
     }
-    function sendChannelNow(channel, packet) {
-        if (channel.binary)
-            sendBinaryNow(channel.session, packet);
-        else
-            sendRaw(packet);
-    }
     function sendChannel(channel, d) {
         if (detached)
             return;
         flushSession(channel.session);
-        sendChannelNow(channel, d);
+        sendRaw(d);
     }
     function callbackBatchOn(channel) {
         return (0, rpc_caps_1.hasCap)(serverCaps & channel.session.peerCaps, rpc_caps_1.Caps.CB_BATCH);
@@ -256,20 +168,11 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
             sendChannel(channel, packet);
             return;
         }
-        if (channel.session.lastCallbackBinary != undefined
-            && channel.session.lastCallbackBinary != channel.binary) {
-            flushSession(channel.session);
-        }
-        channel.session.lastCallbackBinary = channel.binary;
-        if (channel.binary)
-            channel.session.binaryBatch.enqueue(packet);
-        else
-            channel.session.rawBatch.enqueue(packet);
+        channel.session.rawBatch.enqueue(packet);
     }
     const cbShapes = (0, rpc_shape_1.createCbShapeServer)();
     function sendCb(channel, cbId, cbArgs) {
-        const compactOn = !channel.binary
-            && (0, rpc_caps_1.hasCap)(serverCaps & channel.session.peerCaps, rpc_caps_1.Caps.COMPACT);
+        const compactOn = (0, rpc_caps_1.hasCap)(serverCaps & channel.session.peerCaps, rpc_caps_1.Caps.COMPACT);
         if (compactOn && cbArgs.length == 1 && (0, rpc_shape_1.isPlainObject)(cbArgs[0])) {
             const obj = cbArgs[0];
             const r = cbShapes.offer(cbId, obj);
@@ -286,85 +189,21 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
                 return;
             }
         }
-        if (channel.binary && (!callbackBatchOn(channel)
-            || (0, rpc_callback_batch_1.callbackBatchDirectBinaryOversize)(cbArgs, opt?.callbackBatch))) {
-            const directArgs = trustedBinaryOn(channel)
-                ? cbArgs
-                : cbArgs.map(value => (0, rpc_binary_walk_1.validateRpcBinaryResult)(value, lim));
-            sendChannel(channel, [rpc_protocol_1.Pkt.CB, cbId, directArgs]);
-            return;
-        }
-        const binaryArgs = channel.binary
-            ? cbArgs.map(value => (0, rpc_binary_walk_1.snapshotRpcBinaryResult)(value, lim))
-            : undefined;
-        const packet = [
-            rpc_protocol_1.Pkt.CB,
-            cbId,
-            channel.binary
-                ? binaryArgs
-                : cbArgs.map(rpc_walk_1.packResult),
-        ];
-        if (!channel.binary) {
-            sendCallbackPacket(channel, packet);
-            return;
-        }
-        sendCallbackPacket(channel, packet);
+        sendCallbackPacket(channel, [rpc_protocol_1.Pkt.CB, cbId, cbArgs.map(rpc_walk_1.packResult)]);
     }
     function sendCbEnd(channel, cbId) {
         cbShapes.drop(cbId);
         sendChannel(channel, [rpc_protocol_1.Pkt.CB_END, cbId]);
     }
     function sendResult(channel, reqId, value) {
-        if (!channel.binary) {
-            sendChannel(channel, [rpc_protocol_1.Pkt.RESP, reqId, (0, rpc_walk_1.packResult)(value)]);
-            return;
-        }
-        if (trustedBinaryOn(channel)) {
-            try {
-                sendChannel(channel, [rpc_protocol_1.Pkt.RESP, reqId, value]);
-            }
-            catch (error) {
-                if (!isFunctionValueSerializationError(error))
-                    throw error;
-                sendChannel(channel, [
-                    rpc_protocol_1.Pkt.RESP,
-                    reqId,
-                    (0, rpc_binary_walk_1.validateRpcBinaryResult)(value, lim),
-                ]);
-            }
-            return;
-        }
-        const packet = [
-            rpc_protocol_1.Pkt.RESP,
-            reqId,
-            (0, rpc_binary_walk_1.validateRpcBinaryResult)(value, lim),
-        ];
-        sendChannel(channel, packet);
+        sendChannel(channel, [rpc_protocol_1.Pkt.RESP, reqId, (0, rpc_walk_1.packResult)(value)]);
     }
     function fallbackSerializationError(error) {
         const source = error instanceof Error ? error.message : String(error);
         const reason = source.length > 2_000 ? source.slice(0, 2_000) + '…' : source;
         return new TypeError('RPC response serialization failed: ' + reason);
     }
-    function isFunctionValueSerializationError(error) {
-        return error instanceof TypeError
-            && error.message.includes('function values are not supported');
-    }
     function sendError(channel, reqId, error) {
-        if (channel.binary) {
-            try {
-                sendChannel(channel, [rpc_protocol_1.Pkt.RESP, reqId, null, (0, rpc_binary_walk_1.rpcBinaryErrorToDto)(error, lim)]);
-            }
-            catch (serializationError) {
-                sendChannel(channel, [
-                    rpc_protocol_1.Pkt.RESP,
-                    reqId,
-                    null,
-                    (0, rpc_binary_walk_1.rpcBinaryErrorToDto)(fallbackSerializationError(serializationError), lim),
-                ]);
-            }
-            return;
-        }
         try {
             sendChannel(channel, [rpc_protocol_1.Pkt.RESP, reqId, null, (0, rpc_walk_1.errToObj)(error)]);
         }
@@ -379,16 +218,6 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
     }
     let authed = !auth?.gate;
     let authAck = undefined;
-    function acknowledgeProbedBinarySessions() {
-        if (auth?.gate && !authed)
-            return;
-        for (const session of sessions.values()) {
-            if (session.probeReceived
-                && (0, rpc_caps_1.hasCap)(serverCaps & session.peerCaps, rpc_caps_1.Caps.BINARY)) {
-                sendRaw((0, rpc_binary_envelope_1.encodeRpcBinaryControl)(rpc_binary_envelope_1.RpcBinaryFrame.PROBE_ACK, session.id, session.peer.protocolVersion, session.peer.encodePrelude()));
-            }
-        }
-    }
     let helloInFlight = null;
     function sendCapsChallenge() {
         flushAllSessions();
@@ -400,20 +229,6 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
         sendRaw(authAck !== undefined
             ? [rpc_protocol_1.Pkt.MAP, routeMap, strictSchema, listenPaths, authAck]
             : [rpc_protocol_1.Pkt.MAP, routeMap, strictSchema, listenPaths]);
-    }
-    function resetRejectedBinarySession(sessionId) {
-        if (!sessions.has(sessionId))
-            return;
-        removeSession(sessionId);
-        sendRaw([rpc_protocol_1.Pkt.BINARY_RESET, sessionId, serverGeneration]);
-    }
-    function resetAllRejectedBinarySessions() {
-        for (const sessionId of [...sessions.keys()]) {
-            resetRejectedBinarySession(sessionId);
-        }
-    }
-    function isBinaryTransportValue(value) {
-        return value instanceof ArrayBuffer || ArrayBuffer.isView(value);
     }
     let byKey = SERVERS.get(socket);
     if (!byKey) {
@@ -439,62 +254,8 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
     async function handleServerPacket(incoming) {
         if (detached)
             return;
-        let msg = incoming;
+        const msg = incoming;
         let channel = legacyChannel;
-        let decodedSessionId;
-        try {
-            const envelope = (0, rpc_binary_envelope_1.inspectRpcBinaryEnvelope)(incoming);
-            if (envelope) {
-                decodedSessionId = envelope.sessionId;
-                const session = sessions.get(envelope.sessionId);
-                if (!session || !(0, rpc_caps_1.hasCap)(serverCaps & session.peerCaps, rpc_caps_1.Caps.BINARY))
-                    return;
-                if (envelope.version != session.peer.protocolVersion) {
-                    throw new TypeError('RPC binary envelope version does not match session');
-                }
-                if (envelope.kind == rpc_binary_envelope_1.RpcBinaryFrame.PROBE) {
-                    session.peer.decodePrelude(envelope.payload);
-                    session.probeReceived = true;
-                    if (!auth?.gate || authed) {
-                        sendRaw((0, rpc_binary_envelope_1.encodeRpcBinaryControl)(rpc_binary_envelope_1.RpcBinaryFrame.PROBE_ACK, session.id, session.peer.protocolVersion, session.peer.encodePrelude()));
-                    }
-                    return;
-                }
-                if (envelope.kind != rpc_binary_envelope_1.RpcBinaryFrame.PACKET || !session.probeReceived
-                    || (auth?.gate && !authed))
-                    return;
-                const decoded = session.peer.decode(envelope.payload);
-                if (!Array.isArray(decoded)
-                    || (decoded[0] != rpc_protocol_1.Pkt.CALL && decoded[0] != rpc_protocol_1.Pkt.PIPE)) {
-                    throw new TypeError('RPC binary packet has an invalid client opcode');
-                }
-                msg = decoded;
-                channel = { session, binary: true };
-            }
-            else if (isBinaryTransportValue(incoming) && sessions.size > 0) {
-                resetAllRejectedBinarySessions();
-                await hooks?.onInvalid?.({
-                    reason: 'invalid_payload',
-                    request: incoming,
-                    error: 'RPC binary envelope magic mismatch',
-                });
-                return;
-            }
-        }
-        catch (error) {
-            if (decodedSessionId != undefined) {
-                resetRejectedBinarySession(decodedSessionId);
-            }
-            else if (isBinaryTransportValue(incoming)) {
-                resetAllRejectedBinarySessions();
-            }
-            await hooks?.onInvalid?.({
-                reason: 'invalid_payload',
-                request: incoming,
-                error,
-            });
-            return;
-        }
         if (typeof msg == 'number' && msg == rpc_protocol_1.Pkt.STRICT) {
             const hello = helloInFlight;
             if (hello) {
@@ -516,7 +277,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
                     await hooks?.onInvalid?.({
                         reason: 'invalid_payload',
                         request: msg,
-                        error: 'RPC binary session requires a client id',
+                        error: 'RPC session requires a client id',
                     });
                     return;
                 }
@@ -525,7 +286,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
                     await hooks?.onInvalid?.({
                         reason: 'invalid_payload',
                         request: msg,
-                        error: 'RPC binary session belongs to another client',
+                        error: 'RPC session belongs to another client',
                     });
                     return;
                 }
@@ -537,19 +298,19 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
                 clientBySession.set(sessionId, clientId);
                 let session = sessions.get(sessionId);
                 if (!session || session.peerCaps != announced) {
-                    if (!session && sessions.size >= MAX_BINARY_SESSIONS) {
+                    if (!session && sessions.size >= MAX_CLIENT_SESSIONS) {
                         sessionByClient.delete(clientId);
                         clientBySession.delete(sessionId);
                         await hooks?.onInvalid?.({
                             reason: 'rate_limit',
                             request: msg,
-                            error: 'too many RPC binary sessions',
+                            error: 'too many RPC sessions',
                         });
                         return;
                     }
                     if (session)
                         flushSession(session);
-                    session = createSession(sessionId, announced, (0, rpc_caps_1.hasCap)(serverCaps & announced, rpc_caps_1.Caps.BINARY));
+                    session = createSession(sessionId, announced);
                     sessions.set(sessionId, session);
                 }
                 sendRaw([rpc_protocol_1.Pkt.CAPS, serverCaps, sessionId, serverGeneration]);
@@ -574,7 +335,6 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
                     authAck = r && r.ack !== undefined ? r.ack : { ok: true };
                     authed = authAck?.ok !== false;
                     sendMap();
-                    acknowledgeProbedBinarySessions();
                 }
                 catch (e) {
                     sendCapsChallenge();
@@ -597,10 +357,10 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
         }
         if (!Array.isArray(msg) || (msg[0] != rpc_protocol_1.Pkt.CALL && msg[0] != rpc_protocol_1.Pkt.PIPE))
             return;
-        if (!channel.binary && Number.isSafeInteger(msg[5])) {
+        if (Number.isSafeInteger(msg[5])) {
             const session = sessions.get(msg[5]);
             if (session)
-                channel = { session, binary: false };
+                channel = { session };
         }
         const hello = helloInFlight;
         if (hello) {
@@ -713,11 +473,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
                     else if (step.type === 'call') {
                         if (typeof current !== "function")
                             throw new Error("Attempted to call a non-function in pipe");
-                        const stepArgs = channel.binary
-                            ? (trustedBinaryOn(channel)
-                                ? rpc_binary_walk_1.unpackRpcBinaryArgsTrusted
-                                : rpc_binary_walk_1.unpackRpcBinaryArgs)(step.args, (id, args) => sendCb(channel, id, args), id => sendCbEnd(channel, id), lim)
-                            : (0, rpc_walk_1.unpack)(step.args, (id, args) => sendCb(channel, id, args), id => sendCbEnd(channel, id), lim);
+                        const stepArgs = (0, rpc_walk_1.unpack)(step.args, (id, args) => sendCb(channel, id, args), id => sendCbEnd(channel, id), lim);
                         current = current(...stepArgs);
                     }
                 }
@@ -728,11 +484,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
                     sendResult(channel, reqId, current);
             }
             else {
-                const args = channel.binary
-                    ? (trustedBinaryOn(channel)
-                        ? rpc_binary_walk_1.unpackRpcBinaryArgsTrusted
-                        : rpc_binary_walk_1.unpackRpcBinaryArgs)(rawArgsOrSteps, (id, values) => sendCb(channel, id, values), id => sendCbEnd(channel, id), lim)
-                    : (0, rpc_walk_1.unpack)(rawArgsOrSteps, (id, values) => sendCb(channel, id, values), id => sendCbEnd(channel, id), lim);
+                const args = (0, rpc_walk_1.unpack)(rawArgsOrSteps, (id, values) => sendCb(channel, id, values), id => sendCbEnd(channel, id), lim);
                 const res = await fn.apply(ctx, args);
                 if (wait)
                     sendResult(channel, reqId, res);

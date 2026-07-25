@@ -51,9 +51,7 @@ files.sort()
 
 if (extendedStressOnly) {
     const expected = [
-        path.join('replay', 'store-replay-extended-stress.test.ts'),
         path.join('replay', 'video-windows-extended-stress.test.ts'),
-        path.join('src', 'Common', 'rcp', 'rpc-binary-extended-stress.spec.ts'),
     ]
     const missing = expected.filter(file => !files.includes(file))
     if (missing.length) {

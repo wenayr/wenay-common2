@@ -3,8 +3,6 @@
 // =====================================================================
 
 import type {Socket} from 'socket.io-client'
-import {rpcMemberAvailable} from '../src/Common/events/transport-lifecycle'
-import {inspectRpcBinaryEnvelope, RpcBinaryFrame} from '../src/Common/rcp/rpc-binary-envelope'
 import {Caps} from '../src/Common/rcp/rpc-caps'
 import {Pkt} from '../src/Common/rcp/rpc-protocol'
 import type {tStoreReplayMode} from '../src/Common/Observe/store-replay'
@@ -31,26 +29,9 @@ const applicationOpcodes = new Set<number>([
 
 function capNames(caps: number) {
     const names: string[] = []
-    if ((caps & Caps.BINARY_SCHEMA) == Caps.BINARY_SCHEMA) names.push('BINARY_SCHEMA')
-    if ((caps & Caps.BINARY) == Caps.BINARY) names.push('BINARY')
     if ((caps & Caps.CB_BATCH) == Caps.CB_BATCH) names.push('CB_BATCH')
     if ((caps & Caps.COMPACT) == Caps.COMPACT) names.push('COMPACT')
-    return names.length > 0 ? names.join(' + ') : 'legacy only'
-}
-
-function selectedStoreCodec(remote: WorkboardRemote['state'], mode: tStoreReplayMode) {
-    if (mode != 'batch' || !rpcMemberAvailable(remote, 'batch')) return 'per-patch legacy'
-    const batch = (remote as any).batch
-    for (const version of ['v2', 'v7', 'v6', 'v5', 'v4', 'v3']) {
-        if (rpcMemberAvailable(batch, version)) return version
-    }
-    return 'v1'
-}
-
-function wireByteLength(value: unknown) {
-    if (value instanceof ArrayBuffer) return value.byteLength
-    if (ArrayBuffer.isView(value)) return value.byteLength
-    return 0
+    return names.length > 0 ? names.join(' + ') : 'plain JSON'
 }
 
 export function createProtocolDemo(deps: ProtocolDemoDeps) {
@@ -69,43 +50,23 @@ export function createProtocolDemo(deps: ProtocolDemoDeps) {
     let sessionId: number | null = null
     let serverGeneration: number | null = null
     let mapSeen = false
-    let probeSent = false
-    let probeAcknowledged = false
-    let binaryVersion: number | null = null
-    let schemaPreludeBytes = 0
-    let binaryFrames = 0
-    let binaryBytes = 0
-    let legacyApplicationPackets = 0
+    let applicationPackets = 0
     let controlPackets = 0
     let storeSummary = 'waiting for Store schema'
     let legacyCallSummary = 'existing API call pending'
     let loggedClientCaps = false
     let loggedServerCaps = false
-    let loggedProbe = false
 
     compatibility.href = deps.legacyServer
         ? location.pathname
         : location.pathname + '?rpc=legacy-server'
     compatibility.textContent = deps.legacyServer
-        ? 'Open current binary peer'
-        : 'Open new client ↔ legacy-server fallback'
+        ? 'Open current JSON peer'
+        : 'Open current client ↔ legacy-server fallback'
 
     function render() {
-        const binaryReady = probeAcknowledged
-            && clientCaps != null && serverCaps != null
-            && (clientCaps & serverCaps & Caps.BINARY) == Caps.BINARY
-        const legacyReady = mapSeen && !binaryReady
-
-        if (binaryReady) {
-            mode.textContent = `RPB/${binaryVersion ?? '?'} binary active`
-            mode.dataset.state = 'live'
-        } else if (legacyReady) {
-            mode.textContent = 'legacy arrays · compatible fallback'
-            mode.dataset.state = 'fallback'
-        } else {
-            mode.textContent = 'negotiating…'
-            mode.dataset.state = 'connecting'
-        }
+        mode.textContent = mapSeen ? 'JSON-array RPC active' : 'negotiating…'
+        mode.dataset.state = mapSeen ? 'live' : 'connecting'
 
         clientStage.textContent = clientCaps == null
             ? 'waiting for client CAPS'
@@ -119,26 +80,17 @@ export function createProtocolDemo(deps: ProtocolDemoDeps) {
             : `CAPS ${serverCaps}: ${capNames(serverCaps)}`
                 + (serverGeneration == null ? '' : ` · generation ${serverGeneration}`)
 
-        probeStage.textContent = probeAcknowledged
-            ? `RPB/${binaryVersion ?? '?'} byte probe acknowledged`
-                + (binaryVersion == 2 ? ` · schemas ahead: ${schemaPreludeBytes} B` : '')
-            : probeSent
-                ? 'byte probe sent · waiting for ACK'
-                : mapSeen && serverCaps == null
-                    ? 'not sent · peer did not advertise BINARY'
-                    : 'waiting for intersected capabilities'
-
+        probeStage.textContent = 'No binary probe · application packets use JSON arrays'
         storeStage.textContent = `${storeSummary} · ${legacyCallSummary}`
         transportStage.textContent = `Socket.IO ${socketTransport}`
-        traffic.textContent = `Application traffic: ${binaryFrames} binary frame(s), ${binaryBytes.toLocaleString()} bytes`
-            + ` · ${legacyApplicationPackets} legacy array packet(s)`
+        traffic.textContent = `Application traffic: ${applicationPackets} JSON-array packet(s)`
             + ` · ${controlPackets} bootstrap/control array(s)`
     }
 
     function observeArray(direction: tWireDirection, packet: any[]) {
         const opcode = packet[0]
         if (applicationOpcodes.has(opcode)) {
-            legacyApplicationPackets++
+            applicationPackets++
             render()
             return
         }
@@ -165,46 +117,7 @@ export function createProtocolDemo(deps: ProtocolDemoDeps) {
         render()
     }
 
-    function observeBinary(direction: tWireDirection, packet: unknown) {
-        try {
-            const envelope = inspectRpcBinaryEnvelope(packet)
-            if (!envelope) return false
-            if (envelope.kind == RpcBinaryFrame.PROBE) {
-                probeSent = true
-                sessionId = envelope.sessionId
-                binaryVersion = envelope.version
-                schemaPreludeBytes += envelope.payload.byteLength
-            } else if (envelope.kind == RpcBinaryFrame.PROBE_ACK) {
-                probeAcknowledged = true
-                sessionId = envelope.sessionId
-                binaryVersion = envelope.version
-                schemaPreludeBytes += envelope.payload.byteLength
-                if (!loggedProbe) {
-                    loggedProbe = true
-                    deps.log(
-                        `handshake: RPB/${envelope.version} byte probe acknowledged`
-                        + (envelope.version == 2
-                            ? `; ${schemaPreludeBytes} schema-prelude bytes exchanged before data`
-                            : envelope.version == 3
-                                ? '; complete RPC packets use msgpackr records'
-                            : '')
-                        + '; application packets are binary',
-                    )
-                }
-            } else {
-                binaryFrames++
-                binaryBytes += wireByteLength(packet)
-            }
-            render()
-            return true
-        } catch (error) {
-            deps.log(`handshake observer ignored malformed ${direction} binary frame: ${String(error)}`)
-            return true
-        }
-    }
-
     function observe(direction: tWireDirection, packet: unknown) {
-        if (observeBinary(direction, packet)) return
         if (Array.isArray(packet)) observeArray(direction, packet)
     }
 
@@ -237,12 +150,8 @@ export function createProtocolDemo(deps: ProtocolDemoDeps) {
         return socket
     }
 
-    function reportStore(remote: WorkboardRemote['state'], replayMode: tStoreReplayMode) {
-        const codec = selectedStoreCodec(remote, replayMode)
-        storeSummary = replayMode == 'batch'
-            ? `Store Replay batch · ${codec}`
-                + (codec == 'v6' ? ' universal schema' : codec == 'v5' ? ' binary' : '')
-            : 'Store Replay per-patch legacy'
+    function reportStore(_remote: WorkboardRemote['state'], replayMode: tStoreReplayMode) {
+        storeSummary = `Store Replay ${replayMode.toUpperCase()} · sole wire`
         render()
     }
 

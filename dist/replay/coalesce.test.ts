@@ -14,7 +14,7 @@
 import {createStore} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {replayListen, replaySubscribe, ReplayRemote, conflateReplay} from '../src/Common/events/replay-index'
-import {exposeStoreReplay, syncStoreReplay, storePatchKey} from '../src/Common/Observe/store-replay'
+import {exposeStoreReplay, syncStoreReplay} from '../src/Common/Observe/store-replay'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -196,7 +196,7 @@ async function main() {
         const buf = {v: 0}
         const gated = conflateReplay(exposed.replay, {
             pending: () => buf.v, highWater: 3, pollMs: 10,
-            keyOf: storePatchKey,
+            keyOf: patches => patches.length == 1 ? JSON.stringify(patches[0].path) : null,
         })
         let envelopes = 0
         const remote: ReplayRemote<any> = {
@@ -222,8 +222,8 @@ async function main() {
         buf.v = 0
         await waitFor('coalesced recovery', () => mirror.state.tick == 10)
         ok(json(mirror.state) == json(backend.snapshot()), 'recovered mirror equals backend')
-        ok(envelopes - envBefore == 2, `20 missed patches collapsed into 2 envelopes (got ${envelopes - envBefore})`)
-        ok(gated.stats().flushes == 1 && gated.stats().keyframes == 0, 'the big store never travelled — no keyframe')
+        ok(envelopes - envBefore == 1, `10 multi-patch V2 envelopes collapsed into one keyframe (got ${envelopes - envBefore})`)
+        ok(gated.stats().flushes == 0 && gated.stats().keyframes == 1, 'multi-patch V2 recovery uses one keyframe')
 
         // ============ nested paths: leaf → ancestor replacement → leaf, ordered by seq ============
         buf.v = 50
@@ -236,7 +236,8 @@ async function main() {
         buf.v = 0
         await waitFor('nested recovery', () => mirror.state.units['b']?.x == 9)
         ok(json(mirror.state) == json(backend.snapshot()), 'ancestor/descendant interleave replayed bit-exact')
-        ok(gated.stats().keyframes == 0, 'still no keyframe: tails were enough')
+        ok(gated.stats().keyframes == 1 && gated.stats().flushes == 1,
+            'single-patch V2 envelopes still recover through a keyed tail')
 
         // ============ reconnect via since: log full, coalescing gaps harmless ============
         const at = sub.seq()

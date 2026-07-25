@@ -17,14 +17,12 @@ export type ArtifactClientDeps = {
     remote: ArtifactRemote
     initial?: ArtifactStore
     drain?: StoreDrain
-    /** Prefer compact Store coordinates; false preserves legacy seq values. */
-    batch?: boolean
 }
 
 export function createArtifactClient(deps: ArtifactClientDeps) {
-    const {remote, initial = {artifacts: {}}, drain, batch = true} = deps
+    const {remote, initial = {artifacts: {}}, drain} = deps
     const store = createStore<ArtifactStore>(initial, drain !== undefined ? {drain} : {})
-    const sync = syncStoreReplay(store, remote.state, {batch})
+    const sync = syncStoreReplay(store, remote.state)
 
     async function open(artifactId: string) {
         return remote.open(artifactId)

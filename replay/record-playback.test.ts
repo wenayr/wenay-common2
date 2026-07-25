@@ -15,7 +15,7 @@ import {exposeStoreReplay, storeReplayAt, syncStoreReplay} from '../src/Common/O
 import {playbackStoreReplay} from '../src/Common/Observe/store-playback'
 import {archiveReplay} from '../src/Common/events/replay-history'
 import {createJsonlReplayWriter, loadJsonlReplay} from '../src/Common/events/replay-record'
-import {ReplayRemote} from '../src/Common/events/replay-wire'
+import {StoreReplayRemote} from '../src/Common/Observe/store-replay'
 import {StorePatch} from '../src/Common/Observe/store'
 
 let fails = 0
@@ -44,7 +44,7 @@ async function main() {
     ok(rec.stats().events == 7, 'archiver counted 7 events')
 
     // === lift the recording back ===
-    const loaded = loadJsonlReplay<[StorePatch]>(lines)
+    const loaded = loadJsonlReplay<[readonly StorePatch[]]>(lines)
 
     // random access — the existing time machine works on a recording as-is
     const mid = storeReplayAt<Record<string, any>>(loaded, {seq: 3})
@@ -60,7 +60,7 @@ async function main() {
     // === paced playback consumed by an ordinary mirror ===
     const paced = playbackStoreReplay<Record<string, any>>(loaded, {speed: 1000})
     const mirror = createStore<Record<string, any>>({}, {drain: 'micro'})
-    const sub = syncStoreReplay(mirror, paced.api.replay as unknown as ReplayRemote<[StorePatch]>)
+    const sub = syncStoreReplay(mirror, paced.api.replay as StoreReplayRemote)
     await sub.ready
     await paced.done
     await flushReactive(paced.store.state); await delay(20)

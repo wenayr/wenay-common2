@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "1.0.94",
+  "version": "2.0.0",
   "description": "Typed RPC over sockets, replayable Listen wires, reactive stores with replication and failover, peer packet mesh, media/artifact/AI/conversation runtimes",
   "keywords": [
     "rpc",
@@ -37,13 +37,7 @@
     "test:rpc": "node node_modules/ts-node/dist/bin.js --transpile-only src/Common/rcp/rpc.harness.spec.ts",
     "test:all": "npm run test:rpc-guards && npm run test:types && npm run test:rpc && node scripts/run-oracles.mjs",
     "test:stress": "node scripts/run-oracles.mjs --stress",
-    "test:stress:extended": "npm run test:stress && node scripts/run-oracles.mjs --extended-stress",
-    "bench:store-replay": "node node_modules/ts-node/dist/bin.js --transpile-only scripts/benchmark-store-replay.ts",
-    "bench:store-replay:v7": "node node_modules/ts-node/dist/bin.js --transpile-only scripts/benchmark-store-replay-v7.ts",
-    "bench:store-replay:socket": "node node_modules/ts-node/dist/bin.js --transpile-only scripts/benchmark-store-replay.ts --profile=socket-parser",
-    "bench:rpc-binary": "node node_modules/ts-node/dist/bin.js --transpile-only scripts/benchmark-rpc-binary.ts",
-    "bench:rpc-schema": "node node_modules/ts-node/dist/bin.js --transpile-only scripts/benchmark-rpc-schema.ts",
-    "bench:rpc-compression": "node node_modules/ts-node/dist/bin.js --transpile-only scripts/benchmark-rpc-compression.ts"
+    "test:stress:extended": "npm run test:stress && node scripts/run-oracles.mjs --extended-stress"
   },
   "files": [
     "lib/**/*",
@@ -70,8 +64,7 @@
   },
   "dependencies": {
     "axios": "^1.13.6",
-    "express": "^5.2.1",
-    "msgpackr": "2.0.4"
+    "express": "^5.2.1"
   },
   "devDependencies": {
     "@types/create-hmac": "^1.1.3",

@@ -10,28 +10,9 @@ import {
     Caps,
     hasCap,
     optToCaps,
-    rpcBinaryMaxShapes,
-    rpcBinarySchemaOptions,
     type tCaps,
     type RpcOpt,
 } from './rpc-caps'
-import {
-    encodeRpcBinaryControl,
-    inspectRpcBinaryEnvelope,
-    RPC_BINARY_MSGPACK_PROTOCOL_VERSION,
-    RPC_BINARY_PROTOCOL_VERSION,
-    RPC_BINARY_SCHEMA_PROTOCOL_VERSION,
-    RpcBinaryFrame,
-    type RpcBinaryProtocolVersion,
-} from './rpc-binary-envelope'
-import {createRpcBinaryPeer} from './rpc-binary-peer'
-import {
-    packRpcBinaryArgs,
-    reviveRpcBinaryError,
-    rollbackRpcBinaryCallbacks,
-    validateRpcBinaryResult,
-    validateRpcBinaryResultTrusted,
-} from './rpc-binary-walk'
 import {
     createTransportLifecycle,
     RPC_MEMBER_LOOKUP,
@@ -46,7 +27,7 @@ import type { IsReplayMember, InferArgs, ReplaySocketListen } from "./listen-dee
 // Shared id pool per (socket × key): two clients on the same socket+key share the id space,
 // otherwise their reqId collide and a foreign RESP resolves both waits.
 const SHARED_POOLS = new WeakMap<object, Map<string, idPool>>();
-const SHARED_BINARY_SESSION_IDS = new WeakMap<object, Map<string, number>>()
+const SHARED_SESSION_IDS = new WeakMap<object, Map<string, number>>()
 
 function sharedPool(socket: object, key: string) {
     let byKey = SHARED_POOLS.get(socket);
@@ -56,15 +37,15 @@ function sharedPool(socket: object, key: string) {
     return pool;
 }
 
-function nextBinarySessionId(socket: object, key: string) {
-    let byKey = SHARED_BINARY_SESSION_IDS.get(socket)
+function nextSessionId(socket: object, key: string) {
+    let byKey = SHARED_SESSION_IDS.get(socket)
     if (!byKey) {
         byKey = new Map()
-        SHARED_BINARY_SESSION_IDS.set(socket, byKey)
+        SHARED_SESSION_IDS.set(socket, byKey)
     }
     const id = (byKey.get(key) ?? 0) + 1
     if (!Number.isSafeInteger(id)) {
-        throw new RangeError('RPC binary session id space exhausted')
+        throw new RangeError('RPC session id space exhausted')
     }
     byKey.set(key, id)
     return id
@@ -209,8 +190,6 @@ const IS_RPC_PIPE = Symbol.for("isRpcPipe");
 
 function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: { limit?: number; limits?: RpcLimits; dedupeListen?: boolean; token?: any; opt?: RpcOpt }) {
     const limit = opts?.limit ?? 10000;
-    // Optional caller limits are separate from the protocol-hard bounded decode.
-    // A result outside the binary envelope is rejected explicitly by the server.
     const lim = opts?.limits ? resolveLimits(opts.limits) : undefined;
     const pool = sharedPool(socket, key);
     type tPending = {ok: Function; fail: Function; cbs: number[]; promise?: Promise<any>}
@@ -221,57 +200,14 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     const clientCaps = optToCaps(opts?.opt) // independently enabled wire features declared to server
     let peerServerCaps: tCaps = 0 // what the server declared (for future bidirectional features)
     const callbackBatchOn = () => hasCap(clientCaps & peerServerCaps, Caps.CB_BATCH)
-    const maxBinaryShapes = rpcBinaryMaxShapes(opts?.opt)
-    const binarySchemaOptions = rpcBinarySchemaOptions(opts?.opt)
     let serverGeneration: number | undefined
-    const binaryClientId = nextBinarySessionId(socket, key)
-    let binarySessionId = nextBinarySessionId(socket, key)
-    function createSessionBinaryPeer(
-        protocolVersion: RpcBinaryProtocolVersion = RPC_BINARY_PROTOCOL_VERSION,
-    ) {
-        return createRpcBinaryPeer({
-            sessionId: binarySessionId,
-            maxShapes: maxBinaryShapes,
-            protocolVersion,
-            ...binarySchemaOptions,
-        })
-    }
-    let binaryPeer = createSessionBinaryPeer()
-    let binaryProbeSent = false
-    let binaryActive = false
-    let correlatedCapsReady = false
-    let binarySending = false
-    type tBinaryQueueEntry = {
-        packet: any[]
-        onDrop?: (error: unknown) => void
-    }
-    let binaryQueue: tBinaryQueueEntry[] = []
+    const clientId = nextSessionId(socket, key)
+    let sessionId = nextSessionId(socket, key)
     let serverGenerationRecoveryPending = false
-    let serverGenerationRecoveryRaw = false
-    let serverGenerationNeedsRemoteCleanup = false
-    let serverGenerationRecoveryTimer: ReturnType<typeof setTimeout> | undefined
-    let binaryModeFallbackTimer: ReturnType<typeof setTimeout> | undefined
-    let binaryModeWaiters: (() => void)[] = []
 
-    function notifyBinaryModeChange() {
-        const waiters = binaryModeWaiters
-        binaryModeWaiters = []
-        for (const resolve of waiters) resolve()
-    }
-
-    function beginBinaryGeneration(generation?: number) {
-        dropQueuedBinaryPackets(new Error('RPC binary generation changed'))
-        if (binaryModeFallbackTimer) clearTimeout(binaryModeFallbackTimer)
-        binaryModeFallbackTimer = undefined
+    function beginTransportGeneration(generation?: number) {
         serverGeneration = generation
-        binarySessionId = nextBinarySessionId(socket, key)
-        binaryPeer = createSessionBinaryPeer()
-        binaryProbeSent = false
-        binaryActive = false
-        correlatedCapsReady = false
-        binarySending = false
-        binaryQueue = []
-        notifyBinaryModeChange()
+        sessionId = nextSessionId(socket, key)
     }
 
     function advertiseClientCaps() {
@@ -280,19 +216,10 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             : [
                 Pkt.CAPS,
                 clientCaps,
-                binarySessionId,
+                sessionId,
                 serverGeneration,
-                binaryClientId,
+                clientId,
             ])
-    }
-
-    function binaryApplicationOn() {
-        return binaryActive && hasCap(clientCaps & peerServerCaps, Caps.BINARY)
-    }
-
-    function trustedBinaryApplicationOn() {
-        return binaryApplicationOn()
-            && binaryPeer.protocolVersion != RPC_BINARY_PROTOCOL_VERSION
     }
     // ids of canceled requests/callbacks: NOT returned to pool immediately — a late RESP/CB_END
     // from server could steal a newly reused id for a different request
@@ -334,56 +261,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         setTimeout(function rethrowRpcConsumerErrors() { throw error }, 0)
     }
 
-    function handlePacket(incoming: any, binary = false, batchErrors?: any[]) {
-        if (!binary) {
-            try {
-                const envelope = inspectRpcBinaryEnvelope(incoming)
-                if (envelope) {
-                    if (envelope.sessionId != binarySessionId) return
-                    if (envelope.version != binaryPeer.protocolVersion) {
-                        throw new TypeError('RPC binary envelope version does not match session')
-                    }
-                    if (envelope.kind == RpcBinaryFrame.PROBE_ACK) {
-                        if (binaryProbeSent
-                            && hasCap(clientCaps & peerServerCaps, Caps.BINARY)) {
-                            binaryPeer.decodePrelude(envelope.payload)
-                            if (binaryModeFallbackTimer) clearTimeout(binaryModeFallbackTimer)
-                            binaryModeFallbackTimer = undefined
-                            binaryActive = true
-                            notifyBinaryModeChange()
-                            finishServerGenerationRecovery()
-                        }
-                        return
-                    }
-                    if (envelope.kind != RpcBinaryFrame.PACKET || !binaryApplicationOn()) return
-                    const packet = binaryPeer.decode(envelope.payload)
-                    if (!Array.isArray(packet)
-                        || ![
-                            Pkt.RESP,
-                            Pkt.CB,
-                            Pkt.SHAPE,
-                            Pkt.CBV,
-                            Pkt.CB_END,
-                            Pkt.CB_BATCH,
-                        ].includes(packet[0])) {
-                        throw new TypeError('RPC binary packet has an invalid server opcode')
-                    }
-                    handlePacket(packet, true)
-                    return
-                }
-                if ((incoming instanceof ArrayBuffer || ArrayBuffer.isView(incoming))
-                    && binaryApplicationOn()) {
-                    recoverMalformedBinaryGeneration(
-                        new TypeError('RPC binary envelope magic mismatch'),
-                    )
-                    return
-                }
-            } catch (error) {
-                if (debug) console.log('[RPC binary] dropped:', error)
-                if (binaryApplicationOn()) recoverMalformedBinaryGeneration(error)
-                return
-            }
-        }
+    function handlePacket(incoming: any, batchErrors?: any[]) {
         const msg = incoming
         if (!Array.isArray(msg)) return;
         if (disposed) {
@@ -402,9 +280,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 // loses legitimate `throw false`, `throw 0`, `throw ''` and `throw undefined`.
                 if (msg.length > 3) {
                     try {
-                        req.fail(binary
-                            ? reviveRpcBinaryError(msg[3], opts?.limits)
-                            : reviveErr(msg[3]))
+                        req.fail(reviveErr(msg[3]))
                     } catch (error) {
                         req.fail(error)
                     }
@@ -412,11 +288,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 else {
                     // limit violation/corrupt payload in response — reject this request only
                     try {
-                        req.ok(binary
-                            ? (trustedBinaryApplicationOn()
-                                ? validateRpcBinaryResultTrusted(msg[2], opts?.limits)
-                                : validateRpcBinaryResult(msg[2], opts?.limits))
-                            : unpackResult(msg[2], lim))
+                        req.ok(unpackResult(msg[2], lim))
                     }
                     catch (e) { req.fail(e); }
                 }
@@ -429,11 +301,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 // stream has no error channel — drop corrupt/limit-exceeding packet
                 // (previously .map(unpackResult) also passed index as a second argument like lim)
                 try {
-                    cbArgs = (msg[2] || []).map((a: any) => binary
-                        ? (trustedBinaryApplicationOn()
-                            ? validateRpcBinaryResultTrusted(a, opts?.limits)
-                            : validateRpcBinaryResult(a, opts?.limits))
-                        : unpackResult(a, lim))
+                    cbArgs = (msg[2] || []).map((a: any) => unpackResult(a, lim))
                 }
                 catch (e) { if (debug) console.log("[RPC CB] dropped:", e); break; }
                 try {
@@ -471,11 +339,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                     obj = {}
                     keys.forEach(function reconstructShapeValue(k: string, i: number) {
                         if (!isSafeKey(k)) throw new Error('Unsafe compact shape key')
-                        obj[k] = binary
-                            ? (trustedBinaryApplicationOn()
-                                ? validateRpcBinaryResultTrusted(vals[i], opts?.limits)
-                                : validateRpcBinaryResult(vals[i], opts?.limits))
-                            : unpackResult(vals[i], lim)
+                        obj[k] = unpackResult(vals[i], lim)
                     })
                 }
                 catch (e) { if (debug) console.log("[RPC CBV] dropped:", e); break; }
@@ -500,62 +364,29 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 // server declared its bitset of contract features — remember (bidirectional half
                 // of handshake). For COMPACT client does not gate: CBV arrives only if WE declared COMPACT.
                 const declared = typeof msg[1] == 'number' ? msg[1] : 0
-                const sessionId = msg[2]
+                const declaredSessionId = msg[2]
                 const generation = msg[3]
-                if (sessionId == null && Number.isSafeInteger(generation)
+                if (declaredSessionId == null && Number.isSafeInteger(generation)
                     && generation > 0) {
                     if (serverGeneration != generation) {
                         const replacingLiveServer = serverGeneration != undefined
                         if (replacingLiveServer) prepareServerGenerationReplacement()
-                        beginBinaryGeneration(generation)
+                        beginTransportGeneration(generation)
                         if (replacingLiveServer) requestSchema()
                     }
                     peerServerCaps = declared
                     advertiseClientCaps()
-                    notifyBinaryModeChange()
                     break
                 }
-                if (sessionId == binarySessionId && generation == serverGeneration) {
+                if (declaredSessionId == sessionId && generation == serverGeneration) {
                     peerServerCaps = declared
-                    correlatedCapsReady = true
-                    if (!binaryActive
-                        && hasCap(clientCaps & peerServerCaps, Caps.BINARY)) {
-                        const effectiveCaps = clientCaps & peerServerCaps
-                        const protocolVersion = hasCap(effectiveCaps, Caps.BINARY_MSGPACK)
-                            ? RPC_BINARY_MSGPACK_PROTOCOL_VERSION
-                            : hasCap(effectiveCaps, Caps.BINARY_SCHEMA)
-                                ? RPC_BINARY_SCHEMA_PROTOCOL_VERSION
-                                : RPC_BINARY_PROTOCOL_VERSION
-                        binaryPeer = createSessionBinaryPeer(protocolVersion)
-                        binaryProbeSent = true
-                        socket.emit(key, encodeRpcBinaryControl(
-                            RpcBinaryFrame.PROBE,
-                            binarySessionId,
-                            protocolVersion,
-                            binaryPeer.encodePrelude(),
-                        ))
-                        scheduleBinaryModeFallback()
-                    }
-                    notifyBinaryModeChange()
+                    finishServerGenerationRecovery()
                     break
                 }
-                if (sessionId == undefined && generation == undefined) {
-                    peerServerCaps = declared & ~(
-                        Caps.BINARY
-                        | Caps.BINARY_SCHEMA
-                        | Caps.BINARY_MSGPACK
-                    )
-                    notifyBinaryModeChange()
+                if (declaredSessionId == undefined && generation == undefined) {
+                    peerServerCaps = declared
                 }
                 break;
-            }
-            case Pkt.BINARY_RESET: {
-                if (msg[1] == binarySessionId && msg[2] == serverGeneration) {
-                    recoverMalformedBinaryGeneration(
-                        new TypeError('RPC server rejected the binary session'),
-                    )
-                }
-                break
             }
             case Pkt.CB_BATCH: {
                 if (!callbackBatchOn() || !Array.isArray(msg[1])) break
@@ -568,7 +399,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 if (!valid) break
                 const callbackErrors: any[] = []
                 for (const packet of packets) {
-                    try { handlePacket(packet, binary, callbackErrors) }
+                    try { handlePacket(packet, callbackErrors) }
                     catch (error) { callbackErrors.push(error) }
                 }
                 // A user callback throwing must not discard later ticks which shared its
@@ -605,7 +436,6 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 // Here, not in init(): dynamic c.func init() does not call it (server pushes MAP itself).
                 // Each optimization is independently advertised and negotiated by its bit.
                 advertiseClientCaps()
-                notifyBinaryModeChange()
                 finishServerGenerationRecovery()
                 break;
             }
@@ -616,82 +446,29 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     // whose initial MAP/CAPS was emitted before this listener existed.
     advertiseClientCaps()
 
-    function notifyDroppedBinaryPacket(entry: tBinaryQueueEntry, error: unknown, errors: any[]) {
-        if (!entry.onDrop) return
-        try {
-            entry.onDrop(error)
-        } catch (dropError) {
-            errors.push(dropError)
-        }
-    }
-
-    function dropQueuedBinaryPackets(error: unknown) {
-        if (binaryQueue.length == 0) return
-        const dropped = binaryQueue
-        binaryQueue = []
-        const errors: any[] = []
-        for (const entry of dropped) notifyDroppedBinaryPacket(entry, error, errors)
-        rethrowConsumerErrors(errors, 'Multiple RPC binary queue cleanup handlers failed')
-    }
-
-    function emitApplicationPacket(
-        packet: any[],
-        binary: boolean,
-        onDrop?: (error: unknown) => void,
-    ) {
-        if (binary) {
-            const submitted: tBinaryQueueEntry = {packet, onDrop}
-            binaryQueue.push(submitted)
-            if (binarySending) return
-            binarySending = true
-            let index = 0
-            try {
-                while (index < binaryQueue.length) {
-                    const entry = binaryQueue[index++]
-                    let prepared: ReturnType<typeof binaryPeer.prepare> | undefined
-                    try {
-                        prepared = binaryPeer.prepare(entry.packet)
-                        socket.emit(key, prepared.wire)
-                        prepared.commit()
-                    } catch (error) {
-                        prepared?.rollback()
-                        const dropErrors: any[] = []
-                        if (entry != submitted) {
-                            notifyDroppedBinaryPacket(entry, error, dropErrors)
-                        }
-                        while (index < binaryQueue.length) {
-                            notifyDroppedBinaryPacket(binaryQueue[index++], error, dropErrors)
-                        }
-                        binaryQueue.length = 0
-                        rethrowConsumerErrors(
-                            dropErrors,
-                            'Multiple RPC binary queue cleanup handlers failed',
-                        )
-                        if (entry == submitted) throw error
-                        return
-                    }
-                }
-                binaryQueue.length = 0
-            } finally {
-                binarySending = false
-            }
-            return
-        }
+    function emitApplicationPacket(packet: any[]) {
         if (serverGeneration != undefined) {
             const correlated = [...packet]
             while (correlated.length < 5) correlated.push(undefined)
-            correlated[5] = binarySessionId
+            correlated[5] = sessionId
             socket.emit(key, correlated)
             return
         }
         socket.emit(key, packet)
     }
 
+    function rollbackCallbacks(callbackIds: number[]) {
+        while (callbackIds.length > 0) {
+            const id = callbackIds.pop()!
+            callbacks.delete(id)
+            pool.release(id)
+        }
+    }
+
     const sendPipe = (path: string[], steps: any[], wait: boolean): any => {
         if (disposed) return wait ? Promise.reject(new Error('RPC client disposed')) : Promise.resolve()
         if (!transport.api.connected()) return wait ? Promise.reject(new Error('RPC transport disconnected')) : Promise.resolve()
         if (wait && pending.size >= limit) return Promise.reject(new Error('RPC limit'))
-        const binary = binaryApplicationOn()
         const cbIds: number[] = [];
         // Pack arguments in all call steps
         let cleanSteps: any[]
@@ -700,31 +477,23 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 if (step.type === 'call') {
                     return {
                         type: 'call',
-                        args: binary
-                            ? packRpcBinaryArgs(step.args, pool, callbacks, cbIds, binarySending)
-                            : pack(step.args, pool, callbacks, cbIds),
+                        args: pack(step.args, pool, callbacks, cbIds),
                     };
                 }
                 return step;
             });
         } catch (error) {
-            rollbackRpcBinaryCallbacks(pool, callbacks, cbIds)
+            rollbackCallbacks(cbIds)
             return Promise.reject(error)
         }
         const ref: number | string[] = routeCache[rpcPathKey(path)] ?? path;
 
         if (!wait) {
             try {
-                emitApplicationPacket(
-                    [Pkt.PIPE, 0, ref, cleanSteps, false],
-                    binary,
-                    function dropUnsentPipe() {
-                        rollbackRpcBinaryCallbacks(pool, callbacks, cbIds)
-                    },
-                )
+                emitApplicationPacket([Pkt.PIPE, 0, ref, cleanSteps, false])
                 return Promise.resolve()
             } catch (error) {
-                rollbackRpcBinaryCallbacks(pool, callbacks, cbIds)
+                rollbackCallbacks(cbIds)
                 return Promise.reject(error)
             }
         }
@@ -740,7 +509,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         try {
             reqId = pool.next()
         } catch (error) {
-            rollbackRpcBinaryCallbacks(pool, callbacks, cbIds)
+            rollbackCallbacks(cbIds)
             return Promise.reject(error)
         }
         let record: tPending | undefined
@@ -748,7 +517,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             if (!record || pending.get(reqId) != record) return
             pending.delete(reqId)
             pool.release(reqId)
-            rollbackRpcBinaryCallbacks(pool, callbacks, cbIds)
+            rollbackCallbacks(cbIds)
             record.fail(error)
         }
         const promise = new Promise(function trackPipe(resolve, reject) {
@@ -756,11 +525,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             pending.set(reqId, record)
             if (debug) console.log('[RPC PIPE]', path.join('.'), 'steps=', steps.length, 'id=', reqId)
             try {
-                emitApplicationPacket(
-                    [Pkt.PIPE, reqId, ref, cleanSteps],
-                    binary,
-                    failPipePacket,
-                )
+                emitApplicationPacket([Pkt.PIPE, reqId, ref, cleanSteps])
             } catch (error) {
                 failPipePacket(error)
             }
@@ -820,15 +585,12 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             return {promise: Promise.reject(new Error('RPC limit')), abandon: function abandonLimited() {}}
         }
 
-        const binary = binaryApplicationOn()
         const cbIds: number[] = []
         let clean: any[]
         try {
-            clean = binary
-                ? packRpcBinaryArgs(args, pool, callbacks, cbIds, binarySending)
-                : pack(args, pool, callbacks, cbIds)
+            clean = pack(args, pool, callbacks, cbIds)
         } catch (error) {
-            rollbackRpcBinaryCallbacks(pool, callbacks, cbIds)
+            rollbackCallbacks(cbIds)
             return {
                 promise: Promise.reject(error),
                 abandon: function abandonInvalidCall() {},
@@ -839,7 +601,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         try {
             reqId = pool.next()
         } catch (error) {
-            rollbackRpcBinaryCallbacks(pool, callbacks, cbIds)
+            rollbackCallbacks(cbIds)
             return {
                 promise: Promise.reject(error),
                 abandon: function abandonExhaustedCall() {},
@@ -856,15 +618,11 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             if (pending.get(reqId) != record) return
             pending.delete(reqId)
             pool.release(reqId)
-            rollbackRpcBinaryCallbacks(pool, callbacks, cbIds)
+            rollbackCallbacks(cbIds)
             record.fail(error)
         }
         try {
-            emitApplicationPacket(
-                [Pkt.CALL, reqId, ref, clean],
-                binary,
-                failCallPacket,
-            )
+            emitApplicationPacket([Pkt.CALL, reqId, ref, clean])
         } catch (error) {
             failCallPacket(error)
         }
@@ -888,23 +646,14 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         if (!transport.api.connected()) return wait ? Promise.reject(new Error('RPC transport disconnected')) : Promise.resolve()
         if (wait) return createCallAttempt(path, args).promise
 
-        const binary = binaryApplicationOn()
         const cbIds: number[] = []
         try {
-            const clean = binary
-                ? packRpcBinaryArgs(args, pool, callbacks, cbIds, binarySending)
-                : pack(args, pool, callbacks, cbIds)
+            const clean = pack(args, pool, callbacks, cbIds)
             const ref: number | string[] = routeCache[rpcPathKey(path)] ?? path
-            emitApplicationPacket(
-                [Pkt.CALL, 0, ref, clean, false],
-                binary,
-                function dropUnsentCall() {
-                    rollbackRpcBinaryCallbacks(pool, callbacks, cbIds)
-                },
-            )
+            emitApplicationPacket([Pkt.CALL, 0, ref, clean, false])
             return Promise.resolve()
         } catch (error) {
-            rollbackRpcBinaryCallbacks(pool, callbacks, cbIds)
+            rollbackCallbacks(cbIds)
             return Promise.reject(error)
         }
     }
@@ -1123,18 +872,13 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         abandonTransportGeneration('RPC transport disconnected: ' + reason)
         schemaKnown = false
         peerServerCaps = 0
-        beginBinaryGeneration()
-        if (serverGenerationRecoveryTimer) clearTimeout(serverGenerationRecoveryTimer)
-        serverGenerationRecoveryTimer = undefined
+        beginTransportGeneration()
         serverGenerationRecoveryPending = false
-        serverGenerationRecoveryRaw = false
-        serverGenerationNeedsRemoteCleanup = false
         _ready = null
         declaredListens = declaredListens ? new Set() : null
         for (const route of Object.keys(routeCache)) delete routeCache[route]
         authStatus = undefined
         authPending = false
-        notifyBinaryModeChange()
         const strict = strictWaiters
         strictWaiters = []
         for (const resolve of strict) resolve(undefined)
@@ -1148,93 +892,31 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         abandonTransportGeneration(reason)
         schemaKnown = false
         peerServerCaps = 0
-        if (serverGenerationRecoveryTimer) clearTimeout(serverGenerationRecoveryTimer)
-        serverGenerationRecoveryTimer = undefined
         serverGenerationRecoveryPending = true
-        serverGenerationRecoveryRaw = false
-        serverGenerationNeedsRemoteCleanup = false
         _ready = null
         declaredListens = declaredListens ? new Set() : null
         for (const route of Object.keys(routeCache)) delete routeCache[route]
         authStatus = undefined
         authPending = false
-        notifyBinaryModeChange()
         const auths = authWaiters
         authWaiters = []
         for (const resolve of auths) resolve({ok: false, reason})
     }
 
-    function recoverMalformedBinaryGeneration(cause: unknown) {
-        if (!binaryApplicationOn()) return
-        const reason = 'RPC binary generation rejected a malformed frame'
-        const generation = serverGeneration
-        abandonTransportGeneration(reason)
-        beginBinaryGeneration(generation)
-        if (serverGenerationRecoveryTimer) clearTimeout(serverGenerationRecoveryTimer)
-        serverGenerationRecoveryTimer = undefined
-        serverGenerationRecoveryPending = true
-        serverGenerationRecoveryRaw = false
-        serverGenerationNeedsRemoteCleanup = true
-        advertiseClientCaps()
-        finishServerGenerationRecovery()
-        if (debug) console.log('[RPC binary] generation reset:', cause)
-    }
-
-    function restartRecoveredListens(raw: boolean) {
-        if (serverGenerationRecoveryTimer) clearTimeout(serverGenerationRecoveryTimer)
-        serverGenerationRecoveryTimer = undefined
+    function restartRecoveredListens() {
         serverGenerationRecoveryPending = false
-        serverGenerationRecoveryRaw = raw
-        const cleanup = serverGenerationNeedsRemoteCleanup
-        serverGenerationNeedsRemoteCleanup = false
         for (const sub of [...wireSubs.values()]) {
             if (!sub.recoverable) {
                 finishLogical(sub)
                 continue
             }
-            if (cleanup) {
-                sendCallWire(
-                    [...sub.path.slice(0, -1), 'removeCallback'],
-                    [],
-                    false,
-                ).catch(function ignoreGenerationCleanupFailure() {})
-            }
-            startAttempt(sub)
-        }
-    }
-
-    function migrateRawRecoveryToBinary() {
-        serverGenerationRecoveryRaw = false
-        for (const sub of [...wireSubs.values()]) {
-            if (!sub.recoverable || !sub.attempt) continue
-            const attempt = sub.attempt
-            sub.attempt = null
-            attempt.call.abandon('RPC Listen migrated to binary generation')
-            sendCallWire(
-                [...sub.path.slice(0, -1), 'removeCallback'],
-                [],
-                false,
-            ).catch(function ignoreRawRecoveryCleanupFailure() {})
             startAttempt(sub)
         }
     }
 
     function finishServerGenerationRecovery() {
-        if (serverGenerationRecoveryRaw && binaryApplicationOn()) {
-            migrateRawRecoveryToBinary()
-            return
-        }
         if (!serverGenerationRecoveryPending || !schemaKnown) return
-        const binaryExpected = hasCap(clientCaps & peerServerCaps, Caps.BINARY)
-        if (!binaryExpected || binaryActive) {
-            restartRecoveredListens(!binaryActive)
-            return
-        }
-        if (serverGenerationRecoveryTimer) return
-        serverGenerationRecoveryTimer = setTimeout(function recoverListensOnRawFallback() {
-            serverGenerationRecoveryTimer = undefined
-            if (serverGenerationRecoveryPending) restartRecoveredListens(true)
-        }, 250)
+        restartRecoveredListens()
     }
 
     function transportConnected() {
@@ -1406,8 +1088,6 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         disposed = true
         transport.control.close(reason)
         authPending = false
-        if (binaryModeFallbackTimer) clearTimeout(binaryModeFallbackTimer)
-        binaryModeFallbackTimer = undefined
         const sw = strictWaiters
         strictWaiters = []
         for (const resolve of sw) resolve(undefined)
@@ -1416,7 +1096,6 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         for (const resolve of aw) resolve({ok: false, reason})
         const dc = disconnectCbs
         disconnectCbs = []
-        notifyBinaryModeChange()
         for (const cb of dc) try { cb(reason) } catch {}
         disconnectResolve(reason)
     }
@@ -1445,38 +1124,6 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         return _ready ? _ready : _ready = init()
     }
 
-    function binaryModeReady() {
-        if (!schemaKnown) return false
-        if (serverGeneration == undefined) return true
-        if (!correlatedCapsReady) return false
-        if (!hasCap(clientCaps, Caps.BINARY)) return true
-        return !hasCap(peerServerCaps, Caps.BINARY)
-            || binaryActive
-            || serverGenerationRecoveryRaw
-    }
-
-    function scheduleBinaryModeFallback() {
-        if (binaryModeFallbackTimer || binaryActive
-            || !hasCap(clientCaps & peerServerCaps, Caps.BINARY)) return
-        binaryModeFallbackTimer = setTimeout(function useCorrelatedRawFallback() {
-            binaryModeFallbackTimer = undefined
-            if (binaryActive || !hasCap(clientCaps & peerServerCaps, Caps.BINARY)) return
-            serverGenerationRecoveryRaw = true
-            notifyBinaryModeChange()
-        }, 250)
-    }
-
-    async function waitForBinaryMode() {
-        while (!binaryModeReady()) {
-            if (disposed) throw new Error('RPC client disposed')
-            if (!transport.api.connected()) return
-            scheduleBinaryModeFallback()
-            await new Promise<void>(function registerBinaryModeWaiter(resolve) {
-                binaryModeWaiters.push(resolve)
-            })
-        }
-    }
-
     function requestSchema() {
         if (authToken != null) { authPending = true; socket.emit(key, [Pkt.HELLO, authToken]) }
         socket.emit(key, Pkt.STRICT)
@@ -1492,10 +1139,6 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             requestSchema()
             await waitForMap
         }
-        // Schema readiness is also the public transport-readiness boundary. Waiting
-        // for the negotiated mode prevents the first long-lived subscription from
-        // being permanently captured by the raw compatibility channel.
-        await waitForBinaryMode()
     }
 
     async function waitForRpcSchema() {
@@ -1594,8 +1237,7 @@ export type RpcClientReturn<T extends object> = {
 
 export function createRpcClient<T extends object>({ socket, socketKey: key, limit, limits, dedupeListen, token, opt }: {
     socket: SocketTmpl; socketKey: string; limit?: number;
-    /** Optional lower limits on incoming responses/callbacks. The negotiated binary
-     *  protocol always retains its documented hard frame/value safety ceilings. */
+    /** Optional lower limits on incoming responses/callbacks. */
     limits?: RpcLimits;
     /** Dedup subscriptions (enabled by default): one network connection per Listen address,
      *  new consumers relayed locally, network stop — after last one leaves.
@@ -1605,7 +1247,7 @@ export function createRpcClient<T extends object>({ socket, socketKey: key, limi
      *  In-band auth assumes ONE logical client per socket+key (hub model): two
      *  token clients on one socket would wipe routeCache/authAck of each other on principal change. */
     token?: any;
-    /** Negotiated wire optimizations. Binary packets are opt-in; compact shapes and callback batching default on. */
+    /** Negotiated JSON-wire optimizations. Compact shapes and callback batching default on. */
     opt?: RpcOpt;
 }): RpcClientReturn<T> {
     return createClient<T>(socket, key, { limit, limits, dedupeListen, token, opt });

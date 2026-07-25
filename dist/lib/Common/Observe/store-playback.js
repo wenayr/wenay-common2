@@ -18,7 +18,7 @@ function playbackStoreReplay(storage, opts = {}) {
     }
     const store = (0, store_1.createStore)({}, drain !== undefined ? { drain } : {});
     if (base)
-        (0, store_1.applyStorePatch)(store, base.event[0]);
+        (0, store_1.applyStorePatches)(store, base.event[0]);
     const exposed = (0, store_replay_1.exposeStoreReplay)(store, { ...(opts.expose ?? {}), firstSeq: base?.seq ?? 0 });
     let closed = false;
     let timer = null;
@@ -33,7 +33,7 @@ function playbackStoreReplay(storage, opts = {}) {
         timer = null;
         while (!closed && index < tail.length) {
             const ev = tail[index++];
-            (0, store_1.applyStorePatch)(store, ev.event[0]);
+            (0, store_1.applyStorePatches)(store, ev.event[0]);
             if (index >= tail.length)
                 break;
             const gap = Math.max(0, tail[index].ts - ev.ts) / speed;

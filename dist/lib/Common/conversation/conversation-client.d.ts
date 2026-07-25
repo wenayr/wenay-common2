@@ -15,14 +15,13 @@ export type ConversationClientDeps = {
     remote: ConversationRemote;
     initial?: ConversationStore;
     drain?: StoreDrain;
-    batch?: boolean;
 };
 export declare function createConversationClient(deps: ConversationClientDeps): {
     store: import("../Observe/store").Store<ConversationStore>;
     events: import("../events/Listen").ListenApi<[tConversationEvent]>;
     ready: Promise<void>;
     stateSeq: () => number;
-    stateMode: () => import("../Observe/store-replay").tStoreReplayMode;
+    stateMode: () => "v2";
     eventSeq: () => number;
     createConversation: (input: ConversationCreateInput) => Promise<ConversationCreateResult>;
     createChannel: (input: ConversationChannelInput) => Promise<ConversationChannel>;

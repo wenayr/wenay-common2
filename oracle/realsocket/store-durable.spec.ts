@@ -11,8 +11,7 @@ import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {openFsReplayStorage} from '../../src/server/fsReplayStorage'
 import {createDurableStoreReplay} from '../../src/Common/Observe/store-durable'
 import {createStore, StorePatch} from '../../src/Common/Observe/store'
-import {syncStoreReplay} from '../../src/Common/Observe/store-replay'
-import {replaySubscribe, ReplayRemote} from '../../src/Common/events/replay-wire'
+import {StoreReplayRemote, syncStoreReplay} from '../../src/Common/Observe/store-replay'
 
 const PORT = 3166
 
@@ -25,20 +24,20 @@ async function main() {
     const file = path.join(os.tmpdir(), `wenay-durable-${process.pid}-${Date.now()}.jsonl`)
 
     // ============== lifetime 1: journaled head + real-socket mirror ==============
-    let storage = openFsReplayStorage<[StorePatch]>(file)
+    let storage = openFsReplayStorage<[readonly StorePatch[]]>(file)
     let head = createDurableStoreReplay<Record<string, any>>({storage, initial: {}, everyEvents: 4})
     await check('fresh boot restores nothing', () => head.restored, {seq: 0, fromArchive: false})
 
     let srv = await startRealServer({port: PORT, makeObject: () => ({board: head.api})})
     const c1 = await startRealClient({port: PORT})
     const m1 = createStore<Record<string, any>>({}, {drain: 'micro'})
-    const sub1 = syncStoreReplay(m1, c1.api.board.replay as ReplayRemote<[StorePatch]>)
+    const sub1 = syncStoreReplay(m1, c1.api.board.replay as StoreReplayRemote)
     await sub1.ready
     for (let i = 1; i <= 6; i++) head.store.state['item' + i] = {n: i}
     await delay(200)
     await check('mirror followed lifetime 1', () => m1.snapshot(), head.store.snapshot())
     const seqAtDeath = sub1.seq()
-    await check('line progressed to seq 6', () => seqAtDeath, 6)
+    await check('six writes share one V2 drain coordinate', () => seqAtDeath, 1)
 
     // ============== death: close everything, only the file remains ==============
     sub1(); c1.close()
@@ -46,23 +45,29 @@ async function main() {
     head.close()
 
     // ============== lifetime 2: reboot from the same file ==============
-    storage = openFsReplayStorage<[StorePatch]>(file)
+    storage = openFsReplayStorage<[readonly StorePatch[]]>(file)
     head = createDurableStoreReplay<Record<string, any>>({storage, initial: {}, everyEvents: 4})
-    await check('reboot restored the head coordinate', () => head.restored, {seq: 6, fromArchive: true})
+    await check('reboot restored the head coordinate', () => head.restored, {seq: 1, fromArchive: true})
     await check('reboot restored the state', () => head.store.snapshot()['item6'], {n: 6})
 
     srv = await startRealServer({port: PORT, makeObject: () => ({board: head.api})})
     const c2 = await startRealClient({port: PORT})
-    const remote2 = c2.api.board.replay as ReplayRemote<[StorePatch]>
+    const remote2 = c2.api.board.replay as StoreReplayRemote
 
     // reconnect with the OLD seq: the persisted journal serves the exact tail
     head.store.state['item7'] = {n: 7}
     await delay(100)
     let rootPatches = 0, deltaPatches = 0
-    const probe = replaySubscribe<[StorePatch]>(remote2, function countPatchShapes(patch) {
-        if (patch.path.length == 0) rootPatches++
-        else deltaPatches++
-    }, {since: seqAtDeath})
+    const probeStore = createStore<Record<string, any>>({})
+    const probe = syncStoreReplay(probeStore, remote2, {
+        since: seqAtDeath,
+        onBatch(patches) {
+            for (const patch of patches) {
+                if (patch.path.length == 0) rootPatches++
+                else deltaPatches++
+            }
+        },
+    })
     await probe.ready
     await check('old-seq reconnect got the exact persisted tail (no keyframe reset)',
         () => ({rootPatches, deltas: deltaPatches >= 1}), {rootPatches: 0, deltas: true})
@@ -80,9 +85,13 @@ async function main() {
     // ============== compaction: pre-compact seq honestly resets by keyframe ==============
     storage.compact()
     let rootAfterCompact = 0
-    const probe2 = replaySubscribe<[StorePatch]>(remote2, function countRootAfterCompact(patch) {
-        if (patch.path.length == 0) rootAfterCompact++
-    }, {since: 1})
+    const compactStore = createStore<Record<string, any>>({})
+    const probe2 = syncStoreReplay(compactStore, remote2, {
+        since: 0,
+        onBatch(patches) {
+            for (const patch of patches) if (patch.path.length == 0) rootAfterCompact++
+        },
+    })
     await probe2.ready
     await check('compacted archive falls back to a loud keyframe', () => rootAfterCompact, 1)
     probe2()

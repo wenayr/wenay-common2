@@ -1,11 +1,11 @@
-import { type RpcLimits } from './rpc-limits';
-declare const RPC_BINARY_CALLBACK_REF: unique symbol;
-type tRpcBinaryCallbackRef = {
-    [RPC_BINARY_CALLBACK_REF]: number;
+import { type RpcLimits } from '../rcp/rpc-limits';
+declare const REPLAY_BINARY_CALLBACK_REF: unique symbol;
+type tReplayBinaryCallbackRef = {
+    [REPLAY_BINARY_CALLBACK_REF]: number;
 };
-export declare function RpcBinaryCallbackRefValue(): void;
-export declare function createRpcBinaryCallbackRef(id: number): Readonly<tRpcBinaryCallbackRef>;
-export declare function rpcBinaryCallbackRefId(value: unknown): number | undefined;
+export declare function ReplayBinaryCallbackRefValue(): void;
+export declare function createReplayBinaryCallbackRef(id: number): Readonly<tReplayBinaryCallbackRef>;
+export declare function replayBinaryCallbackRefId(value: unknown): number | undefined;
 export type BinaryShapeCacheOptions = {
     maxEntries?: number;
     maxFieldRefs?: number;
@@ -24,9 +24,9 @@ export type BinaryValueCodecOptions = {
 export type BinaryValueWireLimits = {
     maxWireBytes?: number;
 };
-export declare function trustRpcBinaryLeaf<T extends ArrayBufferView>(value: T): T;
-export declare function rpcBinaryNativeOwnStateError(value: object, kind: 'Date' | 'RegExp' | 'Map' | 'Set' | 'ArrayBuffer' | 'DataView' | 'TypedArray', typedArrayItems?: number): string | undefined;
-export declare function rpcBinaryRegExpV1Error(source: string, flags: string): "RegExp flags are unsupported or non-canonical in protocol v1" | "RegExp source syntax is unsupported in protocol v1" | undefined;
+export declare function trustReplayBinaryLeaf<T extends ArrayBufferView>(value: T): T;
+export declare function replayBinaryNativeOwnStateError(value: object, kind: 'Date' | 'RegExp' | 'Map' | 'Set' | 'ArrayBuffer' | 'DataView' | 'TypedArray', typedArrayItems?: number): string | undefined;
+export declare function replayBinaryRegExpError(source: string, flags: string): "RegExp flags are unsupported or non-canonical in protocol v1" | "RegExp source syntax is unsupported in protocol v1" | undefined;
 export declare function createBinaryValueCodec(options: BinaryValueCodecOptions): {
     encode: (value: unknown) => Uint8Array<ArrayBuffer>;
     prepareEncode: (value: unknown) => {

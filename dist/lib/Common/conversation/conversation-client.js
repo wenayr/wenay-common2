@@ -9,10 +9,10 @@ function factIdentity(fact) {
     return fact.namespace + '\u0000' + fact.key;
 }
 function createConversationClient(deps) {
-    const { remote, initial = { conversations: {}, channels: {}, messages: {}, facts: {} }, drain, batch = true } = deps;
+    const { remote, initial = { conversations: {}, channels: {}, messages: {}, facts: {} }, drain } = deps;
     const store = (0, store_1.createStore)(initial, drain !== undefined ? { drain } : {});
     const [emitEvent, events] = (0, Listen_1.listen)();
-    const stateSync = (0, store_replay_1.syncStoreReplay)(store, remote.state, { batch });
+    const stateSync = (0, store_replay_1.syncStoreReplay)(store, remote.state);
     const eventSync = (0, replay_wire_1.replaySubscribe)(remote.events, function forwardEvent(event) { emitEvent(event); });
     async function createConversation(input) {
         return remote.createConversation(input);

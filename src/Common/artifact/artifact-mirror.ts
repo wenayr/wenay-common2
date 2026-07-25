@@ -98,7 +98,7 @@ export function createArtifactMirror(deps: ArtifactMirrorDeps) {
     function connection(account: string) {
         if (closed) throw new Error('artifact mirror closed')
         const state = createStore<ArtifactStore>(project(account), drain !== undefined ? {drain} : {})
-        const replay = exposeStoreReplay(state, history == undefined ? {batch: true} : {history, batch: true})
+        const replay = exposeStoreReplay(state, history == undefined ? {} : {history})
         let connectionClosed = false
         const view = {
             refresh: function refreshProjection(change: StoreChange) {

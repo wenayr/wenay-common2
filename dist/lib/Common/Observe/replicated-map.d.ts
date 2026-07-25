@@ -71,9 +71,8 @@ export type CreateReplicatedMapDeps<V, K extends string = string> = (ReplicatedM
         describe?: Record<string, any>;
     };
 };
-type FollowReplicatedMapBaseOpts<V, K extends string> = Omit<StoreReplaySyncOpts<ReplicatedMapState<V, K>>, 'batch' | 'onBatch' | 'policy' | 'catchUp' | 'gapPolicy' | 'prepareCatchUp' | 'since'> & {
+type FollowReplicatedMapBaseOpts<V, K extends string> = Omit<StoreReplaySyncOpts<ReplicatedMapState<V, K>>, 'onBatch' | 'policy' | 'catchUp' | 'gapPolicy' | 'prepareCatchUp' | 'since'> & {
     delivery?: tReplicatedMapDelivery;
-    batch?: boolean;
     drain?: StoreDrain;
     onBatch?: (change: ReplicatedMapChange<V, K>) => void;
     onStatus?: (status: ReplicatedMapStatus) => void;
@@ -130,7 +129,7 @@ export declare function followReplicatedMap<V, K extends string = string>(remote
         onClose(cb: () => void): import("../events/Listen").ListenOff;
     };
     seq: () => number;
-    replayMode: () => tStoreReplayMode;
+    replayMode: () => "v2";
     delivery: () => tReplicatedMapDelivery;
     checkpoint: () => ReplicatedMapCheckpoint<V, K>;
     isStale: () => boolean;

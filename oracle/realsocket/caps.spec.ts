@@ -28,9 +28,7 @@ async function scenario(port: number, serverOpt?: {compact?: boolean}, clientOpt
     let cbv = 0, cb = 0
     const srv = await startRealServer({
         port, makeObject,
-        // This oracle isolates the legacy COMPACT/CBV capability. Universal
-        // binary has its own oracle and intentionally supersedes CBV on the wire.
-        serverOpts: {opt: {...serverOpt, binary: false}},
+        serverOpts: {opt: serverOpt},
         onServer: (_api, socket) => {
             const orig = socket.emit.bind(socket)
             socket.emit = (key: string, d: any) => {
@@ -39,7 +37,7 @@ async function scenario(port: number, serverOpt?: {compact?: boolean}, clientOpt
             }
         },
     })
-    const cli = await startRealClient({port, opt: {...clientOpt, binary: false}})
+    const cli = await startRealClient({port, opt: clientOpt})
     const got: any[] = []
     const off = cli.api.stream.callback((v: any) => got.push(v))
     await delay(60) // subscription round-trip + CAPS handshake over the real socket

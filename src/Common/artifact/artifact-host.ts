@@ -180,7 +180,7 @@ export function createArtifactHost(deps: ArtifactHostDeps) {
 
     function createView(account: string) {
         const state = createStore<ArtifactStore>(project(account), drain !== undefined ? {drain} : {})
-        const replay = exposeStoreReplay(state, history == undefined ? {batch: true} : {history, batch: true})
+        const replay = exposeStoreReplay(state, history == undefined ? {} : {history})
         function refreshProjection(change: StoreChange) {
             // A custom policy may close over tenant membership outside the changed record.
             if (policy?.canRead) { reconcileStoreProjection(state, project(account)); return }

@@ -160,23 +160,10 @@ async function main() {
         keyOf(value) { return value.id },
         initial: [item('seed', 0)],
         delivery: 'latest',
-        replay: {history: 32, batch: {history: 32}},
+        replay: {history: 32},
     })
     let v2Reads = 0
-    let v5Reads = 0
-    let v6Reads = 0
-    let v7Reads = 0
-    const producerBatch = producer.api.batch!
-    const measuredRemote = {
-        ...producer.api,
-        batch: {
-            ...producerBatch,
-            v2: countWireReads(producerBatch.v2!, function countV2Read() { v2Reads++ }),
-            v5: countWireReads(producerBatch.v5!, function countV5Read() { v5Reads++ }),
-            v6: countWireReads(producerBatch.v6!, function countV6Read() { v6Reads++ }),
-            v7: countWireReads(producerBatch.v7!, function countV7Read() { v7Reads++ }),
-        },
-    }
+    const measuredRemote = countWireReads(producer.api, function countV2Read() { v2Reads++ })
     const wireStats: WireStats = {rpcV3Frames: 0, embeddedV5Frames: 0}
     const server = await startServer(measuredRemote, wireStats)
     const hub = createRpcClientHub(
@@ -207,10 +194,9 @@ async function main() {
 
         const descriptor = await remote.describe!()
         ok(descriptor?.replicatedMap?.delivery == 'latest'
-            && follower.replayMode() == 'batch' && follower.delivery() == 'latest',
+            && follower.replayMode() == 'v2' && follower.delivery() == 'latest',
         'Replicated Map descriptor and compact batch facade pass RPC auto-projection')
-        ok(v2Reads > 0 && v7Reads == 0 && v6Reads == 0 && v5Reads == 0,
-            'Replicated Map initial catch-up selects the default Store Replay v2')
+        ok(v2Reads > 0, 'Replicated Map initial catch-up uses Store Replay V2')
         ok(follower.get('seed')?.value == 0,
             'initial keyframe crosses the projected real-socket facade')
         producer.control.set({
@@ -270,9 +256,9 @@ async function main() {
         ok(JSON.stringify(comparableSnapshot(follower.snapshot()))
             == JSON.stringify(comparableSnapshot(producer.control.snapshot())),
             'reconnected follower converges to the authoritative map')
-        ok(v2Reads >= 2 && v7Reads == 0 && v6Reads == 0 && v5Reads == 0 && wireStats.rpcV3Frames == 0
+        ok(v2Reads >= 2 && wireStats.rpcV3Frames == 0
             && wireStats.embeddedV5Frames == 0,
-        `Replicated Map reconnect remains on v2/JSON without RPB/3 (${v2Reads}/${v7Reads}/${v6Reads}/${v5Reads}, `
+        `Replicated Map reconnect remains on V2/JSON (${v2Reads}, `
             + `${wireStats.rpcV3Frames} frames)`)
     } finally {
         follower?.close()

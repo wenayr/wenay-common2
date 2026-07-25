@@ -94,7 +94,7 @@ async function startClient(port: number, account: string) {
         },
     })
     await workboard.ready
-    ok(workboard.status().replayMode == 'batch', 'stand client negotiated compact Store Replay batch')
+    ok(workboard.status().replayMode == 'v2', 'stand client uses Store Replay V2')
     return {
         hub,
         workboard,

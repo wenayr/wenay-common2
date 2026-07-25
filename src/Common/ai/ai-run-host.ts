@@ -288,7 +288,7 @@ export function createAiRunHost(deps: AiRunHostDeps) {
 
     function createView(account: string) {
         const state = createStore<AiRunStore>(project(account), drain !== undefined ? {drain} : {})
-        const stateReplay = exposeStoreReplay(state, history == undefined ? {batch: true} : {history, batch: true})
+        const stateReplay = exposeStoreReplay(state, history == undefined ? {} : {history})
         const [emitViewEvent, events] = replayListen<[AiRunEvent]>({
             current: () => [syncEvent(account)],
             history: history ?? 1024,

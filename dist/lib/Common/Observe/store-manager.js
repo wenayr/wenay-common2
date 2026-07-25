@@ -121,8 +121,7 @@ function createStoreManager(resources) {
                     const r = resource;
                     store ??= (0, store_1.createStore)(r.initial, r.storeOpts);
                     attemptStore = store;
-                    const syncOpts = r.syncOpts ?? {};
-                    const sub = (0, store_replay_1.syncStoreReplay)(store, r.remote, { ...syncOpts, batch: syncOpts.batch ?? true });
+                    const sub = (0, store_replay_1.syncStoreReplay)(store, r.remote, r.syncOpts);
                     attemptStop = once(sub);
                     requireCurrent();
                     stopSync = attemptStop;

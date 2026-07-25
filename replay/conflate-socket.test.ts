@@ -23,7 +23,7 @@ import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 import {createStore, StorePatch} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
-import {exposeStoreReplay, syncStoreReplay, storePatchKey} from '../src/Common/Observe/store-replay'
+import {exposeStoreReplay, syncStoreReplay} from '../src/Common/Observe/store-replay'
 import {conflateReplay, exposeReplay} from '../src/Common/events/replay-index'
 import {ReplayRemote} from '../src/Common/events/replay-index'
 
@@ -69,7 +69,8 @@ async function main() {
             exposeReplay(exposed.replay, {conflate: {pending: () => buf.v, highWater: 5, pollMs: 10}})
         const gatedK = conflateReplay(exposed.replay, {
             pending: () => bufK.v, highWater: 5, pollMs: 10,
-            keyOf: storePatchKey, maxKeys: 4,
+            keyOf: patches => patches.length == 1 ? JSON.stringify(patches[0].path) : null,
+            maxKeys: 4,
         })
         const [disconnect, disconnectListen] = createListenPair<[]>()
         socket.on('disconnect', () => { disconnect(); gatedClose(); gatedK.close() })
@@ -180,9 +181,9 @@ async function main() {
         await deep.debug.setPendingK(0)
         await waitFor('coalesced recovery over wire', () => mirrorK.state.tick == 23)
         ok(json(mirrorK.state) == json(backend.snapshot()), 'keyOf mirror equals backend after recovery')
-        ok(envelopesK - envKBefore == 2, `20 missed patches collapsed into 2 tail envelopes (got ${envelopesK - envKBefore})`)
+        ok(envelopesK - envKBefore == 1, `10 missed V2 envelopes collapsed into one keyframe (got ${envelopesK - envKBefore})`)
         const statsK1: ConflateStats = await deep.debug.statsK()
-        ok(statsK1.flushes == 1 && statsK1.keyframes == 0, 'recovery was a coalesced tail — the big store never travelled')
+        ok(statsK1.flushes == 0 && statsK1.keyframes == 1, 'multi-patch V2 envelopes recover through one keyframe')
 
         // ============ maxKeys: five paths in congestion → degradation to keyframe, memory limited by keys ============
         await deep.debug.setPendingK(100)
@@ -196,7 +197,7 @@ async function main() {
         await waitFor('keyframe degradation over wire', () => mirrorK.state.units['gamma']?.hp == 5)
         ok(json(mirrorK.state) == json(backend.snapshot()), 'over-maxKeys episode converged via keyframe')
         const statsK2: ConflateStats = await deep.debug.statsK()
-        ok(statsK2.keyframes == 1 && statsK2.flushes == 1, 'over maxKeys the episode degraded to exactly one keyframe')
+        ok(statsK2.keyframes == 2 && statsK2.flushes == 0, 'the next multi-patch episode also degrades to one keyframe')
         subK()
 
         // ============ two clients on one line: slow conflates, fast streams ============
@@ -267,7 +268,7 @@ async function main() {
         const sub2 = syncStoreReplay(mirror, remote2, {since: at, onSeq: s => seqs2.push(s)})
         await sub2.ready
         ok(json(mirror.state) == json(backend.snapshot()), 'reconnect mid-episode converged from the journal tail')
-        ok(seqs2.length == 14, `gate drops did not hole the journal: since delivered the 14 patches, not a keyframe (got ${seqs2.length})`)
+        ok(seqs2.length == 7, `gate drops did not hole the journal: since delivered seven V2 envelopes (got ${seqs2.length})`)
         ok(seqs2.every((s, i) => i == 0 || s > seqs2[i - 1]), `reconnect seqs strictly ascending: ${seqs2.join(',')}`)
         sub2()
 

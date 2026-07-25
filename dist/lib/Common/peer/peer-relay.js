@@ -3,16 +3,21 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createPatchRelayJournal = createPatchRelayJournal;
 const Listen_1 = require("../events/Listen");
 const store_1 = require("../Observe/store");
-const store_replay_1 = require("../Observe/store-replay");
 const peer_publish_batch_1 = require("./peer-publish-batch");
+function storePatchKey(patch) {
+    for (const key of patch.path)
+        if (typeof key == 'symbol')
+            return null;
+    return JSON.stringify(patch.path);
+}
 function condensePatchTail(tail) {
     const held = new Map();
     for (const ev of tail) {
-        const k = (0, store_replay_1.storePatchKey)(ev.event[0]);
-        if (k == null)
+        const key = storePatchKey(ev.event[0]);
+        if (key == null)
             return tail;
-        held.delete(k);
-        held.set(k, ev);
+        held.delete(key);
+        held.set(key, ev);
     }
     return Array.from(held.values());
 }

@@ -8,34 +8,12 @@ import {
     Caps,
     hasCap,
     optToCaps,
-    rpcBinaryMaxShapes,
-    rpcBinarySchemaOptions,
     type tCaps,
     type RpcOpt,
 } from './rpc-caps'
 import {
-    callbackBatchDirectBinaryOversize,
     createCallbackPacketBatcher,
 } from './rpc-callback-batch'
-import {
-    inspectRpcBinaryEnvelope,
-    encodeRpcBinaryControl,
-    RPC_BINARY_MSGPACK_PROTOCOL_VERSION,
-    RPC_BINARY_PROTOCOL_VERSION,
-    RPC_BINARY_SCHEMA_PROTOCOL_VERSION,
-    RpcBinaryFrame,
-} from './rpc-binary-envelope'
-import {
-    createRpcBinaryPeer,
-    type RpcBinaryPeer,
-} from './rpc-binary-peer'
-import {
-    rpcBinaryErrorToDto,
-    snapshotRpcBinaryResult,
-    unpackRpcBinaryArgs,
-    unpackRpcBinaryArgsTrusted,
-    validateRpcBinaryResult,
-} from './rpc-binary-walk'
 import { MyError } from "../../toError/myThrow";
 
 type Func = (...args: any[]) => any;
@@ -65,9 +43,8 @@ type RpcServerAuth = {
 // previous handler becomes inert.
 const SERVERS = new WeakMap<object, Map<string, () => void>>();
 // A socket/key normally owns one logical client, but a small bounded fan-out is
-// supported. Each session can retain up to 1,000 layouts, so 1,024 sessions was
-// an avoidable memory-amplification surface.
-const MAX_BINARY_SESSIONS = 16
+// supported. Bound per-client capability state on a shared socket/key.
+const MAX_CLIENT_SESSIONS = 16
 let serverGenerationCounter = 0
 
 function nextServerGeneration() {
@@ -165,64 +142,13 @@ function createServer<T extends object>(
     // sendCb: frequent object of one shape → Pkt.SHAPE(once) + Pkt.CBV(values); else normal Pkt.CB.
     const serverCaps = optToCaps(opt)
     const serverGeneration = nextServerGeneration()
-    const maxBinaryShapes = rpcBinaryMaxShapes(opt)
-    const binarySchemaOptions = rpcBinarySchemaOptions(opt)
 
     type tServerSession = {
         id: number
         peerCaps: tCaps
-        peer?: RpcBinaryPeer
-        probeReceived: boolean
         rawBatch: ReturnType<typeof createCallbackPacketBatcher>
-        binaryBatch?: ReturnType<typeof createCallbackPacketBatcher>
-        lastCallbackBinary?: boolean
-        binarySending: boolean
-        binaryQueue: {packet: any[]}[]
     }
-    type tSendChannel = {session: tServerSession, binary: boolean}
-
-    function trustedBinaryOn(channel: tSendChannel) {
-        return channel.binary
-            && channel.session.peer?.protocolVersion != RPC_BINARY_PROTOCOL_VERSION
-    }
-
-    function sendBinaryNow(session: tServerSession, packet: any[]) {
-        if (!session.peer) throw new Error('RPC binary session is not initialized')
-        // A synchronous transport may re-enter while the previous frame is prepared.
-        // Snapshot nested output now; application code may mutate its object before
-        // the outer emit unwinds and this queue can encode it.
-        session.binaryQueue.push({
-            packet: session.binarySending
-                ? snapshotRpcBinaryResult(packet) as any[]
-                : packet,
-        })
-        if (session.binarySending) return
-        session.binarySending = true
-        let index = 0
-        try {
-            while (index < session.binaryQueue.length) {
-                const next = session.binaryQueue[index++]
-                let prepared: ReturnType<RpcBinaryPeer['prepare']> | undefined
-                try {
-                    prepared = session.peer.prepare(next.packet)
-                    if (detached) {
-                        prepared.rollback()
-                        session.binaryQueue.length = 0
-                        return
-                    }
-                    socket.emit(key, prepared.wire)
-                    prepared.commit()
-                } catch (error) {
-                    prepared?.rollback()
-                    session.binaryQueue.length = 0
-                    throw error
-                }
-            }
-            session.binaryQueue.length = 0
-        } finally {
-            session.binarySending = false
-        }
-    }
+    type tSendChannel = {session: tServerSession}
 
     // Legacy packets have no session envelope. Callback ids already share one
     // socket/key id space, so one physical batch safely combines raw sessions.
@@ -231,55 +157,19 @@ function createServer<T extends object>(
         opt: opt?.callbackBatch,
     })
 
-    function createSession(id: number, peerCaps: tCaps, binary = true): tServerSession {
-        const effectiveCaps = serverCaps & peerCaps
-        const protocolVersion = hasCap(effectiveCaps, Caps.BINARY_MSGPACK)
-            ? RPC_BINARY_MSGPACK_PROTOCOL_VERSION
-            : hasCap(effectiveCaps, Caps.BINARY_SCHEMA)
-                ? RPC_BINARY_SCHEMA_PROTOCOL_VERSION
-                : RPC_BINARY_PROTOCOL_VERSION
-        const peer = binary
-            ? createRpcBinaryPeer({
-                sessionId: id,
-                maxShapes: maxBinaryShapes,
-                protocolVersion,
-                ...binarySchemaOptions,
-            })
-            : undefined
-        let session!: tServerSession
-        const binaryBatch = peer
-            ? createCallbackPacketBatcher({
-                send: function sendBinaryCallbackBatch(packet) {
-                    sendBinaryNow(session, packet)
-                },
-                opt: opt?.callbackBatch,
-                acceptBinary: true,
-                // The peer already has a prepared frame while a synchronous transport
-                // re-enters the server. Treat that nested packet as oversize so it is
-                // queued directly; returning zero would defeat the byte bound.
-                measure: packet => session?.binarySending
-                    ? Number.MAX_SAFE_INTEGER
-                    : peer.measure(packet),
-            })
-            : undefined
-        session = {
+    function createSession(id: number, peerCaps: tCaps): tServerSession {
+        return {
             id,
             peerCaps,
-            peer,
-            probeReceived: false,
             rawBatch: rawCallbackBatch,
-            binaryBatch,
-            binarySending: false,
-            binaryQueue: [],
         }
-        return session
     }
 
-    const legacySession = createSession(0, 0, false)
+    const legacySession = createSession(0, 0)
     const sessions = new Map<number, tServerSession>()
     const sessionByClient = new Map<number, number>()
     const clientBySession = new Map<number, number>()
-    const legacyChannel: tSendChannel = {session: legacySession, binary: false}
+    const legacyChannel: tSendChannel = {session: legacySession}
 
     function removeSession(sessionId: number) {
         const session = sessions.get(sessionId)
@@ -294,8 +184,6 @@ function createServer<T extends object>(
 
     function flushSession(session: tServerSession) {
         session.rawBatch.flush()
-        session.binaryBatch?.flush()
-        session.lastCallbackBinary = undefined
     }
 
     function flushAllSessions() {
@@ -303,17 +191,12 @@ function createServer<T extends object>(
         for (const session of sessions.values()) flushSession(session)
     }
 
-    function sendChannelNow(channel: tSendChannel, packet: any[]) {
-        if (channel.binary) sendBinaryNow(channel.session, packet)
-        else sendRaw(packet)
-    }
-
     // Control packets are ordering barriers: callbacks stay before the response,
     // error, or stream end which followed them in server execution.
     function sendChannel(channel: tSendChannel, d: any[]) {
         if (detached) return
         flushSession(channel.session)
-        sendChannelNow(channel, d)
+        sendRaw(d)
     }
 
     function callbackBatchOn(channel: tSendChannel) {
@@ -326,19 +209,12 @@ function createServer<T extends object>(
             sendChannel(channel, packet)
             return
         }
-        if (channel.session.lastCallbackBinary != undefined
-            && channel.session.lastCallbackBinary != channel.binary) {
-            flushSession(channel.session)
-        }
-        channel.session.lastCallbackBinary = channel.binary
-        if (channel.binary) channel.session.binaryBatch!.enqueue(packet)
-        else channel.session.rawBatch.enqueue(packet)
+        channel.session.rawBatch.enqueue(packet)
     }
 
     const cbShapes = createCbShapeServer()
     function sendCb(channel: tSendChannel, cbId: number, cbArgs: any[]) {
-        const compactOn = !channel.binary
-            && hasCap(serverCaps & channel.session.peerCaps, Caps.COMPACT)
+        const compactOn = hasCap(serverCaps & channel.session.peerCaps, Caps.COMPACT)
         if (compactOn && cbArgs.length == 1 && isPlainObject(cbArgs[0])) {
             const obj = cbArgs[0]
             const r = cbShapes.offer(cbId, obj)
@@ -355,37 +231,9 @@ function createServer<T extends object>(
                 return
             }
         }
-        if (channel.binary && (
-            !callbackBatchOn(channel)
-            || callbackBatchDirectBinaryOversize(cbArgs, opt?.callbackBatch)
-        )) {
-            // Encoding happens synchronously before sendChannel returns, so a
-            // direct packet already owns its call-time bytes. Validate limits
-            // without first cloning a large media leaf or measuring the frame
-            // through a complete throw-away encode.
-            const directArgs = trustedBinaryOn(channel)
-                ? cbArgs
-                : cbArgs.map(value => validateRpcBinaryResult(value, lim))
-            sendChannel(channel, [Pkt.CB, cbId, directArgs])
-            return
-        }
         // Callback batching defers encoding to a microtask. Preserve the same
-        // call-time snapshot semantics as the legacy packResult path.
-        const binaryArgs = channel.binary
-            ? cbArgs.map(value => snapshotRpcBinaryResult(value, lim))
-            : undefined
-        const packet = [
-            Pkt.CB,
-            cbId,
-            channel.binary
-                ? binaryArgs
-                : cbArgs.map(packResult),
-        ]
-        if (!channel.binary) {
-            sendCallbackPacket(channel, packet)
-            return
-        }
-        sendCallbackPacket(channel, packet)
+        // call-time snapshot semantics as the ordinary packResult path.
+        sendCallbackPacket(channel, [Pkt.CB, cbId, cbArgs.map(packResult)])
     }
 
     function sendCbEnd(channel: tSendChannel, cbId: number) {
@@ -394,32 +242,7 @@ function createServer<T extends object>(
     }
 
     function sendResult(channel: tSendChannel, reqId: number, value: unknown) {
-        if (!channel.binary) {
-            sendChannel(channel, [Pkt.RESP, reqId, packResult(value)])
-            return
-        }
-        if (trustedBinaryOn(channel)) {
-            try {
-                sendChannel(channel, [Pkt.RESP, reqId, value])
-            } catch (error) {
-                if (!isFunctionValueSerializationError(error)) throw error
-                // Legacy JSON omits methods held by returned data objects. Keep
-                // ordinary schema results on the zero-walk hot path and pay for
-                // that projection only after a function leaf actually rejects.
-                sendChannel(channel, [
-                    Pkt.RESP,
-                    reqId,
-                    validateRpcBinaryResult(value, lim),
-                ])
-            }
-            return
-        }
-        const packet = [
-            Pkt.RESP,
-            reqId,
-            validateRpcBinaryResult(value, lim),
-        ]
-        sendChannel(channel, packet)
+        sendChannel(channel, [Pkt.RESP, reqId, packResult(value)])
     }
 
     function fallbackSerializationError(error: unknown) {
@@ -428,28 +251,7 @@ function createServer<T extends object>(
         return new TypeError('RPC response serialization failed: ' + reason)
     }
 
-    function isFunctionValueSerializationError(error: unknown) {
-        return error instanceof TypeError
-            && error.message.includes('function values are not supported')
-    }
-
     function sendError(channel: tSendChannel, reqId: number, error: unknown) {
-        if (channel.binary) {
-            try {
-                sendChannel(
-                    channel,
-                    [Pkt.RESP, reqId, null, rpcBinaryErrorToDto(error, lim)],
-                )
-            } catch (serializationError) {
-                sendChannel(channel, [
-                    Pkt.RESP,
-                    reqId,
-                    null,
-                    rpcBinaryErrorToDto(fallbackSerializationError(serializationError), lim),
-                ])
-            }
-            return
-        }
         try {
             sendChannel(channel, [Pkt.RESP, reqId, null, errToObj(error)])
         } catch (serializationError) {
@@ -465,20 +267,6 @@ function createServer<T extends object>(
     // gate=true → calls rejected before successful HELLO; without auth — open, as before.
     let authed = !auth?.gate;
     let authAck: any = undefined;
-    function acknowledgeProbedBinarySessions() {
-        if (auth?.gate && !authed) return
-        for (const session of sessions.values()) {
-            if (session.probeReceived
-                && hasCap(serverCaps & session.peerCaps, Caps.BINARY)) {
-                sendRaw(encodeRpcBinaryControl(
-                    RpcBinaryFrame.PROBE_ACK,
-                    session.id,
-                    session.peer!.protocolVersion,
-                    session.peer!.encodePrelude(),
-                ))
-            }
-        }
-    }
     // Socket.IO preserves packet order, but EventEmitter does not await an async
     // HELLO handler. STRICT/CALL therefore wait on the matching principal build.
     let helloInFlight: Promise<void> | null = null;
@@ -494,22 +282,6 @@ function createServer<T extends object>(
         sendRaw(authAck !== undefined
             ? [Pkt.MAP, routeMap, strictSchema, listenPaths, authAck]
             : [Pkt.MAP, routeMap, strictSchema, listenPaths])
-    }
-
-    function resetRejectedBinarySession(sessionId: number) {
-        if (!sessions.has(sessionId)) return
-        removeSession(sessionId)
-        sendRaw([Pkt.BINARY_RESET, sessionId, serverGeneration])
-    }
-
-    function resetAllRejectedBinarySessions() {
-        for (const sessionId of [...sessions.keys()]) {
-            resetRejectedBinarySession(sessionId)
-        }
-    }
-
-    function isBinaryTransportValue(value: unknown) {
-        return value instanceof ArrayBuffer || ArrayBuffer.isView(value)
     }
 
     let byKey = SERVERS.get(socket);
@@ -533,65 +305,8 @@ function createServer<T extends object>(
 
     async function handleServerPacket(incoming: any) {
         if (detached) return
-        let msg = incoming
+        const msg = incoming
         let channel = legacyChannel
-        let decodedSessionId: number | undefined
-        try {
-            const envelope = inspectRpcBinaryEnvelope(incoming)
-            if (envelope) {
-                decodedSessionId = envelope.sessionId
-                const session = sessions.get(envelope.sessionId)
-                if (!session || !hasCap(serverCaps & session.peerCaps, Caps.BINARY)) return
-                if (envelope.version != session.peer!.protocolVersion) {
-                    throw new TypeError('RPC binary envelope version does not match session')
-                }
-                if (envelope.kind == RpcBinaryFrame.PROBE) {
-                    session.peer!.decodePrelude(envelope.payload)
-                    session.probeReceived = true
-                    if (!auth?.gate || authed) {
-                        sendRaw(encodeRpcBinaryControl(
-                            RpcBinaryFrame.PROBE_ACK,
-                            session.id,
-                            session.peer!.protocolVersion,
-                            session.peer!.encodePrelude(),
-                        ))
-                    }
-                    return
-                }
-                if (envelope.kind != RpcBinaryFrame.PACKET || !session.probeReceived
-                    || (auth?.gate && !authed)) return
-                const decoded = session.peer!.decode(envelope.payload)
-                if (!Array.isArray(decoded)
-                    || (decoded[0] != Pkt.CALL && decoded[0] != Pkt.PIPE)) {
-                    throw new TypeError('RPC binary packet has an invalid client opcode')
-                }
-                msg = decoded
-                channel = {session, binary: true}
-            } else if (isBinaryTransportValue(incoming) && sessions.size > 0) {
-                // A damaged magic/header cannot be attributed to one session. Reset
-                // the bounded set so no sender keeps emitting references into a
-                // decoder cache which never committed the lost definition.
-                resetAllRejectedBinarySessions()
-                await hooks?.onInvalid?.({
-                    reason: 'invalid_payload',
-                    request: incoming,
-                    error: 'RPC binary envelope magic mismatch',
-                })
-                return
-            }
-        } catch (error) {
-            if (decodedSessionId != undefined) {
-                resetRejectedBinarySession(decodedSessionId)
-            } else if (isBinaryTransportValue(incoming)) {
-                resetAllRejectedBinarySessions()
-            }
-            await hooks?.onInvalid?.({
-                reason: 'invalid_payload',
-                request: incoming,
-                error,
-            })
-            return
-        }
         if (typeof msg == 'number' && msg == Pkt.STRICT) {
             const hello = helloInFlight;
             if (hello) {
@@ -612,13 +327,13 @@ function createServer<T extends object>(
             const clientId = msg[4]
             if (Number.isSafeInteger(sessionId) && sessionId > 0
                 && generation == serverGeneration) {
-                // Binary was introduced with correlated client ids, so accepting an
-                // anonymous session has no compatibility value and defeats the bound.
+                // Correlated client ids prevent one shared socket client from
+                // overwriting another client's negotiated callback policy.
                 if (!Number.isSafeInteger(clientId) || clientId <= 0) {
                     await hooks?.onInvalid?.({
                         reason: 'invalid_payload',
                         request: msg,
-                        error: 'RPC binary session requires a client id',
+                        error: 'RPC session requires a client id',
                     })
                     return
                 }
@@ -627,7 +342,7 @@ function createServer<T extends object>(
                     await hooks?.onInvalid?.({
                         reason: 'invalid_payload',
                         request: msg,
-                        error: 'RPC binary session belongs to another client',
+                        error: 'RPC session belongs to another client',
                     })
                     return
                 }
@@ -639,22 +354,18 @@ function createServer<T extends object>(
                 clientBySession.set(sessionId, clientId)
                 let session = sessions.get(sessionId)
                 if (!session || session.peerCaps != announced) {
-                    if (!session && sessions.size >= MAX_BINARY_SESSIONS) {
+                    if (!session && sessions.size >= MAX_CLIENT_SESSIONS) {
                         sessionByClient.delete(clientId)
                         clientBySession.delete(sessionId)
                         await hooks?.onInvalid?.({
                             reason: 'rate_limit',
                             request: msg,
-                            error: 'too many RPC binary sessions',
+                            error: 'too many RPC sessions',
                         })
                         return
                     }
                     if (session) flushSession(session)
-                    session = createSession(
-                        sessionId,
-                        announced,
-                        hasCap(serverCaps & announced, Caps.BINARY),
-                    )
+                    session = createSession(sessionId, announced)
                     sessions.set(sessionId, session)
                 }
                 sendRaw([Pkt.CAPS, serverCaps, sessionId, serverGeneration])
@@ -684,7 +395,6 @@ function createServer<T extends object>(
                     authAck = r && r.ack !== undefined ? r.ack : { ok: true };
                     authed = authAck?.ok !== false;
                     sendMap(); // principal-specific routeMap + authAck
-                    acknowledgeProbedBinarySessions()
                 } catch (e: any) {
                     // Reauth rejection DOES NOT drop live session: don't touch principal/authed/routeMap,
                     // just report ok:false to client via local ack (their reauth() resolves as-is).
@@ -702,9 +412,9 @@ function createServer<T extends object>(
             return;
         }
         if (!Array.isArray(msg) || (msg[0] != Pkt.CALL && msg[0] != Pkt.PIPE)) return
-        if (!channel.binary && Number.isSafeInteger(msg[5])) {
+        if (Number.isSafeInteger(msg[5])) {
             const session = sessions.get(msg[5])
-            if (session) channel = {session, binary: false}
+            if (session) channel = {session}
         }
         const hello = helloInFlight;
         if (hello) {
@@ -810,21 +520,12 @@ function createServer<T extends object>(
                     } else if (step.type === 'call') {
                         if (typeof current !== "function") throw new Error("Attempted to call a non-function in pipe");
                         // like in CALL: else Date/Map/BigInt in callback args perish on JSON transport
-                        const stepArgs = channel.binary
-                            ? (trustedBinaryOn(channel)
-                                ? unpackRpcBinaryArgsTrusted
-                                : unpackRpcBinaryArgs)(
-                                step.args,
-                                (id, args) => sendCb(channel, id, args),
-                                id => sendCbEnd(channel, id),
-                                lim,
-                            )
-                            : unpack(
-                                step.args,
-                                (id, args) => sendCb(channel, id, args),
-                                id => sendCbEnd(channel, id),
-                                lim,
-                            )
+                        const stepArgs = unpack(
+                            step.args,
+                            (id, args) => sendCb(channel, id, args),
+                            id => sendCbEnd(channel, id),
+                            lim,
+                        )
                         current = current(...stepArgs);
                     }
                 }
@@ -836,21 +537,12 @@ function createServer<T extends object>(
 
             } else {
                 // --- STANDARD CALL LOGIC ---
-                const args = channel.binary
-                    ? (trustedBinaryOn(channel)
-                        ? unpackRpcBinaryArgsTrusted
-                        : unpackRpcBinaryArgs)(
-                        rawArgsOrSteps,
-                        (id, values) => sendCb(channel, id, values),
-                        id => sendCbEnd(channel, id),
-                        lim,
-                    )
-                    : unpack(
-                        rawArgsOrSteps,
-                        (id, values) => sendCb(channel, id, values),
-                        id => sendCbEnd(channel, id),
-                        lim,
-                    )
+                const args = unpack(
+                    rawArgsOrSteps,
+                    (id, values) => sendCb(channel, id, values),
+                    id => sendCbEnd(channel, id),
+                    lim,
+                )
                 const res = await fn.apply(ctx, args);
                 if (wait) sendResult(channel, reqId, res)
             }

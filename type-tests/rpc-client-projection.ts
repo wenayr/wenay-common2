@@ -2,19 +2,17 @@ import type {createListen} from '../src/Common/events/Listen'
 import type {DeepSocketListen, DeepSocketListenSmart} from '../src/Common/rcp/listen-deep'
 import type {ClientAPIAll} from '../src/Common/rcp/rpc-client'
 
-type tBatchV5 = {
+type tBatchV2 = [2, number, number, unknown[]]
+
+type tBatch = {
     line: {
-        on(cb: (wire: Uint8Array) => void): Promise<void>
+        on(cb: (wire: tBatchV2) => void): Promise<void>
     }
-    keyframe(): Uint8Array
+    keyframe(): tBatchV2
 }
 
 type tReplayFacade = {
-    replay: {
-        batch?: {
-            v5?: tBatchV5 | null
-        } | null
-    }
+    replay: tBatch
     readBuffer(): ArrayBuffer
     readBytes(): Uint8Array
     readView(): DataView
@@ -27,15 +25,11 @@ async function projectedOptionalBinaryMembersStayTyped() {
     const buffer: ArrayBuffer = await projected.readBuffer()
     const bytes: Uint8Array = await projected.readBytes()
     const view: DataView = await projected.readView()
-    const keyframe: Uint8Array = await projected.replay.batch!.v5!.keyframe()
-    projected.replay.batch!.v5!.line.on(function consumeBinaryWire(wire) {
-        const exact: Uint8Array = wire
+    const keyframe: tBatchV2 = await projected.replay.keyframe()
+    projected.replay.line.on(function consumeV2Wire(wire) {
+        const exact: tBatchV2 = wire
         void exact
     })
-
-    let optionalBatch: tProjected['replay']['batch']
-    optionalBatch = null
-    optionalBatch = undefined
 
     // @ts-expect-error Uint8Array must not degrade to any or a mapped plain object
     const wrong: string = await projected.readBytes()
@@ -43,7 +37,6 @@ async function projectedOptionalBinaryMembersStayTyped() {
     void bytes
     void view
     void keyframe
-    void optionalBatch
     void wrong
 }
 

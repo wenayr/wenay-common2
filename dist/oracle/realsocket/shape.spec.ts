@@ -51,9 +51,6 @@ async function main() {
     const srv = await startRealServer({
         port: PORT,
         makeObject,
-        // This oracle targets the legacy SHAPE/CBV layer itself. Universal
-        // binary RPC supersedes it with its own ordered-layout cache.
-        serverOpts: {opt: {binary: false}},
         onServer: (_api, socket) => {
             // wrap the genuine socket.emit BEFORE any tick is sent — the rpc-server
             // adapter calls socket.emit(key, packetArray) at send time, so this sees
@@ -66,7 +63,7 @@ async function main() {
         },
     })
 
-    const cli = await startRealClient({port: PORT, opt: {binary: false}})
+    const cli = await startRealClient({port: PORT})
     const api = cli.api
 
     // give the connection a moment so makeObject ran and emit handles are captured

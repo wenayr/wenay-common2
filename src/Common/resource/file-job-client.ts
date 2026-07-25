@@ -20,14 +20,12 @@ export type FileJobClientDeps = {
     remote: FileJobRemote
     initial?: FileJobStore
     drain?: StoreDrain
-    /** Prefer compact Store coordinates; false preserves legacy seq values. */
-    batch?: boolean
 }
 
 export function createFileJobClient(deps: FileJobClientDeps) {
-    const {remote, initial = {files: {}, jobs: {}}, drain, batch = true} = deps
+    const {remote, initial = {files: {}, jobs: {}}, drain} = deps
     const store = createStore<FileJobStore>(initial, drain !== undefined ? {drain} : {})
-    const sync = syncStoreReplay(store, remote.state, {batch})
+    const sync = syncStoreReplay(store, remote.state)
 
     async function startUpload(request: FileUploadRequest) {
         return remote.startUpload(request)

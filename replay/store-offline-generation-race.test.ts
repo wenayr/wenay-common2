@@ -2,6 +2,7 @@
 
 import {createMemoryOfflineStorage, createOfflineStore} from '../src/Common/Observe/store-offline'
 import {StoreReplayRemote} from '../src/Common/Observe/store-replay'
+import {encodeStoreReplayBatchV2} from '../src/Common/Observe/store-replay-codec'
 import {RPC_MEMBER_LOOKUP, RPC_SCHEMA_READY} from '../src/Common/events/transport-lifecycle'
 
 type State = {source: string}
@@ -52,11 +53,11 @@ function createDeferredRemote(source: string, holdKeyframe = false) {
         since: () => null,
         async keyframe() {
             if (holdKeyframe) await keyframeGate
-            return {
+            return encodeStoreReplayBatchV2({
                 seq: 0,
                 ts: 1,
-                event: [{path: [], exists: true, value: {source}}],
-            }
+                event: [[{path: [], exists: true, value: {source}}]],
+            })
         },
     }
     const lookup = function lookupMember(member: string) {

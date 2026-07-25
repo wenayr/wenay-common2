@@ -6,7 +6,7 @@ import {
     tConnectorState, tRouteKind,
 } from '../src/Common/events/replay-index'
 import {replayListen} from '../src/Common/events/replay-index'
-import {createStore, applyStorePatch, StorePatch} from '../src/Common/Observe/store'
+import {createStore, applyStorePatch, applyStorePatches, StorePatch} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {exposeStoreReplay} from '../src/Common/Observe/store-replay'
 
@@ -327,11 +327,11 @@ async function main() {
     {
         const backend = createStore<World>({units: {a: {hp: 100, x: 0}}, tick: 0}, {drain: 'micro'})
         const exposed = exposeStoreReplay(backend, {history: 100})
-        const net = makeFakeNet<[StorePatch]>(exposed.replay)
-        const coord = createRouteCoordinator<[StorePatch]>({connect: net.connect})
+        const net = makeFakeNet<[readonly StorePatch[]]>(exposed.replay)
+        const coord = createRouteCoordinator<[readonly StorePatch[]]>({connect: net.connect})
         const link = coord.pair('server', 'client')
         const mirror = createStore<World>({units: {}, tick: -1}, {drain: 'micro'})
-        const sub = link.subscribe(function applyRoutedPatch(patch) { applyStorePatch(mirror, patch) })
+        const sub = link.subscribe(function applyRoutedPatches(patches) { applyStorePatches(mirror, patches) })
         await sub.ready
         ok(json(mirror.state) == json(backend.snapshot()), 'mirror starts from route keyframe')
 

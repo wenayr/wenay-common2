@@ -10,9 +10,9 @@ import {deepEqual} from '../core/common'
 import {listen} from '../events/Listen'
 import {createStore, Store, StorePatch} from './store'
 import {exposeStoreReplay, StoreReplayOpts, StoreReplayRemote, syncStoreReplayRoute} from './store-replay'
-import {ReplayRemote} from '../events/replay-wire'
 import {getRpcSchemaReady, hasRpcMemberLookup, rpcMemberAvailable} from '../events/transport-lifecycle'
 import {diffKeyedState} from './store-follower'
+import {decodeStoreReplayBatchV2} from './store-replay-codec'
 
 export type tStoreReplicaRole = 'leader' | 'follower' | 'offline' | 'electing' | 'reconciling' | 'closed'
 export type tStoreReplicaRouteState = 'connecting' | 'open' | 'failed' | 'rejected' | 'closed'
@@ -146,8 +146,6 @@ export type StoreReplicaRoutePolicy = {
     pingTimeoutMs?: number
     /** A new route must beat the current one by this many milliseconds. */
     hysteresisMs?: number
-    /** Opt in only when every offered route shares one batch line identity (default false). */
-    batch?: boolean
 }
 
 export type StoreReplicaSetDeps<T extends object> = {
@@ -200,8 +198,9 @@ function sameAuthority(a: StoreReplicaDescriptor | null, b: StoreReplicaDescript
         a.authorityLineId == b.authorityLineId
 }
 
-function keyframeState<T extends object>(value: Awaited<ReturnType<ReplayRemote<[StorePatch]>['keyframe']>>) {
-    const patch = value?.event?.[0]
+function keyframeState<T extends object>(value: unknown) {
+    if (value == null) return null
+    const patch = decodeStoreReplayBatchV2(value).event[0][0]
     if (!patch || patch.path.length || !patch.exists || patch.value == null || typeof patch.value != 'object') return null
     return patch.value as T
 }
@@ -283,7 +282,7 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
     const hysteresisMs = deps.route?.hysteresisMs ?? 8
     const store = deps.store ?? createStore<T>((deps.initial ?? {}) as T)
     const exposeOpts = deps.expose ?? {}
-    const exposed = exposeStoreReplay(store, {...exposeOpts, batch: exposeOpts.batch ?? true})
+    const exposed = exposeStoreReplay(store, exposeOpts)
     const offers = new Map<string, OfferEntry>()
     const [emitDescriptor, descriptorChanges] = listen<[StoreReplicaDescriptor]>()
     const [emitConflict, conflictListen] = listen<[StoreReplicaConflict<T>]>()
@@ -707,9 +706,7 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
     }
 
     function trackAuthoritySeq(seq: number) {
-        // Batch and legacy heads count different units. The descriptor remains in
-        // canonical legacy coordinates, so only a legacy direct route may advance it from delivery.
-        if (activeDescriptor?.lineId == activeDescriptor?.authorityLineId && upstreamSub?.mode == 'legacy') authoritySeq = seq
+        if (activeDescriptor?.lineId == activeDescriptor?.authorityLineId) authoritySeq = seq
         else authoritySeq = Math.max(authoritySeq, activeDescriptor?.authoritySeq ?? -1)
         scheduleDataStatus()
     }
@@ -752,7 +749,6 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
             if (!upstreamSub) {
                 created = true
                 upstreamSub = syncStoreReplayRoute(store, session.remote.replay, {
-                    batch: deps.route?.batch ?? false,
                     label: entry.offer.id,
                     since: -1,
                     reset: true,

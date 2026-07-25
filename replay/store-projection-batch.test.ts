@@ -6,7 +6,7 @@ import {createStore, listenStorePatches} from '../src/Common/Observe/store'
 import {reconcileStoreProjection, reconcileStoreProjectionRecord} from '../src/Common/Observe/store-projection'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {syncStoreReplay} from '../src/Common/Observe/store-replay'
-import {decodeStoreReplayBatch} from '../src/Common/Observe/store-replay-codec'
+import {decodeStoreReplayBatchV2} from '../src/Common/Observe/store-replay-codec'
 import {createFileJobHost} from '../src/Common/resource/file-job-host'
 
 let fails = 0
@@ -74,11 +74,9 @@ async function main() {
     const owner = host.connection('owner')
     const stranger = host.connection('stranger')
     const ownerBatches: any[] = []
-    let strangerLegacy = 0
-    let strangerBatch = 0
-    const offOwner = (owner.fragment.state as any).batch.line.on(function rememberOwnerBatch(batch: any) { ownerBatches.push(batch) })
-    const offStrangerLegacy = stranger.fragment.state.line.on(function countStrangerLegacy() { strangerLegacy++ })
-    const offStrangerBatch = (stranger.fragment.state as any).batch.line.on(function countStrangerBatch() { strangerBatch++ })
+    let strangerBatches = 0
+    const offOwner = owner.fragment.state.line.on(function rememberOwnerBatch(batch: any) { ownerBatches.push(batch) })
+    const offStranger = stranger.fragment.state.line.on(function countStrangerBatch() { strangerBatches++ })
 
     host.register({
         owner: 'owner',
@@ -97,12 +95,10 @@ async function main() {
 
     ok(ownerBatches.length == 1 && ownerBatches[0][3].length == 2,
         'two visible records from one source drain travel in one compact batch')
-    ok(strangerLegacy == 0 && strangerBatch == 0,
-        'an unrelated account receives neither legacy nor batch projection traffic')
+    ok(strangerBatches == 0, 'an unrelated account receives no V2 projection traffic')
 
     offOwner()
-    offStrangerLegacy()
-    offStrangerBatch()
+    offStranger()
     owner.close()
     stranger.close()
     host.close()
@@ -124,7 +120,7 @@ async function main() {
     await flushReactive(policyHost.store.state)
     const policyView = policyHost.connection('viewer')
     const policyBatches: any[] = []
-    const offPolicyBatch = (policyView.fragment.state as any).batch.line.on(function rememberPolicyBatch(batch: any) {
+    const offPolicyBatch = policyView.fragment.state.line.on(function rememberPolicyBatch(batch: any) {
         policyBatches.push(batch)
     })
     grant = false
@@ -132,9 +128,10 @@ async function main() {
     await flushReactive(policyHost.store.state)
     await drainTurn()
     const policyFrame = await policyView.fragment.state.keyframe()
-    const policyDeletes = policyBatches.flatMap(decodeStoreReplayBatch)
+    const policyDeletes = policyBatches.flatMap(decodeStoreReplayBatchV2)
         .flatMap(event => event.event[0]).filter(patch => !patch.exists)
-    ok(Object.keys((policyFrame as any).event[0].value.artifacts).length == 0,
+    const decodedPolicyFrame = decodeStoreReplayBatchV2(policyFrame)
+    ok(Object.keys((decodedPolicyFrame as any).event[0][0].value.artifacts).length == 0,
         'custom policy invalidation rechecks the complete projection')
     ok(policyBatches.length == 1 && policyDeletes.length == 2,
         'one policy change removes every newly forbidden record in one batch')
@@ -150,14 +147,12 @@ async function main() {
     const mirrorConnection = artifactMirror.connection('owner')
     const mirrorState = mirrorConnection.fragment.state as any
     let mirrorLineClosed = false
-    let mirrorBatchClosed = false
     mirrorState.line.onClose(function rememberMirrorLineClose() { mirrorLineClosed = true })
-    mirrorState.batch.line.onClose(function rememberMirrorBatchClose() { mirrorBatchClosed = true })
     artifactMirror.close()
     let mirrorConnectionRejected = false
     try { artifactMirror.connection('late') } catch { mirrorConnectionRejected = true }
-    ok(mirrorLineClosed && mirrorBatchClosed && mirrorConnectionRejected,
-        'artifact mirror close retires every connection replay view and remains terminal')
+    ok(mirrorLineClosed && mirrorConnectionRejected,
+        'artifact mirror close retires its V2 replay view and remains terminal')
     mirrorConnection.close()
 
     const fileHost = createFileJobHost({
@@ -175,24 +170,21 @@ async function main() {
     await flushReactive(fileHost.store.state)
     const fileView = fileHost.connection('owner')
     const fileMirror = createStore<any>({files: {}, jobs: {}}, {drain: 'micro'})
-    const fileSync = syncStoreReplay(fileMirror, fileView.fragment.state as any, {batch: true})
+    const fileSync = syncStoreReplay(fileMirror, fileView.fragment.state as any)
     await fileSync.ready
-    const fileLegacy: any[] = []
     const fileBatches: any[] = []
-    const offFileLegacy = fileView.fragment.state.line.on(function rememberFileLegacy(event) { fileLegacy.push(event) })
-    const offFileBatch = (fileView.fragment.state as any).batch.line.on(function rememberFileBatch(event: any) { fileBatches.push(event) })
+    const offFileBatch = fileView.fragment.state.line.on(function rememberFileBatch(event: any) { fileBatches.push(event) })
     const nestedResult = fileHost.store.state.jobs.j.result as any
     nestedResult.x = 2
     await flushReactive(fileHost.store.state)
     await drainTurn()
-    const decodedFileBatch = fileBatches.flatMap(decodeStoreReplayBatch)
-    ok(fileLegacy.length == 1 && fileLegacy[0].event[0].path.join('/') == 'jobs/j'
-        && fileLegacy[0].event[0].value.result.x == 2,
+    const decodedFileBatch = fileBatches.flatMap(decodeStoreReplayBatchV2)
+    ok(decodedFileBatch.length == 1 && decodedFileBatch[0].event[0][0].path.join('/') == 'jobs/j'
+        && decodedFileBatch[0].event[0][0].value.result.x == 2,
     'opaque nested changes produce one detached record patch')
     ok(decodedFileBatch.length == 1 && decodedFileBatch[0].event[0].length == 1
         && fileMirror.state.jobs.j.result.x == 2,
     'nested projected data reaches the live batch mirror without waiting for a keyframe')
-    offFileLegacy()
     offFileBatch()
     fileSync()
     fileView.close()

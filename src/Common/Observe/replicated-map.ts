@@ -117,12 +117,10 @@ export type CreateReplicatedMapDeps<V, K extends string = string> = (
 
 type FollowReplicatedMapBaseOpts<V, K extends string> = Omit<
     StoreReplaySyncOpts<ReplicatedMapState<V, K>>,
-    'batch' | 'onBatch' | 'policy' | 'catchUp' | 'gapPolicy' | 'prepareCatchUp' | 'since'
+    'onBatch' | 'policy' | 'catchUp' | 'gapPolicy' | 'prepareCatchUp' | 'since'
 > & {
     /** Override only for a legacy remote without a Replicated Map descriptor. */
     delivery?: tReplicatedMapDelivery
-    /** Prefer compact Store Replay batching (default true; old remotes fall back to legacy). */
-    batch?: boolean
     /** Advanced local notification scheduling; replication batching is unaffected. */
     drain?: StoreDrain
     /** One materialized bounded wire envelope; replay limits may split or merge producer operations. */
@@ -297,7 +295,6 @@ export function createReplicatedMap<V, K extends string = string>(deps: CreateRe
     const exposed = exposeStoreReplay(store, {
         ...replayOpts,
         describe: descriptor,
-        batch: replayOpts.batch ?? true,
         patchSource,
     })
     let closed = false
@@ -538,7 +535,7 @@ export function followReplicatedMap<V, K extends string = string>(
     opts: FollowReplicatedMapOpts<V, K> = {},
 ) {
     const {
-        initial, drain, onBatch, onStatus, delivery: requestedDelivery, batch = true,
+        initial, drain, onBatch, onStatus, delivery: requestedDelivery,
         checkpoint, onSeq, onError, onLive, onStale, validateBatch, ...wireOpts
     } = opts
     const requestedCursor = checkpoint?.cursor
@@ -558,7 +555,7 @@ export function followReplicatedMap<V, K extends string = string>(
     })
     let status: ReplicatedMapStatus = {
         state: 'connecting', ready: false, stale: false, delivery,
-        replayMode: requestedCursor?.replayMode ?? 'legacy', seq: requestedCursor?.seq ?? -1, error: null,
+        replayMode: 'v2', seq: requestedCursor?.seq ?? -1, error: null,
     }
 
     function reportConsumerError(error: unknown) {
@@ -813,14 +810,14 @@ export function followReplicatedMap<V, K extends string = string>(
         if (!next && delivery == 'lossless') {
             throw new Error(`lossless replicated map lost its producer descriptor ${phase}`)
         }
-        const nextMode = storeReplayMode(remote, batch)
+        const nextMode = storeReplayMode()
         if (nextMode != replayMode()) {
             throw new Error(`replicated map replay mode changed ${phase}: ${replayMode()} -> ${nextMode}`)
         }
         if (next?.lineId == lineId) return
         if (delivery == 'lossless') {
             throw new Error(
-                `lossless replicated map replay line changed ${phase}: ${lineId} -> ${next?.lineId ?? 'legacy'}`,
+                `lossless replicated map replay line changed ${phase}: ${lineId} -> ${next?.lineId ?? 'unknown'}`,
             )
         }
         lineId = next?.lineId ?? ''
@@ -869,7 +866,7 @@ export function followReplicatedMap<V, K extends string = string>(
         delivery = preferredDelivery ?? declaredDelivery ?? 'latest'
         lineId = declared?.lineId ?? ''
 
-        const replayMode = storeReplayMode(remote, batch)
+        const replayMode = storeReplayMode()
         if (requestedCursor && requestedCursor.delivery != delivery) {
             reportSyncError(new Error(
                 `replicated map delivery mismatch: cursor ${requestedCursor.delivery}, remote ${delivery}`,
@@ -878,7 +875,7 @@ export function followReplicatedMap<V, K extends string = string>(
         }
         if (requestedCursor && requestedCursor.lineId != lineId && delivery == 'lossless') {
             reportSyncError(new Error(
-                `lossless replicated map cannot resume another replay line: ${requestedCursor.lineId} -> ${lineId || 'legacy'}`,
+                `lossless replicated map cannot resume another replay line: ${requestedCursor.lineId} -> ${lineId || 'unknown'}`,
             ))
             return
         }
@@ -896,7 +893,6 @@ export function followReplicatedMap<V, K extends string = string>(
             sync = syncStoreReplay(store, remote, {
                 ...wireOpts,
                 since,
-                batch,
                 policy: delivery == 'latest' ? 'frame' : 'queue',
                 catchUp: delivery == 'latest' ? 'frame' : 'tail',
                 gapPolicy: delivery == 'latest' ? 'keyframe' : 'error',
@@ -962,7 +958,7 @@ export function followReplicatedMap<V, K extends string = string>(
     }
 
     function checkpointSnapshot(): ReplicatedMapCheckpoint<V, K> {
-        if (!lineId) throw new Error('legacy replicated map remote has no safe checkpoint identity')
+        if (!lineId) throw new Error('replicated map remote has no safe checkpoint identity')
         return {
             cursor: {lineId, delivery, replayMode: replayMode(), seq: seq()},
             snapshot: snapshot(),
