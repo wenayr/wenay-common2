@@ -1,5 +1,5 @@
 // Oracle: store.each() (per-changed-key listen) + syncStoreReplayEach (one-call remote fold).
-// Prompt: doc/target/wenay-common2-store-ergonomics-prompt.md. Disposable oracle, ts-node --transpile-only.
+// Prompt: doc/target/wenay-common2-store-ergonomics-prompt.md. Disposable oracle, run through tsx.
 
 import {createStore} from '../../src/Common/Observe/store'
 import {flushReactive} from '../../src/Common/Observe/reactive'

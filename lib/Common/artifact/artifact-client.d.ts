@@ -12,7 +12,7 @@ export type ArtifactClientDeps = {
     drain?: StoreDrain;
 };
 export declare function createArtifactClient(deps: ArtifactClientDeps): {
-    store: import("../Observe/store").Store<ArtifactStore>;
+    store: import("../Observe").Store<ArtifactStore>;
     ready: Promise<void>;
     seq: () => number;
     stateMode: () => "v2";

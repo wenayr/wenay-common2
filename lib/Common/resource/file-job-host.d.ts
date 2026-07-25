@@ -83,22 +83,22 @@ export declare function createFileJobHost(deps: FileJobHostDeps): {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 };
                 since: (seq: number) => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
-                keyframe: () => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | null | undefined;
+                keyframe: () => Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
                 frame?: ((seq: number, hint?: unknown) => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
                 frameLine?: {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 } | undefined;
             } | {
-                describe: () => Record<string, any>;
                 line: {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 };
                 since: (seq: number) => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
-                keyframe: () => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | null | undefined;
+                keyframe: () => Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
                 frame?: ((seq: number, hint?: unknown) => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
                 frameLine?: {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 } | undefined;
+                describe: () => Record<string, any>;
             };
             startUpload: (request: FileUploadRequest) => Promise<{
                 file: {
@@ -126,25 +126,25 @@ export declare function createFileJobHost(deps: FileJobHostDeps): {
                 error?: string;
             }>;
             startJob: (fileId: string, input: unknown) => {
-                result?: unknown;
                 id: string;
                 fileId: string;
                 owner: string;
                 state: FileJobState;
                 progress: number;
                 message?: string;
+                result?: unknown;
                 error?: string;
                 createdAt: number;
                 updatedAt: number;
             };
             cancelJob: (jobId: string) => {
-                result?: unknown;
                 id: string;
                 fileId: string;
                 owner: string;
                 state: FileJobState;
                 progress: number;
                 message?: string;
+                result?: unknown;
                 error?: string;
                 createdAt: number;
                 updatedAt: number;
@@ -153,7 +153,7 @@ export declare function createFileJobHost(deps: FileJobHostDeps): {
         };
         close(): void;
     };
-    store: import("../Observe/store").Store<FileJobStore>;
+    store: import("../Observe").Store<FileJobStore>;
     close(): void;
 };
 export type FileJobHost = ReturnType<typeof createFileJobHost>;

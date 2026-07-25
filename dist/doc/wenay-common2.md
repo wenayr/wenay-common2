@@ -718,7 +718,7 @@ await manager.start('video', {explicit: true})
 ```
 Runnable example: `npx tsx observe/store-mirror.example.ts`.
 Offline oracles: `npx tsx replay/offline-store.test.ts`; real Socket.IO/RPC wire: `npx tsx replay/offline-store-socket.test.ts`.
-Replica-set oracle: `node node_modules/ts-node/dist/bin.js --transpile-only observe/store-replica-set.test.ts`;
+Replica-set oracle: `npx tsx observe/store-replica-set.test.ts`;
 real two-hop Socket.IO/RPC wire: `oracle/realsocket/store-replica-set.spec.ts`; interactive network:
 `npm run demo` → **Lab** → **Self-assembling Store replica set** (live offer/session/selected-route graph).
 
@@ -785,7 +785,7 @@ Manual path (pre-rev2, still works, `keyOf` @deprecated): build the gate yoursel
 `Replay.conflateReplay(exposed.replay, {pending, highWater, keyOf})` and spread `gated.api` into the
 facade — details in rare docs. New code should declare `frame` on the line instead.
 
-Wire-level proof/oracles: `npx ts-node replay/rpc-auto.test.ts` (real Socket.IO: auto-exposure, legacy
+Wire-level proof/oracles: `npx tsx replay/rpc-auto.test.ts` (real Socket.IO: auto-exposure, legacy
 parity, frame equivalence, gate lag sim), plus `replay/conflate-socket.test.ts`, `replay/conflate.test.ts`,
 `replay/coalesce.test.ts`. Full generic surface (history/time-travel, archive) → 🎞️ in rare docs.
 

@@ -110,7 +110,7 @@ export declare const managedStore: {
 };
 export declare function createStoreManager<const R extends ManagedStoreResources>(resources: R): {
     handles: { [K in keyof R]: ManagedStoreHandle<ManagedStoreOf<R[K]>>; };
-    statusListen: import("../events/Listen").ListenApi<[ManagedStoreStatus]>;
+    statusListen: import("../..").ListenApi<[ManagedStoreStatus]>;
     plan: (opts?: ManagedStorePlanOpts) => ManagedStorePlanItem[];
     start: <K extends keyof R & string>(key: K, opts?: ManagedStoreStartOpts) => Promise<ManagedStoreOf<R[K]>>;
     startMany: (keys: Iterable<keyof R & string>, opts?: ManagedStoreStartOpts) => Promise<Partial<{ [K in keyof R]: ManagedStoreOf<R[K]>; }>>;

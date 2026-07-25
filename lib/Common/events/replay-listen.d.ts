@@ -34,6 +34,13 @@ type ReplayOnOptions<Z extends any[]> = {
 };
 export type ListenOnReplay<Z extends any[] = any[]> = ((cb: Listener<Z>, opts?: ReplayOnOptions<Z>) => (() => void)) & ListenOnBrand<Z>;
 export declare function withReplayListen<T>(base: ListenApi<T>, options?: ReplayListenOptions<NormalizeTuple<T>>): {
+    has(key: import("./Listen").ListenKey): boolean;
+    off(keyOrCallback: Listener<NormalizeTuple<T>> | import("./Listen").ListenKey | null): void;
+    count(): number;
+    keys(): import("./Listen").ListenKey[];
+    isRunning(): boolean;
+    run(): void;
+    onClose(cb: () => void): import("./Listen").ListenOff;
     emit: Listener<NormalizeTuple<T>>;
     emitBatch: (events: readonly NormalizeTuple<T>[]) => void;
     head: () => number;
@@ -50,17 +57,17 @@ export declare function withReplayListen<T>(base: ListenApi<T>, options?: Replay
         key?: key;
         current?: ListenCurrent<NormalizeTuple<T>> | undefined;
     }) => () => void;
-    has(key: import("./Listen").ListenKey): boolean;
-    off(keyOrCallback: import("./Listen").ListenKey | Listener<NormalizeTuple<T>> | null): void;
-    count(): number;
-    keys(): import("./Listen").ListenKey[];
-    isRunning(): boolean;
-    run(): void;
-    onClose(cb: () => void): import("./Listen").ListenOff;
 };
 export type ListenReplayApi<T> = ReturnType<typeof withReplayListen<T>>;
 export type ReplayListenUseOptions<T> = ListenOptions<T> & ReplayListenOptions<NormalizeTuple<T>>;
 export declare function replayListen<T>(options?: ReplayListenUseOptions<T>): readonly [(...a: NormalizeTuple<T>) => void, {
+    has(key: import("./Listen").ListenKey): boolean;
+    off(keyOrCallback: Listener<NormalizeTuple<T>> | import("./Listen").ListenKey | null): void;
+    count(): number;
+    keys(): import("./Listen").ListenKey[];
+    isRunning(): boolean;
+    run(): void;
+    onClose(cb: () => void): import("./Listen").ListenOff;
     emit: Listener<NormalizeTuple<T>>;
     emitBatch: (events: readonly NormalizeTuple<T>[]) => void;
     head: () => number;
@@ -77,12 +84,5 @@ export declare function replayListen<T>(options?: ReplayListenUseOptions<T>): re
         key?: key;
         current?: ListenCurrent<NormalizeTuple<T>> | undefined;
     }) => () => void;
-    has(key: import("./Listen").ListenKey): boolean;
-    off(keyOrCallback: import("./Listen").ListenKey | Listener<NormalizeTuple<T>> | null): void;
-    count(): number;
-    keys(): import("./Listen").ListenKey[];
-    isRunning(): boolean;
-    run(): void;
-    onClose(cb: () => void): import("./Listen").ListenOff;
 }];
 export {};

@@ -1,6 +1,6 @@
 // Oracle: createNodeIdMinter — per-node id namespaces + adopt() rescan.
 // Post-failover id safety: the demo convention (per-node prefixes) promoted to a primitive.
-// Disposable oracle, ts-node --transpile-only.
+// Disposable oracle, run through tsx.
 
 import {createNodeIdMinter} from '../../src/Common/id-pool'
 

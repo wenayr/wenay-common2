@@ -293,7 +293,7 @@ export declare function createConversationHost(deps?: ConversationHostDeps): {
         appendMessage: (account: string, input: ConversationAppendInput) => Promise<ConversationMessage>;
         upsertFact: (account: string, input: ConversationFactInput, source?: tConversationFactSource) => Promise<ConversationFact>;
         retractFact: (account: string, input: ConversationFactRetractInput) => Promise<ConversationFact>;
-        store: import("../Observe/store").Store<ConversationStore>;
+        store: import("../Observe").Store<ConversationStore>;
     };
     connection: (account: string) => {
         fragment: {
@@ -302,22 +302,22 @@ export declare function createConversationHost(deps?: ConversationHostDeps): {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 };
                 since: (seq: number) => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
-                keyframe: () => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | null | undefined;
+                keyframe: () => Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
                 frame?: ((seq: number, hint?: unknown) => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
                 frameLine?: {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 } | undefined;
             } | {
-                describe: () => Record<string, any>;
                 line: {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 };
                 since: (seq: number) => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
-                keyframe: () => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | null | undefined;
+                keyframe: () => Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
                 frame?: ((seq: number, hint?: unknown) => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
                 frameLine?: {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 } | undefined;
+                describe: () => Record<string, any>;
             };
             events: import("../events/replay-wire").ReplayExpose<[tConversationEvent]>;
             createConversation: (input: ConversationCreateInput) => Promise<{

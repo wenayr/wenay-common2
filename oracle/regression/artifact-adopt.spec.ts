@@ -1,7 +1,7 @@
 // Oracle: artifact catalog failover tail — adopt a promoted mirror's catalog into a new host.
 // createArtifactHost({store}) continues the artifact-N id line (no re-issued ids) and
 // recovers private keys through storage.adoptKey (content-hash version → local byte cache).
-// In-proc replay wire; disposable oracle, ts-node --transpile-only.
+// In-proc replay wire; disposable oracle, run through tsx.
 
 import {createArtifactHost, ArtifactRecord, ArtifactStore} from '../../src/Common/artifact/artifact-host'
 import {createStoreFollower} from '../../src/Common/Observe/store-follower'

@@ -8,7 +8,7 @@
 //  Part 1 — generic wire (ticks by symbol), part 2 — degradations,
 //  part 3 — store mirror with storePatchKey (including nested paths).
 //  Run:
-//      npx ts-node replay/coalesce.test.ts
+//      npx tsx replay/coalesce.test.ts
 // ============================================================
 
 import {createStore} from '../src/Common/Observe/store'

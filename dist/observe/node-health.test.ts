@@ -5,7 +5,7 @@
 //  refresh() resamples, a throwing probe records {error} without breaking
 //  the rest, and the store mirrors through the ordinary replay wire —
 //  monitoring of the replication IS replication.
-//  Run: npx ts-node observe/node-health.test.ts
+//  Run: npx tsx observe/node-health.test.ts
 // ============================================================
 
 import {createNodeHealth} from '../src/Common/Observe/node-health'

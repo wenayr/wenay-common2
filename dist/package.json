@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Typed RPC over sockets, replayable Listen wires, reactive stores with replication and failover, peer packet mesh, media/artifact/AI/conversation runtimes",
   "keywords": [
     "rpc",
@@ -32,18 +32,15 @@
   "author": "wenay",
   "license": "ISC",
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/wenayr/wenay-common2.git"
   },
   "dependencies": {
-    "axios": "^1.13.6",
+    "axios": "^1.18.1",
     "express": "^5.2.1"
-  },
-  "optionalDependencies": {
-    "utf-8-validate": "^6.0.6"
   },
   "exports": {
     ".": "./lib/index.js",

@@ -9,7 +9,7 @@
 //  delivery; NO flap on historical tail of since-catch-up;
 //  skewMs tolerance; timer cleanup by off()/close().
 //  Run:
-//      npx ts-node replay/staleness.test.ts
+//      npx tsx replay/staleness.test.ts
 // ============================================================
 
 import {replayListen, exposeReplay, replaySubscribe, StaleInfo, ReplayRemote} from '../src/Common/events/replay-index'

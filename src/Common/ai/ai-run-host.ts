@@ -604,7 +604,7 @@ export function createAiRunHost(deps: AiRunHostDeps) {
             fragment: {
                 capabilities: getCapabilities,
                 state: stateReplay.api.replay,
-                events: exposeReplay(events),
+                events: exposeReplay<[AiRunEvent]>(events),
                 createRun: (request: AiRunRequest) => createRun(account, request),
                 cancelRun: (runId: string, reason?: string) => cancelRun(account, runId, reason),
                 resolveApproval: (approvalId: string, decision: 'approved' | 'rejected') => resolveApproval(account, approvalId, decision),

@@ -23,24 +23,24 @@ export declare function createCallManager(deps: CallManagerDeps): {
     call: (other: string, meta?: unknown) => {
         id: string;
         peer: string;
-        direction: "out" | "in";
+        direction: "in" | "out";
         meta: unknown;
         state: () => tCallState;
         reason: () => tCallEnd | null;
-        changed: import("../events/Listen").ListenApi<[tCallState]>;
+        changed: import("../..").ListenApi<[tCallState]>;
         ended: Promise<tCallEnd>;
         accept(): void;
         decline(why?: tCallEnd): void;
         hangup(): void;
     };
-    rings: import("../events/Listen").ListenApi<[{
+    rings: import("../..").ListenApi<[{
         id: string;
         peer: string;
-        direction: "out" | "in";
+        direction: "in" | "out";
         meta: unknown;
         state: () => tCallState;
         reason: () => tCallEnd | null;
-        changed: import("../events/Listen").ListenApi<[tCallState]>;
+        changed: import("../..").ListenApi<[tCallState]>;
         ended: Promise<tCallEnd>;
         accept(): void;
         decline(why?: tCallEnd): void;
@@ -49,11 +49,11 @@ export declare function createCallManager(deps: CallManagerDeps): {
     active: () => {
         id: string;
         peer: string;
-        direction: "out" | "in";
+        direction: "in" | "out";
         meta: unknown;
         state: () => tCallState;
         reason: () => tCallEnd | null;
-        changed: import("../events/Listen").ListenApi<[tCallState]>;
+        changed: import("../..").ListenApi<[tCallState]>;
         ended: Promise<tCallEnd>;
         accept(): void;
         decline(why?: tCallEnd): void;

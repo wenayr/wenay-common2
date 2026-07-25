@@ -15,10 +15,10 @@ export declare function createContractRuntime(deps?: ContractRuntimeDeps): {
             replay?: undefined;
             status?: undefined;
         } | {
+            reason?: undefined;
             accepted: boolean;
             replay: boolean;
             status: ContractSlotStatus;
-            reason?: undefined;
         }>;
         apply(demands: readonly ContractDemand[]): Promise<({
             accepted: boolean;
@@ -26,10 +26,10 @@ export declare function createContractRuntime(deps?: ContractRuntimeDeps): {
             replay?: undefined;
             status?: undefined;
         } | {
+            reason?: undefined;
             accepted: boolean;
             replay: boolean;
             status: ContractSlotStatus;
-            reason?: undefined;
         })[]>;
         release(slotId: string, reason?: string): Promise<boolean>;
         addOffer(offer: ContractOffer): Promise<void>;
@@ -41,18 +41,18 @@ export declare function createContractRuntime(deps?: ContractRuntimeDeps): {
         rollback(slotId: string): Promise<ContractBinding>;
     };
     api: {
-        status: import("../Observe/store").Store<ContractRuntimeStatus>;
-        changed: import("../events/Listen").ListenApi<[ContractBindingEvent]>;
+        status: import("../Observe").Store<ContractRuntimeStatus>;
+        changed: import("../..").ListenApi<[ContractBindingEvent]>;
         binding(slotId: string): ContractBinding | null;
         acquire<T extends object>(slotId: string): ContractLease<T>;
         explain(slotId: string): ContractExplanation;
         history: () => {
-            from: ContractBinding | null;
-            to: ContractBinding | null;
             at: number;
             slotId: string;
             reason: string;
             error?: string;
+            from: ContractBinding | null;
+            to: ContractBinding | null;
         }[];
     };
     close(): void;

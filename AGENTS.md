@@ -71,6 +71,16 @@ Write new code in this style by default — no need to ask.
   a durable doc (`ROADMAP`, `RECOMMENDATIONS`, `doc/target`, or `doc/changes`) instead of relying on
   an ignored progress file.
 
+## Generated declarations
+
+- `lib/**/*.d.ts` files are generated artifacts. Never edit them by hand.
+- For a compact public-surface overview, read the relevant generated entrypoint declaration
+  (`lib/index.d.ts`, `lib/server.d.ts`, or the matching exported namespace) before traversing
+  implementation files.
+- Run `npm run types:generate` after changing exported types. Use `npm run types:watch` while
+  iterating on public type surfaces; a full `npm run build` also regenerates declarations and removes
+  stale build artifacts.
+
 ## Documentation and release notes
 
 - `README.md` is navigation only. Do not put API guides, examples, or long explanations there.

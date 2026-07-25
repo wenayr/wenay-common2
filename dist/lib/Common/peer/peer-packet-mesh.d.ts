@@ -111,7 +111,7 @@ export declare function createPeerPacketOffers<T>(initial?: readonly PeerPacketO
     };
     api: {
         list: () => PeerPacketOffer<T>[];
-        changes: import("../events/Listen").ListenApi<[readonly PeerPacketOffer<T>[]]>;
+        changes: import("../..").ListenApi<[readonly PeerPacketOffer<T>[]]>;
     };
 };
 export type PeerPacketOffers<T> = ReturnType<typeof createPeerPacketOffers<T>>;
@@ -125,17 +125,17 @@ export declare function createPeerPacketMesh<T>(deps: PeerPacketMeshDeps<T>): {
     broadcast: (targets: readonly string[], payload: T, opts?: {
         ttl?: number;
     }) => Promise<PeerPacketSendResult[]>;
-    packets: import("../events/Listen").ListenApi<[T, PeerPacketMeta]>;
+    packets: import("../..").ListenApi<[T, PeerPacketMeta]>;
     routes: () => {
-        path: string[];
         targetId: string;
         nextHopId: string;
         offerId: string;
         cost: number;
+        path: string[];
     }[];
-    routeChanges: import("../events/Listen").ListenApi<[readonly PeerPacketRoute[]]>;
+    routeChanges: import("../..").ListenApi<[readonly PeerPacketRoute[]]>;
     status: () => PeerPacketRouteStatus[];
-    statusChanges: import("../events/Listen").ListenApi<[readonly PeerPacketRouteStatus[]]>;
+    statusChanges: import("../..").ListenApi<[readonly PeerPacketRouteStatus[]]>;
     stats: () => {
         sent: number;
         forwarded: number;

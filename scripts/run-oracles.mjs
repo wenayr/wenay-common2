@@ -1,5 +1,5 @@
 ﻿// run-oracles.mjs — run ALL oracles with one command (npm run test:all).
-// Convention oracle/README.md: ts-node --transpile-only, PASS/FAIL to log,
+// Convention oracle/README.md: tsx, PASS/FAIL to log,
 // nonzero exit on failure. Sequential run: socket-oracles hold ports.
 // NOT in the publish gate (fast npm run test stays there) — this is the
 // command to 'verify everything' when touching core (events / Observe / replay / rpc).
@@ -11,7 +11,7 @@ import {fileURLToPath} from 'node:url'
 import path from 'node:path'
 
 const root = path.resolve(fileURLToPath(import.meta.url), '..', '..')
-const tsNode = path.join(root, 'node_modules', 'ts-node', 'dist', 'bin.js')
+const tsx = path.join(root, 'node_modules', 'tsx', 'dist', 'cli.mjs')
 const stressOnly = process.argv.includes('--stress')
 const extendedStressOnly = process.argv.includes('--extended-stress')
 
@@ -64,7 +64,7 @@ let failed = 0
 const t0 = Date.now()
 for (const file of files) {
     const start = Date.now()
-    const res = spawnSync(process.execPath, [tsNode, '--transpile-only', file],
+    const res = spawnSync(process.execPath, [tsx, file],
         {
             cwd: root,
             encoding: 'utf8',

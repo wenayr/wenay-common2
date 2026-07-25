@@ -187,41 +187,41 @@ export declare function createAiRunHost(deps: AiRunHostDeps): {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 };
                 since: (seq: number) => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
-                keyframe: () => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | null | undefined;
+                keyframe: () => Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
                 frame?: ((seq: number, hint?: unknown) => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
                 frameLine?: {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 } | undefined;
             } | {
-                describe: () => Record<string, any>;
                 line: {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 };
                 since: (seq: number) => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
-                keyframe: () => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | null | undefined;
+                keyframe: () => Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("../Observe/store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
                 frame?: ((seq: number, hint?: unknown) => import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("../Observe/store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
                 frameLine?: {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 } | undefined;
+                describe: () => Record<string, any>;
             };
             events: import("../events/replay-wire").ReplayExpose<[AiRunEvent]>;
             createRun: (request: AiRunRequest) => AiRun;
             cancelRun: (runId: string, reason?: string) => AiRun;
-            resolveApproval: (approvalId: string, decision: "approved" | "rejected") => {
-                data?: unknown;
+            resolveApproval: (approvalId: string, decision: 'approved' | 'rejected') => {
                 id: string;
                 runId: string;
                 kind: string;
                 label: string;
+                data?: unknown;
                 state: AiApprovalState;
                 createdAt: number;
                 updatedAt: number;
             };
             provideInput: (inputId: string, value: unknown) => {
-                schema?: unknown;
                 id: string;
                 runId: string;
                 label: string;
+                schema?: unknown;
                 state: AiInputState;
                 createdAt: number;
                 updatedAt: number;
@@ -229,7 +229,7 @@ export declare function createAiRunHost(deps: AiRunHostDeps): {
         };
         close(): void;
     };
-    store: import("../Observe/store").Store<AiRunStore>;
+    store: import("../Observe").Store<AiRunStore>;
     close(): void;
 };
 export type AiRunHost = ReturnType<typeof createAiRunHost>;

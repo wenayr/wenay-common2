@@ -8,7 +8,7 @@
 //  part 5 — time machine for store, part 6 — file
 //  storage (jsonl) as proof "lambdas = anything".
 //  Run:
-//      npx ts-node replay/history.test.ts
+//      npx tsx replay/history.test.ts
 // ============================================================
 
 import * as fs from 'fs'

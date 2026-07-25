@@ -5,7 +5,7 @@
 //  Part 1 — generic wire (counter), part 2 — independence
 //  per-client, part 3 — store mirror over async wire with lag.
 //  Run:
-//      npx ts-node replay/conflate.test.ts
+//      npx tsx replay/conflate.test.ts
 // ============================================================
 
 import {createStore} from '../src/Common/Observe/store'

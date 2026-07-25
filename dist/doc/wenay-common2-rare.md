@@ -647,7 +647,7 @@ WebRTC future contract:
 - `transport:'webrtc'` is reserved and currently reports `state:'error'` on `start()`; it is not a hidden second transport.
 - Future WebRTC support must be explicit opt-in for sub-200ms human duplex. Signaling belongs on the existing socket/RPC control channel (offer/answer/ICE), and backend/AI access requires an SFU that re-emits media bytes into the same `Media` Listen/replay surface. Downstream RPC/replay/store consumers must not change.
 
-Oracle: `npx ts-node replay/media-socket.test.ts` checks header decode, plain Listen shape, `replay:true`, typed no-device state in Node, and real Socket.IO binary delivery.
+Oracle: `npx tsx replay/media-socket.test.ts` checks header decode, plain Listen shape, `replay:true`, typed no-device state in Node, and real Socket.IO binary delivery.
 
 ## 📈 exchange — params (`CParams`)
 ```

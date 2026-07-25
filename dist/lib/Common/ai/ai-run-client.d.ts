@@ -17,8 +17,8 @@ export type AiRunClientDeps = {
     drain?: StoreDrain;
 };
 export declare function createAiRunClient(deps: AiRunClientDeps): {
-    store: import("../Observe/store").Store<AiRunStore>;
-    events: import("../events/Listen").ListenApi<[AiRunEvent]>;
+    store: import("../Observe").Store<AiRunStore>;
+    events: import("../..").ListenApi<[AiRunEvent]>;
     ready: Promise<void>;
     stateSeq: () => number;
     stateMode: () => "v2";
@@ -26,7 +26,7 @@ export declare function createAiRunClient(deps: AiRunClientDeps): {
     capabilities: () => Promise<AiCapability[]>;
     createRun: (request: AiRunRequest) => Promise<AiRun>;
     cancelRun: (runId: string, reason?: string) => Promise<AiRun>;
-    resolveApproval: (approvalId: string, decision: "approved" | "rejected") => Promise<AiRunApproval>;
+    resolveApproval: (approvalId: string, decision: 'approved' | 'rejected') => Promise<AiRunApproval>;
     provideInput: (inputId: string, value: unknown) => Promise<AiRunInput>;
     close(): void;
 };

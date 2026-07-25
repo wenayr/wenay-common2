@@ -107,26 +107,26 @@ export declare function followReplicatedMap<V, K extends string = string>(remote
     snapshot: () => Partial<Record<K, V>>;
     onKey: (key: K, cb: (value: V | undefined, ctx: ReplicatedMapKeyContext<K>) => void, keyOpts?: {
         current?: boolean;
-    }) => import("../events/Listen").ListenOff;
-    batches: import("../events/Listen").ListenApi<[ReplicatedMapChange<V, K>]>;
-    keys: import("../events/Listen").ListenApi<[K, V | undefined, ReplicatedMapKeyContext<K>]>;
+    }) => import("../..").ListenOff;
+    batches: import("../..").ListenApi<[ReplicatedMapChange<V, K>]>;
+    keys: import("../..").ListenApi<[K, V | undefined, ReplicatedMapKeyContext<K>]>;
     ready: Promise<void>;
     status: () => ReplicatedMapStatus;
     statusChanges: {
-        on: import("../events/Listen").ListenOnCurrent<[ReplicatedMapStatus]>;
-        once: (cb: import("../events/Listen").Listener<[ReplicatedMapStatus]>, opts?: {
-            key?: import("../events/Listen").ListenKey;
-            current?: import("../events/Listen").ListenCurrent<[ReplicatedMapStatus]> | undefined;
-        }) => import("../events/Listen").ListenOff;
-        emit: import("../events/Listen").Listener<[ReplicatedMapStatus]>;
-        has(key: import("../events/Listen").ListenKey): boolean;
-        off(keyOrCallback: import("../events/Listen").ListenKey | import("../events/Listen").Listener<[ReplicatedMapStatus]> | null): void;
+        emit: import("../..").Listener<[ReplicatedMapStatus]>;
+        has(key: import("../..").ListenKey): boolean;
+        off(keyOrCallback: import("../..").Listener<[ReplicatedMapStatus]> | import("../..").ListenKey | null): void;
         close(): void;
         count(): number;
-        keys(): import("../events/Listen").ListenKey[];
+        keys(): import("../..").ListenKey[];
         isRunning(): boolean;
         run(): void;
-        onClose(cb: () => void): import("../events/Listen").ListenOff;
+        onClose(cb: () => void): import("../..").ListenOff;
+        on: import("../..").ListenOnCurrent<[ReplicatedMapStatus]>;
+        once: (cb: import("../..").Listener<[ReplicatedMapStatus]>, opts?: {
+            key?: import("../..").ListenKey;
+            current?: import("../..").ListenCurrent<[ReplicatedMapStatus]> | undefined;
+        }) => import("../..").ListenOff;
     };
     seq: () => number;
     replayMode: () => "v2";

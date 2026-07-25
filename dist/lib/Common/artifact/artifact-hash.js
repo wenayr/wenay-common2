@@ -8,7 +8,7 @@ function artifactBytesOf(data) {
 }
 async function sha256Hex(data) {
     const bytes = artifactBytesOf(data);
-    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
     let out = '';
     for (const byte of new Uint8Array(digest))
         out += byte.toString(16).padStart(2, '0');

@@ -1,5 +1,4 @@
-import * as lib from "../Common/core/common";
-import { IItems, ParsedUrlQueryInputMy, SearchMatchMode } from "../Common/core/common";
+import { IItems, ParsedUrlQueryInputMy, SearchMatchMode, VirtualItems } from "../Common/core/common";
 import { TF } from "../Common/Time";
 import { ByteStreamR, ByteStreamW, Nullable, NumericTypes } from "../Common/data/ByteStream";
 import { const_Date, ReadonlyFull } from "../Common/core/BaseTypes";
@@ -71,13 +70,13 @@ export declare abstract class IBars implements Iterable<CBar> {
     get lastTime(): const_Date | null;
     get lastCloseTime(): const_Date | null;
     abstract get tickSize(): number;
-    Values<T>(getter: (bar: CBar) => T): lib.VirtualItems<T>;
-    get times(): lib.VirtualItems<const_Date>;
-    get opens(): lib.VirtualItems<number>;
-    get highs(): lib.VirtualItems<number>;
-    get lows(): lib.VirtualItems<number>;
-    get closes(): lib.VirtualItems<number>;
-    get volumes(): lib.VirtualItems<number>;
+    Values<T>(getter: (bar: CBar) => T): VirtualItems<T>;
+    get times(): VirtualItems<const_Date>;
+    get opens(): VirtualItems<number>;
+    get highs(): VirtualItems<number>;
+    get lows(): VirtualItems<number>;
+    get closes(): VirtualItems<number>;
+    get volumes(): VirtualItems<number>;
     entries(): IterableIterator<[number, CBar]>;
     indexOf(time: const_Date, match?: SearchMatchMode): number;
     indexOfLessOrEqual(time: const_Date): number;

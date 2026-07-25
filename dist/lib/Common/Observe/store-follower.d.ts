@@ -19,39 +19,43 @@ export declare function createStoreFollower<T extends object>(deps: StoreFollowe
     status: import("./store").Store<FollowerStatus>;
     isStale: () => boolean;
     api: {
-        replay: {
-            line: {
-                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
-            };
-            since: (seq: number) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
-            keyframe: () => import("./store-replay-codec").tStoreReplayWireBatchV2 | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | null | undefined;
-            frame?: ((seq: number, hint?: unknown) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
-            frameLine?: {
-                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
-            } | undefined;
-        } | {
-            describe: () => Record<string, any>;
-            line: {
-                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
-            };
-            since: (seq: number) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
-            keyframe: () => import("./store-replay-codec").tStoreReplayWireBatchV2 | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | null | undefined;
-            frame?: ((seq: number, hint?: unknown) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
-            frameLine?: {
-                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
-            } | undefined;
-        };
         get(): T;
         get<M extends import("./store").StoreMask<T>>(mask: M): import("./store").StorePick<T, M>;
         set(path: import("./store").StorePath, value: any): void;
         replace(path: import("./store").StorePath, value: any): void;
         changed: any;
         changedPaths: any;
+        replay: {
+            line: {
+                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
+            };
+            since: (seq: number) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
+            keyframe: () => Promise<import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
+            frame?: ((seq: number, hint?: unknown) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
+            frameLine?: {
+                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
+            } | undefined;
+        } | {
+            line: {
+                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
+            };
+            since: (seq: number) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
+            keyframe: () => Promise<import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
+            frame?: ((seq: number, hint?: unknown) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
+            frameLine?: {
+                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
+            } | undefined;
+            describe: () => Record<string, any>;
+        };
     };
     replay: {
-        getSince(seq: number): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]>[] | undefined;
-        keyframe(): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]> | undefined;
-        frame(seq: number, hint?: unknown): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]>[];
+        has(key: import("../..").ListenKey): boolean;
+        off(keyOrCallback: import("../..").Listener<[readonly import("./store").StorePatch[]]> | import("../..").ListenKey | null): void;
+        count(): number;
+        keys(): import("../..").ListenKey[];
+        isRunning(): boolean;
+        run(): void;
+        onClose(cb: () => void): import("../..").ListenOff;
         emit: import("../..").Listener<[readonly import("./store").StorePatch[]]>;
         emitBatch: (events: readonly [readonly import("./store").StorePatch[]][]) => void;
         head: () => number;
@@ -65,21 +69,21 @@ export declare function createStoreFollower<T extends object>(deps: StoreFollowe
             key?: string | symbol;
             current?: import("../..").ListenCurrent<[readonly import("./store").StorePatch[]]> | undefined;
         }) => () => void;
-        has(key: import("../..").ListenKey): boolean;
-        off(keyOrCallback: import("../..").ListenKey | import("../..").Listener<[readonly import("./store").StorePatch[]]> | null): void;
-        count(): number;
-        keys(): import("../..").ListenKey[];
-        isRunning(): boolean;
-        run(): void;
-        onClose(cb: () => void): import("../..").ListenOff;
+        getSince(seq: number): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]>[] | undefined;
+        keyframe(): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]> | undefined;
+        frame(seq: number, hint?: unknown): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]>[];
     };
     ready: Promise<void>;
     promote: () => {
         store: import("./store").Store<T>;
         replay: {
-            getSince(seq: number): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]>[] | undefined;
-            keyframe(): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]> | undefined;
-            frame(seq: number, hint?: unknown): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]>[];
+            has(key: import("../..").ListenKey): boolean;
+            off(keyOrCallback: import("../..").Listener<[readonly import("./store").StorePatch[]]> | import("../..").ListenKey | null): void;
+            count(): number;
+            keys(): import("../..").ListenKey[];
+            isRunning(): boolean;
+            run(): void;
+            onClose(cb: () => void): import("../..").ListenOff;
             emit: import("../..").Listener<[readonly import("./store").StorePatch[]]>;
             emitBatch: (events: readonly [readonly import("./store").StorePatch[]][]) => void;
             head: () => number;
@@ -93,13 +97,9 @@ export declare function createStoreFollower<T extends object>(deps: StoreFollowe
                 key?: string | symbol;
                 current?: import("../..").ListenCurrent<[readonly import("./store").StorePatch[]]> | undefined;
             }) => () => void;
-            has(key: import("../..").ListenKey): boolean;
-            off(keyOrCallback: import("../..").ListenKey | import("../..").Listener<[readonly import("./store").StorePatch[]]> | null): void;
-            count(): number;
-            keys(): import("../..").ListenKey[];
-            isRunning(): boolean;
-            run(): void;
-            onClose(cb: () => void): import("../..").ListenOff;
+            getSince(seq: number): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]>[] | undefined;
+            keyframe(): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]> | undefined;
+            frame(seq: number, hint?: unknown): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]>[];
         };
         epoch: number;
     };

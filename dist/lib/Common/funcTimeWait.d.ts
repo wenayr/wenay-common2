@@ -28,9 +28,6 @@ export declare const FuncTimeWait: {
     byWeightTimeNow(type: tType, timeNow?: number, weight?: number): number;
 };
 export declare function createRateWindow(): {
-    prune: (type: tType, ms?: number) => void;
-    sumWeight: (type: tType, ms?: number) => number;
-    readyAt: (type: tType, weight?: number) => number;
     dStatic: {
         [key: string]: [number, number][];
     };
@@ -40,11 +37,11 @@ export declare function createRateWindow(): {
     weight(type: tType, ms?: number): number;
     byWeight(type: tType, weight?: number): number;
     byWeightTimeNow(type: tType, timeNow?: number, weight?: number): number;
+    prune: (type: tType, ms?: number) => void;
+    sumWeight: (type: tType, ms?: number) => number;
+    readyAt: (type: tType, weight?: number) => number;
 };
 export declare const rateWindow: {
-    prune: (type: tType, ms?: number) => void;
-    sumWeight: (type: tType, ms?: number) => number;
-    readyAt: (type: tType, weight?: number) => number;
     dStatic: {
         [key: string]: [number, number][];
     };
@@ -54,5 +51,8 @@ export declare const rateWindow: {
     weight(type: tType, ms?: number): number;
     byWeight(type: tType, weight?: number): number;
     byWeightTimeNow(type: tType, timeNow?: number, weight?: number): number;
+    prune: (type: tType, ms?: number) => void;
+    sumWeight: (type: tType, ms?: number) => number;
+    readyAt: (type: tType, weight?: number) => number;
 };
 export {};

@@ -39,13 +39,13 @@ export type SortMode = E_SORTMODE | "ascend" | "descend";
 export declare function BSearch<T extends {
     valueOf(): number;
 }>(array: ArrayLike<T>, value: T, match?: SearchMatchMode, mode?: SortMode): number;
-export declare function BSearch<T, T2>(array: ArrayLike<T>, value: T2, comparer: (a: T, b: T2) => number, match?: SearchMatchMode, mode?: SortMode): number;
-export declare function BSearch<T>(array: ArrayLike<T>, compareElement: (item: T) => number, match?: SearchMatchMode, mode?: SortMode): number;
 export declare namespace BSearch {
     var EQUAL: E_MATCH;
     var LESS_OR_EQUAL: E_MATCH;
     var GREAT_OR_EQUAL: E_MATCH;
 }
+export declare function BSearch<T, T2>(array: ArrayLike<T>, value: T2, comparer: (a: T, b: T2) => number, match?: SearchMatchMode, mode?: SortMode): number;
+export declare function BSearch<T>(array: ArrayLike<T>, compareElement: (item: T) => number, match?: SearchMatchMode, mode?: SortMode): number;
 export declare const BSearchAsync: typeof ___BSearchAsync;
 export declare function BSearchDefault<T extends {
     valueOf(): number;
@@ -214,7 +214,7 @@ export declare class CancelablePromise<T> extends Promise<T> {
     static resolve<T>(value: T | PromiseLike<T>): CancelablePromise<T>;
 }
 export declare function createCancellableTimer(interval_ms: number, onTimer: () => boolean | void, onStop?: () => void): CancelablePromise<never>;
-export declare function createCancellableTaskWrapper<T>(task: Promise<T>, isStopped: () => boolean, interval_ms?: number): Promise<T | "stopped">;
+export declare function createCancellableTaskWrapper<T>(task: Promise<T>, isStopped: () => boolean, interval_ms?: number): Promise<"stopped" | T>;
 export declare class MyTimerInterval {
     private _timer;
     private _onstop;

@@ -17,10 +17,10 @@ function mirrorTarget() {
 
 function startMirror() {
     const target = mirrorTarget()
-    const tsNode = path.resolve('node_modules/ts-node/dist/bin.js')
+    const tsx = path.resolve('node_modules/tsx/dist/cli.mjs')
     const server = path.resolve('demo/server.ts')
     console.log('[demo:mirror] following ' + target)
-    const child = spawn(process.execPath, [tsNode, '--transpile-only', server], {
+    const child = spawn(process.execPath, [tsx, server], {
         stdio: 'inherit',
         env: {...process.env, DEMO_MIRROR_OF: target},
     })

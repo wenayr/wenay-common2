@@ -15,7 +15,7 @@ export function artifactBytesOf(data: string | Uint8Array) {
 export async function sha256Hex(data: string | Uint8Array) {
     const bytes = artifactBytesOf(data)
     // WebCrypto types in Node narrow input to BufferSource from DOM-lib; Uint8Array is valid at runtime everywhere
-    const digest = await crypto.subtle.digest('SHA-256', bytes as unknown as ArrayBuffer)
+    const digest = await (globalThis as any).crypto.subtle.digest('SHA-256', bytes as unknown as ArrayBuffer)
     let out = ''
     for (const byte of new Uint8Array(digest)) out += byte.toString(16).padStart(2, '0')
     return out

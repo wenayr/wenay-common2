@@ -10,7 +10,7 @@
 //  - lag gates (policy 'frame'): skip + frame recovery
 //  - negative detection: similar object is NOT replay
 //  - sacred line: frame throws loud (in-proc)
-//  Run: npx ts-node replay/rpc-auto.test.ts
+//  Run: npx tsx replay/rpc-auto.test.ts
 // ============================================================
 
 import express from 'express'

@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Typed RPC over sockets, replayable Listen wires, reactive stores with replication and failover, peer packet mesh, media/artifact/AI/conversation runtimes",
   "keywords": [
     "rpc",
@@ -20,6 +20,8 @@
     "test": "npm run test:rpc-guards && npm run test:types && npm run test:rpc && npm run --prefix ./test test",
     "build & watch": "npm run _clearDir  &&  tsc --watch",
     "build": "npm run _clearDir  &&  tsc --build --verbose  &&  npm run _afterBuild",
+    "types:generate": "tsc -p tsconfig.json --emitDeclarationOnly",
+    "types:watch": "tsc -p tsconfig.json --emitDeclarationOnly --watch",
     "_afterBuild": "node copyCompiledFiles.mjs .\\dist  &&  cd dist  &&  npm pkg delete scripts devDependencies private",
     "pack": "npm run _afterBuild  &&  npm pack .\\dist",
     "_publish": "npm run test  &&  npm publish .\\dist",
@@ -28,13 +30,13 @@
     "_clearDir": "IF exist lib (rd /s /q lib)  &&  mkdir lib  &&  copy tsconfig_lib.json lib\\tsconfig.json  &&  echo:",
     "demo:build": "esbuild demo/client.ts --bundle --minify --platform=browser --outfile=demo/public/client.js  &&  copy /Y demo\\index.html demo\\public\\index.html",
     "demo:build:debug": "esbuild demo/client.ts --bundle --platform=browser --outfile=demo/public/client.js  &&  copy /Y demo\\index.html demo\\public\\index.html",
-    "demo": "npm run demo:build  &&  node node_modules/ts-node/dist/bin.js --transpile-only demo/server.ts",
+    "demo": "npm run demo:build  &&  tsx demo/server.ts",
     "demo:mirror": "npm run demo:build  &&  node scripts/start-demo-mirror.cjs",
     "demo:https": "powershell -ExecutionPolicy Bypass -File scripts/start-demo-https.ps1",
     "demo:https:stop": "powershell -ExecutionPolicy Bypass -File scripts/start-demo-https.ps1 -Stop",
     "test:rpc-guards": "node scripts/assert-rpc-symbol-guard.cjs",
     "test:types": "tsc -p tsconfig.type-tests.json",
-    "test:rpc": "node node_modules/ts-node/dist/bin.js --transpile-only src/Common/rcp/rpc.harness.spec.ts",
+    "test:rpc": "tsx src/Common/rcp/rpc.harness.spec.ts",
     "test:all": "npm run test:rpc-guards && npm run test:types && npm run test:rpc && node scripts/run-oracles.mjs",
     "test:stress": "node scripts/run-oracles.mjs --stress",
     "test:stress:extended": "npm run test:stress && node scripts/run-oracles.mjs --extended-stress"
@@ -56,35 +58,25 @@
   "author": "wenay",
   "license": "ISC",
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/wenayr/wenay-common2.git"
   },
   "dependencies": {
-    "axios": "^1.13.6",
+    "axios": "^1.18.1",
     "express": "^5.2.1"
   },
   "devDependencies": {
-    "@types/create-hmac": "^1.1.3",
     "@types/express": "^5.0.6",
-    "@types/jest": "^30.0.0",
-    "@types/node": "^25.3.5",
+    "@types/node": "^26.1.1",
     "@types/source-map-support": "^0.5.10",
     "esbuild": "^0.28.1",
-    "jest": "^30.2.0",
-    "npm": "^11.11.0",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
-    "ts-jest": "^29.4.6",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.9.3",
-    "undici-types": "^7.19.0",
-    "wenay-common2": "file:./dist"
-  },
-  "optionalDependencies": {
-    "utf-8-validate": "^6.0.6"
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
   },
   "exports": {
     ".": "./lib/index.js",

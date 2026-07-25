@@ -72,20 +72,20 @@ export declare function persistStore<T extends object>(store: Store<T>, opts: Pe
     seq: () => number;
     status: () => OfflineStoreStatus;
     statusListen: {
-        on: import("../events/Listen").ListenOnCurrent<[OfflineStoreStatus]>;
-        once: (cb: import("../events/Listen").Listener<[OfflineStoreStatus]>, opts?: {
-            key?: import("../events/Listen").ListenKey;
-            current?: import("../events/Listen").ListenCurrent<[OfflineStoreStatus]> | undefined;
-        }) => import("../events/Listen").ListenOff;
-        emit: import("../events/Listen").Listener<[OfflineStoreStatus]>;
-        has(key: import("../events/Listen").ListenKey): boolean;
-        off(keyOrCallback: import("../events/Listen").ListenKey | import("../events/Listen").Listener<[OfflineStoreStatus]> | null): void;
+        emit: import("../..").Listener<[OfflineStoreStatus]>;
+        has(key: import("../..").ListenKey): boolean;
+        off(keyOrCallback: import("../..").Listener<[OfflineStoreStatus]> | import("../..").ListenKey | null): void;
         close(): void;
         count(): number;
-        keys(): import("../events/Listen").ListenKey[];
+        keys(): import("../..").ListenKey[];
         isRunning(): boolean;
         run(): void;
-        onClose(cb: () => void): import("../events/Listen").ListenOff;
+        onClose(cb: () => void): import("../..").ListenOff;
+        on: import("../..").ListenOnCurrent<[OfflineStoreStatus]>;
+        once: (cb: import("../..").Listener<[OfflineStoreStatus]>, opts?: {
+            key?: import("../..").ListenKey;
+            current?: import("../..").ListenCurrent<[OfflineStoreStatus]> | undefined;
+        }) => import("../..").ListenOff;
     };
     setSyncStatus: (patch: Partial<OfflineStoreStatus>) => void;
 };

@@ -21,7 +21,7 @@ export type FileJobClientDeps = {
     drain?: StoreDrain;
 };
 export declare function createFileJobClient(deps: FileJobClientDeps): {
-    store: import("../Observe/store").Store<FileJobStore>;
+    store: import("../Observe").Store<FileJobStore>;
     ready: Promise<void>;
     seq: () => number;
     stateMode: () => "v2";
@@ -41,7 +41,7 @@ export declare function createFileJobClient(deps: FileJobClientDeps): {
         seq: () => number;
         isStale: () => boolean;
         lastTs: () => number;
-        mode: "v2";
+        mode: 'v2';
     };
 };
 export type FileJobClient = ReturnType<typeof createFileJobClient>;

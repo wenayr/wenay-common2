@@ -1,4 +1,5 @@
 import type { Express } from 'express';
+import axios from 'axios';
 interface Subscriber {
     url: string;
     tag: string;
@@ -12,10 +13,12 @@ interface WebhookClientOptions {
     renewIntervalMs?: number;
     app?: Express;
 }
+declare const loadSubscribers: () => Map<string, Subscriber>;
+declare const saveSubscribers: (subs: Map<string, Subscriber>) => void;
 export declare const buildSelfWebhookUrl: (clientIp: string, raw: unknown) => string | null;
 export declare const apiSaveData: {
-    loadSubscribers: () => Map<string, Subscriber>;
-    saveSubscribers: (subs: Map<string, Subscriber>) => void;
+    loadSubscribers: typeof loadSubscribers;
+    saveSubscribers: typeof saveSubscribers;
 };
 type params = {
     authToken: string;
@@ -30,7 +33,7 @@ export declare const createWebhookServer: (params: params) => {
 export declare const createWebhookClient: (options: WebhookClientOptions) => {
     connect: (tag: string, handler: (payload: any) => void) => Promise<void>;
     unsubscribe: (...tags: string[]) => Promise<void>;
-    status: (tag: string) => Promise<import("axios").AxiosResponse<any, any, {}>>;
+    status: (tag: string) => Promise<axios.AxiosResponse<any, any, {}>>;
     tags: () => string[];
     getMySubscriptions: () => Promise<Subscriber[]>;
     getAvailableTags: () => Promise<string[]>;

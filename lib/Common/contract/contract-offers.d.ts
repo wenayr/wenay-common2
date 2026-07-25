@@ -8,7 +8,7 @@ export declare function createContractOffers(initial?: readonly ContractOffer[])
     };
     api: {
         list: () => ContractOffer[];
-        changes: import("../events/Listen").ListenApi<[readonly ContractOffer[]]>;
+        changes: import("../..").ListenApi<[readonly ContractOffer[]]>;
     };
 };
 export type ContractOffers = ReturnType<typeof createContractOffers>;

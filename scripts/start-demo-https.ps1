@@ -25,7 +25,7 @@ $caddyPath = Join-Path $toolsDir 'caddy.exe'
 $caddyConfigPath = Join-Path $runtimeDir 'Caddyfile'
 $caddyVersion = '2.11.4'
 $natPmpScript = Join-Path $PSScriptRoot 'keep-nat-pmp-mapping.ps1'
-$tsNodePath = Join-Path $projectRoot 'node_modules\ts-node\dist\bin.js'
+$tsxPath = Join-Path $projectRoot 'node_modules\tsx\dist\cli.mjs'
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 
 function Stop-DemoProcess([int]$processId, [string]$commandMarker = '') {
@@ -136,7 +136,7 @@ function Stop-PreviousStand {
         }
     }
     if ($properties -contains 'backendPid') {
-        if (!(Stop-DemoProcess $state.backendPid $tsNodePath)) {
+        if (!(Stop-DemoProcess $state.backendPid 'demo/server.ts')) {
             $cleanupComplete = $false
         }
     }
@@ -441,7 +441,7 @@ $env:DEMO_APP_ORIGINS = ConvertTo-Json -InputObject $appOrigins -Compress
 try {
     $backendArgs = @{
         FilePath = $nodePath
-        ArgumentList = @((Quote-ProcessArgument $tsNodePath), '--transpile-only', 'demo/server.ts')
+        ArgumentList = @((Quote-ProcessArgument $tsxPath), 'demo/server.ts')
         WorkingDirectory = $projectRoot
         RedirectStandardOutput = $backendOut
         RedirectStandardError = $backendErr

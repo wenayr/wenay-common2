@@ -17,14 +17,14 @@ export declare function createPeerHost(deps?: PeerHostDeps): {
         fragment: {
             signal: {
                 send: (env: SignalEnvelope) => Promise<boolean>;
-                signals: import("../events/Listen").ListenApi<[SignalEnvelope]>;
+                signals: import("../..").ListenApi<[SignalEnvelope]>;
             };
             publish: (envelope: PatchEnvelope) => import("./peer-relay").RelayPushResult;
             publishBatch: (envelopes: PatchEnvelope[]) => import("./peer-relay").RelayPushResult;
             peers: Record<string, ReplayRemote<[StorePatch]>>;
             presence: {
                 list: () => string[];
-                changes: import("../events/Listen").ListenApi<[PresenceChange]>;
+                changes: import("../..").ListenApi<[PresenceChange]>;
             };
         };
         close: () => void;
@@ -43,7 +43,7 @@ export declare function createPeerHost(deps?: PeerHostDeps): {
     accounts: () => string[];
     presence: {
         list: () => string[];
-        changes: import("../events/Listen").ListenApi<[PresenceChange]>;
+        changes: import("../..").ListenApi<[PresenceChange]>;
     };
     revoke: (pair: string, accounts: string[], reason?: string) => void;
     close(): void;

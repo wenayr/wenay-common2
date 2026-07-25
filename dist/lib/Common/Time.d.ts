@@ -93,7 +93,7 @@ export declare class TF implements IPeriod {
     private static constructFromSec;
     static get<T extends string>(name: T): TF | (T extends __E_TF_KEY ? never : null);
     static getAsserted(name: string): TF;
-    static fromName<T extends string>(name: T): TF | (T extends "D1" | "S1" | "S2" | "S3" | "S4" | "S5" | "S6" | "S10" | "S12" | "S15" | "S20" | "S30" | "M1" | "M2" | "M3" | "M4" | "M5" | "M6" | "M10" | "M12" | "M15" | "M20" | "M30" | "H1" | "H2" | "H3" | "H4" | "H6" | "H8" | "H12" | "W1" | "MN1" | "MN2" | "MN3" | "MN4" | "MN6" | "Y1" ? never : null);
+    static fromName<T extends string>(name: T): TF | (T extends "D1" | "H1" | "H12" | "H2" | "H3" | "H4" | "H6" | "H8" | "M1" | "M10" | "M12" | "M15" | "M2" | "M20" | "M3" | "M30" | "M4" | "M5" | "M6" | "MN1" | "MN2" | "MN3" | "MN4" | "MN6" | "S1" | "S10" | "S12" | "S15" | "S2" | "S20" | "S3" | "S30" | "S4" | "S5" | "S6" | "W1" | "Y1" ? never : null);
     static fromSec(value: number): TF | null;
     static createCustomFromSec(sec: number): TF;
     static createCustom(unit: TIME_UNIT, unitCount: number): TF;

@@ -13,39 +13,43 @@ export type DurableStoreReplayDeps<T extends object> = {
 export declare function createDurableStoreReplay<T extends object>(deps: DurableStoreReplayDeps<T>): {
     store: import("./store").Store<T>;
     api: {
-        replay: {
-            line: {
-                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
-            };
-            since: (seq: number) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
-            keyframe: () => import("./store-replay-codec").tStoreReplayWireBatchV2 | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | null | undefined;
-            frame?: ((seq: number, hint?: unknown) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
-            frameLine?: {
-                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
-            } | undefined;
-        } | {
-            describe: () => Record<string, any>;
-            line: {
-                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
-            };
-            since: (seq: number) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
-            keyframe: () => import("./store-replay-codec").tStoreReplayWireBatchV2 | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | null | undefined;
-            frame?: ((seq: number, hint?: unknown) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
-            frameLine?: {
-                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
-            } | undefined;
-        };
         get(): T;
         get<M extends import("./store").StoreMask<T>>(mask: M): import("./store").StorePick<T, M>;
         set(path: import("./store").StorePath, value: any): void;
         replace(path: import("./store").StorePath, value: any): void;
         changed: any;
         changedPaths: any;
+        replay: {
+            line: {
+                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
+            };
+            since: (seq: number) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
+            keyframe: () => Promise<import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
+            frame?: ((seq: number, hint?: unknown) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
+            frameLine?: {
+                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
+            } | undefined;
+        } | {
+            line: {
+                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
+            };
+            since: (seq: number) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
+            keyframe: () => Promise<import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
+            frame?: ((seq: number, hint?: unknown) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
+            frameLine?: {
+                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
+            } | undefined;
+            describe: () => Record<string, any>;
+        };
     };
     replay: {
-        getSince(seq: number): ReplayEvent<[readonly StorePatch[]]>[] | undefined;
-        keyframe(): ReplayEvent<[readonly StorePatch[]]> | undefined;
-        frame(seq: number, hint?: unknown): ReplayEvent<[readonly StorePatch[]]>[];
+        has(key: import("../..").ListenKey): boolean;
+        off(keyOrCallback: import("../..").Listener<[readonly StorePatch[]]> | import("../..").ListenKey | null): void;
+        count(): number;
+        keys(): import("../..").ListenKey[];
+        isRunning(): boolean;
+        run(): void;
+        onClose(cb: () => void): import("../..").ListenOff;
         emit: import("../..").Listener<[readonly StorePatch[]]>;
         emitBatch: (events: readonly [readonly StorePatch[]][]) => void;
         head: () => number;
@@ -59,13 +63,9 @@ export declare function createDurableStoreReplay<T extends object>(deps: Durable
             key?: string | symbol;
             current?: import("../..").ListenCurrent<[readonly StorePatch[]]> | undefined;
         }) => () => void;
-        has(key: import("../..").ListenKey): boolean;
-        off(keyOrCallback: import("../..").ListenKey | import("../..").Listener<[readonly StorePatch[]]> | null): void;
-        count(): number;
-        keys(): import("../..").ListenKey[];
-        isRunning(): boolean;
-        run(): void;
-        onClose(cb: () => void): import("../..").ListenOff;
+        getSince(seq: number): ReplayEvent<[readonly StorePatch[]]>[] | undefined;
+        keyframe(): ReplayEvent<[readonly StorePatch[]]> | undefined;
+        frame(seq: number, hint?: unknown): ReplayEvent<[readonly StorePatch[]]>[];
     };
     restored: {
         seq: number;

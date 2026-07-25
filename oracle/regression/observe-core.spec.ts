@@ -141,7 +141,10 @@ function addCoreSuite(label: string, api: Api) {
         drain.flushAll()
         assertEq(hits, 3, 'non-configurable defineProperty notifies once')
         assertDeepEq(Object.keys(s).sort(), ['fixed', 'open'], 'non-configurable key remains enumerable through proxy invariants')
-        assertThrows(() => { s.fixed = 8 }, /read only|trap returned falsish|Cannot assign/i, 'non-writable non-configurable property rejects writes')
+        assertThrows(function rejectFixedWrite() {
+            'use strict'
+            s.fixed = 8
+        }, /read only|trap returned falsish|Cannot assign/i, 'non-writable non-configurable property rejects writes')
         drain.flushAll()
         assertEq(s.fixed, 7, 'failed non-configurable write leaves value unchanged')
         assertEq(hits, 3, 'failed non-configurable write does not notify')

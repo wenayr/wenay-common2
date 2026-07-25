@@ -64,53 +64,53 @@ export declare function createListen<T>(producer: (emit: Listener<NormalizeTuple
 export declare function createFastListen<T>(producer: (emit: Listener<NormalizeTuple<T>>) => (void | ListenOff)): ListenApi<T>;
 export declare function listen<T>(options?: ListenOptions<T>): readonly [Listener<NormalizeTuple<T>>, ListenApi<T>];
 export declare function withStoreListen<T>(base: ListenApi<T>, currentProvider: ListenCurrentProvider<NormalizeTuple<T>>): {
+    emit: Listener<NormalizeTuple<T>>;
+    has(key: ListenKey): boolean;
+    off(keyOrCallback: Listener<NormalizeTuple<T>> | ListenKey | null): void;
+    close(): void;
+    count(): number;
+    keys(): ListenKey[];
+    isRunning(): boolean;
+    run(): void;
+    onClose(cb: CloseCallback): ListenOff;
     on: ListenOnCurrent<NormalizeTuple<T>>;
     once: (cb: Listener<NormalizeTuple<T>>, opts?: {
         key?: ListenKey;
         current?: ListenCurrent<NormalizeTuple<T>>;
     }) => ListenOff;
-    emit: Listener<NormalizeTuple<T>>;
-    has(key: ListenKey): boolean;
-    off(keyOrCallback: ListenKey | Listener<NormalizeTuple<T>> | null): void;
-    close(): void;
-    count(): number;
-    keys(): ListenKey[];
-    isRunning(): boolean;
-    run(): void;
-    onClose(cb: CloseCallback): ListenOff;
 };
 export type ListenStoreApi<T> = ReturnType<typeof withStoreListen<T>>;
 export declare function createStoreListen<T>(producer: (emit: Listener<NormalizeTuple<T>>) => (void | ListenOff), options: ListenStoreOptions<T>): {
-    on: ListenOnCurrent<NormalizeTuple<T>>;
-    once: (cb: Listener<NormalizeTuple<T>>, opts?: {
-        key?: ListenKey;
-        current?: ListenCurrent<NormalizeTuple<T>> | undefined;
-    }) => ListenOff;
     emit: Listener<NormalizeTuple<T>>;
     has(key: ListenKey): boolean;
-    off(keyOrCallback: ListenKey | Listener<NormalizeTuple<T>> | null): void;
+    off(keyOrCallback: Listener<NormalizeTuple<T>> | ListenKey | null): void;
     close(): void;
     count(): number;
     keys(): ListenKey[];
     isRunning(): boolean;
     run(): void;
     onClose(cb: CloseCallback): ListenOff;
+    on: ListenOnCurrent<NormalizeTuple<T>>;
+    once: (cb: Listener<NormalizeTuple<T>>, opts?: {
+        key?: ListenKey;
+        current?: ListenCurrent<NormalizeTuple<T>> | undefined;
+    }) => ListenOff;
 };
 export declare function listenStore<T>(options: ListenStoreOptions<T>): readonly [Listener<NormalizeTuple<T>>, {
-    on: ListenOnCurrent<NormalizeTuple<T>>;
-    once: (cb: Listener<NormalizeTuple<T>>, opts?: {
-        key?: ListenKey;
-        current?: ListenCurrent<NormalizeTuple<T>> | undefined;
-    }) => ListenOff;
     emit: Listener<NormalizeTuple<T>>;
     has(key: ListenKey): boolean;
-    off(keyOrCallback: ListenKey | Listener<NormalizeTuple<T>> | null): void;
+    off(keyOrCallback: Listener<NormalizeTuple<T>> | ListenKey | null): void;
     close(): void;
     count(): number;
     keys(): ListenKey[];
     isRunning(): boolean;
     run(): void;
     onClose(cb: CloseCallback): ListenOff;
+    on: ListenOnCurrent<NormalizeTuple<T>>;
+    once: (cb: Listener<NormalizeTuple<T>>, opts?: {
+        key?: ListenKey;
+        current?: ListenCurrent<NormalizeTuple<T>> | undefined;
+    }) => ListenOff;
 }];
 export declare function toSlimListen<T>(full: ListenApi<T>): {
     on: (cb: Listener<NormalizeTuple<T>>, opts?: {
@@ -125,7 +125,7 @@ export declare function slimListen<T>(options?: ListenOptions<T>): readonly [Lis
     on: (cb: Listener<NormalizeTuple<T>>, opts?: {
         key?: ListenKey;
     } | undefined) => ListenOff;
-    off: (keyOrCallback: ListenKey | Listener<NormalizeTuple<T>> | null) => void;
+    off: (keyOrCallback: Listener<NormalizeTuple<T>> | ListenKey | null) => void;
     close: () => void;
     count: () => number;
 }];

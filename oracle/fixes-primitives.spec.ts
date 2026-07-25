@@ -3,7 +3,7 @@
 //   #2 joinListens.destroy — present + actually unsubscribes (type fix; runtime sanity here)
 //   #3 joinListens         — no empty-bucket leak in `pending` after a group fires
 //   #5 createIterableObject — delete on a read-only proxy must NOT throw (consistent with set())
-// Run: node node_modules/ts-node/dist/bin.js --transpile-only oracle/fixes-primitives.spec.ts
+// Run: npx tsx oracle/fixes-primitives.spec.ts
 import {promiseProgress} from '../src/Common/async/promiseProgress'
 import {joinListens} from '../src/Common/events/joinListens'
 import {listen as createListenPair} from '../src/Common/events/Listen'

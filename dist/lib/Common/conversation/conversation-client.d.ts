@@ -17,8 +17,8 @@ export type ConversationClientDeps = {
     drain?: StoreDrain;
 };
 export declare function createConversationClient(deps: ConversationClientDeps): {
-    store: import("../Observe/store").Store<ConversationStore>;
-    events: import("../events/Listen").ListenApi<[tConversationEvent]>;
+    store: import("../Observe").Store<ConversationStore>;
+    events: import("../..").ListenApi<[tConversationEvent]>;
     ready: Promise<void>;
     stateSeq: () => number;
     stateMode: () => "v2";

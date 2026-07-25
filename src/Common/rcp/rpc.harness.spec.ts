@@ -21,7 +21,7 @@
 // the schema (off-schema path for maxPathLen). Where a value is `any` by contract
 // (echo, authAck) — that is the library type, not hidden typing.
 //
-// Run:   node node_modules/ts-node/dist/bin.js --transpile-only src/Common/rcp/rpc.harness.spec.ts
+// Run:   npx tsx src/Common/rcp/rpc.harness.spec.ts
 // Excluded from build (*.spec.ts in tsconfig.exclude) — does NOT reach published lib.
 // ===========================================================================
 

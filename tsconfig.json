@@ -3,7 +3,7 @@
     "target": "ESNext",
     "module": "CommonJS",
     //"module": "ESNext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "noEmitOnError": true,
     "removeComments": true,
     "sourceMap": false,
@@ -19,18 +19,16 @@
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
     "outDir": "./lib",
+    "rootDir": "./src",
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "lib": [
       "esnext"
     ],
-    "baseUrl": ".",
-    "paths": {
-      "*": [
-        "node_modules/*"
-      ],
-    }
+    "types": [
+      "node"
+    ]
   },
 
   "include": [

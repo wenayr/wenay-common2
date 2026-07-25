@@ -10,7 +10,7 @@
 //  reconnect in MIDDLE of conflation-episode via since (journal full,
 //  drops from gates don't leak it).
 //  Run:
-//      npx ts-node replay/conflate-socket.test.ts
+//      npx tsx replay/conflate-socket.test.ts
 // ============================================================
 
 import express from 'express'

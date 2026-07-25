@@ -9,7 +9,7 @@
 //  dedup in window, symbol-identity of keys, no string segment concatenation
 //  string segments.
 //  Run:
-//      npx ts-node observe/hot-write.test.ts
+//      npx tsx observe/hot-write.test.ts
 // ============================================================
 
 import {reactive, onUpdatePaths, flushReactive} from '../src/Common/Observe/reactive'

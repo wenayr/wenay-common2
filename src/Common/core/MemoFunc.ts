@@ -366,5 +366,5 @@ export const MemoFuncConvert = <T extends () => any>(func: T, memo: ReturnType<t
 //     }
 // }
 //
-// // Run: MEMO_FUNC_TESTS=1 npx ts-node MemoFunc.ts
+// // Run: MEMO_FUNC_TESTS=1 npx tsx MemoFunc.ts
 // runMemoFuncTests();

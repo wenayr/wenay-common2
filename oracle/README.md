@@ -4,7 +4,7 @@ Convention (see PLAN.md "Working agreement"):
 
 - One file per task being verified: `oracle/<task-slug>.oracle.ts`.
 - Log-based: prints `PASS`/`FAIL` lines, exits non-zero on failure.
-  Run: `node node_modules/ts-node/dist/bin.js --transpile-only oracle/<name>.oracle.ts`
+  Run: `npx tsx oracle/<name>.oracle.ts`
 - **Disposable**: after the fix goes green, the oracle file is DELETED and a one-line
   mark is appended to `PASSED.md`. The completed task is then removed from PLAN.md/PLAN_ru.md
   (history lives in git).

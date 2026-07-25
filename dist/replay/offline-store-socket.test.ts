@@ -13,7 +13,7 @@
 //  - evicted/future seq falls back to one fresh keyframe and overwrites cache
 //
 //  Run:
-//      npx ts-node replay/offline-store-socket.test.ts
+//      npx tsx replay/offline-store-socket.test.ts
 //      npx tsx replay/offline-store-socket.test.ts
 // ============================================================
 

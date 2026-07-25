@@ -16,7 +16,7 @@
 //"module" : "ES6"
 
 //-r source-map-support/register
-//--loader ts-node/esm.mjs
+// Run TypeScript entry points through tsx.
 
 //"sourceMap": true,
 

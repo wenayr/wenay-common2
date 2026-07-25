@@ -80,7 +80,7 @@ export declare function createRouteCoordinator<Z extends any[] = any[]>(deps: Ro
                 state: tConnectorState;
             } | null;
         };
-        subscribe: (cb: Listener<Z>, opts?: Omit<ReplayRouteSubscribeOpts, "label">) => (() => void) & {
+        subscribe: (cb: Listener<Z>, opts?: Omit<ReplayRouteSubscribeOpts, 'label'>) => (() => void) & {
             ready: Promise<void>;
             seq: () => number;
             label: () => string | undefined;
@@ -109,7 +109,7 @@ export declare function createRouteCoordinator<Z extends any[] = any[]>(deps: Ro
                 state: tConnectorState;
             } | null;
         };
-        subscribe: (cb: Listener<Z>, opts?: Omit<ReplayRouteSubscribeOpts, "label">) => (() => void) & {
+        subscribe: (cb: Listener<Z>, opts?: Omit<ReplayRouteSubscribeOpts, 'label'>) => (() => void) & {
             ready: Promise<void>;
             seq: () => number;
             label: () => string | undefined;
@@ -138,7 +138,7 @@ export declare function createRouteCoordinator<Z extends any[] = any[]>(deps: Ro
                 state: tConnectorState;
             } | null;
         };
-        subscribe: (cb: Listener<Z>, opts?: Omit<ReplayRouteSubscribeOpts, "label">) => (() => void) & {
+        subscribe: (cb: Listener<Z>, opts?: Omit<ReplayRouteSubscribeOpts, 'label'>) => (() => void) & {
             ready: Promise<void>;
             seq: () => number;
             label: () => string | undefined;
@@ -167,7 +167,7 @@ export declare function createRouteCoordinator<Z extends any[] = any[]>(deps: Ro
                 state: tConnectorState;
             } | null;
         };
-        subscribe: (cb: Listener<Z>, opts?: Omit<ReplayRouteSubscribeOpts, "label">) => (() => void) & {
+        subscribe: (cb: Listener<Z>, opts?: Omit<ReplayRouteSubscribeOpts, 'label'>) => (() => void) & {
             ready: Promise<void>;
             seq: () => number;
             label: () => string | undefined;
@@ -196,7 +196,7 @@ export declare function createRouteCoordinator<Z extends any[] = any[]>(deps: Ro
                 state: tConnectorState;
             } | null;
         };
-        subscribe: (cb: Listener<Z>, opts?: Omit<ReplayRouteSubscribeOpts, "label">) => (() => void) & {
+        subscribe: (cb: Listener<Z>, opts?: Omit<ReplayRouteSubscribeOpts, 'label'>) => (() => void) & {
             ready: Promise<void>;
             seq: () => number;
             label: () => string | undefined;
@@ -225,7 +225,7 @@ export declare function createRouteCoordinator<Z extends any[] = any[]>(deps: Ro
                 state: tConnectorState;
             } | null;
         };
-        subscribe: (cb: Listener<Z>, opts?: Omit<ReplayRouteSubscribeOpts, "label">) => (() => void) & {
+        subscribe: (cb: Listener<Z>, opts?: Omit<ReplayRouteSubscribeOpts, 'label'>) => (() => void) & {
             ready: Promise<void>;
             seq: () => number;
             label: () => string | undefined;
@@ -255,7 +255,7 @@ export declare function createRouteCoordinator<Z extends any[] = any[]>(deps: Ro
                 state: tConnectorState;
             } | null;
         };
-        subscribe: (cb: Listener<Z>, opts?: Omit<ReplayRouteSubscribeOpts, "label">) => (() => void) & {
+        subscribe: (cb: Listener<Z>, opts?: Omit<ReplayRouteSubscribeOpts, 'label'>) => (() => void) & {
             ready: Promise<void>;
             seq: () => number;
             label: () => string | undefined;

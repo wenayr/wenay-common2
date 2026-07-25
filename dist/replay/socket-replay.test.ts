@@ -4,7 +4,7 @@
 //  Layer B via real Socket.IO localhost WebSocket:
 //  store mirror over replay-line (keyframe + seq-deltas).
 //  Run:
-//      npx ts-node replay/socket-replay.test.ts
+//      npx tsx replay/socket-replay.test.ts
 // ============================================================
 
 import express from 'express'

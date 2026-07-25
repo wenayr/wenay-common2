@@ -9,7 +9,7 @@
 //  keyframe (I-frame) = the full frame buffer. Memory is external: the server
 //  owns the "current frame" itself, current() returns a copy of it.
 //
-//  Run: npx ts-node replay/canvas-socket.test.ts
+//  Run: npx tsx replay/canvas-socket.test.ts
 // ============================================================
 
 import express from 'express'

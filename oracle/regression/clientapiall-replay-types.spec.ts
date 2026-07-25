@@ -1,5 +1,5 @@
 // Oracle: ClientAPIAll/ClientAPIStrict replay projection is a TYPE-level contract, and
-// tsconfig excludes *.spec.ts while oracles run ts-node --transpile-only — so the check
+// tsconfig excludes *.spec.ts while oracles run through tsx — so the check
 // here is an explicit `tsc --noEmit` over the fixture. A negative control compiles a
 // deliberately broken snippet first: if THAT passes, the tsc invocation itself is broken
 // and a green fixture would mean nothing.
@@ -11,8 +11,8 @@ import path from 'node:path'
 
 const root = path.resolve(__dirname, '..', '..')
 const tsc = path.join(root, 'node_modules', 'typescript', 'bin', 'tsc')
-const flags = ['--noEmit', '--strict', '--target', 'esnext', '--module', 'commonjs',
-    '--moduleResolution', 'node', '--esModuleInterop', '--skipLibCheck']
+const flags = ['--ignoreConfig', '--noEmit', '--strict', '--target', 'esnext', '--module', 'commonjs',
+    '--moduleResolution', 'bundler', '--esModuleInterop', '--skipLibCheck']
 
 function typecheck(file: string) {
     const res = spawnSync(process.execPath, [tsc, ...flags, file],

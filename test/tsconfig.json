@@ -3,7 +3,7 @@
     "target": "ESNext",
     "module": "CommonJS",
     //"module": "ESNext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "noEmitOnError": true,
     "removeComments": true,
     "sourceMap": true,
@@ -25,9 +25,6 @@
       "esnext"
     ],
     "types" : ["node"],
-    "baseUrl": "./",
-    "paths": {
-    },
   },
   "include": [
     //"*.ts"

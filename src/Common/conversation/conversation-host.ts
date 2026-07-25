@@ -797,7 +797,7 @@ export function createConversationHost(deps: ConversationHostDeps = {}) {
         return {
             fragment: {
                 state: stateReplay.api.replay,
-                events: exposeReplay(events),
+                events: exposeReplay<[tConversationEvent]>(events),
                 createConversation: (input: ConversationCreateInput) => createConversation(account, input),
                 createChannel: (input: ConversationChannelInput) => createChannel(account, input),
                 postMessage: (input: ConversationPostInput) => postMessage(account, input),

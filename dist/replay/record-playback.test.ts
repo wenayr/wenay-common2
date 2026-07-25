@@ -6,7 +6,7 @@
 //  storeReplayAt gives random access; playbackStoreReplay re-emits the line
 //  into a fresh head — instantly (speed: Infinity) or paced — and an ordinary
 //  mirror consumes the playback exactly like a live line.
-//  Run: npx ts-node replay/record-playback.test.ts
+//  Run: npx tsx replay/record-playback.test.ts
 // ============================================================
 
 import {createStore} from '../src/Common/Observe/store'

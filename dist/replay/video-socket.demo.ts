@@ -13,7 +13,7 @@
 //    - viewer B "lags" (gap of several frames): reconnect
 //      via since → only the skipped tail of deltas
 //
-//  Run: npx ts-node replay/video-socket.demo.ts
+//  Run: npx tsx replay/video-socket.demo.ts
 // ============================================================
 
 import express from 'express'
