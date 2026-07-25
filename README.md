@@ -37,7 +37,10 @@ Where it goes next: [`demo/`](demo/) is the full runnable stand (`npm run demo`)
 - Extended API cheat sheet: [`doc/wenay-common2-rare.md`](doc/wenay-common2-rare.md)
 - Runtime protocols: [`AI`](doc/AI-RUN-PROTOCOL.md) · [`Artifact`](doc/ARTIFACT-RUNTIME.md) ·
   [`Conversation`](doc/CONVERSATION-RUNTIME.md) · [`Contract`](doc/CONTRACT-RUNTIME.md)
-- Public HTTPS/WSS stand and certificates: [`doc/DEMO-HTTPS.md`](doc/DEMO-HTTPS.md)
+- Installed-project HTTPS CLI and renewal: [`doc/HTTPS-CLI.md`](doc/HTTPS-CLI.md)
+- Public HTTPS/WSS demo stand and certificates: [`doc/DEMO-HTTPS.md`](doc/DEMO-HTTPS.md)
+- Generated `.d.ts` overview workflow for TypeScript/TSX projects:
+  [`doc/RECOMMENDATIONS.md#generated-declaration-overview-for-consuming-projects`](doc/RECOMMENDATIONS.md#generated-declaration-overview-for-consuming-projects)
 - Project direction: [`intent`](doc/INTENT.md) · [`recommendations`](doc/RECOMMENDATIONS.md) ·
   [`conditional roadmap`](doc/ROADMAP.md)
 - Naming migrations: [`doc/NAMING_RENAMES.md`](doc/NAMING_RENAMES.md)
@@ -54,7 +57,8 @@ Where it goes next: [`demo/`](demo/) is the full runnable stand (`npm run demo`)
   [`doc/DEMO-HTTPS.md`](doc/DEMO-HTTPS.md).
 - [`replay/`](replay/) · [`observe/`](observe/) · [`oracle/`](oracle/) — the oracle suites CI runs on
   every push; each file doubles as a worked usage example of one subsystem.
-- The package ships readable example sources, not installed CLI scripts. Examples import from the
-  repo's `src/`; in application code the same API comes from
+- The package ships readable example sources rather than installing the demo scripts as commands;
+  `wenay-https` is the separate installed server-tool entrypoint. Examples import from the repo's
+  `src/`; in application code the same API comes from
   `wenay-common2` / `wenay-common2/peer` / `wenay-common2/replay` / `wenay-common2/observe` /
   `wenay-common2/contract`.

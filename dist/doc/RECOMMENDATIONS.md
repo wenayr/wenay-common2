@@ -23,6 +23,96 @@ that the implementations have diverged.
 - Predicted Store: wait for a consumer that defines command receipt/reject/rebase semantics.
 - Media optimization: use the stand's max-video measurements to choose exactly one bottleneck.
 
+## Generated declaration overview for consuming projects
+
+For a TypeScript library or modular application, keep a generated declaration tree inside the
+consumer's own workspace. It gives people and code agents a compact overview of exported module
+boundaries without making generated files a second source of truth. The consumer owns the watcher:
+an installed dependency must not start a persistent process from `postinstall`.
+
+Apply the declaration tree as an index:
+
+1. Choose the entrypoint that matches the package export or application boundary being used.
+2. Read that entrypoint's `.d.ts` and follow its re-exports/namespaces until the owning declaration
+   is clear.
+3. Use the declaration to understand the public shape and type relationships, then open the source,
+   tests, or public docs for runtime behavior and implementation details.
+4. Change source files only. Regenerate declarations and inspect their diff to catch accidental
+   exports, widening, narrowing, or stale entrypoints.
+
+This stays safe because declarations are never treated as executable behavior or as a second source
+of truth. They shorten navigation; they do not replace source review, tests, or documentation.
+
+Add `tsconfig.types.json` at the consuming project root:
+
+```json
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "noEmit": false,
+        "allowJs": false,
+        "declaration": true,
+        "emitDeclarationOnly": true,
+        "declarationMap": false,
+        "outDir": "./.types",
+        "incremental": true,
+        "tsBuildInfoFile": "./.types/.tsbuildinfo"
+    },
+    "include": [
+        "./src/**/*"
+    ],
+    "exclude": [
+        "./src/**/*.spec.ts",
+        "./src/**/*.spec.tsx",
+        "./src/**/*.test.ts",
+        "./src/**/*.test.tsx"
+    ]
+}
+```
+
+`noEmit: false` deliberately overrides the common React/Next application default; `allowJs: false`
+keeps this overview limited to `.ts`, `.tsx`, and existing declaration inputs rather than adding
+JavaScript/JSX output.
+
+Add the project-local commands:
+
+```json
+{
+    "scripts": {
+        "types:generate": "tsc -p tsconfig.types.json",
+        "types:watch": "tsc -p tsconfig.types.json --watch"
+    }
+}
+```
+
+Run `npm run types:watch` in a long-lived development terminal. The watcher observes filesystem
+changes regardless of whether they come from an IDE, a code agent, Git, or another process. It does
+nothing until the consumer explicitly starts it, so a one-shot `npm run types:generate` plus a clean
+CI/build check remains the correctness gate.
+
+Copy this block into the consuming project's agent instructions, adjusting `.types` if declarations
+are emitted into another build directory:
+
+```md
+## Generated declarations
+
+- `.types/**/*.d.ts` files are generated artifacts. Never edit them manually.
+- Start at the relevant generated declaration entrypoint and follow re-exports for a compact
+  overview of the exported project surface.
+- Use declarations for public shapes and type relationships only; verify runtime behavior in source,
+  tests, and documentation.
+- Change the original `.ts` files, not generated declarations.
+- During extended TypeScript editing, start `npm run types:watch`; do not assume it is already running.
+- Before finishing changes to exported types, run `npm run types:generate` and inspect the declaration
+  diff for unintended public-surface changes.
+```
+
+This repository applies the same pattern with checked-in `lib/**/*.d.ts`, `types:generate`, and
+`types:watch`. Declarations describe exported contracts, not complete internal behavior; modules
+without meaningful exports may produce an almost empty declaration. Keep `.tsx` in the input:
+exported React components and their props need declarations just as ordinary `.ts` modules do; the
+generated `.d.ts` contains their type surface, not JSX implementation.
+
 ## Replay scaling follow-ups
 
 The compatibility-safe CPU and allocation hot paths are optimized. The remaining large gains need

@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "2.0.1",
+  "version": "2.1.1",
   "description": "Typed RPC over sockets, replayable Listen wires, reactive stores with replication and failover, peer packet mesh, media/artifact/AI/conversation runtimes",
   "keywords": [
     "rpc",
@@ -16,8 +16,11 @@
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "private": true,
+  "bin": {
+    "wenay-https": "./lib/cli/wenay-https.js"
+  },
   "scripts": {
-    "test": "npm run test:rpc-guards && npm run test:types && npm run test:rpc && npm run --prefix ./test test",
+    "test": "npm run test:rpc-guards && npm run test:types && npm run test:rpc && npm run test:https && npm run --prefix ./test test",
     "build & watch": "npm run _clearDir  &&  tsc --watch",
     "build": "npm run _clearDir  &&  tsc --build --verbose  &&  npm run _afterBuild",
     "types:generate": "tsc -p tsconfig.json --emitDeclarationOnly",
@@ -34,10 +37,12 @@
     "demo:mirror": "npm run demo:build  &&  node scripts/start-demo-mirror.cjs",
     "demo:https": "powershell -ExecutionPolicy Bypass -File scripts/start-demo-https.ps1",
     "demo:https:stop": "powershell -ExecutionPolicy Bypass -File scripts/start-demo-https.ps1 -Stop",
+    "https": "tsx src/cli/wenay-https.ts",
     "test:rpc-guards": "node scripts/assert-rpc-symbol-guard.cjs",
     "test:types": "tsc -p tsconfig.type-tests.json",
     "test:rpc": "tsx src/Common/rcp/rpc.harness.spec.ts",
-    "test:all": "npm run test:rpc-guards && npm run test:types && npm run test:rpc && node scripts/run-oracles.mjs",
+    "test:https": "tsx src/Common/https/https-config.spec.ts",
+    "test:all": "npm run test:rpc-guards && npm run test:types && npm run test:rpc && npm run test:https && node scripts/run-oracles.mjs",
     "test:stress": "node scripts/run-oracles.mjs --stress",
     "test:stress:extended": "npm run test:stress && node scripts/run-oracles.mjs --extended-stress"
   },
@@ -93,6 +98,7 @@
     "./ai": "./lib/Common/ai/ai-index.js",
     "./artifact": "./lib/Common/artifact/artifact-index.js",
     "./conversation": "./lib/Common/conversation/conversation-index.js",
-    "./contract": "./lib/Common/contract/contract-index.js"
+    "./contract": "./lib/Common/contract/contract-index.js",
+    "./https": "./lib/Common/https/https-index.js"
   }
 }

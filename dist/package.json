@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "2.0.1",
+  "version": "2.1.1",
   "description": "Typed RPC over sockets, replayable Listen wires, reactive stores with replication and failover, peer packet mesh, media/artifact/AI/conversation runtimes",
   "keywords": [
     "rpc",
@@ -15,6 +15,9 @@
   ],
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
+  "bin": {
+    "wenay-https": "./lib/cli/wenay-https.js"
+  },
   "files": [
     "lib/**/*",
     "doc/**/*",
@@ -57,6 +60,7 @@
     "./ai": "./lib/Common/ai/ai-index.js",
     "./artifact": "./lib/Common/artifact/artifact-index.js",
     "./conversation": "./lib/Common/conversation/conversation-index.js",
-    "./contract": "./lib/Common/contract/contract-index.js"
+    "./contract": "./lib/Common/contract/contract-index.js",
+    "./https": "./lib/Common/https/https-index.js"
   }
 }

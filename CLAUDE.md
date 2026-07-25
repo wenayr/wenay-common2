@@ -1,56 +1,103 @@
-# Code style (author preferences)
+# Code rules (author preferences)
 
-Write new code in this style by default — no need to ask.
+Use these rules by default — no need to ask.
 
-## Prohibited
-- Never write new logic without first checking if it already exists in the codebase
-- Never change public interfaces without explicit discussion
+## Non-negotiable
 
-## Architecture
-- **Closure factories instead of classes.** `function createX(deps) { ... return { ... } }`.
-  Keep state in the closure; avoid classes and `this`.
-- **DI at the boundary, closures inside.** A *reusable / exported* factory takes its
-  dependencies as an explicit `deps` object, so it can move to its own file unchanged.
-  *Inside* a factory, nesting is normal and encouraged — inner factories and helper
-  functions freely close over the enclosing scope (that captured state is the whole point
-  of closures). Factories don't have to be flat.
-- A factory's returned object is a namespace of functions (functional style,
-  an "object with meaning"). Split the return **by audience** when there's more than one —
-  `control` (what goes *into* the owning unit) vs `api` (what's exposed *outward*). The
-  number of facades follows the need: **one** flat object when there's a single audience,
-  **two** (`control`/`api`) for the common in/out split, **more** when distinct consumers
-  warrant it (e.g. `control` / `api` / `debug`). Don't force two if one is clearer.
-- **Layering — separate resource / utility / business logic.** Keep the *resource* part
-  (sockets, adapters, connections, stores) apart from *utilities* (pure, reusable helpers)
-  and from *business logic*. Business logic is **local**: each layer has its own — the
-  API-description layer carries the business rules for that API; a higher layer carries the
-  business rules of *using* those APIs. Wherever it lives, mark it clearly (section dividers).
-  Utility-leaning functions are better *extracted* (own function / file) so they don't blur
-  into business logic.
-- **Multi-level facades are fine** — `listen` (or other callbacks) may be installed at
-  any nesting depth. Closures are fine. Inner factories and captured state are encouraged.
-- **Expose callbacks outward.** `listen` streams that callers will subscribe to belong in
-  the `api` surface — prefer over-exposing event streams to hiding them.
-- Registries/tables — `as const` + inferred literal types (type-safe).
+- Before writing new logic, check whether it already exists in the project or its libraries.
+  If it exists, use it; if it almost exists, wrap it instead of rewriting it.
+- Never change a public interface without explicit discussion.
 
-## Syntax
-- **`==` / `!=`**, not `===` / `!==` (unless strict comparison is genuinely needed).
-- **Don't annotate function return types** (`: Promise<void>`, `: number`, etc.) — let them
-  be inferred. Exception: when the type genuinely helps the reader or narrows inference.
-- Single quotes, 4-space indent, no semicolons.
-- **Named functions over anonymous arrows for anything non-trivial.** A named `function foo()`
-  shows up by name in stack traces / logs; an anonymous arrow is `<anonymous>`. So: real logic,
-  anything that can throw, async handlers, event callbacks → name them. Trivial one-liners where
-  an error is impossible (simple getters, mappers, predicates) — arrow is fine, no need to fuss.
+## Construction order
+
+- First identify the corridors: the few places where important behavior will live.
+- Sketch only enough horizontal layers and connections to discover the primitives. Sketches are
+  disposable; their job is to expose the smallest useful building blocks, not become code.
+- A significant primitive may itself unfold into another horizontal layer. Repeat until reaching
+  local primitives, then build upward from the minimal set of those primitives.
+- Aim for the smallest working skeleton with the right architecture. Build a resource before its
+  consumer, but do not build an entire resource tier before it is needed.
+- Keep horizontal layers few and explicit. Temporary entanglement is normal; persistent
+  entanglement should be untangled. A phase-by-phase thickening file or logic with no layer of its
+  own is an architecture smell.
+
+## Layers and facades
+
+- A layer is not complete until it exposes a deliberate facade.
+- A facade is an addressing system, not a bag of methods. It should let a reader locate the layer
+  responsible for a change without reading the whole project.
+- Large or complex APIs should normally expose intentional multi-level facades. Depth follows real
+  boundaries; flatten only small surfaces or nesting levels that do not represent a boundary.
+- Name each facet after its consumer or what it exposes: `control` for commands inward, `resource`
+  for raw IO, `events`/`on` for outward streams, `view` for synchronous reads, and names such as
+  `health` or `source` for other real surfaces. Avoid a generic `api` name and names that merely
+  repeat the obvious.
+- One facet represents one boundary. If a consumer routinely cherry-picks unrelated fields from a
+  facet, it likely mixes audiences and should be split.
+- Inputs and behavior flow down through `deps`; facts flow up through events. Keep `UseListen` or
+  equivalent subscription streams on the outward surface instead of hiding them.
+- Retransmit whole facet blocks with spread rather than copying members field by field. A member may
+  appear in multiple facets when each is a genuine surface. Prefer fixing a poor source facade over
+  patching every consumer.
+- A transformer is not retransmission. Raw-to-typed conversion gets its own facet; a normal layer
+  should mostly relay correctly shaped facets instead of quietly converting them.
+
+## Factories and internal structure
+
+- Use closure factories for services, layers, and stateful orchestration:
+  `function createX(deps) { ... return { ... } }`. Keep service state in closures instead of
+  reaching for `class` and `this`.
+- The reason is API shape, not a blanket ban on classes. A closure factory constructs its outward
+  surface explicitly, keeps hidden state out of that surface, and can group a large API into logical
+  multi-level facades by boundary and audience. A service class tends to flatten unrelated methods
+  and state onto one instance, making those facades harder to express and navigate.
+- Keep a class when class semantics are genuinely part of the model or contract: value objects,
+  linked-list nodes and collections, iterators, `Error` subclasses, required framework inheritance,
+  or APIs whose identity/prototype/constructor behavior matters. Do not mechanically convert these
+  classes into factories.
+- Do not replace an obviously class-shaped model with a factory. Conversely, do not use a class only
+  as a container for service methods when an explicit closure-factory facade describes the API more
+  clearly.
+- Put DI at the boundary and use closures inside. A reusable/exported factory takes one explicit
+  `deps` object so it can move to its own file unchanged. Nested factories and helpers may freely
+  capture enclosing state.
+- Keep resources (sockets, adapters, connections, stores), reusable pure utilities, and business
+  logic separate. Business logic is local to its layer and marked with section dividers.
+- Extract a utility only when it is abstract and reusable. A one-off private helper stays near its
+  use rather than becoming a false shared abstraction.
 
 ## Types
-- Union and primitive aliases — `t` prefix: `tNum`, `tSide`, `tOrderId`.
-- Generic parameters — uppercase `T`, `K`, `Cb`.
-- Derive public types from the implementation: `type X = ReturnType<typeof createX>`.
 
-## Comments
-- Section dividers like `// ===...===` with a block heading.
-- Explain "why", not "what". Keep them short.
+- The thing itself is the source of its type. Derive exported factory types from implementation:
+  `export type X = ReturnType<typeof createX>`. Do not handwrite a parallel interface.
+- Introduce a shared contract only for a real family of similar layers, and keep it to the minimum
+  common requirements. Validate implementations with `satisfies`; consumers depend on the contract,
+  not on one concrete factory's `ReturnType`.
+- Infer instead of redeclaring: derive fields with tools such as `Extract`, and preserve source types
+  when retransmitting. Keep source inference broad enough to remain useful instead of accidentally
+  narrowing it to values such as `0 | 1` or `undefined`.
+- Carry a generic only where a caller specializes it or `satisfies` needs it to validate current
+  data. Remove unspecialized generics.
+- Prefix union and primitive aliases with `t` (`tNum`, `tSide`, `tOrderId`). Use uppercase generic
+  parameters (`T`, `K`, `Cb`). Declare registries and tables `as const` and infer their literal types.
+
+## Syntax and comments
+
+- Use `==` / `!=`, not `===` / `!==`, unless strict comparison is genuinely needed.
+- Use single quotes, four spaces, and no semicolons.
+- Do not annotate function return types unless the annotation genuinely helps the reader or narrows
+  inference.
+- Use named functions for non-trivial logic, anything that can throw, async handlers, and event
+  callbacks. Trivial getters, mappers, and predicates may be arrows.
+- Use section dividers such as `// ===...===` with a heading. Comments are short and explain why,
+  not what.
+
+## Verification
+
+- Verify each primitive and resource independently before the layers above it.
+- Verify each wrapper through its own facade and contract, not through its internals.
+- Verify the project as a composition of verified layers; a single top-level smoke test is not the
+  only evidence.
 
 ## Work progress files
 
@@ -73,13 +120,20 @@ Write new code in this style by default — no need to ask.
 
 ## Generated declarations
 
-- `lib/**/*.d.ts` files are generated artifacts. Never edit them by hand.
-- For a compact public-surface overview, read the relevant generated entrypoint declaration
-  (`lib/index.d.ts`, `lib/server.d.ts`, or the matching exported namespace) before traversing
-  implementation files.
-- Run `npm run types:generate` after changing exported types. Use `npm run types:watch` while
-  iterating on public type surfaces; a full `npm run build` also regenerates declarations and removes
-  stale build artifacts.
+- Use generated `.d.ts` files as the first, compact map of the public surface. Start from the
+  package export being used, open its declaration entrypoint (`lib/index.d.ts`, `lib/server.d.ts`,
+  or the matching namespace entrypoint), and follow its re-exports to the declaration that owns the
+  symbol before traversing implementation files.
+- Declarations answer what is exported and how types relate. They do not establish runtime behavior,
+  lifecycle, errors, performance, or implementation ownership; confirm those in source, tests, and
+  public documentation after the declaration locates the relevant layer.
+- `lib/**/*.d.ts` files are generated, read-only artifacts. Never edit them by hand. If they are
+  absent or stale, regenerate them from the source.
+- After changing exported types, run `npm run types:generate` and inspect the generated declaration
+  diff for the intended surface and for accidental exports, widening, or narrowing.
+- Use `npm run types:watch` only as an explicitly started aid while iterating; never assume a watcher
+  is running. A full `npm run build` regenerates declarations, removes stale artifacts, and is
+  required before publishing.
 
 ## Documentation and release notes
 

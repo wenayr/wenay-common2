@@ -4,7 +4,24 @@
 > Notation: `name(args: types) -> ret  // note`. Types are shown where they decide a correct call (callback shape,
 > overloads, return). Short names are **canonical**; removed old names are listed in `NAMING_RENAMES.md`.
 > Full surface → **`wenay-common2-rare.md`**. Code style → `CLAUDE.md`. Full RPC guide → `rpc.md`.
-> Public raw-IP/hostname HTTPS/WSS demo, certificate issuance, router ports, and diagnostics → **[`DEMO-HTTPS.md`](DEMO-HTTPS.md)**.
+> Installed-project Caddy HTTPS management → **[`HTTPS-CLI.md`](HTTPS-CLI.md)**. Public raw-IP/hostname
+> demo, certificate issuance, router ports, and diagnostics → **[`DEMO-HTTPS.md`](DEMO-HTTPS.md)**.
+
+## 🔐 HTTPS manager (server-only)
+
+```ts
+import {createNodeHttpsManager} from 'wenay-common2/https'
+
+const httpsManager = createNodeHttpsManager({projectRoot: process.cwd(), onLog: console.log})
+await httpsManager.ensure()     // install/find Caddy, validate config, start/reuse, wait for trusted cert
+await httpsManager.status()     // owned process + served-certificate metadata
+await httpsManager.doctor()     // config/Caddy/backend/identity/runtime checks
+await httpsManager.stop()       // preserve Caddy + ACME account + keys + certificates
+```
+
+Installed CLI: `npm exec wenay-https -- ensure|status|doctor|stop`. The consuming project supplies
+`wenay-https.json`; Caddy owns automatic renewal. Call `ensure` only from trusted server startup or
+an authenticated administrative route. Full setup and security boundary → [`HTTPS-CLI.md`](HTTPS-CLI.md).
 
 ## ⭐ events — `listen` / `listenStore`
 ```

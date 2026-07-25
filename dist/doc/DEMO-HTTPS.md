@@ -3,7 +3,7 @@
 This guide starts the repository demo on a non-standard public HTTPS port, obtains a browser-trusted
 certificate automatically, and keeps Socket.IO/WebSocket and browser media APIs in a secure context.
 The commands are for a **repository checkout**. They are not installed as CLI commands with the npm
-package.
+package. For the installed-project `wenay-https` reverse-proxy tool, see [`HTTPS-CLI.md`](HTTPS-CLI.md).
 
 The current stand exposes the same application through two independently trusted certificates and
 uses a third, isolated certificate for sandboxed artifact iframes:

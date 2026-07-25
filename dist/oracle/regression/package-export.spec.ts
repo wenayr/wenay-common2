@@ -6,6 +6,7 @@ import * as srcIndex from '../../src/index'
 import * as srcObserve from '../../src/Common/Observe/reactive'
 import * as srcConversation from '../../src/Common/conversation/conversation-index'
 import * as srcContract from '../../src/Common/contract/contract-index'
+import * as srcHttps from '../../src/Common/https/https-index'
 
 type Api = {
     reactive: Function
@@ -53,6 +54,13 @@ function assertContractApi(label: string, api: any) {
     assertEq(typeof api.createContractOffers, 'function', `${label}.createContractOffers export`)
     assertEq(typeof api.resolveContractBinding, 'function', `${label}.resolveContractBinding export`)
     assertEq(typeof api.createContractRuntime, 'function', `${label}.createContractRuntime export`)
+}
+
+function assertHttpsApi(label: string, api: any) {
+    assert(api, `${label} is missing`)
+    assertEq(typeof api.createNodeHttpsManager, 'function', `${label}.createNodeHttpsManager export`)
+    assertEq(typeof api.normalizeHttpsConfig, 'function', `${label}.normalizeHttpsConfig export`)
+    assertEq(typeof api.createCaddyfile, 'function', `${label}.createCaddyfile export`)
 }
 
 function skip(name: string, reason: string) {
@@ -127,6 +135,22 @@ test('lib artifacts export Conversation namespace and direct module', () => {
     assertConversationApi('lib/Common/conversation', requireFromSpec(libConversation))
 })
 
+test("package.json exports './https' and the installed CLI", () => {
+    const packageJson = requireFromSpec(resolve(rootDir, 'package.json'))
+    assertEq(packageJson.exports?.['./https'], './lib/Common/https/https-index.js',
+        "package.json exports['./https']")
+    assertEq(packageJson.bin?.['wenay-https'], './lib/cli/wenay-https.js',
+        "package.json bin['wenay-https']")
+    assertHttpsApi('src/Common/https', srcHttps)
+
+    const resolved = requireFromSpec.resolve('wenay-common2/https')
+    assert(
+        resolved.replace(/\\/g, '/').endsWith('/lib/Common/https/https-index.js'),
+        `wenay-common2/https resolved to unexpected path: ${resolved}`,
+    )
+    assertHttpsApi('wenay-common2/https', requireFromSpec('wenay-common2/https'))
+})
+
 test('lib artifacts export Contract namespace and direct module', () => {
     const libIndex = resolve(rootDir, 'lib/index.js')
     const libContract = resolve(rootDir, 'lib/Common/contract/contract-index.js')
@@ -195,6 +219,26 @@ test('dist package artifacts include Contract exports when dist is present', () 
         'dist Contract declaration artifact is present')
     assertContractApi('dist/lib/index Contract', distIndex.Contract)
     assertContractApi('dist/lib/Common/contract', requireFromSpec(distContractPath))
+})
+
+test('dist package artifacts include HTTPS API, declarations, and CLI when dist is present', () => {
+    const distDir = resolve(rootDir, 'dist')
+    if (!existsSync(distDir)) {
+        skip('dist package artifacts include HTTPS API, declarations, and CLI', 'dist directory is not present')
+        return
+    }
+    const distPackageJson = requireFromSpec(resolve(distDir, 'package.json'))
+    const distHttpsPath = resolve(distDir, 'lib/Common/https/https-index.js')
+    const distHttpsDts = resolve(distDir, 'lib/Common/https/https-index.d.ts')
+    const distCliPath = resolve(distDir, 'lib/cli/wenay-https.js')
+    assertEq(distPackageJson.exports?.['./https'], './lib/Common/https/https-index.js',
+        "dist package exports['./https']")
+    assertEq(distPackageJson.bin?.['wenay-https'], './lib/cli/wenay-https.js',
+        "dist package bin['wenay-https']")
+    assert(existsSync(distHttpsPath), 'dist HTTPS JavaScript artifact is present')
+    assert(existsSync(distHttpsDts), 'dist HTTPS declaration artifact is present')
+    assert(existsSync(distCliPath), 'dist HTTPS CLI artifact is present')
+    assertHttpsApi('dist/lib/Common/https', requireFromSpec(distHttpsPath))
 })
 
 async function main() {
