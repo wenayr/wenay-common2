@@ -1,11 +1,13 @@
 import {Listener, ListenApi, listen} from '../events/Listen'
 import {ListenReplayApi, ReplayListenUseOptions, replayListen} from '../events/replay-listen'
+import {positiveIntegerOption} from '../positive-integer-option'
 
 export type MediaSourceKind = 'audio' | 'video'
 export type MediaSourceState = 'idle' | 'requesting' | 'live' | 'denied' | 'no-device' | 'error'
 export type MediaFrameKind = 'audio-pcm' | 'audio-record' | 'video-frame'
 export type MediaFrameCodec = 'pcm16' | 'float32' | 'jpeg' | 'png' | 'webp' | 'webm-opus'
 export type MediaTransportMode = 'socket' | 'webrtc'
+export type tMediaExecution = 'main' | 'worker' | 'audio-worklet' | 'media-recorder'
 
 export type MediaSourceDevice = {
     deviceId: string
@@ -24,10 +26,14 @@ export type AudioSourceOpts = {
     format?: 'int16' | 'float32'
     channels?: number
     sampleRate?: number
+    /** AudioWorklet is capability-selected by default; false forces the main-thread ScriptProcessor fallback. */
     worklet?: boolean
+    /** PCM duration per emitted AudioWorklet packet. Larger packets reduce transport/scheduling overhead. */
+    packetMs?: number
     bufferSize?: number
     recordMimeType?: string
     recordTimesliceMs?: number
+    /** @deprecated Capture does not own a per-peer route. Use createMediaRoute; only 'socket' starts here. */
     transport?: MediaTransportMode
     replay?: MediaReplayOpts
 }
@@ -45,7 +51,9 @@ export type VideoSourceOpts = {
     quality?: number
     video?: any
     canvas?: any
-    worker?: false | {transferable?: true}
+    /** Worker + OffscreenCanvas are capability-selected by default; false forces main-thread encoding. */
+    worker?: boolean | {transferable?: true}
+    /** @deprecated Capture does not own a per-peer route. Use createMediaRoute; only 'socket' starts here. */
     transport?: MediaTransportMode
     replay?: MediaReplayOpts
 }
@@ -63,6 +71,8 @@ export type MediaStats = {
     fps: number
     rms?: number
     error?: string
+    /** Actual processing path selected for the current/most recent start. */
+    execution?: tMediaExecution
 }
 
 export type MediaSourceControl = {
@@ -233,6 +243,7 @@ function createStats(sourceId: string, kind: MediaSourceKind): MediaStats {
         startedAt: 0,
         lastAt: 0,
         fps: 0,
+        execution: 'main',
     }
 }
 
@@ -343,6 +354,43 @@ function rmsOf(input: Float32Array) {
     return Math.sqrt(sum / input.length)
 }
 
+function createPcmPacketizer(packetMs: number, emit: (samples: Float32Array, sampleRate: number, channels: number, frames: number) => void) {
+    let sampleRate = 0
+    let channels = 0
+    let targetFrames = 0
+    let packet = new Float32Array(0)
+    let writtenFrames = 0
+
+    function reset(nextSampleRate: number, nextChannels: number) {
+        sampleRate = nextSampleRate
+        channels = nextChannels
+        targetFrames = Math.max(1, Math.round(sampleRate * packetMs / 1000))
+        packet = new Float32Array(targetFrames * channels)
+        writtenFrames = 0
+    }
+
+    function push(samples: Float32Array, nextSampleRate: number, nextChannels: number, frames: number) {
+        if (nextSampleRate != sampleRate || nextChannels != channels) reset(nextSampleRate, nextChannels)
+        const availableFrames = Math.min(frames, Math.floor(samples.length / channels))
+        let sourceFrame = 0
+        while (sourceFrame < availableFrames) {
+            const take = Math.min(availableFrames - sourceFrame, targetFrames - writtenFrames)
+            const sourceStart = sourceFrame * channels
+            const sourceEnd = (sourceFrame + take) * channels
+            packet.set(samples.subarray(sourceStart, sourceEnd), writtenFrames * channels)
+            sourceFrame += take
+            writtenFrames += take
+            if (writtenFrames == targetFrames) {
+                emit(packet, sampleRate, channels, targetFrames)
+                packet = new Float32Array(targetFrames * channels)
+                writtenFrames = 0
+            }
+        }
+    }
+
+    return {push}
+}
+
 function audioWorkletCode() {
     return `
 class WenayCommon2PcmProcessor extends AudioWorkletProcessor {
@@ -373,6 +421,7 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
     let mediaNode: any = null
     let workletNode: any = null
     let recorder: any = null
+    let pcmPacketizer: ReturnType<typeof createPcmPacketizer> | null = null
     let seq = 0
 
     function emitPcm(samples: Float32Array, sampleRate: number, channels: number, frames: number) {
@@ -393,9 +442,14 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
     async function startPcm(nextStream: any) {
         const AudioContextCtor = (globalThis as any).AudioContext ?? (globalThis as any).webkitAudioContext
         if (!AudioContextCtor) throw new Error('AudioContext is not available')
+        shell.stats.execution = 'main'
         audioCtx = new AudioContextCtor(opts.sampleRate ? {sampleRate: opts.sampleRate} : undefined)
         mediaNode = audioCtx.createMediaStreamSource(nextStream)
         if (opts.worklet != false && audioCtx.audioWorklet && (globalThis as any).Blob && (globalThis as any).URL) {
+            pcmPacketizer = createPcmPacketizer(
+                positiveIntegerOption(opts.packetMs, 20, 'media audio packetMs'),
+                emitPcm,
+            )
             const blob = new (globalThis as any).Blob([audioWorkletCode()], {type: 'text/javascript'})
             const url = (globalThis as any).URL.createObjectURL(blob)
             try {
@@ -409,9 +463,15 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
                 numberOfOutputs: 0,
                 channelCount: opts.channels ?? 1,
             })
+            shell.stats.execution = 'audio-worklet'
             workletNode.port.onmessage = function onWorkletSamples(ev: any) {
                 const data = ev.data ?? {}
-                emitPcm(data.samples as Float32Array, data.sampleRate ?? audioCtx.sampleRate, data.channels ?? 1, data.frames ?? 0)
+                pcmPacketizer!.push(
+                    data.samples as Float32Array,
+                    data.sampleRate ?? audioCtx.sampleRate,
+                    data.channels ?? 1,
+                    data.frames ?? 0,
+                )
             }
             mediaNode.connect(workletNode)
             return
@@ -437,6 +497,7 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
         if (!Recorder) throw new Error('MediaRecorder is not available')
         const mimeType = opts.recordMimeType ?? 'audio/webm;codecs=opus'
         recorder = new Recorder(nextStream, Recorder.isTypeSupported?.(mimeType) ? {mimeType} : undefined)
+        shell.stats.execution = 'media-recorder'
         recorder.ondataavailable = async function onRecordChunk(ev: any) {
             if (!ev.data || ev.data.size == 0) return
             const payload = new Uint8Array(await ev.data.arrayBuffer())
@@ -453,6 +514,7 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
     function stop() {
         recorder?.stop?.()
         recorder = null
+        pcmPacketizer = null
         workletNode?.disconnect?.()
         mediaNode?.disconnect?.()
         audioCtx?.close?.()
@@ -827,12 +889,14 @@ export function createVideoSource(opts: VideoSourceOpts = {}): MediaSource {
             }
             // main-thread async encode is throttled to ~1/s in hidden tabs — do it in a worker
             const g = globalThis as any
+            shell.stats.execution = 'main'
             if (opts.worker != false && imageCapture && g.Worker && g.Blob && g.URL && g.OffscreenCanvas) {
                 try {
                     const blob = new g.Blob([videoEncodeWorkerCode()], {type: 'text/javascript'})
                     const url = g.URL.createObjectURL(blob)
                     encodeWorker = new g.Worker(url)
                     g.URL.revokeObjectURL(url)
+                    shell.stats.execution = 'worker'
                 } catch {
                     encodeWorker = null
                 }

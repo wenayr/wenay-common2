@@ -1,5 +1,5 @@
-# CI: build + publish gate + full oracle suite.
-# windows-latest is deliberate: npm scripts use cmd syntax (IF exist / rd / copy).
+# CI: build + publish gate + full oracle suite on Windows and Linux.
+# The npm-script layer is node-based/cross-platform; both OSes run the identical chain.
 name: CI
 
 on:
@@ -9,7 +9,11 @@ on:
 
 jobs:
   test:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7

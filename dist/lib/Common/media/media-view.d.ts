@@ -18,6 +18,7 @@ export declare function attachVideoCanvas(line: tMediaLine, canvas: any, opts?: 
 };
 export type AttachAudioPlayerOpts = {
     maxBacklogSec?: number;
+    minBufferSec?: number;
     audioContext?: () => any;
     onError?: (e: unknown) => void;
 };
@@ -29,6 +30,7 @@ export declare function attachAudioPlayer(line: tMediaLine, opts?: AttachAudioPl
         frames: number;
         played: number;
         dropped: number;
+        underruns: number;
         perSec: number;
         ageMs: number;
     };

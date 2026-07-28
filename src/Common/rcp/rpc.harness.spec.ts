@@ -543,6 +543,72 @@ export async function runHarness() {
         await check("strict/cache: identity after type flip", async () => node == c.strict.node, true)
         await check("strict/cache: call follows fresh schema", () => node(), "after")
     }
+    {
+        await check('proxy/cache: Node weak mode', async function verifyNodeWeakCache() {
+            if (typeof globalThis.WeakRef != 'function' || typeof globalThis.FinalizationRegistry != 'function') {
+                return [false, false, false]
+            }
+            const [cs, ss] = createLoopback()
+            const api = {node: {ping: () => 'pong'}}
+            const c = createRpcClient<typeof api>({socket: cs, socketKey: 'rpc'})
+            createRpcServer({socket: ss, object: api, socketKey: 'rpc'})
+            try {
+                const node = c.func.node
+                const ping = node.ping
+                await c.initStrict()
+                return [
+                    node == c.func.node,
+                    ping == c.func.node.ping,
+                    c.strict.node == c.strict.node,
+                ]
+            } finally {
+                c.close('Node weak-cache test complete')
+            }
+        }, [true, true, true])
+    }
+    {
+        await check('proxy/cache: Hermes strong fallback', async function verifyHermesFallback() {
+            const weakRefDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'WeakRef')
+            const finalizationRegistryDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'FinalizationRegistry')
+            let c: RpcClientReturn<any> | undefined
+            try {
+                Object.defineProperty(globalThis, 'WeakRef', {
+                    configurable: true,
+                    writable: true,
+                    value: undefined,
+                })
+                Object.defineProperty(globalThis, 'FinalizationRegistry', {
+                    configurable: true,
+                    writable: true,
+                    value: undefined,
+                })
+
+                const [cs, ss] = createLoopback()
+                const api = {node: {ping: () => 'pong'}}
+                c = createRpcClient<typeof api>({socket: cs, socketKey: 'rpc'})
+                createRpcServer({socket: ss, object: api, socketKey: 'rpc'})
+                const node = c.func.node
+                const ping = node.ping
+                const sameNode = node == c.func.node
+                const samePing = ping == c.func.node.ping
+                await c.initStrict()
+                const sameStrictNode = c.strict.node == c.strict.node
+                const result = await c.strict.node.ping()
+                c.close('Hermes fallback test complete')
+                c.dispose()
+                return [sameNode, samePing, sameStrictNode, result]
+            } finally {
+                c?.close('Hermes fallback test cleanup')
+                if (weakRefDescriptor) Object.defineProperty(globalThis, 'WeakRef', weakRefDescriptor)
+                else delete (globalThis as any).WeakRef
+                if (finalizationRegistryDescriptor) {
+                    Object.defineProperty(globalThis, 'FinalizationRegistry', finalizationRegistryDescriptor)
+                } else {
+                    delete (globalThis as any).FinalizationRegistry
+                }
+            }
+        }, [true, true, true, 'pong'])
+    }
     { // old permissive RPC Proxy must not impersonate internal symbol metadata
         const fakeMember = new Proxy(function fakeRpcMember() {}, {})
         const legacyProxy = new Proxy(function legacyRpcProxy() {}, {get: () => fakeMember})

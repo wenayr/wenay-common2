@@ -74,15 +74,25 @@ async function main() {
         ok(ctx.scheduled[0].frames == 480, 'sample count survives decode (480 frames)')
         ok(player.stats().ageMs >= 80, 'sentAt stamp turns into a real age measurement')
 
+        ctx.currentTime = 0.06
+        emit(pcmFrame(3), Date.now())
+        ok(ctx.scheduled[1].at == 0.09,
+            'reduced jitter headroom preserves the contiguous playhead instead of injecting a gap')
+
+        ctx.currentTime = 0.2
+        emit(pcmFrame(4), Date.now())
+        ok(ctx.scheduled[2].at == 0.28 && player.stats().underruns == 1,
+            'a real underrun rebuilds the configured jitter buffer and is observable')
+
         const before = ctx.scheduled.length
-        emit(videoFrame(3, 320, 240), Date.now())
-        ok(ctx.scheduled.length == before && player.stats().frames == 3, 'video frames on an audio player are counted, not scheduled')
+        emit(videoFrame(5, 320, 240), Date.now())
+        ok(ctx.scheduled.length == before && player.stats().frames == 5, 'video frames on an audio player are counted, not scheduled')
 
         // 40 x 10ms chunks pushed instantly = 0.4s of queued audio while currentTime stays 0
         for (let i = 0; i < 40; i++) emit(pcmFrame(10 + i), Date.now())
         ok(player.stats().dropped > 0, 'backlog past maxBacklogSec is dropped (live policy), not queued forever')
         const last = ctx.scheduled[ctx.scheduled.length - 1]
-        ok(last.at <= 0.45, `playhead rebased near "now" after the drop (last at=${last.at.toFixed(2)}s)`)
+        ok(last.at <= 0.65, `playhead rebased near "now" after the drop (last at=${last.at.toFixed(2)}s)`)
 
         player.disable()
         ok(!player.enabled && ctx.closed == 1, 'disable() closes the context')

@@ -8,6 +8,7 @@ exports.createAudioSource = createAudioSource;
 exports.createVideoSource = createVideoSource;
 const Listen_1 = require("../events/Listen");
 const replay_listen_1 = require("../events/replay-listen");
+const positive_integer_option_1 = require("../positive-integer-option");
 exports.MEDIA_FRAME_MAGIC = 0x57434d32;
 exports.MEDIA_FRAME_VERSION = 1;
 exports.MEDIA_FRAME_HEADER_BYTES = 40;
@@ -138,6 +139,7 @@ function createStats(sourceId, kind) {
         startedAt: 0,
         lastAt: 0,
         fps: 0,
+        execution: 'main',
     };
 }
 function hasGetUserMedia() {
@@ -233,6 +235,40 @@ function rmsOf(input) {
         sum += input[i] * input[i];
     return Math.sqrt(sum / input.length);
 }
+function createPcmPacketizer(packetMs, emit) {
+    let sampleRate = 0;
+    let channels = 0;
+    let targetFrames = 0;
+    let packet = new Float32Array(0);
+    let writtenFrames = 0;
+    function reset(nextSampleRate, nextChannels) {
+        sampleRate = nextSampleRate;
+        channels = nextChannels;
+        targetFrames = Math.max(1, Math.round(sampleRate * packetMs / 1000));
+        packet = new Float32Array(targetFrames * channels);
+        writtenFrames = 0;
+    }
+    function push(samples, nextSampleRate, nextChannels, frames) {
+        if (nextSampleRate != sampleRate || nextChannels != channels)
+            reset(nextSampleRate, nextChannels);
+        const availableFrames = Math.min(frames, Math.floor(samples.length / channels));
+        let sourceFrame = 0;
+        while (sourceFrame < availableFrames) {
+            const take = Math.min(availableFrames - sourceFrame, targetFrames - writtenFrames);
+            const sourceStart = sourceFrame * channels;
+            const sourceEnd = (sourceFrame + take) * channels;
+            packet.set(samples.subarray(sourceStart, sourceEnd), writtenFrames * channels);
+            sourceFrame += take;
+            writtenFrames += take;
+            if (writtenFrames == targetFrames) {
+                emit(packet, sampleRate, channels, targetFrames);
+                packet = new Float32Array(targetFrames * channels);
+                writtenFrames = 0;
+            }
+        }
+    }
+    return { push };
+}
 function audioWorkletCode() {
     return `
 class WenayCommon2PcmProcessor extends AudioWorkletProcessor {
@@ -262,6 +298,7 @@ function createAudioSource(opts = {}) {
     let mediaNode = null;
     let workletNode = null;
     let recorder = null;
+    let pcmPacketizer = null;
     let seq = 0;
     function emitPcm(samples, sampleRate, channels, frames) {
         const codec = opts.format == 'float32' ? 'float32' : 'pcm16';
@@ -281,9 +318,11 @@ function createAudioSource(opts = {}) {
         const AudioContextCtor = globalThis.AudioContext ?? globalThis.webkitAudioContext;
         if (!AudioContextCtor)
             throw new Error('AudioContext is not available');
+        shell.stats.execution = 'main';
         audioCtx = new AudioContextCtor(opts.sampleRate ? { sampleRate: opts.sampleRate } : undefined);
         mediaNode = audioCtx.createMediaStreamSource(nextStream);
         if (opts.worklet != false && audioCtx.audioWorklet && globalThis.Blob && globalThis.URL) {
+            pcmPacketizer = createPcmPacketizer((0, positive_integer_option_1.positiveIntegerOption)(opts.packetMs, 20, 'media audio packetMs'), emitPcm);
             const blob = new globalThis.Blob([audioWorkletCode()], { type: 'text/javascript' });
             const url = globalThis.URL.createObjectURL(blob);
             try {
@@ -298,9 +337,10 @@ function createAudioSource(opts = {}) {
                 numberOfOutputs: 0,
                 channelCount: opts.channels ?? 1,
             });
+            shell.stats.execution = 'audio-worklet';
             workletNode.port.onmessage = function onWorkletSamples(ev) {
                 const data = ev.data ?? {};
-                emitPcm(data.samples, data.sampleRate ?? audioCtx.sampleRate, data.channels ?? 1, data.frames ?? 0);
+                pcmPacketizer.push(data.samples, data.sampleRate ?? audioCtx.sampleRate, data.channels ?? 1, data.frames ?? 0);
             };
             mediaNode.connect(workletNode);
             return;
@@ -329,6 +369,7 @@ function createAudioSource(opts = {}) {
             throw new Error('MediaRecorder is not available');
         const mimeType = opts.recordMimeType ?? 'audio/webm;codecs=opus';
         recorder = new Recorder(nextStream, Recorder.isTypeSupported?.(mimeType) ? { mimeType } : undefined);
+        shell.stats.execution = 'media-recorder';
         recorder.ondataavailable = async function onRecordChunk(ev) {
             if (!ev.data || ev.data.size == 0)
                 return;
@@ -345,6 +386,7 @@ function createAudioSource(opts = {}) {
     function stop() {
         recorder?.stop?.();
         recorder = null;
+        pcmPacketizer = null;
         workletNode?.disconnect?.();
         mediaNode?.disconnect?.();
         audioCtx?.close?.();
@@ -730,12 +772,14 @@ function createVideoSource(opts = {}) {
                 imageCapture = null;
             }
             const g = globalThis;
+            shell.stats.execution = 'main';
             if (opts.worker != false && imageCapture && g.Worker && g.Blob && g.URL && g.OffscreenCanvas) {
                 try {
                     const blob = new g.Blob([videoEncodeWorkerCode()], { type: 'text/javascript' });
                     const url = g.URL.createObjectURL(blob);
                     encodeWorker = new g.Worker(url);
                     g.URL.revokeObjectURL(url);
+                    shell.stats.execution = 'worker';
                 }
                 catch {
                     encodeWorker = null;

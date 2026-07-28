@@ -5,6 +5,7 @@ export type MediaSourceState = 'idle' | 'requesting' | 'live' | 'denied' | 'no-d
 export type MediaFrameKind = 'audio-pcm' | 'audio-record' | 'video-frame';
 export type MediaFrameCodec = 'pcm16' | 'float32' | 'jpeg' | 'png' | 'webp' | 'webm-opus';
 export type MediaTransportMode = 'socket' | 'webrtc';
+export type tMediaExecution = 'main' | 'worker' | 'audio-worklet' | 'media-recorder';
 export type MediaSourceDevice = {
     deviceId: string;
     label: string;
@@ -20,6 +21,7 @@ export type AudioSourceOpts = {
     channels?: number;
     sampleRate?: number;
     worklet?: boolean;
+    packetMs?: number;
     bufferSize?: number;
     recordMimeType?: string;
     recordTimesliceMs?: number;
@@ -37,7 +39,7 @@ export type VideoSourceOpts = {
     quality?: number;
     video?: any;
     canvas?: any;
-    worker?: false | {
+    worker?: boolean | {
         transferable?: true;
     };
     transport?: MediaTransportMode;
@@ -56,6 +58,7 @@ export type MediaStats = {
     fps: number;
     rms?: number;
     error?: string;
+    execution?: tMediaExecution;
 };
 export type MediaSourceControl = {
     start(): Promise<MediaSourceState>;

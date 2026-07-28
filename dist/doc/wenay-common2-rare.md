@@ -606,21 +606,24 @@ Media.decodeMediaFrame(frame) -> {kind, codec, seq, tMono, payload, sampleRate?,
 
 control: start() -> Promise<MediaSourceState> · stop() · getStats() · setDevice(id) · listDevices()
 state: 'idle'|'requesting'|'live'|'denied'|'no-device'|'error'
+getStats().execution: 'main'|'worker'|'audio-worklet'|'media-recorder'
 ```
 Audio source:
 - default `mode:'pcm'`, `format:'int16'`, raw PCM payload; uses `AudioWorklet` when available and falls back to `ScriptProcessor` only when the browser cannot run a worklet.
+- AudioWorklet's 128-sample render quanta are aggregated into `packetMs` (default 20ms) PCM frames
+  before Listen/RPC publication, reducing packet and playback-node pressure without changing samples.
 - `mode:'record'` uses `MediaRecorder` chunks (`webm-opus`) for record/upload flows, not live STT.
 - `getStats().rms` gives a VU-meter signal; permission denied/no device returns typed state, not a thrown public failure.
 
 Video source:
 - default snapshots, not a 30fps video stream: JPEG, `fps` default 3, `quality` default 0.82; `fps:0` runs an unpaced capture-after-encode pump for throughput measurement.
 - each frame carries absolute image bytes, so `replay:true` can safely keep the latest frame for lag recovery.
-- capture is hidden-tab-proof by default (Chrome throttles hidden tabs three ways, each stage has its own escape): the tick comes from a Blob-worker timer (in-page `setInterval` drops to ~1/s), the frame comes from `ImageCapture.grabFrame()` when available (a hidden `<video>` stops painting; `<video>->canvas` stays as the fallback), and JPEG encode runs in a worker over a transferred `ImageBitmap`, returning a transferred `ArrayBuffer` — never a structured-cloned frame (main-thread `convertToBlob` is gated to ~1s per call when hidden). `worker: false` opts out of all three into the plain in-page path.
+- capture is hidden-tab-proof by default (Chrome throttles hidden tabs three ways, each stage has its own escape): the tick comes from a Blob-worker timer (in-page `setInterval` drops to ~1/s), the frame comes from `ImageCapture.grabFrame()` when available (a hidden `<video>` stops painting; `<video>->canvas` stays as the fallback), and JPEG encode runs in a worker over a transferred `ImageBitmap`, returning a transferred `ArrayBuffer` — never a structured-cloned frame (main-thread `convertToBlob` is gated to ~1s per call when hidden). Worker use is capability-selected and enabled by default; CSP/missing APIs fall back to main. `worker:false` opts out of all three into the plain in-page path.
 - one explicit dimension (`width` or `height`) scales the other proportionally from the track resolution, downscale-only; pass both to force an exact size. `grabFrame`'s ~50ms serial latency caps the pipeline around ~15-20fps regardless of `fps`.
 
 Viewer helpers (`media-view`): the consumer side of any media line (local pair or RPC surface).
 - `attachVideoCanvas(line, canvas, {createBitmap?, onError?})` — per-frame codec/size come from the 40-byte header, canvas resizes to follow; decode overload is busy-skipped (keep-latest, `stats().frames` vs `stats().drawn` shows the gap); `createBitmap` injects a custom decoder (tests, OffscreenCanvas pipelines).
-- `attachAudioPlayer(line, {maxBacklogSec? = 0.35, audioContext?, onError?})` — pcm16/float32 through a sequential playhead; a backlog past `maxBacklogSec` is dropped and the playhead rebases near "now" (live beats lossless; `stats().dropped` counts rebases). `enable()` must come from a user gesture (browser autoplay rules); `audioContext` injects a factory for tests/custom routing.
+- `attachAudioPlayer(line, {minBufferSec? = 0.08, maxBacklogSec? = 0.35, audioContext?, onError?})` — pcm16/float32 through a sequential playhead. A still-future playhead remains contiguous even when its headroom drops below `minBufferSec`; only a real underrun rebuilds the jitter buffer (`stats().underruns`). A backlog past `maxBacklogSec` is dropped and rebased (`stats().dropped`). `enable()` must come from a user gesture (browser autoplay rules); `audioContext` injects a factory for tests/custom routing.
 - `pipeMediaPublish(line, publish, {stamp? = true, onError?})` — fire-and-forget pipe into an RPC call; the default `Date.now()` stamp is what viewer `stats().ageMs` measures against. Both attach helpers also expose `stats().perSec` (rolling 1s rate).
 - The canvas path gives an ordinary ArrayBuffer-backed payload directly to `Blob` (SharedArrayBuffer still receives an owned copy), closes every decoded bitmap after draw/error, and ignores an in-flight decode after `off()`. A synchronous publisher does not allocate a Promise; thenables retain asynchronous error routing.
 - Oracles: `replay/media-view.test.ts` and `replay/video-windows-stress.test.ts`. The latter uses
@@ -643,12 +646,45 @@ createRpcServerAuto({
 
 Backpressure rule: audio consumers should use the default queue policy unless the app explicitly accepts loss. Video consumers can use `Replay.replaySubscribe(remote.video, cb, {policy:'frame'})`; a slow socket drains to the latest frame instead of accumulating stale images. The binary frame itself is RPC-safe because `rpc-walk` passes `TypedArray`/`ArrayBuffer` leaves through natively and applies `maxBinaryLen`.
 
-WebRTC future contract:
-- `transport:'socket'` is the implemented default today.
-- `transport:'webrtc'` is reserved and currently reports `state:'error'` on `start()`; it is not a hidden second transport.
-- Future WebRTC support must be explicit opt-in for sub-200ms human duplex. Signaling belongs on the existing socket/RPC control channel (offer/answer/ICE), and backend/AI access requires an SFU that re-emits media bytes into the same `Media` Listen/replay surface. Downstream RPC/replay/store consumers must not change.
+Per-peer route facade:
+```ts
+Media.createMediaRoute<Z>({
+    self, peer,
+    mode?: 'relay'|'direct'|'best',             // default relay
+    connect: (pair, kind) => RouteConnector<Z>,
+    policy?, shadow?, catchUpTimeoutMs?,
+    directRetryMs?: number|false,               // best default 5000
+}) -> {
+    control: {start, setMode, reconsider, close},
+    resource: {line},
+    events: {changed},
+    view: {status, mode, route, metrics},
+}
+```
+- `relay` creates only the server connector. `direct` opens no relay data connector and never emits
+  relay-delivered frames; a failed promotion leaves `view.route()` null. WebRTC signaling may still
+  ride the existing server control channel.
+- `best` exposes relay immediately, promotes direct after replay catch-up, falls back through the
+  same `resource.line`, and retries transport failures. Policy denial is not retried.
+- Connectors are the existing route contract. `createWebRtcConnector` supplies the ordered binary
+  DataChannel direct path and the application supplies its relay connector. Server policy remains
+  authoritative through `RoutePolicy`; `mustShadowRelay` retains an audit copy.
+- Capture and routing are separate because one camera/microphone source may have several viewers
+  with different routes. The old source-level `transport` option is deprecated and only `'socket'`
+  starts; it is not a hidden per-peer selector.
 
-Oracle: `npx tsx replay/media-socket.test.ts` checks header decode, plain Listen shape, `replay:true`, typed no-device state in Node, and real Socket.IO binary delivery.
+Encoding choices:
+- current replay payloads use PCM16/float32 or MediaRecorder Opus for audio and independent
+  JPEG/PNG/WebP images for video;
+- native WebRTC tracks negotiate browser RTP codecs (commonly Opus plus VP8/VP9/H.264/AV1);
+- WebCodecs can produce Opus/AAC and VP8/VP9/H.264/H.265/AV1 where
+  `AudioEncoder.isConfigSupported`/`VideoEncoder.isConfigSupported` confirms support, but inter-frame
+  video needs a versioned chunk contract carrying keyframe, decoder config, timestamp and duration.
+  Those chunks must not be disguised as the current independent-image frame format.
+
+Oracles: `npx tsx replay/media-socket.test.ts` checks header decode, worker selection, plain Listen
+shape, `replay:true`, typed no-device state in Node, and real Socket.IO binary delivery;
+`npx tsx replay/media-route.test.ts` checks all three route modes, fallback, retry, and strict direct.
 
 ## 📈 exchange — params (`CParams`)
 ```

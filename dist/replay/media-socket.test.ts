@@ -135,6 +135,49 @@ async function main() {
     ok(await video.start() == 'no-device', 'video source also returns typed no-device state without browser globals')
     ok(audio.state == 'no-device' && audio.getStats().state == 'no-device', 'audio state getter stays live after construction')
     ok(video.state == 'no-device' && video.getStats().state == 'no-device', 'video state getter stays live after construction')
+    ok(video.getStats().execution == 'main', 'source stats expose the actual main-thread fallback')
+
+    const audioGlobals = globalThis as any
+    const originalAudioContext = audioGlobals.AudioContext
+    const originalAudioWorkletNode = audioGlobals.AudioWorkletNode
+    let fakeWorkletNode: any = null
+    try {
+        function FakeAudioContext(this: any) {
+            this.sampleRate = 48000
+            this.audioWorklet = {async addModule() {}}
+            this.createMediaStreamSource = () => ({connect() {}, disconnect() {}})
+            this.close = () => {}
+        }
+        function FakeAudioWorkletNode(this: any) {
+            this.port = {onmessage: null}
+            this.disconnect = () => {}
+            fakeWorkletNode = this
+        }
+        audioGlobals.AudioContext = FakeAudioContext
+        audioGlobals.AudioWorkletNode = FakeAudioWorkletNode
+        const packetized = createAudioSource({
+            sourceId: 'packetized-mic',
+            packetMs: 20,
+            stream: {
+                getTracks: () => [{stop() {}}],
+            },
+        })
+        const packetizedFrames: Uint8Array[] = []
+        packetized[1].on(frame => packetizedFrames.push(frame))
+        ok(await packetized.start() == 'live', 'AudioWorklet source starts with the injected browser primitives')
+        for (let i = 0; i < 7; i++) {
+            fakeWorkletNode.port.onmessage({data: {samples: new Float32Array(128), sampleRate: 48000, channels: 1, frames: 128}})
+        }
+        ok(packetizedFrames.length == 0, '128-sample render quanta wait for one bounded network packet')
+        fakeWorkletNode.port.onmessage({data: {samples: new Float32Array(128), sampleRate: 48000, channels: 1, frames: 128}})
+        const packetizedFrame = decodeMediaFrame(packetizedFrames[0])
+        ok(packetizedFrame.nSamples == 960 && packetized.getStats().execution == 'audio-worklet',
+            'default worklet aggregation emits one 20ms/960-sample PCM packet')
+        packetized.stop()
+    } finally {
+        audioGlobals.AudioContext = originalAudioContext
+        audioGlobals.AudioWorkletNode = originalAudioWorkletNode
+    }
 
     const fakeTrack = {stop() {}}
     const unpacedFrames: Array<ReturnType<typeof decodeMediaFrame>> = []
@@ -171,6 +214,7 @@ async function main() {
     unpacedVideo.stop()
     offUnpacedFrames()
     ok(unpacedStats.frames >= 2 && unpacedStats.dropped == 0, `unpaced pump starts the next frame without busy drops (${unpacedStats.frames} frames)`)
+    ok(unpacedStats.execution == 'main', 'worker:false explicitly keeps video encoding on the main thread')
     ok(unpacedFrames.length > 0 && unpacedFrames.every(frame => frame.width == 1 && frame.height == 1), 'unpaced mode preserves the explicitly selected output size')
 
     let stoppedAfterEncodeError = 0
@@ -274,6 +318,7 @@ async function main() {
         answerWorker = true
         ok(await workerVideo.start() == 'live', 'video source restarts after an interrupted worker encode')
         ok(workerFrames.length == 1, 'the restarted worker source produces a fresh frame')
+        ok(workerVideo.getStats().execution == 'worker', 'default capability selection reports worker encoding')
         workerVideo.stop()
     } finally {
         globals.Worker = originalWorker

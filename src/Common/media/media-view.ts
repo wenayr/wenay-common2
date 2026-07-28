@@ -148,6 +148,8 @@ export function attachVideoCanvas(line: tMediaLine, canvas: any, opts: AttachVid
 export type AttachAudioPlayerOpts = {
     /** live policy: drop the backlog once the queue creeps this far ahead (seconds) */
     maxBacklogSec?: number
+    /** Startup/recovery jitter buffer. It is reapplied only after a real underrun. */
+    minBufferSec?: number
     /** bring your own AudioContext factory (tests, custom routing) */
     audioContext?: () => any
     onError?: (e: unknown) => void
@@ -161,6 +163,7 @@ export type AttachAudioPlayerOpts = {
  */
 export function attachAudioPlayer(line: tMediaLine, opts: AttachAudioPlayerOpts = {}) {
     const maxBacklogSec = opts.maxBacklogSec ?? 0.35
+    const minBufferSec = Math.max(0, opts.minBufferSec ?? 0.08)
     const age = createAgeMeter()
     const rate = createRateMeter()
     let audioCtx: any = null
@@ -168,6 +171,7 @@ export function attachAudioPlayer(line: tMediaLine, opts: AttachAudioPlayerOpts 
     let frames = 0
     let played = 0
     let dropped = 0
+    let underruns = 0
 
     function makeContext() {
         if (opts.audioContext) return opts.audioContext()
@@ -195,8 +199,9 @@ export function attachAudioPlayer(line: tMediaLine, opts: AttachAudioPlayerOpts 
         const sampleRate = f.sampleRate || 48000
         const nFrames = Math.floor(samples.length / channels)
         if (!nFrames) return
-        if (playhead - audioCtx.currentTime > maxBacklogSec) {
-            playhead = audioCtx.currentTime + 0.05
+        const now = audioCtx.currentTime
+        if (playhead - now > maxBacklogSec) {
+            playhead = now + minBufferSec
             dropped++
         }
         const buf = audioCtx.createBuffer(channels, nFrames, sampleRate)
@@ -207,7 +212,11 @@ export function attachAudioPlayer(line: tMediaLine, opts: AttachAudioPlayerOpts 
         const node = audioCtx.createBufferSource()
         node.buffer = buf
         node.connect(audioCtx.destination)
-        const at = Math.max(audioCtx.currentTime + 0.05, playhead)
+        let at = playhead
+        if (playhead <= now) {
+            if (playhead > 0) underruns++
+            at = now + minBufferSec
+        }
         node.start(at)
         playhead = at + nFrames / sampleRate
         played++
@@ -232,7 +241,7 @@ export function attachAudioPlayer(line: tMediaLine, opts: AttachAudioPlayerOpts 
             audioCtx = null
         },
         get enabled() { return !!audioCtx },
-        stats: () => ({frames, played, dropped, perSec: rate.perSec, ageMs: age.ageMs}),
+        stats: () => ({frames, played, dropped, underruns, perSec: rate.perSec, ageMs: age.ageMs}),
         off,
     }
 }

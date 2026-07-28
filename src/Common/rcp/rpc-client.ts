@@ -81,8 +81,26 @@ function listenKeyArg(a: any): any {
 type tProxyEntry = {ref: WeakRef<object>; token: object}
 
 function createPathProxyCache() {
+    const WeakRefConstructor = globalThis.WeakRef
+    const FinalizationRegistryConstructor = globalThis.FinalizationRegistry
+
+    if (typeof WeakRefConstructor != 'function' || typeof FinalizationRegistryConstructor != 'function') {
+        const values = new Map<string, object>()
+
+        function get(path: string[]) {
+            return values.get(rpcPathKey(path))
+        }
+
+        function set(path: string[], proxy: object) {
+            values.set(rpcPathKey(path), proxy)
+            return proxy
+        }
+
+        return {get, set}
+    }
+
     const values = new Map<string, tProxyEntry>()
-    const registry = new FinalizationRegistry<{key: string; token: object}>(function releaseProxy(entry) {
+    const registry = new FinalizationRegistryConstructor<{key: string; token: object}>(function releaseProxy(entry) {
         if (values.get(entry.key)?.token == entry.token) values.delete(entry.key)
     })
 
@@ -96,7 +114,7 @@ function createPathProxyCache() {
     function set(path: string[], proxy: object) {
         const key = rpcPathKey(path)
         const token = {}
-        values.set(key, {ref: new WeakRef(proxy), token})
+        values.set(key, {ref: new WeakRefConstructor(proxy), token})
         registry.register(proxy, {key, token})
         return proxy
     }
