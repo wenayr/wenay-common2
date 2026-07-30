@@ -21,6 +21,8 @@ import {createArtifactByteCache, createArtifactMirror, sha256Hex} from '../src/C
 import type {ArtifactRecord, ArtifactStore} from '../src/Common/artifact/artifact-index'
 import {createWorkboardHost, WorkboardHost} from './workboard-host'
 import type {WorkboardState} from './workboard-contract'
+import {createAuthLifecycleHost} from './auth-lifecycle-host'
+import {authSocketKeys} from './auth-lifecycle-contract'
 import {demoRpcOpt} from './protocol-schema'
 
 const portStart = Number(process.env.DEMO_PORT_START ?? 3100)
@@ -325,6 +327,12 @@ const workboard = createWorkboardHost({
     ],
 })
 
+// ============== auth lifecycle: a real short-lived token on its own connection ==============
+// The participant connection above is deliberately ungated; this stand runs its own
+// socket so `gate: true`, an anonymous starting facade and a real expiry/revocation
+// cycle can be watched without changing anything the other stands rely on.
+const authLifecycle = createAuthLifecycleHost()
+
 // ============== video rooms: application policy over the media relay ==============
 type VideoRoomEntry = {id: string, name: string, members: Set<string>}
 
@@ -580,6 +588,18 @@ app.get('/resource-download/:fileId', function downloadResource(req, res) {
         return
     }
     res.type('application/octet-stream').send(bytes)
+})
+// The auth stand's identity port. It cannot live on the gated RPC surface: with
+// gate: true nothing is callable before a HELLO succeeds, so a login method there
+// could never run. Passwords/OAuth/user stores belong here too — the token codec
+// says so in its own header, and this endpoint is the smallest honest stand-in.
+app.post('/auth-lifecycle/login', express.json({limit: '1kb'}), function issueAuthLifecycleToken(req, res) {
+    const result = authLifecycle.control.login((req.body as {sid?: unknown} | undefined)?.sid)
+    if (!result.ok) {
+        res.status(result.status).json({error: result.error})
+        return
+    }
+    res.json({sid: result.sid, token: result.token, expiresAt: result.expiresAt})
 })
 app.get('/artifact-open/:artifactId', function openArtifact(req, res) {
     const ticket = typeof req.query.ticket == 'string' ? artifactTickets.get(req.query.ticket) : undefined
@@ -917,6 +937,20 @@ ioServer.on('connection', function onDemoConnection(socket) {
         console.log('[demo] mirror link connected')
         return
     }
+    // The auth-lifecycle stand connects with role=auth: no presence, no participant
+    // account — only its two GATED facades, each starting from the anonymous object.
+    if (socket.handshake.auth?.role == 'auth') {
+        const link = authLifecycle.connection()
+        const [authLinkGone, authLinkGoneListen] = listen<[]>()
+        socket.on('disconnect', function closeAuthLifecycleLink() {
+            authLinkGone()
+            link.close()
+        })
+        createRpcServerAuto({socket, socketKey: authSocketKeys.session, ...link.session, disconnectListen: authLinkGoneListen})
+        createRpcServerAuto({socket, socketKey: authSocketKeys.vault, ...link.vault, disconnectListen: authLinkGoneListen})
+        console.log('[demo] auth lifecycle stand connected')
+        return
+    }
     const account = participantAccount(tab)
     const peer = host.connection(account)
     const resource = files.connection(account)
@@ -1027,6 +1061,7 @@ function closeDemoResources() {
     closeDemoResource('upstream', function closeUpstream() { upstreamLink?.close() })
     upstreamLink = null
     closeDemoResource('workboard', workboard.close)
+    closeDemoResource('auth lifecycle', authLifecycle.close)
     closeDemoResource('files', files.close)
     closeDemoResource('AI', ai.close)
     closeDemoResource('artifacts', artifacts.close)

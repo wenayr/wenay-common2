@@ -24,6 +24,7 @@ import {setupWorkboardDemo} from './workboard-demo'
 import {setupReplicaSetDemo} from './replica-set-demo'
 import {setupContractRuntimeDemo} from './contract-runtime-demo'
 import {setupPacketMeshDemo} from './packet-mesh-demo'
+import {setupAuthLifecycleDemo} from './auth-lifecycle-demo'
 import {createProtocolDemo} from './protocol-demo'
 import {demoRpcOpt} from './protocol-schema'
 
@@ -68,9 +69,12 @@ async function main() {
     const replicaMesh = setupReplicaSetDemo({element: el, log})
     const contractRuntime = setupContractRuntimeDemo({element: el, log})
     const packetMesh = setupPacketMeshDemo({element: el, log})
+    // Its own gated connection, so the participant surface below stays ungated.
+    const authLifecycle = setupAuthLifecycleDemo({element: el, log, tab})
     window.addEventListener('beforeunload', replicaMesh.close)
     window.addEventListener('beforeunload', contractRuntime.close)
     window.addEventListener('beforeunload', packetMesh.close)
+    window.addEventListener('beforeunload', authLifecycle.close)
     const hub = createRpcClientHub(
         // Start with polling so an HTTP-only tunnel/proxy can carry RPC, then
         // Socket.IO upgrades to WebSocket whenever the external route permits it.

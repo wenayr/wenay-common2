@@ -9,6 +9,7 @@ import {
     getRpcMemberState, getRpcSchemaReady, hasRpcMemberLookup, rpcMemberAvailable, RPC_TRANSPORT_CONTROL,
 } from '../events/transport-lifecycle'
 import {createCallbackPacketBatcher} from './rpc-callback-batch'
+import {createRpcCallbackWrapper} from './rpc-walk'
 
 function createLoopback(): [SocketTmpl, SocketTmpl] {
     const a: Record<string, ((data: any) => void)[]> = {}
@@ -164,6 +165,47 @@ async function testBinaryPacketBypass() {
     await delay()
 
     assert.deepEqual(sent, [first, binary, last])
+}
+
+async function testSingletonSkipsInspection() {
+    const sent: any[][] = []
+    let payloadReads = 0
+    const payload = {}
+    Object.defineProperty(payload, 'value', {
+        enumerable: true,
+        get() {
+            payloadReads++
+            return 'large'
+        },
+    })
+    const packet = [Pkt.CB, 1, [payload]]
+    const batcher = createCallbackPacketBatcher({
+        send: function collectSingleton(packet) { sent.push(packet) },
+    })
+
+    batcher.enqueue(packet)
+    await delay()
+
+    assert.equal(payloadReads, 0, 'a lone packet is neither searched nor JSON-sized before transport')
+    assert.equal(sent.length, 1)
+    assert.equal(sent[0], packet)
+}
+
+function testLegacyStopSentinelDoesNotCoercePayload() {
+    const opaque = Object.create(null)
+    let received: any[] | undefined
+    let ended = false
+    const callback = createRpcCallbackWrapper({
+        id: 1,
+        legacyStopSentinel: true,
+        sender(_id, args) { received = args },
+        onEnd() { ended = true },
+    })
+
+    callback([opaque])
+
+    assert.equal(received?.[0][0], opaque)
+    assert.equal(ended, false)
 }
 
 async function testPersistentServerReconnectCaps() {
@@ -505,6 +547,8 @@ export async function runRpcCallbackBatchTests() {
     await testByteBound()
     await testUtf8ByteBound()
     await testBinaryPacketBypass()
+    await testSingletonSkipsInspection()
+    testLegacyStopSentinelDoesNotCoercePayload()
     await testPersistentServerReconnectCaps()
     await testSchemaReadyWithSynchronousMap()
     await testSchemaReadyOfflineThenConnect()

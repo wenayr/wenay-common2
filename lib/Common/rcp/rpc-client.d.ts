@@ -1,4 +1,4 @@
-import { type SocketTmpl } from "./rpc-protocol";
+import { type RpcAuthNotice, type SocketTmpl, type tAuthState } from "./rpc-protocol";
 import { type RpcLimits } from './rpc-limits';
 import { makeOff } from "./rpc-off";
 import { type RpcOpt } from './rpc-caps';
@@ -35,6 +35,16 @@ type ClientApiHandle = {
         consumers: number;
     }[];
 };
+export type tAuthEventState = tAuthState | 'renewFailed' | 'renewed';
+export type RpcAuthEvent = Omit<RpcAuthNotice, 'state'> & {
+    state: tAuthEventState;
+};
+export type tAuthRenewReason = 'connect' | 'notice' | 'unauthorized';
+export type RpcAuthRenewRequest = {
+    reason: tAuthRenewReason;
+    notice?: RpcAuthEvent;
+};
+export type RpcTokenRenew = (request: RpcAuthRenewRequest) => any;
 export type RpcClientReturn<T extends object> = {
     func: ClientAPIAll<T>;
     pipe: PipeAPI<T>;
@@ -57,6 +67,8 @@ export type RpcClientReturn<T extends object> = {
     init: (obj?: object) => Promise<void>;
     reauth: (token: any) => Promise<any>;
     auth: () => Promise<any>;
+    onAuthState: (cb: (event: RpcAuthEvent) => void) => ReturnType<typeof makeOff>;
+    setTokenRenew: (renew: RpcTokenRenew | null) => void;
     onDisconnect: (cb: (reason: string) => void) => ReturnType<typeof makeOff>;
 };
 export declare function createRpcClient<T extends object>({ socket, socketKey: key, limit, limits, dedupeListen, token, opt }: {

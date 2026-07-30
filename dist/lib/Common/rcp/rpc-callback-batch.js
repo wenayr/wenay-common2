@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.MAX_BATCH_ITEMS = void 0;
 exports.createCallbackPacketBatcher = createCallbackPacketBatcher;
 const rpc_protocol_1 = require("./rpc-protocol");
 const wire_size_1 = require("../wire-size");
@@ -7,7 +8,7 @@ const DEFAULT_MAX_ITEMS = 64;
 const DEFAULT_MAX_BYTES = 64 * 1024;
 const MAX_ITEMS = 1024;
 const MAX_BYTES = 8 * 1024 * 1024;
-const BATCH_WIRE_OVERHEAD = (0, wire_size_1.utf8ByteLength)(JSON.stringify([rpc_protocol_1.Pkt.CB_BATCH, []]));
+exports.MAX_BATCH_ITEMS = MAX_ITEMS;
 function resolveCallbackBatchLimits(opt) {
     const configured = opt && typeof opt == 'object' ? opt : undefined;
     function bounded(value, fallback, min, max) {
@@ -35,34 +36,42 @@ function containsBinary(value, seen = new Set()) {
     }
     return false;
 }
-function createCallbackPacketBatcher({ send, opt, }) {
+function createCallbackPacketBatcher({ send, opt, envelope = rpc_protocol_1.Pkt.CB_BATCH, }) {
     const limits = resolveCallbackBatchLimits(opt);
+    const wireOverhead = (0, wire_size_1.utf8ByteLength)(JSON.stringify([envelope, []]));
+    let lone = null;
     let packets = [];
-    let bytes = BATCH_WIRE_OVERHEAD;
+    let bytes = wireOverhead;
     let scheduled = false;
     let scheduleVersion = 0;
     function flush() {
         scheduleVersion++;
         scheduled = false;
+        if (lone != null) {
+            const single = lone;
+            lone = null;
+            send(single);
+            return;
+        }
         if (packets.length == 0)
             return;
         const ready = packets;
         packets = [];
-        bytes = BATCH_WIRE_OVERHEAD;
-        send(ready.length == 1 ? ready[0] : [rpc_protocol_1.Pkt.CB_BATCH, ready]);
+        bytes = wireOverhead;
+        send(ready.length == 1 ? ready[0] : [envelope, ready]);
     }
     function scheduleFlush() {
         if (scheduled)
             return;
         scheduled = true;
         const version = ++scheduleVersion;
-        queueMicrotask(function flushCallbackPackets() {
+        queueMicrotask(function flushBatchedPackets() {
             if (version != scheduleVersion)
                 return;
             flush();
         });
     }
-    function enqueue(packet) {
+    function admit(packet) {
         if (containsBinary(packet)) {
             flush();
             send(packet);
@@ -72,7 +81,7 @@ function createCallbackPacketBatcher({ send, opt, }) {
         const previousSeparator = packets.length == 0 ? 0 : 1;
         if (packets.length > 0 && (packets.length >= limits.maxItems || bytes + previousSeparator + size > limits.maxBytes))
             flush();
-        if (size + BATCH_WIRE_OVERHEAD > limits.maxBytes) {
+        if (size + wireOverhead > limits.maxBytes) {
             flush();
             send(packet);
             return;
@@ -84,6 +93,19 @@ function createCallbackPacketBatcher({ send, opt, }) {
             flush();
         else
             scheduleFlush();
+    }
+    function enqueue(packet) {
+        if (lone != null) {
+            const first = lone;
+            lone = null;
+            admit(first);
+        }
+        if (packets.length == 0) {
+            lone = packet;
+            scheduleFlush();
+            return;
+        }
+        admit(packet);
     }
     return { enqueue, flush };
 }

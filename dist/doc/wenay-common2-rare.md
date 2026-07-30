@@ -152,17 +152,148 @@ createRpcServerAuto(opts)                           // canonical: nested object 
   //   path stays byte-for-byte (Pkt.MAP only grows additively), plus line/frameLine/since/keyframe/frame — so
   //   upgrading listen -> replayListen is a declaration-site-only change; replaySubscribe(client.func.key) works as is.
   //   opts.replayOpts {pending?, highWater?, lowWater?, pollMs?} arms the per-connection lag gate on frameLine
-  //   (consumer picks policy 'queue'|'frame' at subscribe time); the replay `line` stays ungated for connected queue-policy live delivery.
+  //   (consumer picks policy 'queue'|'frame' at subscribe time); Store Replay V2 api.replay / Replicated Map api and
+  //   exposeReplay(...) are internally branded replay-wire facades and receive the same frameLine projection.
+  //   The gate subscribes upstream only while at least one frameLine consumer exists, and its 25ms default poll
+  //   exists only while that active consumer is actually above highWater. The replay `line` stays ungated.
   // Application packets use the JSON-array wire. Date/Map/Set/RegExp/BigInt are projected through
   //   the established marker format; ArrayBuffer/DataView/TypedArray values remain native transport
-  //   attachments. Correlated CAPS negotiates only compact subscription shapes and callback batching.
+  //   attachments. CAPS negotiates only compact subscription shapes, callback batching, the server->client
+  //   authorization-state push (Caps.AUTH_STATE, opt.authState), the HELLO<->MAP correlation id
+  //   (Caps.HELLO_ID, opt.helloId) and row-encoded record arrays (Caps.ROWS, opt.compactRows) — all
+  //   default on.
+  // opts.compactRows defaults on (Caps.ROWS). ONE bounded shape registry per connection replaces the
+  //   per-cbId table, and an array of uniform plain-object records inside a result or a callback
+  //   argument becomes {"$_t":[shapeId,rows,keys]} — key names once instead of once per record.
+  //   A table always carries its own keys: a form that only referenced a previously declared shape
+  //   desynchronizes the moment the receiver drops a packet it cannot use (a RESP for an abandoned
+  //   request, a CB for a dead cbId), and it would have saved 63 B out of ~71 000. So the registry's
+  //   contribution is the SHARED id space and the shared uniformity judgement, not a second wire
+  //   form: a shape an array proved uniform lets the tick path skip the five-repeat threshold and go
+  //   straight to Pkt.SHAPE. A table never writes the Pkt.SHAPE table, so no shape id — hostile or
+  //   accidental — can make a table decode against another producer's key order.
+  //   Encoded only from 4 records up, only when every element is a plain object with the same keys
+  //   in the same ORDER (order is preserved end to end), and never when a value would change meaning
+  //   by moving from an object into an array: JSON.stringify drops undefined/function/symbol from an
+  //   object and writes null for them in an array, so such an array is refused rather than altered.
+  //   Decoding is the one attacker-facing surface added: keys are re-validated (string, isSafeKey,
+  //   unique, <= maxKeys), rows are counted against maxArrayLen, values keep the depth they would
+  //   have had as {…}[], and a row whose width disagrees with its shape is REJECTED, never padded.
+  //   Failures raise PayloadLimitError, which the existing sites already handle — a response rejects
+  //   that one request, a callback packet is dropped — so nothing escapes as an unhandled error.
+  //   Registry lifetime: it belongs to one server instance and dies with it, holds at most 64 shapes
+  //   evicted least-recently-used, and its ids are monotonic and never reused; declaration is tracked
+  //   per session, so a rebuilt session re-declares. The client's Pkt.SHAPE table is bounded at 256
+  //   and cleared on every new server generation.
   // opts.callbackBatch defaults on for new peers: same-microtask callback packets are wrapped
   //   losslessly as Pkt.CB_BATCH (64 items / 64 KiB). RESP, errors and CB_END remain ordering barriers.
+  // opts.requestBatch is the ONE negotiated bit that is OFF by default (Caps.REQ_BATCH). It moves the
+  //   session's whole ordered stream — CALL/PIPE outbound, RESP/CB_END/CB inbound — into a SECOND
+  //   envelope, Pkt.BATCH, with the same microtask flush and the same ceilings ({maxItems:64,maxBytes:65536}).
+  //   Because a response then rides the same queue as the callbacks that preceded it, the RESP ordering
+  //   barrier above is not merely skipped but unnecessary: order is carried by position in the batch.
+  //   Requires callbackBatch (a single queue per session is what makes that true) and is effective only
+  //   when BOTH peers advertise it; Pkt.BATCH is a distinct opcode precisely because today's Pkt.CB_BATCH
+  //   validator accepts only CB/SHAPE/CBV and would drop an envelope carrying a response. Unchanged inside
+  //   it: binary leaves stay direct sends, an oversize packet keeps one-packet semantics and cannot be
+  //   overtaken, a one-item batch is never wrapped, the session id stays at index 5 of every item, a
+  //   wait:false CALL still gets no RESP, and a consumer throwing on one item never discards its siblings.
+  //   Off by default because it re-frames the request path and buys nothing where calls are issued one at
+  //   a time — see experiments/rpc-perf-2026-07/RESULTS.md for the measured burst win and the null result
+  //   on the isolated `small` family.
+  // RETURNS { api, control } (createRpcServerAuto) / { control } (createRpcServer) — see the control facet
+  //   below. Additive: callers that ignore the return are unchanged.
 createRpcServer(opts)                               // lower-level core
 createRpcServerAutoDetect(opts)                          // + legacy/v2 protocol auto-detection (createRpcServerAutoWithProtocolDetection)
 createRpcServerInProc(...)                          // in-process fast path (no socket)
+// authorization (in-band, Pkt.HELLO) — CANONICAL PAGE: doc/RPC-AUTH.md (rules + ✅/❌ pairs + limits)
+opts.auth: RpcServerAuth = { resolveAuth: (token) => RpcAuthGrant | Promise<RpcAuthGrant>, gate?: boolean }
+RpcAuthGrant = { object?: any, ack?: any, expiresAt?: number, renewBeforeMs?: number }
+  // object  — principal facade to serve; ABSENT = keep the currently served object.
+  // ack     — 5th element of Pkt.MAP; default {ok:true}. ack.ok === false is a rejection. When the grant
+  //   declares a finite expiresAt the server attaches it under ONE reserved key: ack.$rpc = {expiresAt}
+  //   (exported GRANT_FACTS_KEY = '$rpc', wire contract in rpc-protocol.ts). Attached on a COPY — a frozen
+  //   or shared application ack is never mutated — and SKIPPED when the ack is not a plain object, already
+  //   owns '$rpc' (the application wins) or the deadline is not finite. Optional by contract: the client
+  //   reads it defensively (grantDeadline) and a missing/garbage value only means an event without one.
+  // expiresAt — ABSOLUTE wall-clock ms. Infinity = no deadline; any OTHER non-finite value fails CLOSED
+  //   (immediate downgrade — a caller's `Date.now() + undefined` must not grant an unlimited session).
+  //   Waits are chunked at 2_147_483_647 ms re-reading Date.now(), so a >24.8-day deadline is not
+  //   clamped to "already expired" and a forward clock jump costs at most one chunk of drift.
+  // renewBeforeMs — 'expiring' lead time, default 30_000, clamped into [0, remaining].
+  // gate:true — CALL/PIPE before a successful HELLO are rejected with MyError code 'E_UNAUTHORIZED'.
+  //   It does NOT gate Pkt.STRICT: the constructor `object` is walked at construction and its schema
+  //   answers any peer. Keep that object EMPTY — it is also the expiry/revocation fallback facade.
+  // resolveAuth throw = TRANSIENT: principal, routeMap, authed and subscriptions are untouched, the
+  //   caller's reauth() just resolves {ok:false,reason}. throw a value carrying `revoke: true`
+  //   (Object.assign(new Error('...'), {revoke:true})) = the full downgrade corridor.
+  // Downgrade corridor (HELLO success / expiry / revocation all share it): Pkt.AUTH state FIRST (so the
+  //   client learns WHY before its streams end) -> rebuild dispatch -> teardown -> Pkt.MAP with
+  //   authAck {ok:false,state,reason}. That ack rides every later MAP but is NOT sticky: a successful
+  //   HELLO replaces it wholesale, including on a later STRICT-driven MAP.
+// control facet — the application's own grip on THIS connection's principal (returned by both factories)
+control.revoke(reason?: any) -> boolean · control.grant(grant: RpcAuthGrant) -> boolean
+RpcServerControl = ReturnType<typeof createRpcServer>['control']   // for a Map<userId, RpcServerControl> registry
+  // WHY: resolveAuth runs only on a HELLO, so `revoke: true` needs the CLIENT to ask. An admin action, a
+  //   logout from another device or a fraud signal has no HELLO to ride on. `control` is commands inward
+  //   over one connection's authorization — two members, one boundary, flat. Reads (api.subscriptions)
+  //   stay where they were; nothing was moved or renamed.
+  // revoke IS downgradePrincipal — no second downgrade path: Pkt.AUTH state first, then teardown of the
+  //   Listen nodes the base facade no longer declares (RPC_STOP -> CB_END), then Pkt.MAP with
+  //   authAck {ok:false,state:'revoked',reason}. Identical to expiry except the state NAME. It always
+  //   clears the grant's timers, so a revoked short-lived token produces no later 'expiring'/'expired'.
+  // grant IS the HELLO success path (applyGrant) with the correlation id omitted: same facade, ack,
+  //   deadline and timers. Deliberately UNCORRELATED — it answers no HELLO, so it can never settle a
+  //   pending reauth(), and for the same reason it emits no client-side 'renewed'.
+  // false means ONLY 'this connection is detached' (socket+key taken over by a later server, or disposed):
+  //   nothing was sent. It is never 'command rejected'.
+  // Safe at any moment: before any HELLO (corridor runs on the base facade, nothing armed); twice in a row
+  //   (deliberately NOT suppressed — a revocation after an expiry carries a DIFFERENT reason the client
+  //   should hear, and the second pass drops nothing); after detach (returns false before touching state).
+  // revokeEpoch: resolveAuth is AWAITED, so a grant that STARTED before an application revoke would
+  //   otherwise resolve after it and silently restore the principal. Such a grant is dropped — but the
+  //   HELLO still gets its answer (the current revocation ack, correlated with its id), so a reauth() in
+  //   flight settles instead of hanging. Guards revocation only: two grants racing stay 'last one wins'.
+  // Known edges: revoke on a server built WITHOUT auth still runs (its MAP grows 4 -> 5 elements for that
+  //   peer — the one path where an auth-less server starts sending an authAck); grant accepts ANY object
+  //   with no validation seam before the dispatch rebuild; repeated revoke re-sends Pkt.AUTH + MAP each
+  //   time; a transport whose emit THROWS is not swallowed (same as every other send in the file).
+hooks.onPrincipalChange?: (ctx: RpcPrincipalChange) => void
+RpcPrincipalChange = { keep: ReadonlySet<object>, drop: ReadonlySet<object> }   // Listen node IDENTITIES
+  // Teardown evidence is the DECLARED set LOSING a node (`drop`), not "absent from keep": a Listen inside
+  //   a noStrict(...) subtree is resolved by string path at CALL time and never walked, so it is in NEITHER
+  //   set and keeps its subscribers across every principal change (a routine renewal must not kill it).
+  //   createRpcServerAuto consumes this hook (unsubscribeUnreachable) and still relays yours; each dropped
+  //   subscriber gets rpcEndCallback (RPC_STOP -> CB_END) BEFORE losing the server subscription, so client
+  //   consumers resolve instead of hanging. A source kept by another exposed node is never torn down.
+createTokenCodec({secret, ttlMs? = 15*60_000, hmac?, now?}) -> {issue, verify}   // 'wenay-common2/server', node-only
+  // issue<T extends IssueClaims>(claims: T, {ttlMs?}?) -> `v1.<base64url(payload)>.<base64url(hmac-sha256)>`
+  //   `exp` and `jti` are MINTED, never accepted from the caller; throws only on caller error (empty `sub`).
+  // verify(token: unknown) -> {ok:true, claims: TokenClaims} | {ok:false, reason: 'malformed'|'signature'|'expired'}
+  //   NEVER throws (network garbage is traffic, not an exception); timing-safe mac compare; the version tag
+  //   is inside the signed input, so a future v2 mac cannot be replayed as v1. Empty secret throws at construction.
+  // Deliberate non-goals: no JWT / no `alg` header (that is the alg:none bug family), no key rotation,
+  //   no revocation or deny list, no refresh flow, no identity provider. A short TTL is the only exit.
 // clients
-createRpcClientHub(opts) + rpc                      // multiplexing client hub: connect(token)/reauth(token)/onConnect/onDisconnect + connectListen/disconnectListen
+createRpcClientHub(opts) + rpc                      // multiplexing client hub: connect(token)/reauth(token)/onConnect/onDisconnect + connectListen/disconnectListen + authListen
+  // hubOpts.token?: RpcTokenProvider = (req: RpcAuthRenewRequest) => string|null|undefined|Promise<...>
+  //   ONE function for the whole token lifecycle; PROVIDING IT STARTS THE HUB (it raises its own socket with
+  //   createSocket(null) — the application never calls connect()). Single-flight over the provider call: N
+  //   triggers across N facade clients share ONE call, and the slot is released only after it settles.
+  //   PRECEDENCE — an explicit token owns ONE connection wave, not every wave that follows:
+  //     • connect(token)/setToken(token) win for the wave they raise (reason 'connect' returns the explicit
+  //       token, the provider is not consulted). The wave is identified by connectCount, bumped once per
+  //       accepted connection, so EVERY facade client of that wave gets it and no later wave can.
+  //     • every LATER wave (transport reconnect on the same socket, server generation change) and every
+  //       renewal trigger ('expiring'/'expired'/'revoked'/'unauthorized') go to the provider — a token that
+  //       outlived its wave would be re-presented forever, including one the server already revoked, so
+  //       every reconnect would start already refused.
+  //     • reauth(token) claims NO wave: its own handshake is the HELLO it issues on the live socket, so a
+  //       future connection inherits nothing from it.
+  //     • a provider yielding nothing is not a downgrade — the facade client keeps the token already in
+  //       force, which on the first wave IS the explicit one.
+  // hub.authListen(cb) -> off: additive; cb gets RpcHubAuthEvent = RpcAuthEvent & {key} (which facade).
+  //   Relayed even WITHOUT a provider — expiry is worth reporting to an application that renews by hand.
   // alias: hub.setToken->connect. onConnect/onDisconnect are legacy single-slot setters; the additive
   //   *Listen registries return per-listener off functions and cannot overwrite each other or internal recovery.
   //   A transient disconnect/reconnect of the SAME Socket.IO object keeps this client generation: after
@@ -171,6 +302,56 @@ createRpcClientHub(opts) + rpc                      // multiplexing client hub: 
   //   connect()/setToken() hard-rotates the socket/client generation; close()/dispose() is terminal.
 client members: func (proxy) · strict (schema-safe) · schema() · auth() · reauth() · onDisconnect()
                 close(reason?, {socketAlive?}) · ready() · init(obj?) · api.subscriptions()
+                onAuthState(cb) -> off · setTokenRenew(fn|null)
+  // createRpcClient opts.token — presented via Pkt.HELLO in initStrict() (never in the socket handshake).
+  //   In-band auth assumes ONE logical client per socket+key (the hub model): two token clients on one
+  //   socket would wipe each other's routeCache/authAck on a principal change.
+  // auth() -> current authAck; null = server WITHOUT auth (5-element MAP with authAck null). During an
+  //   in-flight HELLO it waits for the FRESH ack, not the stale one. After dispose it resolves immediately.
+  //   A client that presented NO token never gets an authAck at all (it sends only Pkt.STRICT and a gated
+  //   server answers a 4-element MAP), so auth() answers LOCALLY with
+  //   {ok:false, reason:'RPC client presented no token'} instead of hanging. It invents no server state:
+  //   from a client that never asked, a gated server and a server without auth are indistinguishable, so
+  //   the answer names the LOCAL cause. Guarded by authToken == null && !authPending && authStatus
+  //   undefined, so a token-bearing client (or one with a HELLO outstanding) is still answered only by its
+  //   own ack — a STRICT companion can never resolve a pending HELLO with a premature null.
+  // reauth(token) -> soft re-auth on the LIVE socket: subscriptions are not broken (same socket, same
+  //   cb-ids); the server re-verifies and sends the new principal's MAP + authAck. Each reauth() settles
+  //   on the answer to its OWN HELLO (Caps.HELLO_ID), so an unsolicited downgrade MAP never resolves it
+  //   with a stale ack. WARNING: still never run concurrent reauths — the server keeps ONE principal per
+  //   socket+key, so racing tokens end in whichever HELLO it resolved last; wait for each. To change
+  //   stream VISIBILITY on the client, reconnect (connect/setToken), not reauth.
+  // onAuthState(cb) -> off (callable + thenable, awaits client teardown). Silent unless Caps.AUTH_STATE is
+  //   negotiated. RpcAuthEvent = Omit<RpcAuthNotice,'state'> & {state: tAuthEventState};
+  //   tAuthEventState = tAuthState | 'renewFailed' | 'renewed'. Both extra states are LOCAL and never travel
+  //   on the wire — one stream covers wire facts and silent local ones.
+  //   'renewFailed' — an installed renewer produced nothing, or the token already in force.
+  //   'renewed'     — an AUTOMATIC renewal got an ack that is not {ok:false}; carries expiresAt when the
+  //     new grant declared one (read from ack.$rpc.expiresAt, defensively: absent key/garbage -> the event
+  //     WITHOUT expiresAt, never no event).
+  //   BOUNDARY (deliberate): this stream reports what happens WITHOUT being asked. A manual reauth() emits
+  //     NOTHING — it resolves with that very ack, deadline included, so an event would duplicate an answer
+  //     its caller already holds. An application control.grant emits nothing either: it reaches the client
+  //     as an unsolicited authAck-bearing MAP, not through the renewal seam. Widening later is additive.
+  // setTokenRenew(renew: RpcTokenRenew | null) — the renewal seam the hub installs its provider into.
+  //   RpcTokenRenew = (req: RpcAuthRenewRequest) => any; RpcAuthRenewRequest = {reason, notice?} with
+  //   reason 'connect' (before a fresh HELLO) | 'notice' (a Pkt.AUTH push) | 'unauthorized' (a rejected call).
+  //   Client-level single-flight over the whole renewal action. Same-token guard: re-presenting the token
+  //   already in force is NOT a renewal (it would drive an endless expire->renew->expire loop) and reports
+  //   'renewFailed'. Without a renewer the client never renews and never retries — previous behavior.
+  // Unauthorized retry: an E_UNAUTHORIZED rejection is retried EXACTLY ONCE after the renewed principal is
+  //   presented. "Once" is structural, not a counter (the retry is issued without the flag), and the retry
+  //   lives INSIDE the call attempt so the caller keeps ONE promise (a derived .catch promise would be
+  //   invisible to transport-generation abandonment and could crash Node on a drop). NEVER retried:
+  //   wait==false (space/fire-and-forget — no reply channel), any call whose args carried a callback (the
+  //   RESP already released those ids), PIPE (opaque chain, steps may carry callbacks) and Listen attempts.
+  // init()/ready(): the handshake guard runs FIRST, so the documented sequential pattern (hub handshake,
+  //   then the application's own ready()) mints ONE token and sends ONE HELLO per connection — the renewal
+  //   is skipped entirely when the schema is already known and the presented token acknowledged, and is
+  //   re-checked after a renewal (a renewal on a live socket presents the token itself). A genuine re-init
+  //   after a transport drop or a server generation change still runs in full. Two CONCURRENT init() calls
+  //   still send two HELLOs (both see the same "not handshaked" state); the provider is not consulted twice
+  //   even then. Without a renewer the behavior is byte-for-byte as before.
   // alias: dispose->close · readyStrict->ready · initStrict->init
   // func/space/strict child proxies are cached per createRpcClient instance + surface + lossless RPC path:
   //   c.func.a.b === c.func.a.b and c.all === c.func; dotted keys remain distinct from segmented paths.
@@ -199,6 +380,9 @@ matchKeys(a,b) · matchKeysList(a, keys) · deepMapByKeys · deepMapByKeysList
 // wire serialization (rpc-walk): Date/Map/Set/RegExp/BigInt are marked+restored; functions -> callback refs.
 //   TypedArray/DataView/Buffer/ArrayBuffer pass through as BINARY leaves (socket.io carries them natively;
 //   never rebuilt into {0:…,1:…} dicts — raw canvas/video byte payloads are wire-safe and cheap).
+RESERVED_MARKER_KEYS · reservedMarkerKeyOf(value)
+  // The reserved key space: a plain object whose SINGLE key is $_d/$_m/$_s/$_r/$_b/$_f/$_t is the
+  // codec's value, not the application's. Full contract under "RPC application wire" below.
 RpcLimits (opt, per server/client): maxDepth 32 · maxKeys 1000 · maxArgs 64 · maxArrayLen 10k
   · maxStringLen 1M · maxCallbacks 100 · maxPathLen 16 · maxBinaryLen 8MB (bytes per binary leaf)
   // Server inputs and client results/callbacks are checked at the JSON application boundary.
@@ -213,7 +397,126 @@ RpcLimits (opt, per server/client): maxDepth 32 · maxKeys 1000 · maxArgs 64 ·
 CALL, RESP, PIPE, callback, error and control packets use backward-readable JSON arrays.
 Date, Map, Set, RegExp and BigInt use the `rpc-walk` marker projection. ArrayBuffer and
 ArrayBufferView values remain native transport attachments, so large media/data leaves are not
-expanded into JSON number dictionaries. CAPS negotiates only COMPACT and CB_BATCH behavior.
+expanded into JSON number dictionaries. CAPS negotiates COMPACT, CB_BATCH, AUTH_STATE, HELLO_ID,
+REQ_BATCH and ROWS.
+
+#### Reserved keys — the one contract an application must respect
+
+The marker projection is a **reserved key space**, and it is the only place where application
+data can be mistaken for the codec's own types. The rule is exact:
+
+> A **plain object whose single own key** is one of `$_d` `$_m` `$_s` `$_r` `$_b` `$_f` `$_t`
+> belongs to the codec. An application must not produce one.
+
+| Key | Payload the codec accepts | Restored as | Where |
+|---|---|---|---|
+| `$_d` | a number, or `null` (an Invalid Date) | `Date` | args, results, callbacks |
+| `$_m` | an array of `[key, value]` pairs | `Map` | args, results, callbacks |
+| `$_s` | an array | `Set` | args, results, callbacks |
+| `$_r` | `{source: string, flags: string}` that `new RegExp` accepts | `RegExp` | args, results, callbacks |
+| `$_b` | a string of `-?[0-9]+` | `BigInt` | args, results, callbacks |
+| `$_f` | a finite number | a **callback handle** bound to that id | arguments only |
+| `$_t` | `[shapeId ≥ 0, rows[], keys[]]` | the record array of a row table | results and callbacks, and only when `Caps.ROWS` is negotiated |
+
+Anything else under one of those keys is **not** the codec's and comes back as the ordinary
+object the wire carried — recognition is exactly as narrow as the payload each serializer
+emits, so `{"$_b": "hello"}`, `{"$_m": 5}` or `{"$_r": 5}` survive as objects instead of
+throwing out of the decoder or turning into a wrong value. `$_f` is the one exception: a
+non-numeric id is a forged callback and still raises `PayloadLimitError`.
+
+To stay safe an application needs one of these, and nothing else works:
+
+- give the object a **second key** — `{"$_d": 5, name: "x"}` round-trips untouched, and always did;
+- do not use these keys at all.
+
+Nesting does **not** help: the walker reaches every level, so `{value: {"$_d": 5}}` still has a
+reserved object inside it. `RESERVED_MARKER_KEYS` and `reservedMarkerKeyOf(value)` are exported
+from the package for applications that want to assert this on their own data.
+
+Two further consequences of the codec stopping at a reserved key, symmetric on both sides:
+the payload under such a key is **not walked**, so a `Date`/`Map`/`Set`/`RegExp`/`BigInt`
+nested inside it is not marked on the way out and does not come back; and the
+`__proto__`/`constructor`/`prototype` key filter is not applied inside it either.
+
+There is no escaping and no negotiation: escaping a colliding object would change the bytes,
+would therefore need its own capability bit, and against a peer without the bit it replaces one
+silent corruption with a different one. What exists instead is **encode-side detection**, which
+is the only side where the question is decidable — going out, a plain object under a reserved
+key is by construction not one of ours, while coming in the two are indistinguishable. With
+`debug: true` on `createRpcServer`/`createRpcServerAuto`, or `client.api.log(true)`, every
+outgoing collision is reported as `[RPC OUT] reserved key $_x …`. With debug off the check costs
+one register test on a branch only colliding values enter.
+
+#### Row encoding (`Caps.ROWS`)
+
+`Caps.ROWS` (`opt.compactRows`, default **on**) adds one value marker and no opcode: an array of
+uniform plain-object records becomes `{"$_t": [shapeId, rows, keys]}` wherever a result or callback
+argument is packed. `$_t` is deliberately NOT in the walker's marker set, so a peer without the bit
+recurses into such an object exactly as before and its wire is unchanged down to the byte. Shape ids
+come from one bounded per-connection registry shared with the `Pkt.SHAPE`/`Pkt.CBV` tick path, which
+is what lets a shape an array proved uniform skip the tick threshold — but a table always carries its
+own keys and never writes the tick table, so the two directions share a judgement, not a decoder
+state. Measured on `large`: 127 912 → 70 983 B per 1000-record call, −44.5 %, with `small`, `ticks`,
+`flood` and `burst` byte-identical.
+
+#### Batch envelopes
+
+There are two batch envelopes and they never share a queue. `Pkt.CB_BATCH` (`Caps.CB_BATCH`, default
+on) carries live `CB`/`SHAPE`/`CBV`. `Pkt.BATCH` (`Caps.REQ_BATCH`, `opt.requestBatch`, default
+**off**) carries a whole session's ordered application stream: `CALL`/`PIPE` outbound,
+`RESP`/`CB_END`/`CB` inbound. It is a distinct opcode on purpose — the shipped `Pkt.CB_BATCH`
+validator accepts only `CB`/`SHAPE`/`CBV` and would silently drop an envelope carrying a response,
+whereas an unknown opcode falls through every existing switch on both sides. Each item keeps its own
+session id at index 5, so unwrapping the envelope yields exactly the packets separate frames would
+have delivered, in the same order. That is also why the response ordering barrier disappears when the
+bit is negotiated rather than merely being skipped: order is carried by position in the batch.
+
+### RPC authorization wire
+
+> Canonical page with rules, ✅/❌ pairs and the documented limits: **[`RPC-AUTH.md`](RPC-AUTH.md)**.
+
+Authorization is in-band. The client sends `[Pkt.HELLO, token, id?]` before `Pkt.STRICT`; the server
+verifies it, optionally replaces the served object with that principal's facade, and answers a
+**five**-element `Pkt.MAP` whose 5th element is `authAck`. A server configured without `auth` still
+answers HELLO with a five-element MAP carrying `authAck = null`, so a token-bearing client can tell
+a HELLO reply from a plain four-element STRICT reply instead of hanging. Old peers never send HELLO
+and see the previous wire byte-for-byte.
+
+Token lifetime is pushed back as `[Pkt.AUTH, {state, reason?, expiresAt?}]` with
+`tAuthState = 'expiring' | 'expired' | 'revoked'`, negotiated by `Caps.AUTH_STATE = 1 << 2`
+(`RpcOpt.authState`, default on). It is deliberately a **control packet and not a Listen node**: such
+a node would live inside the principal's facade and vanish exactly when the state has to be reported.
+The push is per socket+key, not per session — any negotiated peer on that key enables it — and it is
+emitted as a broadcast, so a raw co-tenant peer on the same socket+key sees the bytes. That is not a
+disclosure: authorization is per socket+key by construction (one `authAck`, one principal, one
+`authed` flag), and unknown opcodes are ignored by construction. Anonymous (uncorrelated) `Pkt.CAPS`
+therefore keeps `AUTH_STATE` alongside `COMPACT`, while `CB_BATCH` stays excluded — a control packet
+about this connection's authorization is not a re-framing of another client's callback packets.
+
+A HELLO is correlated with the MAP that answers it (`Caps.HELLO_ID = 1 << 3`, `RpcOpt.helloId`,
+default on): the client puts an id in HELLO's 3rd element and the server echoes it in the answering
+MAP's 6th. Only a reply carries one, so an **unsolicited** MAP — a STRICT push or an expiry/revocation
+downgrade — can never settle a pending `reauth()` with a stale `{ok: false, state: 'expired'}`.
+No id in, no id out: an uncorrelated peer sees the previous wire byte-for-byte, and there the next
+authAck-bearing MAP answers the oldest outstanding HELLO, exactly as before. Still do not run
+concurrent `reauth()`s: correlation guarantees each one sees its own answer, but the server keeps
+ONE principal per socket+key, so racing tokens end in whichever HELLO the server resolved last.
+
+The grant's **deadline** rides inside the existing 5th element rather than a new one. `authAck` is the
+application's value — any shape, read field by field by its own consumers — so the server's own facts
+about the grant go under ONE `$`-prefixed reserved key, `ack.$rpc = {expiresAt}` (exported as
+`GRANT_FACTS_KEY`; an application ack does not carry `$rpc` by accident, and one namespace covers
+every future server-attached grant fact instead of N loose ones). It is attached on a **copy**, so a
+frozen or shared ack is never mutated, and it is skipped entirely when the ack is not a plain object,
+when the ack already owns `$rpc` (the application wins) or when the deadline is not finite (`Infinity`
+would travel as `null`). Hence optional by contract: the client reads it defensively and a
+missing/garbage value yields a `'renewed'` event *without* `expiresAt` rather than no event. **No wire
+change** — `rpc-protocol.ts` gained the key constant, not a packet or a Caps bit.
+
+Server-driven revocation adds no wire vocabulary either: `control.revoke` reuses the downgrade
+corridor verbatim and `control.grant` reuses the HELLO success path with the correlation id omitted,
+so an application grant is deliberately an *unsolicited* authAck-bearing MAP (it answers no HELLO and
+can settle no pending `reauth()`).
 
 ### HTTP facade server: static GET/POST mirror
 
@@ -1196,7 +1499,10 @@ and `[path,value]` / `[path]` represent nested or root patches. Application code
 ordinary `StorePatch` values.
 
 The JSON-array RPC lane transports the logical V2 value without a second Store-specific codec or
-numbered batch member or legacy fallback.
+numbered batch member or legacy fallback. `createRpcServerAuto({replayOpts:{highWater,...}})` recognizes
+this facade by internal identity and projects `frameLine`; a consumer selecting `policy:'frame'` therefore
+stops adding V2 updates to its Socket.IO queue above highWater and recovers by `frame(lastSent)` after drain.
+Merely connecting or receiving the RPC schema creates no upstream replay subscription and no polling timer.
 
 ## 🔁 Observe — coarse reactive object (`Observe`, fact-based)
 > `import { Observe } from "wenay-common2"` → `Observe.reactive(...)`.

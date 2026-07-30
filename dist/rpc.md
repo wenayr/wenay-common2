@@ -5,6 +5,8 @@ Here is a comprehensive guide in a concise style. I've taken into account the ar
 
 Bidirectional, strongly-typed RPC protocol over sockets (Socket.IO or similar).
 **Essence:** Server exposes a nested JS object $\to$ Client receives a typed proxy.
+**Auth:** in-band tokens (`Pkt.HELLO`), see §5. Before writing any auth code read the canonical page
+**[`doc/RPC-AUTH.md`](doc/RPC-AUTH.md)** — §5 is its compressed mirror, not a substitute.
 
 ---
 
@@ -12,6 +14,7 @@ Bidirectional, strongly-typed RPC protocol over sockets (Socket.IO or similar).
 
 *   **Multiplexing:** A single physical socket hosts independent channels (`socketKey`), each with its own API object.
 *   **Data Types:** Works with JSON-compatible data plus `Date`, `Map`, `Set`, `RegExp`, and `BigInt`. Class instances are sent as plain enumerable object data; methods/prototypes are not preserved.
+*   **Reserved keys:** those types travel as single-key marker objects, so `$_d` `$_m` `$_s` `$_r` `$_b` `$_f` `$_t` are the codec's — a plain object of yours whose **only** key is one of them is decoded as a library value on the far side. Add a second key to any such object, or avoid the keys. Full contract (accepted payload per key, which direction each applies to, and how to make a collision report itself with `debug`) is in **[`doc/wenay-common2-rare.md`](doc/wenay-common2-rare.md)** under "RPC application wire".
 *   **Security (RpcLimits):** Server is protected from DDoS attacks. Strict limits on: `maxDepth`, `maxKeys`, `maxArrayLen`, `maxStringLen`, `maxCallbacks`. Exceeding throws `PayloadLimitError`.
 
 ---
@@ -108,19 +111,29 @@ import { createRpcClientHub, rpc } from "wenay-common2";
 import type { MainFacade } from "../server/facade";
 
 export const Api = createRpcClientHub(
-  // 1. Socket factory (DI)
-  (token) => io("http://localhost:4021", {
-    transports: ["websocket"],
-    query: token ? { token } : {}
+  // 1. Socket factory (DI).
+  // The token does NOT belong here: RPC presents it in-band via Pkt.HELLO.
+  // A `query: { token }` handshake copies credentials into access logs, proxies and Referer.
+  () => io("http://localhost:4021", {
+    transports: ["websocket"]
   }),
 
   // 2. Channel registration
   // rpc() accepts Facade type. Property name ("mainAPI") becomes socketKey.
   (rpc) => ({
     mainAPI: rpc<MainFacade>(),
-  })
+  }),
+
+  // 3. Token lifecycle (optional): ONE function, consulted on connect, on a server
+  // auth-state push, and on the unauthorized retry. Providing it also starts the hub,
+  // so the application never calls connect().
+  { token: async () => (await fetch("/session/token", { credentials: "include" })).text() }
 );
 ```
+
+Without `hubOpts.token`, present the token explicitly: `await Api.connect(token)` (hard rotation) or
+`await Api.reauth(token)` (soft, on the live socket). Either way the token reaches the server in
+`Pkt.HELLO`, never in the socket handshake. Details → §5 and [`doc/RPC-AUTH.md`](doc/RPC-AUTH.md).
 
 ### 3.2 Connection Lifecycle
 
@@ -306,3 +319,168 @@ export function useOrchestrator() {
 }
 
 ```
+
+---
+
+### 4.5 Negotiated wire options (`opt`)
+
+Every wire optimization is one capability bit, advertised by both peers and used only when both
+advertise it — a peer that does not is unaffected, byte for byte. Pass `opt` to
+`createRpcServer`/`createRpcServerAuto` and to the client or hub.
+
+```typescript
+createRpcServerAuto({ socket, object, socketKey: "mainAPI", opt: { compactRows: false } });
+```
+
+| `opt` | Default | What it does |
+|---|---|---|
+| `compact` | on | a repeated subscription-tick shape travels as values only (`Pkt.SHAPE`/`Pkt.CBV`) |
+| `callbackBatch` | on | same-microtask callback packets share one frame (`Pkt.CB_BATCH`) |
+| `compactRows` | on | an array of uniform records travels as its keys once plus rows of values |
+| `requestBatch` | **off** | `CALL`/`PIPE` and `RESP` share one frame too (`Pkt.BATCH`) — opt in when calls are concurrent |
+
+`compactRows` is the one that touches ordinary results. An array of 4+ plain objects with the same
+keys in the same order becomes `{"$_t": [shapeId, rows, keys]}` instead of repeating every key name
+per record: measured at **127 912 → 70 983 bytes (−44.5 %)** for a 1000-record result, with p50 down
+24 % and CPU per call unchanged (`experiments/rpc-perf-2026-07`). Key order is preserved, `Date` and
+the other marker types keep working inside records, and an array whose values would change meaning by
+moving into a row (`undefined`, functions, symbols) is simply not compacted. Turn it off with
+`{compactRows: false}` if you need the previous byte layout.
+
+`requestBatch` is the only bit off by default: it re-frames the request path and buys nothing when
+calls are issued one at a time. Decode-side limits and the registry's lifetime →
+[`doc/wenay-common2-rare.md`](doc/wenay-common2-rare.md).
+
+---
+
+## 5. Authorization (in-band tokens)
+
+> Compressed mirror of **[`doc/RPC-AUTH.md`](doc/RPC-AUTH.md)** — the canonical page, with a
+> ✅/❌ pair per rule, the exact signatures and the documented limits. Read it before writing
+> auth code.
+
+The client presents a token in `Pkt.HELLO`; the server verifies it and replaces the served object
+with a facade built for that principal, then answers `Pkt.MAP` whose 5th element is `authAck`.
+Token lifetime, expiry and revocation are pushed back as `Pkt.AUTH` (negotiated by `Caps.AUTH_STATE`).
+When the grant declared a deadline, the server attaches it to the ack under one reserved key:
+`ack.$rpc = { expiresAt }` — attached on a copy, so your own ack is never clobbered, and optional by
+contract (absent for an old server, a non-object ack, an ack that already owns `$rpc`, or no deadline).
+
+### 5.1 Server: empty initial facade + `gate: true`
+
+```typescript
+const { api, control } = createRpcServerAuto({   // control = revoke/grant for THIS connection, §5.5
+  socket, socketKey: "mainAPI",
+  object: {},                 // schema answers a pre-HELLO STRICT, and is the downgrade target
+  auth: {
+    gate: true,               // CALL/PIPE before a successful HELLO -> MyError code "E_UNAUTHORIZED"
+    resolveAuth(token) {
+      const verdict = codec.verify(token);
+      if (!verdict.ok) throw new Error(verdict.reason);                          // TRANSIENT: session survives
+      if (banned.has(verdict.claims.jti))
+        throw Object.assign(new Error("banned"), { revoke: true });              // HARD: full downgrade
+      return {
+        object: buildFacade(verdict.claims),   // the protected surface — one facade per principal
+        ack: { ok: true, sub: verdict.claims.sub },
+        expiresAt: verdict.claims.exp,         // absolute ms; Infinity = no deadline
+        renewBeforeMs: 30_000,                 // "expiring" lead time (default 30s)
+      };
+    },
+  },
+});
+```
+
+Both parts are required. `gate` guards `CALL`/`PIPE` only — it does **not** gate `Pkt.STRICT`, so
+anything left in `object` is public schema. Prune per principal with the `role()` idiom of §2.2: a
+method absent from the schema is stronger than a method that checks.
+
+### 5.2 Client: one token provider
+
+```typescript
+// Hub: hubOpts.token owns the whole lifecycle (see §3.1). Observers are additive.
+const off = Api.authListen(({ key, state, reason }) => console.log(key, state, reason));
+// state: "expiring" | "expired" | "revoked"   — server, on the wire
+//      | "renewed"  | "renewFailed"           — local outcome of an AUTOMATIC renewal, never on the wire
+
+// Bare client (no hub): the same seam, one facade.
+const c = Api.facade.mainAPI;
+c.setTokenRenew(async ({ reason, notice }) => await mintToken(reason));  // "connect"|"notice"|"unauthorized"
+c.onAuthState((e) => console.log(e.state, e.reason, e.expiresAt));
+await c.auth();            // current authAck. null = server without auth; a client that presented
+                           //   NO token answers locally {ok:false, reason:"RPC client presented no token"}
+                           //   instead of hanging. ack.$rpc?.expiresAt = this grant's deadline, if any.
+await c.reauth(newToken);  // soft re-auth on the live socket: subscriptions preserved
+```
+
+Each `reauth()` settles on the answer to its own HELLO (negotiated `Caps.HELLO_ID`), so an
+unsolicited MAP — a downgrade landing mid-flight — never resolves it with a stale ack. Still do not
+run concurrent `reauth()`s: the server keeps one principal per `socketKey`, so racing tokens end in
+whichever HELLO it resolved last.
+
+`renewBeforeMs` before the deadline the server pushes `"expiring"`; at the deadline it pushes
+`"expired"` and rolls the principal back to the constructor object. Every push reaches the observers
+**and** triggers the renewer, whose token is presented with a soft `reauth()`. A renewer that yields
+nothing — or the token already in force — reports `"renewFailed"` and stops; a renewal the server
+acknowledged reports `"renewed"`, carrying `expiresAt` when the new grant declared one.
+
+`"renewed"`/`"renewFailed"` are the two outcomes of an **automatic** renewal and are added by the
+client. Deliberately silent: a manual `reauth()` resolves with that very ack (deadline included), and
+an application `control.grant` (§5.5) arrives as an unsolicited MAP, not through the renewal seam —
+neither emits an event. The stream reports what happens without being asked.
+
+Single-flight is two-level: one renewal per client, and one provider call per wave across all facade
+clients.
+
+**Precedence — an explicit token owns ONE connection wave.** `connect(token)`/`setToken(token)` win
+for the wave they raise, for every facade client of that wave. Every *later* wave (a transport
+reconnect, a server generation change) asks the provider again — a token pinned for the life of the
+hub would be re-presented forever, including one the server already revoked. `reauth(token)` claims
+no wave at all: its handshake is the HELLO it issues itself. Every renewal trigger
+(`"expiring"`/`"expired"`/`"revoked"`/`"unauthorized"`) always goes to the provider. A provider that
+yields nothing is not a downgrade — the client keeps the token already in force.
+
+### 5.3 The one retry, and what it excludes
+
+An `E_UNAUTHORIZED` rejection triggers **exactly one** extra attempt after the renewed principal is
+presented. Retried: a waiting `func`/`strict` call with no callbacks in its arguments, and only when
+a renewer is installed. Never retried: `space` (fire-and-forget — no reply channel), any call whose
+arguments carried a callback, `pipe`, and Listen subscription attempts.
+
+### 5.4 A privilege decrease cuts streams
+
+Re-auth to a narrower principal tears down the Listen nodes the new facade no longer declares: each
+subscriber gets a clean stream end (`RPC_STOP` → `CB_END`), so `await off` resolves instead of
+hanging. **Limit:** Listen nodes inside a `noStrict(...)` subtree are never walked, so they are never
+torn down — if a node must be revocable, keep it out of `noStrict`.
+
+### 5.5 Server-driven revocation: the `control` facet
+
+`resolveAuth` runs only on a HELLO, so `revoke: true` needs the client to ask. An admin action, a
+logout from another device or a fraud signal has none. `createRpcServer`/`createRpcServerAuto`
+therefore **return** `control` — commands inward over this one connection's principal:
+
+```typescript
+import { createRpcServerAuto, type RpcServerControl } from "wenay-common2";
+
+const sessions = new Map<string, RpcServerControl>();          // filled in io.on("connection")
+const { api, control } = createRpcServerAuto({ socket, object: {}, socketKey: "mainAPI", auth });
+
+control.revoke("password changed");        // -> boolean; false ONLY means "connection detached"
+control.grant({ object: facadeFor(claims), ack: { ok: true }, expiresAt });   // -> boolean
+```
+
+`revoke` **is** the expiry corridor — there is no second downgrade path. The client sees exactly what
+an expired token produces: `Pkt.AUTH` first, then the Listen nodes the base facade no longer declares
+end with `RPC_STOP`/`CB_END`, then a `Pkt.MAP` with `authAck {ok:false, state, reason}`; gated calls
+reject with `E_UNAUTHORIZED` again. Only the state name differs (`"revoked"` vs `"expired"`).
+
+`grant` is the HELLO success path without the question — same facade/ack/deadline/timers, but
+uncorrelated, so it can never settle a pending `reauth()` (and emits no `"renewed"`, §5.2). Both are
+safe before any HELLO, twice in a row and after detach; `revoke` clears the grant's timers, and an
+application revocation is not undone by a `resolveAuth` that started before it.
+
+### 5.6 `createTokenCodec` is a default, not a security product
+
+`import { createTokenCodec } from "wenay-common2/server"` gives one honest default: one secret, one
+pinned algorithm, one expiry (`issue` / `verify`, default TTL 15 min). No JWT, no key rotation, no
+revocation list, no refresh flow, no identity provider — those are the application's.

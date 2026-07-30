@@ -7,6 +7,8 @@ Use these rules by default — no need to ask.
 - Before writing new logic, check whether it already exists in the project or its libraries.
   If it exists, use it; if it almost exists, wrap it instead of rewriting it.
 - Never change a public interface without explicit discussion.
+- RPC authorization has a canonical page: `doc/RPC-AUTH.md`. Read it before writing or reviewing any
+  RPC auth code, and keep it in sync when the auth surface changes.
 
 ## Construction order
 
@@ -140,6 +142,7 @@ Use these rules by default — no need to ask.
 - `README.md` is navigation only. Do not put API guides, examples, or long explanations there.
 - The brief public surface lives in `doc/wenay-common2.md`.
 - The extended/rare public surface lives in `doc/wenay-common2-rare.md`.
+- RPC authorization is canonical in `doc/RPC-AUTH.md`; `rpc.md` only mirrors it in compressed form.
 - Naming migrations live in `doc/NAMING_RENAMES.md`.
 - Recent changes live in `doc/changes/` as one markdown file per published version, named `<version>.md`.
 - Every release/change intended for publication must add or update the current version file in `doc/changes/` with a short commit-style summary of what changed.

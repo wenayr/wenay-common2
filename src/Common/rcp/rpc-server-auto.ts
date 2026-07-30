@@ -1,10 +1,14 @@
 import { isListenCallback, createListen, isListenOn, getListenByOn } from "../events/Listen";
 import { IS_REPLAY_LISTEN } from "../events/replay-listen";
 import { listenSocket, type RpcListenSubscribeOpts } from "./listen-socket";
-import { createRpcServer, type PromiseServerHooks, type RpcLimits, type RpcServerAuth, type RpcOpt } from "./rpc-server";
+import { createRpcServer, type PromiseServerHooks, type RpcLimits, type RpcServerAuth, type RpcOpt, type RpcPrincipalChange } from "./rpc-server";
 import {DeepSocketListen} from "./listen-deep";
 import {SocketTmpl, IS_RPC_LISTEN, RPC_STOP} from "./rpc-protocol";
 import {rpcEndCallback} from './rpc-walk'
+import {
+    getRpcReplayWireSource,
+    type RpcReplayWireSource,
+} from '../events/replay-rpc-wire'
 
 type ListenCallbackBase<T extends any[] = any[]> = ReturnType<typeof createListen<T>>;
 
@@ -64,12 +68,40 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
     // so registration there would (a) show zero nodes in stats and (b) pin old principal
     // nodes on a strong Map → leak per re-auth count. We register only real subscriptions.
     const registry = new Map<object, { subs: Map<Function, ReturnType<typeof listenSocket>> }>();
+    // Exposed node → its Listen source. The server reports a principal change as the set of
+    // nodes still REACHABLE in the new facade; teardown has to address the source that owns
+    // the subscriptions (registry key), and for a replay node the exposed object is the merged
+    // surface, not the plain wrapper.
+    const sourceByNode = new WeakMap<object, object>();
     function unsubscribeAllActive() {
         for (const {subs} of registry.values()) {
             subs.forEach(w => w.off());
             subs.clear();
         }
         registry.clear();
+    }
+    // Selective variant of unsubscribeAllActive(): only nodes the new principal LOST.
+    // Driven by `drop` (declared before, not declared now) and not by "absent from keep":
+    // a node the schema walk never saw — a Listen inside a noStrict subtree, reachable only by
+    // string path — is in neither set and keeps its subscribers. Each dropped subscriber first
+    // gets the stream end (rpcEndCallback → RPC_STOP/CB_END) and only then loses the server
+    // subscription, so client consumers resolve instead of hanging.
+    function unsubscribeUnreachable({keep, drop}: RpcPrincipalChange) {
+        const kept = new Set<object>();
+        for (const node of keep) {
+            const source = sourceByNode.get(node);
+            if (source) kept.add(source);
+        }
+        for (const node of drop) {
+            const source = sourceByNode.get(node);
+            // one source may back several exposed nodes (replay: merged surface + legacy)
+            if (!source || kept.has(source)) continue;
+            const entry = registry.get(source);
+            if (!entry) continue;
+            entry.subs.forEach(function endSubscriber(w, z) { rpcEndCallback(z); w.off(); });
+            entry.subs.clear();
+            registry.delete(source);
+        }
     }
 
     function getListenSocket(parent: any, disconnectListen?: ListenCallbackBase<any>, nodeOpt?: { throttle?: number }): ReturnType<typeof listenSocket> {
@@ -130,6 +162,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
             result = { on: subscribe, off: unsubscribeAll, callback: subscribe, removeCallback: unsubscribeAll, once: subscribeOnce, close: () => (parent as any).close?.() };
             (result as any)[IS_RPC_LISTEN] = true; // server will declare node address in Pkt.MAP
             cache.set(parent, result);
+            sourceByNode.set(result, parent);
         }
         return result;
     }
@@ -171,63 +204,127 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         disconnectListen.on(closeAllGates);
     }
 
-    function gatedLineNode(parent: any) {
+    type ReplayGateSource = RpcReplayWireSource & {
+        line: {on: (cb: (event: any) => void) => () => void}
+        frame: (seq: number, hint?: unknown) => any[]
+    }
+
+    function gatedLineNode(source: ReplayGateSource) {
         const { pending: pendingOpt, highWater = Infinity, lowWater = 0, pollMs = 25 } = replayOpts ?? {};
         const pending = pendingOpt ?? (() => (socket as any)?.conn?.writeBuffer?.length ?? 0);
         // personal envelope line of this connection behind the gates
-        const out = createListen<any[]>(() => {});
+        const out = createListen<any[]>(function holdReplayGateOutput() {}, {
+            event(type, count) {
+                if (type == 'add' && count == 1) startSource()
+                if (type == 'remove' && count == 0) stopSource()
+            },
+        });
         out.run();
-        let lastSent: number = typeof parent.head == "function" ? parent.head() : 0;
+        let lastSent = 0;
         let gated = false;
         let closed = false;
+        let active = false;
         let timer: any = null;
+        let offLine: (() => void) | null = null;
         function stopPoll() { if (timer) { clearInterval(timer); timer = null; } }
         function startPoll() {
-            if (timer || closed) return;
+            if (timer || closed || !active) return;
             timer = setInterval(recoverIfDrained, pollMs);
             timer.unref?.();
+        }
+        function stopSource() {
+            if (!active) return
+            active = false
+            stopPoll()
+            offLine?.()
+            offLine = null
+            gated = false
+        }
+        function startSource() {
+            if (closed || active) return
+            active = true
+            lastSent = source.head()
+            offLine = source.line.on(gateForward)
         }
         function close() {
             if (closed) return;
             closed = true;
-            stopPoll();
-            offLine();
+            stopSource();
             gateClosers.delete(close);
+            out.close();
         }
         // loud rejection to THIS subscriber (sacred line + eviction): stream end
         // (RPC_STOP → CB_END on client), no silent loss
         function fail(e: any) {
             if (debug) console.error("[rpc replay gate] frame recovery failed:", e);
             const emitStop = !closed;
-            close();
+            closed = true;
+            stopSource();
+            gateClosers.delete(close);
             if (emitStop) out.emit(RPC_STOP);
             (out as any).close?.();
         }
         function recoverIfDrained() {
-            if (!gated || closed) return;
+            if (!gated || closed || !active) return;
             if (pending() > lowWater) return;
             gated = false;
             stopPoll();
             let envs: any[];
-            try { envs = lineFrame(parent, lastSent); }
+            try { envs = source.frame(lastSent); }
             catch (e) { fail(e); return; }
             for (const ev of envs) {
-                if (ev.seq > lastSent) lastSent = ev.seq;
+                const seq = source.sequenceOf(ev)
+                if (seq == undefined) {
+                    fail(new TypeError('replay gate received an envelope without a sequence'))
+                    return
+                }
+                if (seq > lastSent) lastSent = seq;
                 out.emit(ev);
             }
         }
-        const offLine = parent.line.on(function gateForward(ev: any) {
-            if (closed) return;
+        function gateForward(ev: any) {
+            if (closed || !active) return;
             if (!gated && pending() > highWater) { gated = true; startPoll(); }
             // drained right now → frame will include THIS envelope (journal written before fan-out);
             // still gated → envelope dropped, frame(lastSent) will cover it
             if (gated) { recoverIfDrained(); return; }
-            lastSent = ev.seq;
+            const seq = source.sequenceOf(ev)
+            if (seq == undefined) {
+                fail(new TypeError('replay gate received an envelope without a sequence'))
+                return
+            }
+            lastSent = seq;
             out.emit(ev);
-        });
+        }
         gateClosers.add(close);
         hookGateTeardown();
         return getListenSocket(out, disconnectListen, { throttle: undefined });
+    }
+
+    function rawReplayGateSource(parent: any): ReplayGateSource {
+        return {
+            line: parent.line,
+            head: () => typeof parent.head == 'function' ? parent.head() : 0,
+            frame: (seq, hint) => lineFrame(parent, seq, hint),
+            sequenceOf(event) {
+                const seq = (event as any)?.seq
+                return typeof seq == 'number' ? seq : undefined
+            },
+        }
+    }
+
+    function wireReplayGateSource(parent: any, source: RpcReplayWireSource): ReplayGateSource {
+        return {
+            ...source,
+            line: parent.line,
+            frame(seq, hint) {
+                if (typeof parent.frame == 'function') return parent.frame(seq, hint)
+                const tail = parent.since(seq)
+                if (tail) return tail
+                const keyframe = parent.keyframe()
+                return keyframe ? [keyframe] : []
+            },
+        }
     }
 
     // merged node under same key; cache by line identity (like cache of regular Listen)
@@ -237,7 +334,9 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         if (node) return node;
         const legacy = getListenSocket(parent, disconnectListen); // legacy surface as-is (including throttle)
         const lineNode = getListenSocket(parent.line, disconnectListen, { throttle: undefined });
-        const frameLineNode = replayOpts?.highWater != null ? gatedLineNode(parent) : lineNode;
+        const frameLineNode = replayOpts?.highWater != null
+            ? gatedLineNode(rawReplayGateSource(parent))
+            : lineNode;
         node = {
             ...legacy,
             line: lineNode,
@@ -249,7 +348,24 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         };
         node[IS_RPC_LISTEN] = true; // server will declare node address in Pkt.MAP (legacy subscription)
         replayCache.set(parent, node);
+        sourceByNode.set(node, parent); // merged surface: legacy subscriptions live on `parent`
         return node;
+    }
+
+    function getReplayWireExpose(parent: any, source: RpcReplayWireSource) {
+        let node = replayCache.get(parent)
+        if (node) return node
+        const lineNode = getListenSocket(parent.line, disconnectListen, {throttle: undefined})
+        const frameLineNode = replayOpts?.highWater != null
+            ? gatedLineNode(wireReplayGateSource(parent, source))
+            : lineNode
+        node = {
+            ...parent,
+            line: lineNode,
+            frameLine: frameLineNode,
+        }
+        replayCache.set(parent, node)
+        return node
     }
 
     // ===================================================================
@@ -264,15 +380,19 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         })),
     };
 
-    createRpcServer({
+    const core = createRpcServer({
         socket, object: target as any, socketKey: key, debug, limits, auth, opt,
         hooks: {
             ...hooks,
             onDispose: () => { closeAllGates(); unsubscribeAllActive(); hooks?.onDispose?.(); },
+            // Principal changed: cut exactly the streams the new principal may no longer see.
+            onPrincipalChange: (ctx: RpcPrincipalChange) => { unsubscribeUnreachable(ctx); hooks?.onPrincipalChange?.(ctx); },
             resolveTransform: (obj: any) => {
                 // IMPORTANT: replay detection BEFORE isListenCallback — replay-api passes
                 // plain-Listen check structurally, and without brand its replay surface would be lost.
                 if (isReplayNode(obj)) return getReplayExpose(obj);
+                const replayWireSource = replay == false ? undefined : getRpcReplayWireSource(obj)
+                if (replayWireSource) return getReplayWireExpose(obj, replayWireSource)
                 if (isListenCallback(obj)) return getListenSocket(obj, disconnectListen);
                 // bare `on` function: find its api by registry (WeakMap) and wrap — allows
                 // passing through web ONLY the on reference, client gets subscription {on, once, close}.
@@ -285,5 +405,8 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         } as any,
     });
 
-    return { api }; // additive: previously void. Old calls (harness x3, test.ts) ignore return.
+    // additive: previously void, then { api }. Old calls (harness x3, test.ts) ignore the return.
+    // The core server's facets are retransmitted WHOLE — `control` drives the principal of the
+    // very same connection, so this layer relays it instead of re-describing it.
+    return { ...core, api };
 }

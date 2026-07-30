@@ -7,8 +7,67 @@ Completed migrations and released work are recorded in `doc/changes/`, not repea
 Use Store Replay V2 over the ordinary JSON-array RPC lane. `api.replay` is the only Store replay
 facade; it has no legacy fallback or numbered generation members.
 
-RPC application traffic uses JSON arrays only. Keep `RpcOpt` limited to measured JSON-wire
-optimizations (`compact` and `callbackBatch`) rather than adding another application serializer.
+RPC application traffic uses JSON arrays only. `RpcOpt` now carries six negotiated bits: the four
+measured JSON-wire optimizations (`compact`, `callbackBatch`, `compactRows` — all default on — and
+`requestBatch`, opt-in) and the two authorization-protocol bits (`authState`, `helloId`). Keep it to
+those two families — a wire feature or an authorization correlation — rather than adding another
+application serializer.
+
+## RPC authorization seams
+
+The dynamic-token lifecycle is shipped (`doc/RPC-AUTH.md` is canonical). These are the seams it
+leaves open; none is a behavior gap, and each is cheap to break by accident.
+
+- **The harness is type-checked by the gate — keep it that way.** Closed: `tsconfig.spec.json`
+  (`npm run test:spec-types`, third step of `npm run test` and `npm run test:all`) checks every
+  `src/**/*.spec.ts` under the library's own compiler options — nothing relaxed, only `noEmit` added
+  so `npm run build` still emits no spec into `lib/`. The include is a glob, so a new spec file under
+  `src/` is checked the moment it is created; a new harness stage needs no config change. Two rules
+  keep it green in a file whose clients are often `createRpcClient<any>`: reach an index-signature
+  member with brackets (`c.func['neverSettles']()`, `store.state['BTC'] = 2`), and give a callback
+  parameter an explicit type when its callee is `any` (`.then(…, function on(error: any) {…})`).
+  Where a precise client type is available, prefer it over `RpcClientReturn<any>` — `c.strict.x.y()`
+  only resolves when `T` is real.
+- **The suites outside `src/` are still unchecked.** `oracle/**/*.spec.ts`, `replay/**/*.test.ts` and
+  `observe/**/*.test.ts` are in no tsconfig project; `scripts/run-oracles.mjs` runs them through
+  `tsx`. Measured against the library options they carry 33 / 180 / 23 errors of the same two
+  families. Closing that is a separate pass — clean the errors first, then extend
+  `tsconfig.spec.json`'s include (it is already `rootDir: "."`), or the gate turns red for reasons
+  unrelated to the change under test.
+- **Every `Pkt.MAP` must be preceded by `sendCapsChallenge()`.** The client decides whether an id-less
+  MAP is unsolicited by reading `peerServerCaps` at MAP-handling time, which is only current because
+  `sendMap` and both raw HELLO reply branches send CAPS first. A future MAP emitted without that
+  prefix reopens the window where an unsolicited MAP is mistaken for the answer to a `reauth()`.
+- **`'$rpc'` is a wire contract with one home.** It lives in `rpc-protocol.ts` as `GRANT_FACTS_KEY`
+  and is imported by `rpc-server.ts` (`withGrantDeadline`) and `rpc-client.ts` (`grantDeadline`).
+  Server-attached grant facts go inside that sub-object; do not add sibling top-level ack keys.
+- **Three known client edges, deliberately not closed:** concurrent `init()` calls still send two
+  HELLOs (the documented pattern is sequential, and the provider is single-flighted anyway); a
+  `resolveAuth` that never settles on a live socket wedges that connection's renewals; and
+  `helloWaits` grows by one per `requestSchema()` against a server that ignores `Pkt.HELLO`
+  entirely, bounded by reconnect count and cleared on teardown. All three predate or are unchanged
+  by the token lifecycle and none has a consumer asking for a fix.
+
+## RPC codec seams
+
+- **The reserved key space is a contract, not a bug to be fixed later.** `$_d` `$_m` `$_s` `$_r`
+  `$_b` `$_f` `$_t` belong to the codec as the SINGLE key of a plain object; the contract, the
+  accepted payload per key and the escape hatch are stated once in `doc/wenay-common2-rare.md`
+  under "RPC application wire". Recognition is now exactly as narrow as what each serializer
+  emits, so what remains is irreducible without changing the wire. Escaping the collision is the
+  obvious next idea and it was measured against its own cost: it moves the bytes, so it needs a
+  `Caps` bit, and against a peer without the bit it exchanges one silent corruption for another.
+  Do not add it without a consumer who actually produces a colliding value — the report already
+  tells them, and a second key already fixes it.
+- **Two places do NOT apply marker recognition, on purpose.** The compact tick path
+  (`Pkt.SHAPE`/`Pkt.CBV`) rebuilds the tick object from its declared keys and decodes only the
+  VALUES, so a top-level single-key `{"$_d": n}` tick arrives as a Date on the plain `Pkt.CB` path
+  and as the raw object once the shape is standardized. Making them agree would mean making the
+  compact path collide too. Likewise `unpack` is never handed a row codec, so `$_t` is a table in
+  results and callbacks and never in arguments.
+- **`listenKeyArg` in `rpc-client.ts` builds subscription keys with the same markers and is
+  currently unreferenced.** If it is ever wired up, a `{"$_d": 5}` argument and a real `Date(5)`
+  argument would produce the same subscription key and share one physical subscription.
 
 ## Scheduler extraction
 

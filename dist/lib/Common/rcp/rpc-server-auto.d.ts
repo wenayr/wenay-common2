@@ -24,6 +24,10 @@ export declare function createRpcServerAuto<T extends object>({ socket, object: 
     replay?: false | "auto" | "force";
     replayOpts?: RpcReplayOpts;
 }): {
+    control: {
+        revoke: (reason?: any) => boolean;
+        grant: (grant: import("./rpc-server").RpcAuthGrant) => boolean;
+    };
     api: {
         subscriptions: () => {
             key: string;

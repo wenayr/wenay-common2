@@ -17,6 +17,7 @@
 import {Listener, NormalizeTuple} from './Listen'
 import {ListenReplayApi, ReplayEvent, StaleInfo} from './replay-listen'
 import {conflateReplay, ConflateOpts} from './replay-conflate'
+import {brandRpcReplayWire} from './replay-rpc-wire'
 import {
     getRpcSchemaReady,
     getRpcTransportLifecycle,
@@ -33,7 +34,7 @@ export type ReplayExpose<T> = {
 }
 
 function exposeReplayPlain<T>(replay: ListenReplayApi<T>): ReplayExpose<T> {
-    return {
+    const facade = {
         line: replay.line,
         /** Log tail after seq. null = evicted → client gets keyframe. */
         since: (seq: number) => replay.getSince(seq) ?? null,
@@ -43,6 +44,13 @@ function exposeReplayPlain<T>(replay: ListenReplayApi<T>): ReplayExpose<T> {
          *  line + eviction) goes to client as rejected promise — loud by design. */
         frame: (seq: number, hint?: unknown) => replay.frame(seq, hint),
     }
+    return brandRpcReplayWire(facade, {
+        head: replay.head,
+        sequenceOf(event) {
+            const seq = (event as ReplayEvent<any> | null)?.seq
+            return typeof seq == 'number' ? seq : undefined
+        },
+    })
 }
 
 /**

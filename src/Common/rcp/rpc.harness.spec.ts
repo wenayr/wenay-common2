@@ -25,7 +25,7 @@
 // Excluded from build (*.spec.ts in tsconfig.exclude) — does NOT reach published lib.
 // ===========================================================================
 
-import { createRpcServer } from "./rpc-server"
+import { createRpcServer, type RpcServerControl } from "./rpc-server"
 import { createRpcClient, type RpcClientReturn } from "./rpc-client"
 import { createRpcServerAuto } from "./rpc-server-auto"
 import { createRpcServerAutoDetect } from "./createRpcServerAutoWithProtocolDetection"
@@ -36,6 +36,8 @@ import { mapListen } from "../events/mapListen"
 import { joinListens } from "../events/joinListens"
 import { noStrict } from "./rpc-dynamic"
 import { Pkt, IS_RPC_LISTEN, type SocketTmpl } from "./rpc-protocol"
+import { Caps, type RpcOpt } from "./rpc-caps"
+import { createShapeRegistry, createShapeDecoder } from "./rpc-shape"
 import { rpcPathKey } from "./rpc-path"
 import { getRpcMemberState, getRpcTransportLifecycle, RPC_TRANSPORT_CONTROL } from "../events/transport-lifecycle"
 import type { DeepSocketListen } from "./listen-deep"
@@ -421,11 +423,11 @@ export async function runHarness() {
         const unhandled: unknown[] = []
         function rememberUnhandled(reason: unknown) { unhandled.push(reason) }
         process.on('unhandledRejection', rememberUnhandled)
-        const ignored = c.func.neverSettles()
-        const awaited = c.func.neverSettles()
+        const ignored = c.func['neverSettles']()
+        const awaited = c.func['neverSettles']()
         const awaitedResult = awaited.then(
             function unexpectedResolve() { return 'resolved' },
-            function observeDisconnectReject(error) { return String(error?.message ?? error) },
+            function observeDisconnectReject(error: any) { return String(error?.message ?? error) },
         )
         control.disconnect('intentional test disconnect')
         const rejection = await awaitedResult
@@ -443,7 +445,7 @@ export async function runHarness() {
             emit: (e, d) => { if (e === "rpc") emitted.push(JSON.parse(JSON.stringify(d))) },
         }
         const c = createRpcClient<any>({ socket, socketKey: "rpc" })
-        const pending = c.func.map["mystrategy.2020"].start()
+        const pending = c.func['map']["mystrategy.2020"].start()
         pending.catch(() => {})
         await check("wire: dotted segment path array", async () => {
             const call = emitted.find(m => Array.isArray(m) && m[0] === Pkt.CALL)
@@ -524,7 +526,7 @@ export async function runHarness() {
         const c = createRpcClient<any>({ socket: cs, socketKey: "rpc" })
         createRpcServer({ socket: ss, object: api, socketKey: "rpc" })
         await delay(0)
-        await check("path-key: dynamic dotted prop", () => c.func.map["mystrategy.2020"].start(), ["mystrategy.2020", "start"])
+        await check("path-key: dynamic dotted prop", () => c.func['map']["mystrategy.2020"].start(), ["mystrategy.2020", "start"])
     }
     { // strict proxy: schema refresh changes path type, but not identity
         const [cs, ss] = createLoopback()
@@ -533,14 +535,14 @@ export async function runHarness() {
         createRpcServer({ socket: ss, object: api, socketKey: "rpc" })
         await delay(0)
         await c.initStrict({ node: { child: "func" } })
-        const node = c.strict.node as any
+        const node = c.strict['node'] as any
         await check("strict/cache: object path rejects call", async () => {
             try { await node(); return false }
             catch { return true }
         }, true)
         api.node = () => "after"
         await c.initStrict({ node: "func" })
-        await check("strict/cache: identity after type flip", async () => node == c.strict.node, true)
+        await check("strict/cache: identity after type flip", async () => node == c.strict['node'], true)
         await check("strict/cache: call follows fresh schema", () => node(), "after")
     }
     {
@@ -570,7 +572,7 @@ export async function runHarness() {
         await check('proxy/cache: Hermes strong fallback', async function verifyHermesFallback() {
             const weakRefDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'WeakRef')
             const finalizationRegistryDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'FinalizationRegistry')
-            let c: RpcClientReturn<any> | undefined
+            let c: RpcClientReturn<{node: {ping: () => string}}> | undefined
             try {
                 Object.defineProperty(globalThis, 'WeakRef', {
                     configurable: true,
@@ -634,7 +636,7 @@ export async function runHarness() {
         await delay(0)
         const values: number[] = []
         const errors: string[] = []
-        const sub = replaySubscribe<[number]>(c.func.oldReplay as any, value => values.push(value), {
+        const sub = replaySubscribe<[number]>(c.func['oldReplay'] as any, value => values.push(value), {
             since: 0,
             policy: "frame",
             onError: error => errors.push(String(error)),
@@ -834,6 +836,194 @@ export async function runHarness() {
         emit(2); await delay(10)
         await check("hub reauth: подписка жива", async () => got, [1, 2])
         await check("hub reauth: admin видит write", () => hub.facade.main.func.write(7), 7)
+    }
+
+    console.log("--- Stage 2: динамические токены (Pkt.AUTH / expiry / revoke) ---")
+    { // lifetime: expiring → expired; principal откатан к базовому, исчезнувший поток обрезан
+        const [cs, ss] = createLoopback()
+        const [emit, listen] = createListenPair<number>()
+        const base = { who: () => "anon" }                          // анонимный facade: без stream
+        const princ = { who: () => "user", stream: listen }
+        const notices: any[] = []
+        const origEmit = ss.emit.bind(ss)
+        ss.emit = (e, d) => { if (Array.isArray(d) && d[0] === Pkt.AUTH) notices.push(d[1]); origEmit(e, d) }
+        const resolveAuth = (t: string) => ({
+            object: princ,
+            ack: { ok: true, who: t },
+            expiresAt: Date.now() + 200,
+            renewBeforeMs: 100,
+        })
+        createRpcServerAuto({ socket: ss, object: base, socketKey: "rpc", auth: { resolveAuth } })
+        type Princ = { who: () => string; stream: typeof listen }   // клиент знает надмножество
+        const c = createRpcClient<Princ>({ socket: cs, socketKey: "rpc", token: "user" })
+        await c.initStrict()
+        const got: number[] = []
+        const sub = webListen(c).stream.on((v) => got.push(v))
+        await delay(10); emit(1); await delay(10)
+        await check("expiry: до дедлайна поток идёт", async () => got, [1])
+        await delay(260) // expiring (+100) и expired (+200) уже отработали
+        emit(2); await delay(10)
+        await check("expiry: состояния expiring→expired", async () => notices.map((n) => n.state), ["expiring", "expired"])
+        await check("expiry: поток обрезан", async () => got, [1])
+        await check("expiry: principal откатан к базовому", () => c.func.who(), "anon")
+        await check("expiry: подписка завершена (не висит)", () => Promise.race([sub.then(() => "ended"), delay(60).then(() => "hung")]), "ended")
+    }
+    { // auth БЕЗ expiresAt: reauth сохраняет узел → провод как раньше (ни CB_END, ни AUTH)
+        const [cs, ss] = createLoopback()
+        const [emit, listen] = createListenPair<number>()
+        const mk = (who: string) => who === "admin" ? { stream: listen, write: (x: number) => x } : { stream: listen }
+        const resolveAuth = (t: string) => ({ object: mk(t), ack: { ok: true, who: t } })
+        const wire = { ends: 0, auth: 0 }
+        const origEmit = ss.emit.bind(ss)
+        ss.emit = (e, d) => {
+            if (Array.isArray(d)) { if (d[0] === Pkt.CB_END) wire.ends++; if (d[0] === Pkt.AUTH) wire.auth++ }
+            origEmit(e, d)
+        }
+        createRpcServerAuto({ socket: ss, object: mk("user"), socketKey: "rpc", auth: { resolveAuth } })
+        type Princ = { stream: typeof listen; write: (x: number) => number }
+        const c = createRpcClient<Princ>({ socket: cs, socketKey: "rpc", token: "user" })
+        await c.initStrict()
+        const got: number[] = []
+        webListen(c).stream.on((v) => got.push(v))
+        await delay(10); emit(1); await delay(10)
+        await c.reauth("admin")
+        emit(2); await delay(10)
+        await check("reauth-keep: подписка не тронута", async () => got, [1, 2])
+        await check("reauth-keep: ни CB_END, ни AUTH", async () => [wire.ends, wire.auth], [0, 0])
+        await check("reauth-keep: новый principal видит write", () => c.func.write(7), 7)
+    }
+    { // revoke vs transient: только явный revoke роняет живую сессию
+        const [cs, ss] = createLoopback()
+        const [emit, listen] = createListenPair<number>()
+        const base = { who: () => "anon" }
+        const princ = { who: () => "user", stream: listen }
+        function resolveAuth(t: string) {
+            if (t === "revoked") throw Object.assign(new Error("token revoked"), { revoke: true })
+            if (t === "flaky") throw new Error("transient")
+            return { object: princ, ack: { ok: true, who: t } }
+        }
+        const notices: any[] = []
+        const origEmit = ss.emit.bind(ss)
+        ss.emit = (e, d) => { if (Array.isArray(d) && d[0] === Pkt.AUTH) notices.push(d[1]); origEmit(e, d) }
+        createRpcServerAuto({ socket: ss, object: base, socketKey: "rpc", auth: { resolveAuth } })
+        type Princ = { who: () => string; stream: typeof listen }
+        const c = createRpcClient<Princ>({ socket: cs, socketKey: "rpc", token: "user" })
+        await c.initStrict()
+        const got: number[] = []
+        const sub = webListen(c).stream.on((v) => got.push(v))
+        await delay(10); emit(1); await delay(10)
+        const soft = await c.reauth("flaky")
+        emit(2); await delay(10)
+        await check("reauth-fail: ok=false, сессия жива", async () => [soft?.ok, got, await c.func.who()], [false, [1, 2], "user"])
+        await check("reauth-fail: AUTH не отправлялся", async () => notices.length, 0)
+        const hard = await c.reauth("revoked")
+        emit(3); await delay(10)
+        await check("revoke: состояние revoked", async () => notices.map((n) => n.state), ["revoked"])
+        await check("revoke: ack ok=false", async () => hard?.ok, false)
+        await check("revoke: поток обрезан", async () => got, [1, 2])
+        await check("revoke: principal откатан к базовому", () => c.func.who(), "anon")
+        await check("revoke: подписка завершена (не висит)", () => Promise.race([sub.then(() => "ended"), delay(60).then(() => "hung")]), "ended")
+    }
+
+    console.log("--- Stage 2+: провайдер токенов (single-flight / soft renew / один ретрай) ---")
+    { // провайдер: ОДИН вызов на волну (2 фасада), 'expiring' продлевает сессию, подписка жива
+        const [cs, ss] = createLoopback()
+        const [emit, listen] = createListenPair<number>()
+        const mk = (who: string) => ({ stream: listen, who: () => who })
+        // первый принципал живёт коротко (ждём 'expiring'), обновлённый — долго
+        const grant = (t: string) => ({
+            object: mk(t),
+            ack: { ok: true, who: t },
+            expiresAt: Date.now() + (t === "t1" ? 160 : 60_000),
+            renewBeforeMs: 120,
+        })
+        createRpcServerAuto({ socket: ss, object: mk("anon"), socketKey: "main", auth: { resolveAuth: grant } })
+        createRpcServerAuto({ socket: ss, object: mk("anon"), socketKey: "side", auth: { resolveAuth: grant } })
+        let calls = 0
+        const seen: string[] = []
+        type Princ = { stream: typeof listen; who: () => string }
+        const hub = createRpcClientHub(
+            () => Object.assign(cs, { disconnect: () => {} }),
+            r => ({ main: r<Princ>(), side: r<Princ>() }),
+            { token: async () => { calls++; await delay(20); return "t" + calls } },
+        )
+        hub.authListen((e) => seen.push(e.state))
+        ss.emit("connect", 1)
+        await hub.promise
+        await check("провайдер: один вызов на хендшейк двух фасадов",
+            async () => [calls, (await hub.facade.main.auth())?.who, (await hub.facade.side.auth())?.who], [1, "t1", "t1"])
+        const got: number[] = []
+        hub.facade.main.func.stream.callback((v) => got.push(v))
+        await delay(10); emit(1); await delay(10)
+        await delay(240) // 'expiring' с обоих фасадов (+40) и бывший дедлайн (+160) уже позади
+        emit(2); await delay(10)
+        await check("провайдер: две тревоги 'expiring' → один вызов", async () => [calls, seen.filter((s) => s === "expiring").length], [2, 2])
+        await check("провайдер: продление мягкое — подписка жива", async () => got, [1, 2])
+        await check("провайдер: новый principal у обоих фасадов",
+            async () => [(await hub.facade.main.auth())?.who, (await hub.facade.side.auth())?.who], ["t2", "t2"])
+        await check("провайдер: до истечения не дошло", async () => seen.filter((s) => s !== "expiring" && s !== "renewed"), [])
+    }
+    { // клиентский шов: ровно один ретрай, и только для «чистого» ожидающего вызова
+        const [cs, ss] = createLoopback()
+        const princ = { ping: () => "pong", boom: (cb: (v: number) => void) => { cb(1); return "s" } }
+        function resolveAuth(t: string) {
+            if (t !== "good") throw new Error("bad token")
+            return { object: princ, ack: { ok: true } }
+        }
+        createRpcServer({ socket: ss, object: {} as typeof princ, socketKey: "rpc", auth: { resolveAuth, gate: true } })
+        const c = createRpcClient<typeof princ>({ socket: cs, socketKey: "rpc", token: "stale" })
+        let issued = 0
+        // на хендшейке токена ещё нет → сессия стартует отклонённой, как у протухшего клиента
+        c.setTokenRenew(async () => { issued++; await delay(5); return issued === 1 ? null : "good" })
+        await c.initStrict()
+        await check("ретрай: старт с отклонённым токеном", async () => [issued, (await c.auth())?.ok], [1, false])
+        c.space.ping()
+        await delay(20)
+        await check("ретрай: fire-and-forget не повторяется", async () => issued, 1)
+        await check("ретрай: вызов с колбэком не повторяется", () => c.func.boom(() => {}).catch((e: any) => e?.code), "E_UNAUTHORIZED")
+        await check("ретрай: колбэк не дёрнул обновление", async () => issued, 1)
+        await check("ретрай: три параллельных вызова прошли",
+            () => Promise.all([c.func.ping(), c.func.ping(), c.func.ping()]), ["pong", "pong", "pong"])
+        await check("ретрай: обновление ровно одно на волну", async () => issued, 2)
+        await check("ретрай: дальше без обновления", async () => [await c.func.ping(), issued], ["pong", 2])
+    }
+    { // провайдер отдаёт null: состояние всплывает через authListen, обновление не крутится
+        const [cs, ss] = createLoopback()
+        const base = { who: () => "anon" }
+        const princ = { who: () => "user" }
+        const grant = () => ({ object: princ, ack: { ok: true }, expiresAt: Date.now() + 120, renewBeforeMs: 80 })
+        createRpcServerAuto({ socket: ss, object: base, socketKey: "main", auth: { resolveAuth: grant } })
+        let calls = 0
+        const seen: string[] = []
+        const hub = createRpcClientHub(
+            () => Object.assign(cs, { disconnect: () => {} }),
+            r => ({ main: r<{ who: () => string }>() }),
+            { token: async () => { calls++; return calls === 1 ? "short" : null } },
+        )
+        hub.authListen((e) => seen.push(e.state))
+        ss.emit("connect", 1)
+        await hub.promise
+        await delay(400)
+        await check("null-провайдер: поток состояний", async () => seen, ["expiring", "renewFailed", "expired", "renewFailed"])
+        await check("null-провайдер: ровно один вызов на тревогу", async () => calls, 3)
+        await check("null-провайдер: principal откатан к базовому", () => hub.facade.main.func.who(), "anon")
+    }
+    { // приоритет: явный connect(token) выигрывает у провайдера на СВОЁМ хендшейке
+        const [cs, ss] = createLoopback()
+        const mk = (who: string) => ({ who: () => who })
+        const resolveAuth = (t: string) => ({ object: mk(t), ack: { ok: true, who: t } })
+        createRpcServerAuto({ socket: ss, object: mk("anon"), socketKey: "main", auth: { resolveAuth } })
+        let calls = 0
+        const hub = createRpcClientHub(
+            () => Object.assign(cs, { disconnect: () => {} }),
+            r => ({ main: r<{ who: () => string }>() }),
+            { token: async () => { calls++; return "fromProvider" } },
+        )
+        const started = hub.connect("explicit")
+        ss.emit("connect", 1)
+        await started
+        await check("приоритет: явный токен важнее провайдера",
+            async () => [await hub.facade.main.func.who(), calls], ["explicit", 0])
     }
 
     console.log("--- S0.3: protocol-detection lifecycle (auto-detect dispose/reset) ---")
@@ -1154,9 +1344,9 @@ export async function runHarness() {
         const got: [string, any][] = []
         webListen(c).rows.callback((k, v) => got.push([k, v]))
         await delay(10)
-        rows.state.a = 10
-        rows.state.c = 3
-        delete rows.state.b
+        rows.state['a'] = 10
+        rows.state['c'] = 3
+        delete rows.state['b']
         await flushReactive(rows.state); await delay(10)
         await check("store.each: [key,value] дельты по сети", async () => got, [["a", 10], ["c", 3], ["b", null]])
         await check("store.each: одна сетевая подписка", async () => obj.rows.count(), 1)
@@ -1383,7 +1573,7 @@ export async function runHarness() {
         const mirror = new Map<string, number>()
         webListen(c).positions.callback((k, v) => { if (v == null) mirror.delete(k); else mirror.set(k, v) })
         await delay(5)
-        book.state.BTC = 2; book.state.ETH = 5; delete book.state.BTC
+        book.state['BTC'] = 2; book.state['ETH'] = 5; delete book.state['BTC']
         await flushReactive(book.state); await delay(10)
         await check("cookbook: зеркало коллекции по сети", async () => [...mirror], [["ETH", 5]])
     }
@@ -1507,7 +1697,994 @@ export async function runHarness() {
         await check("cookbook: throttle — leading+trailing, не все тики", async () => [got[0], got[got.length - 1], got.length < 5], [1, 5, true])
     }
 
+    console.log("--- Stage 3: харденинг динамических токенов (noStrict / ack / таймеры / часы) ---")
+    { // noStrict-поддерево в схеме НЕ объявлено, поэтому его нет в keep — но это не доказательство
+      // недостижимости: при истечении токена режется только объявленный узел, динамика живёт
+        const [cs, ss] = createLoopback()
+        const [emitDecl, declared] = createListenPair<number>()
+        const [emitDyn, dynamic] = createListenPair<number>()
+        const dyn = noStrict({ stream: dynamic })                   // виден только по строковому пути
+        const base = { who: () => "anon", dyn }
+        const princ = { who: () => "user", stream: declared, dyn }
+        const resolveAuth = (t: string) => ({
+            object: princ,
+            ack: { ok: true, who: t },
+            expiresAt: Date.now() + 80,
+            renewBeforeMs: 40,
+        })
+        createRpcServerAuto({ socket: ss, object: base, socketKey: "rpc", auth: { resolveAuth } })
+        type Princ = { who: () => string; stream: typeof declared; dyn: { stream: typeof dynamic } }
+        const c = createRpcClient<Princ>({ socket: cs, socketKey: "rpc", token: "user" })
+        await c.initStrict()
+        const gotDecl: number[] = [], gotDyn: number[] = []
+        webListen(c).stream.on((v) => gotDecl.push(v))
+        webListen(c).dyn.stream.on((v) => gotDyn.push(v))
+        await delay(10); emitDecl(1); emitDyn(1); await delay(10)
+        await delay(120) // expiring (+40) и expired (+80) отработали
+        emitDecl(2); emitDyn(2); await delay(20)
+        await check("noStrict: объявленный узел обрезан", async () => gotDecl, [1])
+        await check("noStrict: динамический поток пережил downgrade", async () => gotDyn, [1, 2])
+        await check("noStrict: principal откатан к базовому", () => c.func.who(), "anon")
+    }
+    { // тот же узел при обычном reauth: повышение прав НЕ трогает динамический поток
+        const [cs, ss] = createLoopback()
+        const [emitDyn, dynamic] = createListenPair<number>()
+        const dyn = noStrict({ stream: dynamic })
+        const mk = (who: string) => who == "admin"
+            ? { who: () => who, write: (x: number) => x, dyn }
+            : { who: () => who, dyn }
+        const resolveAuth = (t: string) => ({ object: mk(t), ack: { ok: true, who: t } })
+        const wire = { ends: 0 }
+        const origEmit = ss.emit.bind(ss)
+        ss.emit = (e, d) => { if (Array.isArray(d) && d[0] === Pkt.CB_END) wire.ends++; origEmit(e, d) }
+        createRpcServerAuto({ socket: ss, object: mk("user"), socketKey: "rpc", auth: { resolveAuth } })
+        type Princ = { who: () => string; write: (x: number) => number; dyn: { stream: typeof dynamic } }
+        const c = createRpcClient<Princ>({ socket: cs, socketKey: "rpc", token: "user" })
+        await c.initStrict()
+        const got: number[] = []
+        webListen(c).dyn.stream.on((v) => got.push(v))
+        await delay(10); emitDyn(1); await delay(10)
+        await c.reauth("admin")
+        emitDyn(2); await delay(10)
+        await check("noStrict: reauth с повышением прав не рвёт поток", async () => [got, wire.ends], [[1, 2], 0])
+        await check("noStrict: новый principal видит write", () => c.func.write(7), 7)
+    }
+    { // authAck после downgrade — {ok:false,state}; успешный токен снимает его начисто,
+      // включая ответы на последующий STRICT (липкий ok:false пережил бы хороший токен)
+        const [cs, ss] = createLoopback()
+        const acks: any[] = []
+        const origEmit = ss.emit.bind(ss)
+        ss.emit = (e, d) => { if (Array.isArray(d) && d[0] === Pkt.MAP) acks.push(d[4]); origEmit(e, d) }
+        let lifetime = 60 // второй грант выдаём уже бессрочным
+        const resolveAuth = (t: string) => ({
+            object: { who: () => t },
+            ack: { ok: true, who: t },
+            ...(lifetime ? { expiresAt: Date.now() + lifetime, renewBeforeMs: 30 } : {}),
+        })
+        createRpcServer({ socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth } })
+        const c = createRpcClient<{ who: () => string }>({ socket: cs, socketKey: "rpc", token: "user" })
+        await c.initStrict()
+        await delay(120)
+        await check("ack: после expiry ok=false + state", async () => {
+            const a = acks[acks.length - 1]
+            return [a?.ok, a?.state]
+        }, [false, "expired"])
+        lifetime = 0
+        const fresh = await c.reauth("user2")
+        await check("ack: свежий токен снял ok:false", async () => [fresh?.ok, fresh?.who], [true, "user2"])
+        cs.emit("rpc", Pkt.STRICT) // повторный STRICT: липкого ok:false не осталось
+        await delay(20)
+        await check("ack: STRICT после re-auth несёт ok:true", async () => {
+            const a = acks[acks.length - 1]
+            return [a?.ok, a?.state]
+        }, [true, undefined])
+        await check("ack: principal снова живой", () => c.func.who(), "user2")
+    }
+    { // detach во время проверки токена: отцепленный сервер не меняет principal и не взводит таймер
+        const [cs, ss] = createLoopback()
+        const notices: any[] = []
+        const origEmit = ss.emit.bind(ss)
+        ss.emit = (e, d) => { if (Array.isArray(d) && d[0] === Pkt.AUTH) notices.push(d[1]); origEmit(e, d) }
+        const seen = { changes: 0, disposes: 0 }
+        async function resolveAuth(t: string) {
+            await delay(40) // сервер успеют отцепить, пока токен проверяется
+            return { object: { who: () => t }, ack: { ok: true, who: t }, expiresAt: Date.now() + 30, renewBeforeMs: 10 }
+        }
+        createRpcServer({
+            socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth },
+            hooks: { onPrincipalChange: () => { seen.changes++ }, onDispose: () => { seen.disposes++ } },
+        })
+        const c = createRpcClient<{ who: () => string }>({ socket: cs, socketKey: "rpc", token: "user" })
+        c.initStrict().catch(() => {}) // ответа на HELLO не будет: сервер отцепят раньше
+        await delay(10)
+        createRpcServer({ socket: ss, object: { who: () => "second" }, socketKey: "rpc" }) // detach первого
+        await delay(150)
+        await check("detach: principal отцепленного сервера не менялся", async () => [seen.changes, seen.disposes], [0, 1])
+        await check("detach: таймер отцепленного сервера не выстрелил", async () => notices.length, 0)
+    }
+    { // повторные HELLO перевзводят таймеры, а не копят их: ровно одно expiring и одно expired
+        const [cs, ss] = createLoopback()
+        const notices: any[] = []
+        const origEmit = ss.emit.bind(ss)
+        ss.emit = (e, d) => { if (Array.isArray(d) && d[0] === Pkt.AUTH) notices.push(d[1]); origEmit(e, d) }
+        const resolveAuth = (t: string) => ({
+            object: { who: () => t },
+            ack: { ok: true, who: t },
+            expiresAt: Date.now() + 120,
+            renewBeforeMs: 60,
+        })
+        createRpcServer({ socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth } })
+        const c = createRpcClient<{ who: () => string }>({ socket: cs, socketKey: "rpc", token: "t1" })
+        await c.initStrict()
+        await c.reauth("t2"); await delay(20)
+        await c.reauth("t3"); await delay(20)
+        await delay(220) // дедлайн последнего гранта + запас; утечка дала бы лишние уведомления
+        await check("таймеры: повторный HELLO не копит таймеры", async () => notices.map((n) => n.state), ["expiring", "expired"])
+        await check("таймеры: после expiry principal базовый", () => c.func.who(), "anon")
+    }
+    { // часы: дедлайн дальше 24.8 суток не должен читаться как «уже истёк» (32-битный setTimeout)
+        const [cs, ss] = createLoopback()
+        const notices: any[] = []
+        const origEmit = ss.emit.bind(ss)
+        ss.emit = (e, d) => { if (Array.isArray(d) && d[0] === Pkt.AUTH) notices.push(d[1]); origEmit(e, d) }
+        const MONTH_MS = 30 * 24 * 60 * 60 * 1000
+        const resolveAuth = (t: string) => ({ object: { who: () => t }, ack: { ok: true, who: t }, expiresAt: Date.now() + MONTH_MS })
+        createRpcServer({ socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth } })
+        const c = createRpcClient<{ who: () => string }>({ socket: cs, socketKey: "rpc", token: "user" })
+        await c.initStrict()
+        await delay(60)
+        await check("часы: месячный токен не истекает сразу", async () => [notices.length, await c.func.who()], [0, "user"])
+    }
+    { // часы: битая арифметика дедлайна (NaN) — не безлимит, а немедленный downgrade (fail closed)
+        const [cs, ss] = createLoopback()
+        const notices: any[] = []
+        const origEmit = ss.emit.bind(ss)
+        ss.emit = (e, d) => { if (Array.isArray(d) && d[0] === Pkt.AUTH) notices.push(d[1]); origEmit(e, d) }
+        const missing: number = undefined as any // «поле ttl не пришло» — типовая ошибка вызывающего
+        const resolveAuth = (t: string) => ({ object: { who: () => t }, ack: { ok: true, who: t }, expiresAt: Date.now() + missing })
+        createRpcServer({ socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth } })
+        const c = createRpcClient<{ who: () => string }>({ socket: cs, socketKey: "rpc", token: "user" })
+        await c.initStrict()
+        await delay(40)
+        await check("часы: битый дедлайн падает закрыто", async () => [notices.map((n) => n.state), await c.func.who()], [["expired"], "anon"])
+    }
+    { // риск анонимного CAPS: Pkt.AUTH — control-пакет, а не переупаковка чужих колбэков.
+      // Сырой (некоррелированный) пир на общем socket+key видит байты, но его CALL/RESP прежний
+        const [cs, ss] = createLoopback()
+        const seen: any[] = []
+        cs.on("rpc", (d: any) => { if (Array.isArray(d)) seen.push(d) })
+        const resolveAuth = (t: string) => ({
+            object: { who: () => "user" },
+            ack: { ok: true, who: t },
+            expiresAt: Date.now() + 60,
+            renewBeforeMs: 30,
+        })
+        createRpcServer({ socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth } })
+        cs.emit("rpc", [Pkt.CAPS, Caps.COMPACT | Caps.CB_BATCH | Caps.AUTH_STATE]) // без session/generation
+        cs.emit("rpc", [Pkt.HELLO, "user"])
+        await delay(20)
+        cs.emit("rpc", [Pkt.CALL, 1, ["who"], [], true])
+        await delay(90) // ответ на первый вызов, затем expiring (+30) и expired (+60)
+        cs.emit("rpc", [Pkt.CALL, 2, ["who"], [], true])
+        await delay(20)
+        const resp = (id: number) => seen.filter((d) => d[0] === Pkt.RESP && d[1] === id).map((d) => d[2])
+        await check("caps: у сырого пира обычный RESP до и после downgrade", async () => [resp(1), resp(2)], [["user"], ["anon"]])
+        await check("caps: анонимный CAPS включает AUTH_STATE", async () => seen.filter((d) => d[0] === Pkt.AUTH).map((d) => d[1].state), ["expiring", "expired"])
+    }
+
+    console.log("--- Stage 4: корреляция HELLO ↔ MAP (свой ответ на reauth, а не чужой push) ---")
+    { // downgrade прилетает, пока reauth в полёте: он НЕ ответ на этот HELLO — свой придёт позже
+        const [cs, ss] = createLoopback()
+        const states: string[] = []
+        let slow = false
+        async function resolveAuth(t: string) {
+            if (slow) await delay(120) // истечение первого гранта успеет выстрелить в это окно
+            return {
+                object: { who: () => t },
+                ack: { ok: true, who: t },
+                ...(t === "user" ? { expiresAt: Date.now() + 60, renewBeforeMs: 30 } : {}),
+            }
+        }
+        createRpcServer({ socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth } })
+        const c = createRpcClient<{ who: () => string }>({ socket: cs, socketKey: "rpc", token: "user" })
+        c.onAuthState((e) => states.push(e.state))
+        await c.initStrict()
+        slow = true
+        const inFlight = c.reauth("user2")
+        await delay(80) // downgrade уже прошёл: без корреляции он бы и стал «ответом»
+        const early = await Promise.race([inFlight, delay(0).then(() => "pending" as const)])
+        const ack = await inFlight
+        await check("корреляция: downgrade не резолвит чужой reauth", async () => early, "pending")
+        await check("корреляция: reauth получил СВОЙ ответ", async () => [ack?.ok, ack?.who, ack?.state], [true, "user2", undefined])
+        await check("корреляция: downgrade дошёл до наблюдателей", async () => states, ["expiring", "expired"])
+        await check("корреляция: principal из ответа на reauth", () => c.func.who(), "user2")
+    }
+    { // отзыв — это ОТВЕТ на HELLO: его downgrade коррелирован, reauth не остаётся без ответа
+        const [cs, ss] = createLoopback()
+        const states: string[] = []
+        const resolveAuth = (t: string) => {
+            if (t === "bad") throw Object.assign(new Error("revoked hard"), { revoke: true })
+            return { object: { who: () => t }, ack: { ok: true, who: t } }
+        }
+        createRpcServer({ socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth } })
+        const c = createRpcClient<{ who: () => string }>({ socket: cs, socketKey: "rpc", token: "user" })
+        c.onAuthState((e) => states.push(e.state))
+        await c.initStrict()
+        const ack = await c.reauth("bad")
+        await check("отзыв: reauth получил ответ-отказ", async () => [ack?.ok, ack?.state], [false, "revoked"])
+        await check("отзыв: наблюдатели увидели revoked", async () => states, ["revoked"])
+        await check("отзыв: principal откатан к базовому", () => c.func.who(), "anon")
+    }
+    { // ответа на HELLO не будет (сервер завис на проверке): reauth завершается, а не виснет
+        const hanging = new Promise<any>(function neverAnswers() {})
+        const resolveAuth = (t: string) => t === "hang"
+            ? hanging
+            : { object: { who: () => t }, ack: { ok: true, who: t } }
+        const [cs, ss] = createLoopback()
+        createRpcServer({ socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth } })
+        const c = createRpcClient<{ who: () => string }>({ socket: cs, socketKey: "rpc", token: "user" })
+        await c.initStrict()
+        const lost = c.reauth("hang")
+        await delay(20)
+        ;(c as any)[RPC_TRANSPORT_CONTROL].disconnect("link lost")
+        await check("обрыв: HELLO без ответа завершается", async () => { const a = await lost; return [a?.ok, a?.reason] }, [false, "link lost"])
+
+        const [cs2, ss2] = createLoopback()
+        createRpcServer({ socket: ss2, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth } })
+        const c2 = createRpcClient<{ who: () => string }>({ socket: cs2, socketKey: "rpc", token: "user" })
+        await c2.initStrict()
+        const dropped = c2.reauth("hang")
+        await delay(20)
+        c2.close("client closed")
+        await check("close: HELLO без ответа завершается", async () => { const a = await dropped; return [a?.ok, a?.reason] }, [false, "client closed"])
+    }
+    { // сервер отцепили, пока он проверял токен: ответа не будет — reauth закрывает смена поколения
+        const [cs, ss] = createLoopback()
+        const resolveAuth = async (t: string) => {
+            if (t === "slow") await delay(200) // сервер успеют отцепить, пока токен проверяется
+            return { object: { who: () => t }, ack: { ok: true, who: t } }
+        }
+        createRpcServer({ socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth } })
+        const c = createRpcClient<{ who: () => string }>({ socket: cs, socketKey: "rpc", token: "user" })
+        await c.initStrict()
+        const orphan = c.reauth("slow")
+        await delay(20)
+        createRpcServer({ socket: ss, object: { who: () => "second" }, socketKey: "rpc" }) // detach первого
+        const settled = await Promise.race([orphan, delay(120).then(() => "завис" as const)])
+        await check("detach: HELLO отцепленного сервера завершается", async () => settled?.ok ?? settled, false)
+    }
+    { // сервер без Caps.HELLO_ID (старый): новый клиент не залипает — откат «ответ = следующий MAP»
+        const [cs, ss] = createLoopback()
+        const maps: number[] = []
+        const origEmit = ss.emit.bind(ss)
+        ss.emit = (e, d) => { if (Array.isArray(d) && d[0] === Pkt.MAP) maps.push(d.length); origEmit(e, d) }
+        const resolveAuth = (t: string) => ({ object: { who: () => t }, ack: { ok: true, who: t } })
+        createRpcServer({ socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth }, opt: { helloId: false } })
+        const c = createRpcClient<{ who: () => string }>({ socket: cs, socketKey: "rpc", token: "user" })
+        await c.initStrict()
+        const ack = await c.reauth("user2")
+        await check("старый сервер: reauth всё равно резолвится", async () => [ack?.ok, ack?.who], [true, "user2"])
+        await check("старый сервер: 6-го элемента в MAP нет", async () => maps, [5, 5])
+    }
+    { // провод: id возвращается ТОЛЬКО в ответ на HELLO, который его прислал
+        const [cs, ss] = createLoopback()
+        const maps: any[] = []
+        const origEmit = ss.emit.bind(ss)
+        ss.emit = (e, d) => { if (Array.isArray(d) && d[0] === Pkt.MAP) maps.push(d); origEmit(e, d) }
+        const resolveAuth = (t: string) => ({ object: { who: () => t }, ack: { ok: true, who: t } })
+        createRpcServer({ socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth } })
+        cs.emit("rpc", [Pkt.HELLO, "old"]); await delay(20)               // старый клиент: id нет
+        cs.emit("rpc", [Pkt.HELLO, "new", 77]); await delay(20)           // новый клиент: id есть
+        cs.emit("rpc", [Pkt.HELLO, "junk", { oops: 1 }]); await delay(20) // мусорный id не эхуется
+        cs.emit("rpc", Pkt.STRICT); await delay(20)                       // не ответ на HELLO — id нет
+        await check("провод: id только в ответе на свой HELLO", async () => maps.map((m) => m.length), [5, 6, 5, 5])
+        await check("провод: вернулся тот же id", async () => maps[1][5], 77)
+    }
+    { // два HELLO внахлёст (режим по-прежнему не рекомендован): каждый reauth видит СВОЙ ответ
+        const [cs, ss] = createLoopback()
+        const resolveAuth = async (t: string) => {
+            await delay(t === "slow" ? 60 : 5) // ответы приходят в ОБРАТНОМ порядке к запросам
+            return { object: { who: () => t }, ack: { ok: true, who: t } }
+        }
+        createRpcServer({ socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth } })
+        const c = createRpcClient<{ who: () => string }>({ socket: cs, socketKey: "rpc", token: "user" })
+        await c.initStrict()
+        const [first, second] = await Promise.all([c.reauth("slow"), c.reauth("fast")])
+        await check("внахлёст: каждый HELLO получил свой ack", async () => [first?.who, second?.who], ["slow", "fast"])
+    }
+
+    console.log("--- Stage 5: сервер сам рвёт сессию (control.revoke / control.grant) ---")
+    { // приложение рвёт сессию само (админ, логаут с другого устройства, сигнал фрода):
+      // тот же коридор, что и истечение токена — клиент наблюдает ровно то же состояние
+        async function runSession(revoke: boolean, lifetime?: number) {
+            const [cs, ss] = createLoopback()
+            const [emit, listen] = createListenPair<number>()
+            const base = { who: () => "anon" }
+            const princ = { who: () => "user", stream: listen, secret: () => "s" }
+            const resolveAuth = (t: string) => ({
+                object: princ,
+                ack: { ok: true, who: t },
+                ...(lifetime ? { expiresAt: Date.now() + lifetime, renewBeforeMs: 30 } : {}),
+            })
+            // так это выглядит у приложения: внутри io.on('connection') — реестр живых сессий
+            const sessions = new Map<string, RpcServerControl>()
+            const { control } = createRpcServerAuto({ socket: ss, object: base, socketKey: "rpc", auth: { resolveAuth, gate: true } })
+            sessions.set("user", control)
+            type Princ = { who: () => string; stream: typeof listen; secret: () => string }
+            const c = createRpcClient<Princ>({ socket: cs, socketKey: "rpc", token: "user" })
+            const states: string[] = []
+            c.onAuthState((e) => states.push(e.state))
+            await c.initStrict()
+            const got: number[] = []
+            const sub = webListen(c).stream.on((v) => got.push(v))
+            await delay(10); emit(1); await delay(10)
+            if (revoke) sessions.get("user")!.revoke("вышел с другого устройства") // клиент ни о чём не просил
+            await delay(120) // здесь же истекает дедлайн, если он выдавался
+            emit(2); await delay(10)
+            const call = await c.func.secret().then(() => "ok", (e: any) => e?.code)
+            const ended = await Promise.race([sub.then(() => "ended"), delay(60).then(() => "hung")])
+            return { states, got, ok: (await c.auth())?.ok, ended, call }
+        }
+        const timer = await runSession(false, 60) // истечение токена — прежний путь
+        const seam = await runSession(true)       // отзыв из приложения — новый шов
+        await check("отзыв: поток обрезан, как при истечении", async () => [seam.got, timer.got], [[1], [1]])
+        await check("отзыв: привилегированный вызов отбит", async () => [seam.call, timer.call], ["E_UNAUTHORIZED", "E_UNAUTHORIZED"])
+        await check("отзыв: подписка завершена (не висит)", async () => [seam.ended, timer.ended], ["ended", "ended"])
+        await check("отзыв: ack ok=false у обоих", async () => [seam.ok, timer.ok], [false, false])
+        await check("отзыв: состояния различает только имя", async () => [seam.states, timer.states], [["revoked"], ["expiring", "expired"]])
+    }
+
+    { // шов безопасен в любой момент: до HELLO, дважды подряд, после detach — и без утечки таймеров
+        const [cs, ss] = createLoopback()
+        const notices: any[] = []
+        const origEmit = ss.emit.bind(ss)
+        ss.emit = (e, d) => { if (Array.isArray(d) && d[0] === Pkt.AUTH) notices.push(d[1]); origEmit(e, d) }
+        const resolveAuth = (t: string) => ({
+            object: { who: () => t },
+            ack: { ok: true, who: t },
+            expiresAt: Date.now() + 200,
+            renewBeforeMs: 100,
+        })
+        const first = createRpcServerAuto({ socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth } })
+        await check("шов: отзыв до HELLO безвреден", async () => first.control.revoke("никто ещё не пришёл"), true)
+        const c = createRpcClient<{ who: () => string }>({ socket: cs, socketKey: "rpc", token: "user" })
+        await c.initStrict()
+        await check("шов: отзыв до HELLO не чернит токен", async () => [(await c.auth())?.who, await c.func.who()], ["user", "user"])
+        first.control.revoke("раз")
+        await check("шов: второй отзыв подряд безвреден", async () => first.control.revoke("два"), true)
+        await delay(260) // и предупреждение (+100), и дедлайн (+200) уже позади: отзыв снял таймеры
+        await check("шов: отзыв снял таймеры гранта", async () => notices.map((n) => n.state), ["revoked", "revoked"])
+        await check("шов: principal откатан к базовому", () => c.func.who(), "anon")
+        createRpcServerAuto({ socket: ss, object: { who: () => "second" }, socketKey: "rpc" }) // detach первого
+        await check("шов: после detach — no-op, не бросает",
+            async () => [first.control.revoke("поздно"), first.control.grant({ object: { who: () => "late" } })], [false, false])
+        await delay(20)
+        await check("шов: отцепленный сервер молчит", async () => notices.length, 2)
+    }
+
+    { // выдача из приложения: право пришло не от клиента (step-up завершился в другом месте),
+      // а коридор тот же — фасад, ack, дедлайн; MAP не коррелирован, потому что вопроса не было
+        const [cs, ss] = createLoopback()
+        const [emit, listen] = createListenPair<number>()
+        const anon = { who: () => "anon" }
+        const princ = { who: () => "user", stream: listen, write: (x: number) => x }
+        const maps: any[] = []
+        const origEmit = ss.emit.bind(ss)
+        ss.emit = (e, d) => { if (Array.isArray(d) && d[0] === Pkt.MAP) maps.push(d); origEmit(e, d) }
+        const deadline = Date.now() + 60_000
+        const resolveAuth = () => { throw new Error("токены здесь не выдают") }
+        const { control } = createRpcServerAuto({ socket: ss, object: anon, socketKey: "rpc", auth: { resolveAuth, gate: true } })
+        type Princ = { who: () => string; stream: typeof listen; write: (x: number) => number }
+        const c = createRpcClient<Princ>({ socket: cs, socketKey: "rpc", token: "свой-токен-не-подошёл" })
+        await c.initStrict()
+        await check("выдача: до неё вызовы отбиты", () => c.func.who().catch((e: any) => e?.code), "E_UNAUTHORIZED")
+        control.grant({ object: princ, ack: { ok: true, who: "user" }, expiresAt: deadline })
+        await delay(20)
+        const got: number[] = []
+        webListen(c).stream.on((v) => got.push(v))
+        await delay(10); emit(1); await delay(10)
+        await check("выдача: фасад принципала доступен", async () => [await c.func.who(), await c.func.write(7)], ["user", 7])
+        await check("выдача: поток принципала пошёл", async () => got, [1])
+        await check("выдача: ack приложения дошёл целиком", async () => { const a = await c.auth(); return [a?.ok, a?.who] }, [true, "user"])
+        await check("выдача: дедлайн приехал в ack", async () => (await c.auth())?.$rpc?.expiresAt, deadline)
+        await check("выдача: MAP без корреляции (ответа никто не ждал)", async () => maps[maps.length - 1].length, 5)
+    }
+
+    { // ack принадлежит ПРИЛОЖЕНИЮ: дедлайн едет отдельным полем $rpc и ничего не затирает
+        const [cs, ss] = createLoopback()
+        const at = Date.now() + 60_000
+        function resolveAuth(t: string) {
+            if (t === "своё") return { object: { who: () => t }, ack: { ok: true, who: t, $rpc: "моё" }, expiresAt: at }
+            if (t === "строка") return { object: { who: () => t }, ack: "просто строка", expiresAt: at }
+            if (t === "бессрочный") return { object: { who: () => t }, ack: { ok: true, who: t } }
+            return { object: { who: () => t }, ack: { ok: true, who: t }, expiresAt: at }
+        }
+        const { control } = createRpcServer({ socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth } })
+        const c = createRpcClient<{ who: () => string }>({ socket: cs, socketKey: "rpc", token: "user" })
+        await c.initStrict()
+        await check("дедлайн: ack приложения цел, дедлайн рядом",
+            async () => { const a = await c.auth(); return [a?.ok, a?.who, a?.$rpc?.expiresAt] }, [true, "user", at])
+        await check("дедлайн: чужой $rpc не затирается", async () => (await c.reauth("своё"))?.$rpc, "моё")
+        await check("дедлайн: ack-не-объект не оборачивают", async () => await c.reauth("строка"), "просто строка")
+        await check("дедлайн: без дедлайна поля нет", async () => (await c.reauth("бессрочный"))?.$rpc, undefined)
+        await check("шов: есть и у голого createRpcServer",
+            async () => { control.revoke("голый сервер"); await delay(20); const a = await c.auth(); return [a?.state, await c.func.who()] },
+            ["revoked", "anon"])
+    }
+
+    { // отзыв прилетел, пока сервер проверял токен: грант, начатый РАНЬШЕ отзыва, не воскрешает
+      // принципала — но HELLO всё равно получает свой ответ, иначе reauth() повис бы навсегда
+        const [cs, ss] = createLoopback()
+        async function resolveAuth(t: string) {
+            await delay(60) // приложение успевает отозвать сессию, пока токен проверяется
+            return { object: { who: () => t }, ack: { ok: true, who: t } }
+        }
+        const { control } = createRpcServer({ socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth, gate: true } })
+        const c = createRpcClient<{ who: () => string }>({ socket: cs, socketKey: "rpc", token: "user" })
+        await c.initStrict()
+        const inFlight = c.reauth("user2")
+        await delay(20)
+        control.revoke("бан во время проверки токена")
+        const ack = await inFlight
+        await check("гонка: поздний грант не отменяет отзыв", async () => [ack?.ok, ack?.state], [false, "revoked"])
+        await check("гонка: вызовы после отзыва отбиты", () => c.func.who().catch((e: any) => e?.code), "E_UNAUTHORIZED")
+    }
+
+    console.log("--- Stage 6: клиент (одна волна явного токена / один init / anon auth() / renewed) ---")
+    { // явный токен принадлежит ОДНОЙ волне: переподключение спрашивает провайдера, а не его
+        const [cs, ss] = createLoopback()
+        const mk = (who: string) => ({ who: () => who })
+        const resolveAuth = (t: string) => ({ object: mk(t), ack: { ok: true, who: t } })
+        createRpcServerAuto({ socket: ss, object: mk("anon"), socketKey: "main", auth: { resolveAuth } })
+        let calls = 0
+        const hub = createRpcClientHub(
+            () => Object.assign(cs, { disconnect: () => {} }),
+            r => ({ main: r<{ who: () => string }>() }),
+            { token: async () => "p" + ++calls },
+        )
+        const started = hub.connect("явный")
+        ss.emit("connect", 1)
+        await started
+        await check("волна: явный connect выиграл свой хендшейк",
+            async () => [await hub.facade.main.func.who(), calls], ["явный", 0])
+        await hub.reauth("ручной") // мягкая смена принципала на ЖИВОМ сокете: своя волна уже прошла
+        await check("волна: reauth сменил принципал", () => hub.facade.main.func.who(), "ручной")
+        ss.emit("disconnect", "transport close")
+        await delay(20)
+        ss.emit("connect", 2) // новая волна: явный/ручной токен больше не предъявляют
+        await delay(60)
+        await check("волна: переподключение спросило провайдера",
+            async () => [await hub.facade.main.func.who(), calls], ["p1", 1])
+    }
+    { // двойной init: initStrict (хаб) + ready() (приложение) — один токен и один HELLO
+        const [cs, ss] = createLoopback()
+        const hellos: any[] = []
+        const origEmit = cs.emit.bind(cs)
+        cs.emit = (e, d) => { if (Array.isArray(d) && d[0] === Pkt.HELLO) hellos.push(d[1]); origEmit(e, d) }
+        const resolveAuth = (t: string) => ({ object: { who: () => t }, ack: { ok: true, who: t } })
+        createRpcServer({ socket: ss, object: { who: () => "anon" }, socketKey: "rpc", auth: { resolveAuth, gate: true } })
+        const c = createRpcClient<{ who: () => string }>({ socket: cs, socketKey: "rpc" })
+        let minted = 0
+        c.setTokenRenew(async () => "t" + ++minted) // одноразовый эмитент: каждый вызов — НОВЫЙ токен
+        await c.initStrict()
+        await c.readyStrict()
+        await c.ready()
+        await check("двойной init: один токен на соединение", async () => [minted, hellos], [1, ["t1"]])
+        await check("двойной init: принципал от первого токена", () => c.func.who(), "t1")
+    }
+    { // документированный путь: await hub.promise → readyStrict() фасада — тоже один токен
+        const [cs, ss] = createLoopback()
+        const hellos: any[] = []
+        const origEmit = cs.emit.bind(cs)
+        cs.emit = (e, d) => { if (Array.isArray(d) && d[0] === Pkt.HELLO) hellos.push(d[1]); origEmit(e, d) }
+        const resolveAuth = (t: string) => ({ object: { who: () => t }, ack: { ok: true, who: t } })
+        createRpcServerAuto({ socket: ss, object: { who: () => "anon" }, socketKey: "main", auth: { resolveAuth } })
+        let minted = 0
+        const hub = createRpcClientHub(
+            () => Object.assign(cs, { disconnect: () => {} }),
+            r => ({ main: r<{ who: () => string }>() }),
+            { token: async () => "t" + ++minted },
+        )
+        ss.emit("connect", 1)
+        const clients = await hub.promise
+        await clients.main.readyStrict()
+        await check("хаб: readyStrict после хендшейка не тратит токен", async () => [minted, hellos], [1, ["t1"]])
+        await check("хаб: принципал от выданного токена", () => clients.main.func.who(), "t1")
+    }
+    { // клиент БЕЗ токена против gate-сервера: ack не придёт никогда — auth() отвечает локально
+        const [cs, ss] = createLoopback()
+        const resolveAuth = (t: string) => ({ object: { ping: () => "pong" }, ack: { ok: true, who: t } })
+        createRpcServer({ socket: ss, object: {} as { ping: () => string }, socketKey: "rpc", auth: { resolveAuth, gate: true } })
+        const c = createRpcClient<{ ping: () => string }>({ socket: cs, socketKey: "rpc" })
+        await c.initStrict()
+        await check("аноним: auth() отвечает, а не виснет",
+            async () => { const a: any = await Promise.race([c.auth(), delay(60).then(() => "завис")]); return [a?.ok, a?.reason] },
+            [false, "RPC client presented no token"])
+        await check("аноним: gate по-прежнему отбивает вызов", () => c.func.ping().catch((e: any) => e?.code), "E_UNAUTHORIZED")
+        const ack = await c.reauth("свой") // предъявленный токен отвечает СВОИМ ack, а не локальным
+        await check("аноним: после HELLO ack настоящий", async () => [ack?.ok, (await c.auth())?.who], [true, "свой"])
+    }
+    { // успешное продление — событие на том же потоке, с НОВЫМ дедлайном из ack ($rpc)
+        const [cs, ss] = createLoopback()
+        const deadlines: number[] = []
+        const events: any[] = []
+        const grant = (t: string) => {
+            const expiresAt = Date.now() + (t === "t1" ? 120 : 60_000)
+            deadlines.push(expiresAt)
+            return { object: { who: () => t }, ack: { ok: true, who: t }, expiresAt, renewBeforeMs: 60 }
+        }
+        createRpcServerAuto({ socket: ss, object: { who: () => "anon" }, socketKey: "main", auth: { resolveAuth: grant } })
+        let calls = 0
+        const hub = createRpcClientHub(
+            () => Object.assign(cs, { disconnect: () => {} }),
+            r => ({ main: r<{ who: () => string }>() }),
+            { token: async () => "t" + ++calls },
+        )
+        hub.authListen((e) => events.push(e))
+        ss.emit("connect", 1)
+        await hub.promise
+        await delay(200) // 'expiring' (+60) → продление; новый грант живёт долго, истечения нет
+        await check("продление: поток состояний", async () => events.map((e) => e.state), ["expiring", "renewed"])
+        await check("продление: событие несёт НОВЫЙ дедлайн", async () => events[1]?.expiresAt, deadlines[1])
+        await check("продление: событие названо своим фасадом", async () => events[1]?.key, "main")
+        await check("продление: принципал обновлён", () => hub.facade.main.func.who(), "t2")
+    }
+    { // дедлайна может не быть (старый сервер, бессрочный грант) — событие всё равно есть
+        const [cs, ss] = createLoopback()
+        const events: any[] = []
+        const grant = (t: string) => ({
+            object: { who: () => t },
+            ack: { ok: true, who: t },
+            ...(t === "t1" ? { expiresAt: Date.now() + 120, renewBeforeMs: 60 } : {}), // второй грант бессрочный
+        })
+        createRpcServerAuto({ socket: ss, object: { who: () => "anon" }, socketKey: "main", auth: { resolveAuth: grant } })
+        let calls = 0
+        const hub = createRpcClientHub(
+            () => Object.assign(cs, { disconnect: () => {} }),
+            r => ({ main: r<{ who: () => string }>() }),
+            { token: async () => "t" + ++calls },
+        )
+        hub.authListen((e) => events.push(e))
+        ss.emit("connect", 1)
+        await hub.promise
+        await delay(200)
+        const last = events[events.length - 1]
+        await check("продление без дедлайна: событие есть", async () => [last?.state, last?.expiresAt], ["renewed", undefined])
+        await check("продление без дедлайна: истечения не было", async () => events.map((e) => e.state), ["expiring", "renewed"])
+    }
+
+    console.log("--- Stage 7: один кадр на всплеск (Caps.REQ_BATCH) ---")
+    // Кандидат из experiments/rpc-perf-2026-07: burst шёл ровно 1.00 логическому пакету на кадр
+    // в ОБЕ стороны. Бит опциональный, поэтому «старый пир» здесь не абстракция, а обязательная
+    // вторая половина проверки: без бита провод должен совпасть побайтно с сегодняшним.
+    function tapPackets(s: SocketTmpl) {
+        const seen: any[] = []
+        const orig = s.emit.bind(s)
+        s.emit = (e, d) => { seen.push(d); orig(e, d) }
+        return seen
+    }
+    const C2S_OPS: number[] = [Pkt.BATCH, Pkt.CALL, Pkt.PIPE]
+    const S2C_OPS: number[] = [Pkt.BATCH, Pkt.RESP, Pkt.CB, Pkt.CB_BATCH, Pkt.CB_END, Pkt.SHAPE, Pkt.CBV]
+    const appOut = (seen: any[]) => seen.filter((d) => Array.isArray(d) && C2S_OPS.includes(d[0]))
+    const appBack = (seen: any[]) => seen.filter((d) => Array.isArray(d) && S2C_OPS.includes(d[0]))
+    // Кадры как они есть: конверт разворачивается в массив опкодов, одиночный пакет — просто опкод.
+    const shapeOf = (seen: any[]) => seen.map((d) => d[0] === Pkt.BATCH ? (d[1] as any[]).map((p) => p[0]) : d[0])
+    const logicalOf = (seen: any[]) => seen.flatMap((d) => d[0] === Pkt.BATCH ? (d[1] as any[]).map((p) => p[0]) : [d[0]])
+
+    { // 50 вызовов одним синхронным всплеском: один кадр туда, один обратно, порядок сохранён
+        const [cs, ss] = createLoopback()
+        const burstObj = { seq: (n: number) => n * 2 }
+        const c = createRpcClient<typeof burstObj>({ socket: cs, socketKey: "rpc", opt: { requestBatch: true } })
+        createRpcServer({ socket: ss, object: burstObj, socketKey: "rpc", opt: { requestBatch: true } })
+        await c.initStrict()
+        await delay(5)
+        const out = tapPackets(cs), back = tapPackets(ss)
+        const got = await Promise.all(Array.from({ length: 50 }, (_, i) => c.func.seq(i)))
+        await check("конверт: 50 вызовов вернулись по порядку", async () => got, Array.from({ length: 50 }, (_, i) => i * 2))
+        await check("конверт: один кадр CALL и один кадр RESP",
+            async () => [appOut(out).length, appBack(back).length], [1, 1])
+        await check("конверт: внутри ровно 50 и 50",
+            async () => [appOut(out)[0][1].length, appBack(back)[0][1].length], [50, 50])
+        await check("конверт: порядок ответов = порядку вызовов",
+            async () => eq(appOut(out)[0][1].map((p: any[]) => p[1]), appBack(back)[0][1].map((p: any[]) => p[1])), true)
+        await check("конверт: id сессии уцелел в 6-м элементе",
+            async () => appOut(out)[0][1].every((p: any[]) => Number.isSafeInteger(p[5])), true)
+    }
+
+    { // ответ едет ЗА своими колбэками: барьер снят, порядок держится позицией в конверте
+        const [cs, ss] = createLoopback()
+        const mixObj = {
+            plain: (n: number) => n,
+            twice: (cb: (i: number) => void) => { cb(1); cb(2); return "готово" },
+        }
+        const c = createRpcClient<typeof mixObj>({ socket: cs, socketKey: "rpc", opt: { requestBatch: true } })
+        createRpcServer({ socket: ss, object: mixObj, socketKey: "rpc", opt: { requestBatch: true } })
+        await c.initStrict()
+        await delay(5)
+        const back = tapPackets(ss)
+        const ticks: number[] = []
+        const settled: string[] = []
+        const [plain, twice] = await Promise.all([
+            c.func.plain(5).then((v) => { settled.push("plain"); return v }),
+            c.func.twice((v) => ticks.push(v)).then((v) => { settled.push("twice"); return v }),
+        ])
+        await check("конверт: колбэки дошли до ответа", async () => [ticks, plain, twice], [[1, 2], 5, "готово"])
+        await check("конверт: CB раньше RESP на проводе",
+            async () => logicalOf(appBack(back)), [Pkt.CB, Pkt.CB, Pkt.RESP, Pkt.RESP])
+        await check("конверт: ответ уехал в одном кадре с чужими колбэками",
+            async () => shapeOf(appBack(back)), [[Pkt.CB, Pkt.CB, Pkt.RESP], Pkt.RESP])
+        await check("конверт: оба вызова разрешились", async () => settled.sort(), ["plain", "twice"])
+    }
+
+    { // старый пир (бит не согласован) видит СЕГОДНЯШНИЙ провод — сравниваем побайтно
+        async function wireOf(clientOpt: RpcOpt | undefined, serverOpt: RpcOpt | undefined) {
+            const [cs, ss] = createLoopback()
+            const obj = { seq: (n: number) => n * 2 }
+            const c = createRpcClient<typeof obj>({ socket: cs, socketKey: "rpc", opt: clientOpt })
+            createRpcServer({ socket: ss, object: obj, socketKey: "rpc", opt: serverOpt })
+            await c.initStrict()
+            await delay(5)
+            const out = tapPackets(cs), back = tapPackets(ss)
+            await Promise.all([c.func.seq(1), c.func.seq(2), c.func.seq(3)])
+            await delay(5)
+            return JSON.stringify([appOut(out), appBack(back)])
+        }
+        const legacy = await wireOf(undefined, undefined)
+        const clientOnly = await wireOf({ requestBatch: true }, undefined)
+        const serverOnly = await wireOf(undefined, { requestBatch: true })
+        const both = await wireOf({ requestBatch: true }, { requestBatch: true })
+        await check("старый пир: только клиент просит — провод как был", async () => clientOnly, legacy)
+        await check("старый пир: только сервер просит — провод как был", async () => serverOnly, legacy)
+        await check("старый пир: без бита это 3 CALL и 3 RESP по отдельности",
+            async () => JSON.parse(legacy).map((side: any[]) => side.map((d: any) => d[0])),
+            [[Pkt.CALL, Pkt.CALL, Pkt.CALL], [Pkt.RESP, Pkt.RESP, Pkt.RESP]])
+        await check("старый пир: с битом провод ДРУГОЙ (иначе тест ничего не доказывает)",
+            async () => both == legacy, false)
+    }
+
+    { // бинарь конверту не по зубам: он уезжает своим кадром, но очередь не обгоняет
+        const [cs, ss] = createLoopback()
+        const binObj = { plain: (n: number) => n, blob: (data: Uint8Array) => new Uint8Array([7, 7, 7]) }
+        const c = createRpcClient<typeof binObj>({ socket: cs, socketKey: "rpc", opt: { requestBatch: true } })
+        createRpcServer({ socket: ss, object: binObj, socketKey: "rpc", opt: { requestBatch: true } })
+        await c.initStrict()
+        await delay(5)
+        const out = tapPackets(cs), back = tapPackets(ss)
+        await Promise.all([
+            c.func.plain(1), c.func.plain(2), c.func.blob(new Uint8Array([1, 2, 3])), c.func.plain(3), c.func.plain(4),
+        ])
+        await delay(5)
+        await check("бинарь: аргумент уехал своим пакетом",
+            async () => shapeOf(appOut(out)), [[Pkt.CALL, Pkt.CALL], Pkt.CALL, [Pkt.CALL, Pkt.CALL]])
+        await check("бинарь: результат вернулся своим пакетом",
+            async () => shapeOf(appBack(back)), [[Pkt.RESP, Pkt.RESP], Pkt.RESP, [Pkt.RESP, Pkt.RESP]])
+        await check("бинарь: соседей не обогнал", async () => logicalOf(appOut(out)).length, 5)
+    }
+
+    { // пакет выше байтового потолка едет один, а соседи по обе стороны — конвертами
+        const [cs, ss] = createLoopback()
+        const bigObj = { size: (s: string) => s.length }
+        const tight: RpcOpt = { requestBatch: { maxBytes: 512 } }
+        const c = createRpcClient<typeof bigObj>({ socket: cs, socketKey: "rpc", opt: tight })
+        createRpcServer({ socket: ss, object: bigObj, socketKey: "rpc", opt: tight })
+        await c.initStrict()
+        await delay(5)
+        const out = tapPackets(cs)
+        const huge = "x".repeat(600)
+        const got = await Promise.all([
+            c.func.size("a"), c.func.size("b"), c.func.size(huge), c.func.size("c"), c.func.size("d"),
+        ])
+        await check("большой: уехал один, соседи в конвертах",
+            async () => shapeOf(appOut(out)), [[Pkt.CALL, Pkt.CALL], Pkt.CALL, [Pkt.CALL, Pkt.CALL]])
+        await check("большой: порядок не нарушен", async () => got, [1, 1, 600, 1, 1])
+    }
+
+    { // вызов без ожидания ответа делит кадр с соседями и всё равно выполняется на сервере
+        const [cs, ss] = createLoopback()
+        const seen: number[] = []
+        const fireObj = { note: (n: number) => { seen.push(n); return n }, ask: (n: number) => n }
+        const c = createRpcClient<typeof fireObj>({ socket: cs, socketKey: "rpc", opt: { requestBatch: true } })
+        createRpcServer({ socket: ss, object: fireObj, socketKey: "rpc", opt: { requestBatch: true } })
+        await c.initStrict()
+        await delay(5)
+        const out = tapPackets(cs), back = tapPackets(ss)
+        const answers = await Promise.all([c.func.ask(1), c.space.note(7), c.func.ask(2)])
+        await delay(10)
+        await check("без ответа: три CALL в одном кадре",
+            async () => shapeOf(appOut(out)), [[Pkt.CALL, Pkt.CALL, Pkt.CALL]])
+        await check("без ответа: RESP только два",
+            async () => shapeOf(appBack(back)), [[Pkt.RESP, Pkt.RESP]])
+        await check("без ответа: сервер всё же выполнил вызов",
+            async () => [seen, answers[0], answers[2]], [[7], 1, 2])
+    }
+
+    { // потребитель колбэка упал: ответ соседа по кадру не должен пропасть вместе с ним,
+      // и ни одна из ошибок не имеет права исчезнуть по дороге к приложению
+        function catchConsumerError(error: any) { reportThrown(error) }
+        const [cs, ss] = createLoopback()
+        const failObj = {
+            plain: (n: number) => n,
+            twice: (a: (i: number) => void, b: (i: number) => void) => { a(1); b(2); return "ок" },
+        }
+        const c = createRpcClient<typeof failObj>({ socket: cs, socketKey: "rpc", opt: { requestBatch: true } })
+        createRpcServer({ socket: ss, object: failObj, socketKey: "rpc", opt: { requestBatch: true } })
+        await c.initStrict()
+        await delay(5)
+        const back = tapPackets(ss)
+        let reportThrown = function rememberLater(_error: any) {}
+        const thrown = new Promise<any>((resolve) => { reportThrown = resolve })
+        process.once("uncaughtException", catchConsumerError)
+        const got: number[] = []
+        const [plain, twice] = await Promise.all([
+            c.func.plain(3),
+            c.func.twice(
+                (v) => { got.push(v); throw new Error("первый потребитель упал") },
+                (v) => { got.push(v); throw new Error("второй потребитель упал") },
+            ),
+        ])
+        const caught = await Promise.race([thrown, delay(100).then(() => "не дождались")])
+        process.off("uncaughtException", catchConsumerError)
+        await check("сироты: ответ соседа не потерялся", async () => [plain, twice], [3, "ок"])
+        await check("сироты: оба колбэка доставлены", async () => got, [1, 2])
+        await check("сироты: ответ и упавшие колбэки были в одном кадре",
+            async () => shapeOf(appBack(back)), [[Pkt.CB, Pkt.CB, Pkt.RESP], Pkt.RESP])
+        await check("сироты: ни одна ошибка не исчезла",
+            async () => [caught instanceof AggregateError, caught?.errors?.map((e: Error) => e.message)],
+            [true, ["первый потребитель упал", "второй потребитель упал"]])
+    }
+
+    console.log("--- Stage 9: строки вместо повторённых ключей (Caps.ROWS) ---")
+    // Кандидат из experiments/rpc-perf-2026-07: 63 000 из 127 896 байт результата на 1000 записей —
+    // это повторённые имена ключей (49.26 %), и ни одна из этих записей не тик.
+    // Бит включён ПО УМОЛЧАНИЮ (измерения третьего прохода), поэтому «старый пир» — это явный
+    // отказ, а не отсутствие опции: сравнивать с undefined значило бы сравнивать бит сам с собой.
+    const ROWS: RpcOpt = { compactRows: true }
+    const NO_ROWS: RpcOpt = { compactRows: false }
+    const ROWS_NB: RpcOpt = { compactRows: true, callbackBatch: false }
+    type tBar = { time: Date; open: number; high: number; low: number; close: number; volume: number }
+    const makeBar = (i: number): tBar => ({
+        time: new Date(1_700_000_000_000 + i * 60_000),
+        open: i, high: i + 2, low: i - 1, close: i + 1, volume: i * 10,
+    })
+    const barsObj = {
+        bars: (n: number) => Array.from({ length: n }, (_, i) => makeBar(i)),
+        mixed: () => [makeBar(0), { time: new Date(0), open: 1 }, makeBar(2), makeBar(3)],
+        pair: () => [makeBar(0), makeBar(1)],
+        feed: (n: number, cb: (b: tBar) => void) => { for (let i = 0; i < n; i++) cb(makeBar(100 + i)); return "готово" },
+        // Никогда не отвечает: подсунутый ответ — единственный, который придёт. С настоящим
+        // ответом освобождённый reqId переиспользуется, и поздний RESP снял бы СЛЕДУЮЩИЙ вызов.
+        hang: () => new Promise<string>(function neverSettle() {}),
+        ping: () => "жив",
+        holes: () => Array.from({ length: 6 }, (_, i) => ({ a: i, b: i == 3 ? undefined : i * 2 })),
+    }
+    function rowsClient(opt: RpcOpt | undefined, limits?: any) {
+        const [cs, ss] = createLoopback()
+        const c = createRpcClient<typeof barsObj>({ socket: cs, socketKey: "rpc", opt, limits })
+        createRpcServer({ socket: ss, object: barsObj, socketKey: "rpc", opt })
+        return { c, cs, ss }
+    }
+
+    { // массив однородных записей: значение то же, что и на обычном проводе, а байт меньше
+        async function callBars(opt: RpcOpt | undefined) {
+            const { c, ss } = rowsClient(opt)
+            await c.initStrict()
+            await delay(5)
+            const back = tapPackets(ss)
+            const got = await c.func.bars(200)
+            await delay(5)
+            const resp = appBack(back).find((d) => d[0] == Pkt.RESP)
+            return { got, resp, bytes: JSON.stringify(resp).length }
+        }
+        const plain = await callBars(NO_ROWS)
+        const rows = await callBars(ROWS)
+        await check("строки: значение совпало с обычным проводом", async () => eq(rows.got, plain.got), true)
+        await check("строки: Date внутри записи пережил таблицу",
+            async () => [rows.got[7].time instanceof Date, rows.got[7].time.valueOf()],
+            [true, plain.got[7].time.valueOf()])
+        await check("строки: таблица есть только там, где бит согласован",
+            async () => [JSON.stringify(rows.resp).includes("$_t"), JSON.stringify(plain.resp).includes("$_t")],
+            [true, false])
+        await check("строки: ответ похудел больше чем на треть",
+            async () => rows.bytes < plain.bytes * 0.67, true)
+    }
+
+    { // неоднородный массив не таблица, и слишком короткий — тоже: порог считается ВНУТРИ пакета
+        const { c, ss } = rowsClient(ROWS)
+        await c.initStrict()
+        await delay(5)
+        const back = tapPackets(ss)
+        const mixed = await c.func.mixed()
+        const pair = await c.func.pair()
+        await delay(5)
+        await check("строки: разнородный и короткий массивы не свернулись",
+            async () => JSON.stringify(appBack(back)).includes("$_t"), false)
+        await check("строки: их значения целы",
+            async () => [mixed.length, (mixed[1] as any).open, pair.length, pair[1].close], [4, 1, 2, 2])
+    }
+
+    { // undefined в записи: JSON выкидывает его из объекта и пишет null в массиве, поэтому
+      // таблица от такого массива ОТКАЗЫВАЕТСЯ — лучше не сэкономить, чем тихо подменить смысл
+        async function holesOf(opt: RpcOpt) {
+            const { c, ss } = rowsClient(opt)
+            await c.initStrict()
+            await delay(5)
+            const back = tapPackets(ss)
+            const got: any = await c.func.holes()
+            await delay(5)
+            return { got, wire: JSON.stringify(appBack(back)) }
+        }
+        const plain = await holesOf(NO_ROWS)
+        const rows = await holesOf(ROWS)
+        await check("undefined: массив с дыркой не свернулся в таблицу",
+            async () => rows.wire.includes("$_t"), false)
+        await check("undefined: значение совпало с обычным проводом до ключа",
+            async () => [eq(rows.got, plain.got), "b" in rows.got[3], rows.got[2].b], [true, false, 4])
+    }
+
+    { // реестр общий: форму зарегистрировал ОТВЕТ, а воспользовался ею первый же тик
+        const { c, ss } = rowsClient(ROWS_NB)
+        await c.initStrict()
+        await delay(5)
+        await c.func.bars(8)
+        await delay(5)
+        const back = tapPackets(ss)
+        const seen: tBar[] = []
+        const done = await c.func.feed(1, (b) => seen.push(b))
+        await delay(5)
+        await check("реестр: тик встал на форму ответа, минуя порог в 5 повторов",
+            async () => logicalOf(appBack(back)).filter((op) => op == Pkt.SHAPE || op == Pkt.CBV || op == Pkt.CB),
+            [Pkt.SHAPE, Pkt.CBV])
+        await check("реестр: тик собрался обратно правильно",
+            async () => [done, seen.length, seen[0].open, seen[0].time instanceof Date], ["готово", 1, 100, true])
+    }
+
+    { // и наоборот: форму зарегистрировал поток тиков, а сэкономил на ней ответ
+        const { c, ss } = rowsClient(ROWS_NB)
+        await c.initStrict()
+        await delay(5)
+        const seen: tBar[] = []
+        await c.func.feed(6, (b) => seen.push(b))
+        await delay(5)
+        const back = tapPackets(ss)
+        await c.func.bars(8)
+        await delay(5)
+        const resp: any = appBack(back).find((d) => d[0] == Pkt.RESP)
+        const shape: any = appBack(back).find((d) => d[0] == Pkt.SHAPE)
+        await check("реестр: поток успел объявить форму", async () => seen.length, 6)
+        await check("реестр: таблица ответа и Pkt.SHAPE потока — ОДИН id формы",
+            async () => [Array.isArray(resp[2]?.$_t), resp[2]?.$_t?.[0]], [true, 0])
+        await check("реестр: ключи таблица всё равно везёт с собой (сверка не может рассинхрониться)",
+            async () => [resp[2]?.$_t?.length, resp[2]?.$_t?.[2]?.length], [3, 6])
+        await check("реестр: тот же id уже уехал в Pkt.SHAPE до ответа", async () => shape, undefined)
+    }
+
+    { // старый пир (бит не согласован) видит СЕГОДНЯШНИЙ провод — сравниваем побайтно
+        async function wireOf(clientOpt: RpcOpt | undefined, serverOpt: RpcOpt | undefined) {
+            const [cs, ss] = createLoopback()
+            const c = createRpcClient<typeof barsObj>({ socket: cs, socketKey: "rpc", opt: clientOpt })
+            createRpcServer({ socket: ss, object: barsObj, socketKey: "rpc", opt: serverOpt })
+            await c.initStrict()
+            await delay(5)
+            const out = tapPackets(cs), back = tapPackets(ss)
+            const seen: tBar[] = []
+            await c.func.bars(8)
+            await c.func.feed(6, (b) => seen.push(b))
+            await delay(10)
+            return JSON.stringify([appOut(out), appBack(back)])
+        }
+        const legacy = await wireOf(NO_ROWS, NO_ROWS)
+        const clientOnly = await wireOf(ROWS, NO_ROWS)
+        const serverOnly = await wireOf(NO_ROWS, ROWS)
+        const both = await wireOf(ROWS, ROWS)
+        await check("старый пир: только клиент просит — провод как был", async () => clientOnly, legacy)
+        await check("старый пир: только сервер просит — провод как был", async () => serverOnly, legacy)
+        await check("старый пир: с битом провод ДРУГОЙ (иначе тест ничего не доказывает)",
+            async () => both == legacy, false)
+    }
+
+    { // враждебный пир: таблица, которая не сходится, ОТВЕРГАЕТСЯ, а не достраивается
+        const { c, cs, ss } = rowsClient(ROWS, { maxArrayLen: 16, maxKeys: 4, maxStringLen: 32 })
+        await c.initStrict()
+        await delay(5)
+        const out = tapPackets(cs)
+        // враждебный ответ подсовывается на место настоящего: id берём с провода
+        async function injectResult(table: any) {
+            const from = out.length
+            const p = c.func.hang()
+            await delay(5)
+            const call: any = out.slice(from).find((d) => Array.isArray(d) && d[0] == Pkt.CALL)
+            ss.emit("rpc", [Pkt.RESP, call[1], table])
+            return await p.then((v) => "разрешилось: " + v, (e: any) => e?.name ?? String(e))
+        }
+        const strangeId = await injectResult({ $_t: [999999, [[1, 2], [3, 4]], ["a", "b"]] })
+        const referencing = await injectResult({ $_t: [0, [[1, 2], [3, 4]]] })
+        const badWidth = await injectResult({ $_t: [5000, [[1, 2], [3]], ["a", "b"]] })
+        const tooManyRows = await injectResult({ $_t: [5001, Array.from({ length: 20 }, () => [1, 2]), ["a", "b"]] })
+        const tooManyKeys = await injectResult({ $_t: [5002, [[1, 2, 3, 4, 5, 6]], ["a", "b", "c", "d", "e", "f"]] })
+        const unsafeKey = await injectResult({ $_t: [5003, [[1, 2]], ["__proto__", "b"]] })
+        const notATable = await injectResult({ $_t: 5 })
+        await check("враждебный: чужой shapeId безвреден — таблица читает СВОИ ключи",
+            async () => strangeId, "разрешилось: [object Object],[object Object]")
+        await check("враждебный: ссылочная форма без ключей таблицей не считается",
+            async () => referencing, "разрешилось: [object Object]")
+        await check("враждебный: ширина строки не сошлась — отказ, а не добивка", async () => badWidth, "PayloadLimitError")
+        await check("враждебный: строк больше maxArrayLen — отказ", async () => tooManyRows, "PayloadLimitError")
+        await check("враждебный: ключей больше maxKeys — отказ", async () => tooManyKeys, "PayloadLimitError")
+        await check("враждебный: небезопасный ключ — отказ", async () => unsafeKey, "PayloadLimitError")
+        await check("враждебный: не таблица — не наше, значение доехало как объект",
+            async () => notATable, "разрешилось: [object Object]")
+        await check("враждебный: соединение после всего этого живо",
+            async () => await c.func.ping(), "жив")
+    }
+
+    { // таблица НЕ пишет в таблицу форм тиков — иначе чужой shapeId переклеил бы ключи потока
+        const { c, cs, ss } = rowsClient(ROWS_NB)
+        await c.initStrict()
+        await delay(5)
+        const seen: tBar[] = []
+        await c.func.feed(6, (b) => seen.push(b)) // форма 0 объявлена через Pkt.SHAPE
+        await delay(5)
+        const out = tapPackets(cs)
+        const p = c.func.hang()
+        await delay(5)
+        const call: any = out.find((d) => Array.isArray(d) && d[0] == Pkt.CALL)
+        // враждебная таблица заявляет ТУ ЖЕ форму 0 с другими ключами
+        ss.emit("rpc", [Pkt.RESP, call[1], { $_t: [0, [[1, 2], [3, 4], [5, 6], [7, 8]], ["x", "y"]] }])
+        const hostile: any = await p
+        const after: tBar[] = []
+        await c.func.feed(2, (b) => after.push(b))
+        await delay(5)
+        await check("изоляция: враждебная таблица прочлась своими ключами",
+            async () => [hostile.length, hostile[0].x, hostile[0].y], [4, 1, 2])
+        await check("изоляция: тики после неё всё ещё бары, а не x/y",
+            async () => [after.length, after[0].open, after[0].time instanceof Date], [2, 100, true])
+    }
+
+    { // лимиты кусают и через таблицу: 20 записей против maxArrayLen 16
+        const { c } = rowsClient(ROWS, { maxArrayLen: 16 })
+        await c.initStrict()
+        await delay(5)
+        const verdict = await c.func.bars(20).then(() => "разрешилось", (e: any) => e?.name ?? String(e))
+        const ok = await c.func.bars(8)
+        await check("лимиты: длинная таблица отвергнута как длинный массив", async () => verdict, "PayloadLimitError")
+        await check("лимиты: короткая проходит", async () => ok.length, 8)
+    }
+
+    { // реестр ограничен и ВЫТЕСНЯЕТ, а не растёт: это и есть починка хвоста из бенчмарка
+        const registry = createShapeRegistry()
+        for (let i = 0; i < 200; i++) {
+            const rec: any = { ["a" + i]: 1, ["b" + i]: 2, ["c" + i]: 3 }
+            registry.offerRows([rec, rec, rec, rec])
+        }
+        const decoder = createShapeDecoder()
+        for (let i = 0; i < 900; i++) decoder.declare(i, ["a", "b"])
+        await check("реестр: кодировщик не растёт без границы", async () => registry.size() <= 64, true)
+        await check("реестр: декодер не растёт без границы", async () => decoder.size() <= 256, true)
+        await check("реестр: вытесненный id декодеру больше не известен", async () => decoder.keysOf(0), undefined)
+        await check("реестр: свежий id на месте", async () => decoder.keysOf(899), ["a", "b"])
+
+        const reg = createShapeRegistry()
+        const rec = { a: 1, b: 2 }
+        const table = reg.offerRows([rec, rec, rec, rec])
+        const tick1 = reg.offerTick(7, rec)
+        const tick2 = reg.offerTick(7, rec)
+        reg.forgetSession(7)
+        const tick3 = reg.offerTick(7, rec)
+        await check("реестр: массив избавил поток от порога, а Pkt.SHAPE едет раз на сессию",
+            async () => [tick1.mode, tick2.mode, tick3.mode], ["register", "compact", "register"])
+        await check("реестр: у таблицы и у тиков один и тот же id формы",
+            async () => [table?.shapeId, (tick1 as any).shapeId, (tick3 as any).shapeId], [0, 0, 0])
+
+        // Порог всё ещё существует там, где форма — предсказание, а не факт
+        const lonely = createShapeRegistry()
+        const odd = { z: 1 }
+        const modes = [1, 2, 3, 4, 5].map(() => lonely.offerTick(3, odd).mode)
+        await check("порог: одиночный поток стандартизуется только на 5-м повторе",
+            async () => modes, ["full", "full", "full", "full", "register"])
+    }
+
     await runRpcCallbackBatchTests()
+
     console.log(`\n${fails === 0 ? "ALL GREEN ✅" : fails + " FAILURE(S) ❌"}`)
     return fails
 }

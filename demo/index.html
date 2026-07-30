@@ -211,6 +211,17 @@
     .workItemTitle input:hover, .workItemTitle input:focus { border-color: var(--line-strong); background: var(--surface); }
     .workItemMeta { margin: 6px 0 9px; color: var(--muted); font-size: 11px; }
     .workItemActions { display: flex; gap: 5px; flex-wrap: wrap; }
+    #authLifecycle { grid-column: 1 / -1; }
+    .authGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-top: 14px; }
+    .authCard { min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-soft); }
+    .authCard > em { display: block; margin-bottom: 5px; color: var(--muted); font-size: 10px; font-style: normal; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .authCard strong, .authCard span { display: block; overflow-wrap: anywhere; }
+    .authCard span { margin-top: 3px; color: var(--muted); font-size: 11px; }
+    #authResult { margin: 12px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); color: #174aa5; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+    #authLog { display: grid; align-content: start; gap: 3px; max-height: 230px; overflow: auto; margin-top: 12px; padding: 11px; border-radius: 11px; background: #17202a; color: #dbe7f7; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .authLogRow { overflow-wrap: anywhere; }
+    .authLogRow[data-tone="good"] { color: #86e2b6; }
+    .authLogRow[data-tone="bad"] { color: #ffb3a7; }
     .labGrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(480px, 1.15fr); gap: 16px; align-items: start; }
     #canvas { display: block; width: 100%; max-width: 760px; height: auto; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface-soft); }
     #otherDemos > summary { padding: 14px 16px; cursor: pointer; font-weight: 700; }
@@ -535,6 +546,43 @@
                 </div>
             </div>
             <div class="labGrid">
+                <section id="authLifecycle" class="surface">
+                    <div class="surfaceHeader">
+                        <div>
+                            <h3>Auth lifecycle</h3>
+                            <p>A real short-lived token: watch it expire, renew itself without breaking a live stream, and be revoked.</p>
+                        </div>
+                        <span id="authStatus" class="statusBadge" data-state="idle">anonymous</span>
+                    </div>
+                    <div class="surfaceBody">
+                        <div class="toolbar">
+                            <button id="authLogin" class="primary">Login (8s token)</button>
+                            <button id="authCall">Privileged call</button>
+                            <button id="authVault">Read second facade</button>
+                            <button id="authRenew" class="secondary" aria-pressed="true">Auto-renew: on</button>
+                            <button id="authRevoke" class="danger">Revoke now</button>
+                        </div>
+                        <div class="authGrid">
+                            <div class="authCard">
+                                <em>Principal</em><strong id="authWho">anonymous</strong><span id="authDeadline">no grant yet</span>
+                            </div>
+                            <div class="authCard">
+                                <em>Privileged stream</em><strong id="authTicks">not subscribed</strong><span id="authStream">the anonymous facade has no ticks node</span>
+                            </div>
+                            <div class="authCard">
+                                <em>Renewal</em><strong id="authProvider">provider calls 0</strong><span id="authNotices">server Pkt.AUTH notices 0</span>
+                            </div>
+                        </div>
+                        <p id="authResult">nothing called yet</p>
+                        <div id="authLog" aria-live="polite" aria-label="Authorization state log"></div>
+                        <details class="replicaContract">
+                            <summary>What is actually on the wire</summary>
+                            <code>auth.resolveAuth(token) → {object, ack, expiresAt, renewBeforeMs} · [Pkt.AUTH, {state}] · createRpcClientHub(…, {token: provider})</code>
+                            <p>Two gated facades share one socket and one token provider. With <code>gate: true</code> the starting object is the anonymous facade, so a privileged call is refused until a HELLO succeeds. Login is an ordinary HTTP endpoint for the same reason. At <code>expiring</code> both facades alarm and the hub asks the provider exactly once; the renewal is a soft re-auth, so the tick stream keeps its numbering. Expiry and revocation take the same downgrade corridor — the difference is that revocation is a <code>resolveAuth</code> throw carrying <code>revoke: true</code>.</p>
+                        </details>
+                    </div>
+                </section>
+
                 <section class="surface">
                     <div class="surfaceHeader">
                         <div>

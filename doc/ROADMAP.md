@@ -55,7 +55,27 @@ back deterministically.
 Do not build it until one consumer defines command identity, confirmation, rejection and rebase
 semantics. Generic Store patches alone cannot infer them.
 
-## 3. Multi-hop and group topology — complete
+## 3. RPC authorization — two deliberately deferred seams
+
+The in-band token lifecycle is complete and canonical in `doc/RPC-AUTH.md`. Two extensions were
+identified while building it and deliberately not built; both need a consumer before they are worth
+their cost.
+
+**`PIPE` retry after `E_UNAUTHORIZED`.** Only a waiting, callback-free `CALL` is retried once. A pipe
+chain is opaque and any step may carry a callback whose ids the first `RESP` already released, so a
+replay could reference dangling ids. Trigger: a consumer whose real workload is pipe-shaped and hits
+token expiry mid-chain often enough to matter. Before implementing, define what a partially executed
+chain means on replay — the retry is only safe if the whole chain is.
+
+**A distinct client state for an unsolicited application grant.** `control.grant` moves the deadline
+behind the application's back exactly like a renewal, but it reaches the client as an unsolicited
+authAck-bearing `Pkt.MAP`, not through the renewal seam, so it emits no `'renewed'`. Giving it its
+own state is a protocol-level decision: an unsolicited grant MAP would first have to be
+distinguishable from a downgrade by more than `ack.ok !== false`. Trigger: a consumer that must react
+differently to "the server raised my privileges" than to "my own renewal succeeded". Widening the
+stream stays additive, so waiting costs nothing.
+
+## 4. Multi-hop and group topology — complete
 
 Store multi-hop is already compositional: `createStoreReplicaSet` supports leader → follower →
 follower cascades, dynamic connection offers, accumulated latency, anti-cycle paths and route
@@ -74,7 +94,7 @@ of transport. Pair replay routing remains separate because it guarantees seq cat
 relay/direct hand-off. The packet mesh is specifically the higher arbitrary-data topology which was
 missing between those two completed layers.
 
-## 4. Media and binary performance — measure first
+## 5. Media and binary performance — measure first
 
 The stand has balanced media and an explicit max-video load mode. MAX preserves the selected camera
 and resolution and removes capture pacing: every completed encode immediately starts the next frame.

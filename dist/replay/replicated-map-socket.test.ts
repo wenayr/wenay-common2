@@ -11,6 +11,7 @@ import {
     ReplicatedMapChange, ReplicatedMapRemote,
 } from '../src/Common/Observe'
 import {listen} from '../src/Common/events/Listen'
+import {rpcMemberAvailable} from '../src/Common/events/transport-lifecycle'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 
@@ -106,10 +107,17 @@ function countWireReads<W extends {
             return remote.frame!(seq, hint)
         }
     }
+    for (const key of Object.getOwnPropertySymbols(remote)) {
+        Object.defineProperty(counted, key, Object.getOwnPropertyDescriptor(remote, key)!)
+    }
     return counted
 }
 
-async function startServer(remote: ReplicatedMapRemote<Item>, wireStats: WireStats) {
+async function startServer(
+    remote: ReplicatedMapRemote<Item>,
+    wireStats: WireStats,
+    pending: () => number,
+) {
     const httpServer = createServer()
     const ioServer = new SocketIOServer(httpServer)
 
@@ -135,6 +143,7 @@ async function startServer(remote: ReplicatedMapRemote<Item>, wireStats: WireSta
             socketKey: 'replicated-map-socket',
             object: {map: remote} satisfies SocketFacade,
             disconnectListen,
+            replayOpts: {pending, highWater: 5, lowWater: 0, pollMs: 10},
         })
     })
 
@@ -165,7 +174,8 @@ async function main() {
     let v2Reads = 0
     const measuredRemote = countWireReads(producer.api, function countV2Read() { v2Reads++ })
     const wireStats: WireStats = {rpcV3Frames: 0, embeddedV5Frames: 0}
-    const server = await startServer(measuredRemote, wireStats)
+    let pending = 0
+    const server = await startServer(measuredRemote, wireStats, function pendingPackets() { return pending })
     const hub = createRpcClientHub(
         function connectSocket() {
             return io(`http://127.0.0.1:${server.port}`, {
@@ -181,6 +191,10 @@ async function main() {
         const clients = await hub.setToken(null)
         await clients.app.readyStrict()
         const remote = clients.app.func.map
+        ok(rpcMemberAvailable(remote, 'frameLine'),
+            'RPC auto-projects frameLine for the branded Store Replay V2 facade')
+        ok((producer.api.line as any).count() == 0,
+            'Store Replay V2 gate stays detached before the follower subscribes')
         const batches: ReplicatedMapChange<Item>[] = []
         const snapshots: Record<string, Item>[] = []
 
@@ -228,8 +242,28 @@ async function main() {
             'socket onBatch observes the fully applied setMany snapshot')
 
         batches.length = 0
+        const valueBeforeLag = follower.get('A')?.value
+        pending = 100
+        for (let index = 0; index < 50; index++) {
+            producer.control.set(item('A', 1_000 + index))
+        }
+        await delay(80)
+
+        ok(follower.get('A')?.value == valueBeforeLag && batches.length == 0,
+            'slow Store Replay V2 client accumulates no live updates while its gate is closed')
+        pending = 0
+        await waitFor('Store Replay V2 frame recovery', function storeReplayV2Recovered() {
+            return follower!.get('A')?.value == 1_049
+        })
+        await delay(30)
+        ok(batches.length == 1 && batches[0].operations.length < 50,
+            'Store Replay V2 drain recovers one compact frame instead of the skipped backlog '
+            + `(${batches.length}/${batches.map(batch => batch.operations.length).join(',')})`)
+
+        batches.length = 0
         snapshots.length = 0
         const seqBeforeDisconnect = follower.seq()
+        const valueBeforeDisconnect = follower.get('A')?.value
         hub.socket?.disconnect?.()
         await waitFor('follower reconnecting', function followerIsReconnecting() {
             return follower!.status().state == 'reconnecting'
@@ -239,7 +273,7 @@ async function main() {
             item('A', 10),
             item('D', 4),
         ])
-        ok(follower.get('A')?.value == 1 && !follower.has('D'),
+        ok(follower.get('A')?.value == valueBeforeDisconnect && !follower.has('D'),
             'disconnected follower does not observe offline writes early')
 
         hub.socket?.connect?.()

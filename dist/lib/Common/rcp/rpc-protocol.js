@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.IS_RPC_LISTEN = exports.RPC_STOP = exports.Pkt = void 0;
+exports.GRANT_FACTS_KEY = exports.IS_RPC_LISTEN = exports.RPC_STOP = exports.Pkt = void 0;
 exports.Pkt = {
     CALL: 0,
     RESP: 1,
@@ -14,6 +14,9 @@ exports.Pkt = {
     CBV: 9,
     CAPS: 10,
     CB_BATCH: 11,
+    AUTH: 12,
+    BATCH: 13,
 };
 exports.RPC_STOP = "___STOP";
 exports.IS_RPC_LISTEN = Symbol.for("isRpcListen");
+exports.GRANT_FACTS_KEY = '$rpc';

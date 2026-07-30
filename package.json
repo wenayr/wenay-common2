@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "2.1.3",
+  "version": "2.2.0",
   "description": "Typed RPC over sockets, replayable Listen wires, reactive stores with replication and failover, peer packet mesh, media/artifact/AI/conversation runtimes",
   "keywords": [
     "rpc",
@@ -20,7 +20,7 @@
     "wenay-https": "./lib/cli/wenay-https.js"
   },
   "scripts": {
-    "test": "npm run test:rpc-guards && npm run test:types && npm run test:rpc && npm run test:https && npm run --prefix ./test test",
+    "test": "npm run test:rpc-guards && npm run test:types && npm run test:spec-types && npm run test:rpc && npm run test:rpc-markers && npm run test:https && npm run --prefix ./test test",
     "build & watch": "npm run _clearDir  &&  tsc --watch",
     "build": "npm run _clearDir  &&  tsc --build --verbose  &&  npm run _afterBuild",
     "types:generate": "tsc -p tsconfig.json --emitDeclarationOnly",
@@ -40,12 +40,16 @@
     "https": "tsx src/cli/wenay-https.ts",
     "test:rpc-guards": "node scripts/assert-rpc-symbol-guard.cjs",
     "test:types": "tsc -p tsconfig.type-tests.json",
+    "test:spec-types": "tsc -p tsconfig.spec.json",
     "test:rpc": "tsx src/Common/rcp/rpc.harness.spec.ts",
+    "test:rpc-markers": "tsx src/Common/rcp/rpc-marker-contract.spec.ts",
     "test:https": "tsx src/Common/https/https-config.spec.ts",
-    "test:all": "npm run test:rpc-guards && npm run test:types && npm run test:rpc && npm run test:https && node scripts/run-oracles.mjs",
+    "test:all": "npm run test:rpc-guards && npm run test:types && npm run test:spec-types && npm run test:rpc && npm run test:rpc-markers && npm run test:https && node scripts/run-oracles.mjs",
     "test:stress": "node scripts/run-oracles.mjs --stress",
     "test:stress:extended": "npm run test:stress && node scripts/run-oracles.mjs --extended-stress",
-    "experiment:transport": "tsx experiments/transport-2026-07/bench.ts"
+    "experiment:transport": "tsx experiments/transport-2026-07/bench.ts",
+    "experiment:rpc-perf": "tsx experiments/rpc-perf-2026-07/bench.ts",
+    "experiment:store-load": "tsx experiments/store-sync-load-2026-07/bench.ts"
   },
   "files": [
     "lib/**/*",

@@ -1,9 +1,10 @@
-import { Pkt, type SocketTmpl } from "./rpc-protocol";
+import { Pkt, GRANT_FACTS_KEY, type RpcAuthNotice, type SocketTmpl, type tAuthState } from "./rpc-protocol";
 import { rpcPathKey } from "./rpc-path";
 import {createIdPool, type idPool} from "../id-pool";
 import {pack, resolveCA, unpackResult} from "./rpc-walk";
 import {isSafeKey, resolveLimits, type RpcLimits} from './rpc-limits'
 import {rpcResultLimitsProperty} from './rpc-result-limits'
+import {createShapeDecoder, createRowDecoder} from './rpc-shape'
 import {MyError} from "../../toError/myThrow";
 import {makeOff} from "./rpc-off";
 import {
@@ -13,6 +14,10 @@ import {
     type tCaps,
     type RpcOpt,
 } from './rpc-caps'
+import {
+    createCallbackPacketBatcher,
+    MAX_BATCH_ITEMS,
+} from './rpc-callback-batch'
 import {
     createTransportLifecycle,
     RPC_MEMBER_LOOKUP,
@@ -204,6 +209,31 @@ type ClientApiHandle = {
     subscriptions: () => { key: string; consumers: number }[];
 };
 
+// ============================================================
+// Dynamic token lifecycle — client-side vocabulary
+// ============================================================
+// The server pushes [Pkt.AUTH, notice] when the current token nears its deadline, expires or
+// is revoked. 'renewFailed' and 'renewed' are added HERE and never travel on the wire: they are
+// the two LOCAL outcomes of an installed renewer — nothing minted, or a fresh grant the server
+// acknowledged — so a consumer watches ONE stream instead of correlating a wire state with a
+// silent renewal. Both report what happened WITHOUT being asked, which is the rule for this
+// stream: a manual reauth() answers its own caller with the same ack and is not an event.
+
+/** State of the client auth stream: the protocol states plus the local renewal outcome. */
+export type tAuthEventState = tAuthState | 'renewFailed' | 'renewed'
+
+/** What auth observers receive: the server notice, widened by the local state. */
+export type RpcAuthEvent = Omit<RpcAuthNotice, 'state'> & {state: tAuthEventState}
+
+/** Why the client asks the installed renewer for a token. */
+export type tAuthRenewReason = 'connect' | 'notice' | 'unauthorized'
+
+/** Request handed to the renewer; `notice` is present only for reason 'notice'. */
+export type RpcAuthRenewRequest = {reason: tAuthRenewReason; notice?: RpcAuthEvent}
+
+/** Renewal seam: resolve with a fresh token, or null/undefined when there is none. */
+export type RpcTokenRenew = (request: RpcAuthRenewRequest) => any
+
 const IS_RPC_PIPE = Symbol.for("isRpcPipe");
 
 function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: { limit?: number; limits?: RpcLimits; dedupeListen?: boolean; token?: any; opt?: RpcOpt }) {
@@ -218,6 +248,28 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     const clientCaps = optToCaps(opts?.opt) // independently enabled wire features declared to server
     let peerServerCaps: tCaps = 0 // what the server declared (for future bidirectional features)
     const callbackBatchOn = () => hasCap(clientCaps & peerServerCaps, Caps.CB_BATCH)
+    // Caps.REQ_BATCH extends that envelope to CALL/PIPE going out and RESP coming back, so it
+    // needs CB_BATCH as well: one ordered queue per session is what lets a response ride behind
+    // the callbacks it must follow. Off unless the application asked — see optToCaps.
+    const reqBatchOn = () => hasCap(clientCaps & peerServerCaps, Caps.CB_BATCH | Caps.REQ_BATCH)
+    // Caps.ROWS moves the shape table from `compactShapes` (per cbId, dropped only on CB_END —
+    // the tail the benchmark found) to ONE bounded connection-scoped table, and adds the row
+    // marker that a result or a tick may carry. Needs COMPACT: the tick half IS Pkt.SHAPE/CBV.
+    const rowsOn = () => hasCap(clientCaps & peerServerCaps, Caps.COMPACT | Caps.ROWS)
+    const shapeDecoder = createShapeDecoder()
+    const rowCodec = createRowDecoder(lim)
+    // The codec is handed to the walker ONLY when the bit is live, so an un-negotiated build
+    // decodes a value the previous way — the reserved key stays an ordinary object there.
+    const rows = () => rowsOn() ? rowCodec : undefined
+    // The request queue. Same batcher, same microtask discipline, same escape hatches as the
+    // server's callback queue; only the envelope opcode differs. Control packets (CAPS, HELLO,
+    // STRICT) flush it first — they are ordering barriers in this direction too, and a HELLO
+    // overtaking a queued CALL would change what a gated server does with that call.
+    const requestBatch = createCallbackPacketBatcher({
+        send: function sendRequestPacket(packet: any[]) { socket.emit(key, packet) },
+        opt: opts?.opt?.requestBatch,
+        envelope: Pkt.BATCH,
+    })
     let serverGeneration: number | undefined
     const clientId = nextSessionId(socket, key)
     let sessionId = nextSessionId(socket, key)
@@ -226,9 +278,14 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     function beginTransportGeneration(generation?: number) {
         serverGeneration = generation
         sessionId = nextSessionId(socket, key)
+        // A new server instance restarts shape ids at 0, and this session id is new to it, so
+        // every id declared to the previous one is meaningless now. Keeping the table would be
+        // the one way a bounded registry could still decode rows against the wrong keys.
+        shapeDecoder.clear()
     }
 
     function advertiseClientCaps() {
+        requestBatch.flush()
         socket.emit(key, serverGeneration == undefined
             ? [Pkt.CAPS, clientCaps]
             : [
@@ -264,14 +321,189 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     let strictWaiters: ((v: unknown) => void)[] = [];
     let _ready: null | Promise<void> = null
     let debug = false;
+    // Arguments travel through the SAME walker as results, so the collision is symmetric and so
+    // is the report. `debug` is flipped at runtime by api.log(), hence a getter and not a
+    // constant: the packer receives undefined while logging is off and skips the check entirely.
+    function reportReservedKey(markerKey: string) {
+        console.log('[RPC OUT] reserved key', markerKey,
+            '— an application value of this shape is decoded as a library value by the peer')
+    }
+    const reservedReport = () => debug ? reportReservedKey : undefined
 
     // --- in-band auth (Pkt.HELLO/authAck) ---
     let authToken: any = opts?.token ?? null;
     let authStatus: any = undefined; // server's last authAck; null = server without auth (4-element MAP)
     let authWaiters: ((s: any) => void)[] = [];
     let authPending = false; // HELLO/reauth in progress → auth() waits for fresh ack, not the old one
-    const drainAuth = (s: any) => { authPending = false; const w = authWaiters; authWaiters = []; for (const r of w) r(s); };
-    const setAuthStatus = (s: any) => { authStatus = s; drainAuth(s); };
+
+    // --- HELLO ↔ MAP correlation (Caps.HELLO_ID) ---
+    // A reauth() may be settled ONLY by the answer to its OWN HELLO. The server echoes the id
+    // back in the 6th element of Pkt.MAP; a MAP without one from a CORRELATING server is
+    // unsolicited (token downgrade, STRICT push) — a state change, not an answer to a question
+    // nobody asked. An old server never echoes, but it also never pushes a downgrade: there the
+    // next authAck-bearing MAP answers the OLDEST outstanding HELLO, exactly as before.
+    const helloIdOn = () => hasCap(clientCaps & peerServerCaps, Caps.HELLO_ID)
+    const helloIdSent = hasCap(clientCaps, Caps.HELLO_ID)
+    let helloSeq = 0
+    const helloWaits = new Map<number, {resolve?: (ack: any) => void}>()
+
+    // ONE place emits a HELLO. The id is registered BEFORE the packet leaves: a synchronous
+    // adapter can deliver the answering MAP inside emit(). Even the resolver-less HELLO of
+    // init() is tracked — it owns authPending, so its answer must be its own and not the next MAP.
+    function sendHello(token: any, resolve?: (ack: any) => void) {
+        const id = ++helloSeq
+        helloWaits.set(id, {resolve})
+        authPending = true
+        requestBatch.flush()
+        socket.emit(key, helloIdSent ? [Pkt.HELLO, token, id] : [Pkt.HELLO, token])
+    }
+
+    function settleHello(id: number, status: any) {
+        const wait = helloWaits.get(id)
+        if (!wait) return
+        helloWaits.delete(id)
+        authPending = helloWaits.size > 0
+        wait.resolve?.(status)
+    }
+
+    // A reply that can no longer arrive must not become a new way to hang: every teardown that
+    // releases authWaiters releases the outstanding HELLOs with the same {ok:false} shape.
+    function abandonHellos(status: any) {
+        const waits = [...helloWaits.values()]
+        helloWaits.clear()
+        authPending = false
+        for (const wait of waits) wait.resolve?.(status)
+    }
+
+    // ONE MAP settles at most ONE HELLO.
+    function drainAuth(status: any, helloId?: any) {
+        if (Number.isSafeInteger(helloId)) settleHello(helloId, status)
+        // No negotiated correlation: an old server never pushes an unsolicited authAck either,
+        // so the oldest outstanding HELLO owns this reply — today's behavior, kept.
+        else if (!helloIdOn()) for (const id of helloWaits.keys()) { settleHello(id, status); break }
+        // While a HELLO is outstanding, auth() waits for ITS answer: resolving it from an
+        // unsolicited downgrade would be the same stale answer, one layer up.
+        if (authPending) return
+        const waiters = authWaiters
+        authWaiters = []
+        for (const resolve of waiters) resolve(status)
+    }
+
+    const setAuthStatus = (s: any, helloId?: any) => { authStatus = s; drainAuth(s, helloId); };
+
+    // A client that presented no token is acknowledged by nobody: against a gated server its
+    // STRICT is answered by a four-element MAP, so auth() waited for an ack that by construction
+    // could never come. The answer here is LOCAL and says exactly that — no server state is
+    // invented, because from a client that never asked a gated server and a server without auth
+    // look the same. The rule above stays intact: a client that HOLDS a token, or that has a
+    // HELLO outstanding (reauth(null) issues one), is still answered only by its own authAck, so
+    // no STRICT companion can resolve a pending HELLO with a premature null.
+    function settleAnonymousAuth() {
+        if (authToken != null || authPending || authStatus !== undefined) return
+        authStatus = {ok: false, reason: 'RPC client presented no token'}
+        const waiters = authWaiters
+        authWaiters = []
+        for (const resolve of waiters) resolve(authStatus)
+    }
+
+    // ===================================================================
+    // Dynamic token lifecycle: Pkt.AUTH notices + one renewal seam
+    // ===================================================================
+    // Negotiated like every other wire feature — an un-negotiated AUTH packet is not ours to
+    // interpret (same gate idiom as callbackBatchOn for Pkt.CB_BATCH). Without an installed
+    // renewer nothing below ever runs: the client neither renews nor retries, as before.
+    const authStateOn = () => hasCap(clientCaps & peerServerCaps, Caps.AUTH_STATE)
+    let authStateCbs: ((event: RpcAuthEvent) => void)[] = []
+    let tokenRenew: RpcTokenRenew | null = null
+    let renewInFlight: Promise<boolean> | null = null
+
+    function onAuthState(cb: (event: RpcAuthEvent) => void) {
+        authStateCbs.push(cb)
+        function offAuthState() { const i = authStateCbs.indexOf(cb); if (i >= 0) authStateCbs.splice(i, 1) }
+        return makeOff(disconnectPromise, offAuthState)
+    }
+
+    function notifyAuthState(event: RpcAuthEvent) {
+        const errors: any[] = []
+        for (const cb of [...authStateCbs]) {
+            try { cb(event) }
+            catch (error) { errors.push(error) }
+        }
+        rethrowConsumerErrors(errors, 'Multiple RPC auth state consumers failed')
+    }
+
+    function setTokenRenew(renew: RpcTokenRenew | null) { tokenRenew = renew ?? null }
+
+    // ONE renewal at a time: several unauthorized calls plus an 'expiring' notice must present
+    // ONE fresh token. reauth waiters are shared and uncorrelated, so concurrent reauths would
+    // resolve each other's promises.
+    function renewAuth(request: RpcAuthRenewRequest) {
+        if (!tokenRenew || disposed) return Promise.resolve(false)
+        const running = renewInFlight
+        if (running) return running
+        const started = presentRenewedToken(request)
+        renewInFlight = started
+        function clearRenewInFlight() { if (renewInFlight == started) renewInFlight = null }
+        started.then(clearRenewInFlight, clearRenewInFlight)
+        return started
+    }
+
+    // Never rejects: a renewal is best-effort, its failure is a fact on the auth stream.
+    async function presentRenewedToken(request: RpcAuthRenewRequest) {
+        const renew = tokenRenew
+        if (!renew) return false
+        try {
+            const token = await renew(request)
+            if (disposed) return false
+            // The SAME token is not a renewal: re-presenting a dead one would let expiry drive
+            // an endless expire→renew→expire loop.
+            if (token == null || token === authToken) {
+                reportRenewFailure(request, token == null
+                    ? 'RPC token renewer produced no token'
+                    : 'RPC token renewer produced the token already in force')
+                return false
+            }
+            // Before the handshake (hub-managed offline) HELLO has not gone out yet, so seeding
+            // the token IS the renewal — requestSchema() presents it. Nothing is acknowledged
+            // yet, so there is no grant to report: the handshake's own ack carries it.
+            if (!transport.api.connected()) { authToken = token; return true }
+            const ack = await reauth(token)
+            if (ack?.ok === false) return false
+            reportGrantRenewed(ack)
+            return true
+        } catch (error) {
+            reportRenewFailure(request, error)
+            return false
+        }
+    }
+
+    // A renewer that yields nothing must leave a defined state, not a wedged connection.
+    // 'connect' has nothing to report: the token the client already holds stays in force.
+    function reportRenewFailure(request: RpcAuthRenewRequest, reason: any) {
+        if (request.reason == 'connect') return
+        notifyAuthState({state: 'renewFailed', reason})
+    }
+
+    // An AUTOMATIC renewal moves the grant behind the application's back, so its success is a
+    // fact for the stream: without it a consumer showing the deadline can only poll auth() until
+    // the ack changes. The counterpart of 'renewFailed', and the same boundary — a manual
+    // reauth() resolves with this very ack and reports nothing here.
+    function reportGrantRenewed(ack: any) {
+        const event: RpcAuthEvent = {state: 'renewed'}
+        const expiresAt = grantDeadline(ack)
+        if (expiresAt != undefined) event.expiresAt = expiresAt
+        notifyAuthState(event)
+    }
+
+    // The deadline of a granted token, when the server attached one. It lives in the reserved
+    // GRANT_FACTS_KEY sub-object of the ack (wire contract in rpc-protocol.ts) because the ack
+    // itself belongs to the application. Everything about it is optional: an old server sends
+    // no such key, and an application ack that already owns it keeps its own value — hence
+    // no shape is trusted, and an unknown deadline only means an event without one.
+    function grantDeadline(ack: any) {
+        const at = ack?.[GRANT_FACTS_KEY]?.expiresAt
+        return Number.isFinite(at) ? at as number : undefined
+    }
 
     function rethrowConsumerErrors(errors: any[], message: string) {
         if (errors.length == 0) return
@@ -279,12 +511,23 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         setTimeout(function rethrowRpcConsumerErrors() { throw error }, 0)
     }
 
+    // After dispose the only thing still owed is the shared id space: an id whose owner is gone
+    // must come back, whether its RESP/CB_END arrived alone or inside an envelope.
+    function releaseZombiePacket(packet: any) {
+        if (!Array.isArray(packet)) return
+        if ((packet[0] == Pkt.RESP || packet[0] == Pkt.CB_END) && zombies.delete(packet[1])) pool.release(packet[1])
+    }
+
     function handlePacket(incoming: any, batchErrors?: any[]) {
         const msg = incoming
         if (!Array.isArray(msg)) return;
         if (disposed) {
             // after dispose, only return zombie-ids to the shared pool, ignore everything else
-            if ((msg[0] == Pkt.RESP || msg[0] == Pkt.CB_END) && zombies.delete(msg[1])) pool.release(msg[1]);
+            if (msg[0] == Pkt.BATCH) {
+                if (Array.isArray(msg[1])) for (const item of msg[1]) releaseZombiePacket(item);
+                return;
+            }
+            releaseZombiePacket(msg);
             return;
         }
         switch (msg[0]) {
@@ -306,7 +549,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 else {
                     // limit violation/corrupt payload in response — reject this request only
                     try {
-                        req.ok(unpackResult(msg[2], lim))
+                        req.ok(unpackResult(msg[2], lim, rows()))
                     }
                     catch (e) { req.fail(e); }
                 }
@@ -319,7 +562,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 // stream has no error channel — drop corrupt/limit-exceeding packet
                 // (previously .map(unpackResult) also passed index as a second argument like lim)
                 try {
-                    cbArgs = (msg[2] || []).map((a: any) => unpackResult(a, lim))
+                    cbArgs = (msg[2] || []).map((a: any) => unpackResult(a, lim, rows()))
                 }
                 catch (e) { if (debug) console.log("[RPC CB] dropped:", e); break; }
                 try {
@@ -332,12 +575,16 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             }
             case Pkt.SHAPE: {
                 // Late shape from dead transport-generation should not create state tail.
-                if (!callbacks.has(msg[1])) break
+                // Under Caps.ROWS there is no per-cbId tail to create: the table is one bounded
+                // connection-scoped map that a response may equally have filled, so a shape is
+                // accepted on its own merits and the cbId only names the stream that used it.
+                if (!rowsOn() && !callbacks.has(msg[1])) break
                 const shapeId = msg[2]
                 const keys = msg[3]
                 if (!Number.isSafeInteger(shapeId) || shapeId < 0) break
                 if (!Array.isArray(keys) || !keys.every((k: any) => typeof k == 'string' && isSafeKey(k))) break
                 if (new Set(keys).size != keys.length) break
+                if (rowsOn()) { shapeDecoder.declare(shapeId, [...keys]); break }
                 // server declared shape of compact ticks for cbId: shapeId → key order
                 let m = compactShapes.get(msg[1])
                 if (!m) { m = new Map(); compactShapes.set(msg[1], m) }
@@ -348,7 +595,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 // compact tick: reconstruct object from shape + values and call callback as regular CB
                 const cb = callbacks.get(msg[1]);
                 if (!cb) break;
-                const keys = compactShapes.get(msg[1])?.get(msg[2])
+                const keys = rowsOn() ? shapeDecoder.keysOf(msg[2]) : compactShapes.get(msg[1])?.get(msg[2])
                 if (!keys) break;
                 const vals = msg[3]
                 if (!Array.isArray(vals) || vals.length != keys.length) break
@@ -357,7 +604,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                     obj = {}
                     keys.forEach(function reconstructShapeValue(k: string, i: number) {
                         if (!isSafeKey(k)) throw new Error('Unsafe compact shape key')
-                        obj[k] = unpackResult(vals[i], lim)
+                        obj[k] = unpackResult(vals[i], lim, rows())
                     })
                 }
                 catch (e) { if (debug) console.log("[RPC CBV] dropped:", e); break; }
@@ -425,6 +672,46 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 rethrowConsumerErrors(callbackErrors, 'Multiple RPC callback consumers failed')
                 break
             }
+            case Pkt.BATCH: {
+                // The Caps.REQ_BATCH envelope. Its own opcode, so today's builds — whose
+                // Pkt.CB_BATCH validator accepts only CB/SHAPE/CBV — never see one and never
+                // silently drop a frame carrying a response.
+                if (!reqBatchOn() || !Array.isArray(msg[1])) break
+                const batched = msg[1]
+                if (batched.length > MAX_BATCH_ITEMS) break
+                const valid = batched.every(function isBatchedPacket(packet: any) {
+                    return Array.isArray(packet)
+                        && (packet[0] == Pkt.CB || packet[0] == Pkt.SHAPE || packet[0] == Pkt.CBV
+                            || packet[0] == Pkt.CB_END || packet[0] == Pkt.RESP)
+                })
+                if (!valid) break
+                const batchedErrors: any[] = []
+                for (const packet of batched) {
+                    try { handlePacket(packet, batchedErrors) }
+                    catch (error) { batchedErrors.push(error) }
+                }
+                // Same line as Pkt.CB_BATCH holds for callbacks, now for responses too: a
+                // consumer throwing on one item must not discard the items that shared its
+                // physical packet, and no sibling error may disappear either.
+                rethrowConsumerErrors(batchedErrors, 'Multiple RPC batched packet consumers failed')
+                break
+            }
+            case Pkt.AUTH: {
+                // Un-negotiated feature: the packet is not ours to interpret (as CB_BATCH).
+                if (!authStateOn()) break
+                const notice = msg[1]
+                if (!notice || typeof notice != 'object') break
+                const state = notice.state
+                if (state != 'expiring' && state != 'expired' && state != 'revoked') break
+                const event: RpcAuthEvent = {state}
+                if (notice.reason !== undefined) event.reason = notice.reason
+                if (Number.isFinite(notice.expiresAt)) event.expiresAt = notice.expiresAt
+                notifyAuthState(event)
+                // Every state is a renewal trigger. 'expired'/'revoked' are already terminal for
+                // THIS principal: a renewer yielding nothing new simply stops here.
+                if (tokenRenew) renewAuth({reason: 'notice', notice: event}).catch(function ignoreRenewalFailure() {})
+                break;
+            }
             case Pkt.MAP: {
                 schemaKnown = true
                 // Clean before merging: on principal change (re-auth) routeMap indices differ —
@@ -449,7 +736,11 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 // Response to HELLO is ALWAYS 5-element (authAck or null for server without auth) — only it
                 // touches auth. 4-element MAP (STRICT/initial push) is schema-only: does not resolve auth(),
                 // so waiting auth() will not catch premature null from STRICT companion.
-                if (msg.length > 4) setAuthStatus(msg[4]);
+                // 6th element = id of the HELLO this MAP answers; an unsolicited MAP has none.
+                // The one exception is a client with NO token to be acknowledged — see
+                // settleAnonymousAuth: it answers locally and never touches a pending HELLO.
+                if (msg.length > 4) setAuthStatus(msg[4], msg[5]);
+                else settleAnonymousAuth();
                 // CAPS once on MAP arrival: connection established, server listening, ticks not yet sent.
                 // Here, not in init(): dynamic c.func init() does not call it (server pushes MAP itself).
                 // Each optimization is independently advertised and negotiated by its bit.
@@ -464,15 +755,25 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     // whose initial MAP/CAPS was emitted before this listener existed.
     advertiseClientCaps()
 
+    // The negotiated request envelope. The session id at index 5 is already attached here, so
+    // every item of a batch carries its own and the server unwraps into exactly the packets
+    // separate frames would have delivered. A direct packet flushes first: it must not overtake
+    // one already queued, which is possible the moment the bit stops being negotiated.
+    function emitOrBatch(wire: any[]) {
+        if (reqBatchOn()) { requestBatch.enqueue(wire); return }
+        requestBatch.flush()
+        socket.emit(key, wire)
+    }
+
     function emitApplicationPacket(packet: any[]) {
         if (serverGeneration != undefined) {
             const correlated = [...packet]
             while (correlated.length < 5) correlated.push(undefined)
             correlated[5] = sessionId
-            socket.emit(key, correlated)
+            emitOrBatch(correlated)
             return
         }
-        socket.emit(key, packet)
+        emitOrBatch(packet)
     }
 
     function rollbackCallbacks(callbackIds: number[]) {
@@ -495,7 +796,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 if (step.type === 'call') {
                     return {
                         type: 'call',
-                        args: pack(step.args, pool, callbacks, cbIds),
+                        args: pack(step.args, pool, callbacks, cbIds, reservedReport()),
                     };
                 }
                 return step;
@@ -592,7 +893,12 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
 
     type tCallAttempt = {promise: Promise<any>; abandon: (reason: string) => void}
 
-    function createCallAttempt(path: string[], args: any[]): tCallAttempt {
+    // The server's gate rejection is machine-readable (MyError code), never a message match.
+    const isUnauthorized = (error: any) => error?.code == 'E_UNAUTHORIZED'
+
+    // retryUnauthorized: ONE extra attempt after the renewed principal is presented. The retry
+    // itself is issued WITHOUT the flag, so "exactly once" is structural, not a counter.
+    function createCallAttempt(path: string[], args: any[], retryUnauthorized = false): tCallAttempt {
         if (disposed) {
             return {promise: Promise.reject(new Error('RPC client disposed')), abandon: function abandonDisposed() {}}
         }
@@ -606,7 +912,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         const cbIds: number[] = []
         let clean: any[]
         try {
-            clean = pack(args, pool, callbacks, cbIds)
+            clean = pack(args, pool, callbacks, cbIds, reservedReport())
         } catch (error) {
             rollbackCallbacks(cbIds)
             return {
@@ -631,6 +937,26 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             pending.set(reqId, record)
         })
         record.promise = promise
+        // One retry in place of the rejection, so the caller keeps ONE promise: a derived
+        // `.catch` promise would be invisible to abandonTransportGeneration, and an
+        // intentionally ignored call would crash Node on a transport drop. A call whose args
+        // carried callbacks is never replayed — the RESP already released those ids, so a
+        // second packet would reference dangling ones (what `zombies` exists to prevent).
+        if (retryUnauthorized && tokenRenew && cbIds.length == 0) {
+            const settleOk = record.ok, settleFail = record.fail
+            record.fail = function failOrRetryCall(error: any) {
+                if (!isUnauthorized(error) || !tokenRenew || disposed) return settleFail(error)
+                renewAuth({reason: 'unauthorized'}).then(function resendRenewedCall(renewed) {
+                    // Nothing renewed, or the transport died meanwhile: the original rejection
+                    // is the honest answer, a second packet would only add noise.
+                    if (!renewed || disposed || !transport.api.connected()) return settleFail(error)
+                    createCallAttempt(path, args).promise.then(
+                        function settleRetriedCall(value) { settleOk(value) },
+                        function failRetriedCall(retryError) { settleFail(retryError) },
+                    )
+                }, function renewalCrashed() { settleFail(error) })
+            }
+        }
         if (debug) console.log('[RPC]', path.join('.'), 'id=', reqId)
         function failCallPacket(error: unknown) {
             if (pending.get(reqId) != record) return
@@ -662,11 +988,13 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     function sendCallWire(path: string[], args: any[], wait: boolean): any {
         if (disposed) return wait ? Promise.reject(new Error('RPC client disposed')) : Promise.resolve()
         if (!transport.api.connected()) return wait ? Promise.reject(new Error('RPC transport disconnected')) : Promise.resolve()
-        if (wait) return createCallAttempt(path, args).promise
+        // Only a waiting call can be retried: a fire-and-forget has no reply channel, so an
+        // unauthorized rejection for it never even reaches this client.
+        if (wait) return createCallAttempt(path, args, true).promise
 
         const cbIds: number[] = []
         try {
-            const clean = pack(args, pool, callbacks, cbIds)
+            const clean = pack(args, pool, callbacks, cbIds, reservedReport())
             const ref: number | string[] = routeCache[rpcPathKey(path)] ?? path
             emitApplicationPacket([Pkt.CALL, 0, ref, clean, false])
             return Promise.resolve()
@@ -884,6 +1212,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         }
         callbacks.clear()
         compactShapes.clear()
+        shapeDecoder.clear()
     }
 
     function transportDisconnected(reason: string) {
@@ -896,7 +1225,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         declaredListens = declaredListens ? new Set() : null
         for (const route of Object.keys(routeCache)) delete routeCache[route]
         authStatus = undefined
-        authPending = false
+        abandonHellos({ok: false, reason})
         const strict = strictWaiters
         strictWaiters = []
         for (const resolve of strict) resolve(undefined)
@@ -915,7 +1244,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         declaredListens = declaredListens ? new Set() : null
         for (const route of Object.keys(routeCache)) delete routeCache[route]
         authStatus = undefined
-        authPending = false
+        abandonHellos({ok: false, reason})
         const auths = authWaiters
         authWaiters = []
         for (const resolve of auths) resolve({ok: false, reason})
@@ -1085,6 +1414,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         callbacks.forEach(function abortCallback(_, id) { retire(id) })
         callbacks.clear()
         compactShapes.clear()
+        shapeDecoder.clear()
     }
 
     // Hard teardown finishes logical consumers; transient disconnect never calls this.
@@ -1105,7 +1435,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         abortAll(reason)
         disposed = true
         transport.control.close(reason)
-        authPending = false
+        abandonHellos({ok: false, reason})
         const sw = strictWaiters
         strictWaiters = []
         for (const resolve of sw) resolve(undefined)
@@ -1142,14 +1472,34 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         return _ready ? _ready : _ready = init()
     }
 
+
     function requestSchema() {
-        if (authToken != null) { authPending = true; socket.emit(key, [Pkt.HELLO, authToken]) }
+        if (authToken != null) sendHello(authToken)
+        requestBatch.flush()
         socket.emit(key, Pkt.STRICT)
+    }
+
+    // What THIS transport generation still owes: a schema, or an ack for a token already held.
+    // Every teardown path (transport disconnect, server generation change) clears both, so a new
+    // generation genuinely re-inits while a completed handshake stays idempotent.
+    function handshakeNeeded() {
+        return !schemaKnown || (authToken != null && authStatus === undefined)
     }
 
     async function init(obj?: object) {
         if (obj) { strictData = obj; schemaKnown = true; return; }
-        if (!schemaKnown || (authToken != null && authStatus === undefined)) {
+        // A fresh connection is the first renewal trigger: the HELLO below must carry the token
+        // the application considers current. Without a renewer there is not even an await here.
+        // Nothing is owed once the handshake completed, and the check comes BEFORE the renewal:
+        // initStrict is the RAW init while ready() memoizes, and the documented consumer pattern
+        // runs BOTH (the hub's handshake, then the application's readyStrict). A second pass
+        // would otherwise mint and discard a provider token — real for a one-time or
+        // rate-limited issuer — and re-HELLO a live socket for nothing.
+        if (!handshakeNeeded()) return
+        if (tokenRenew) await renewAuth({reason: 'connect'})
+        // On a live socket the renewal presents the token itself, so the handshake this call
+        // owed may already be complete by now.
+        if (handshakeNeeded()) {
             // Register first: a synchronous adapter may deliver MAP inside emit().
             const waitForMap = new Promise<void>(function registerSchemaWaiter(resolve) {
                 strictWaiters.push(function resolveSchemaWaiter() { resolve() })
@@ -1172,15 +1522,17 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
 
     // Soft re-auth on LIVE socket: subscriptions are not broken (same socket, same cb-id);
     // server re-verifies and sends new MAP (routeMap of new principal) + authAck.
-    // WARNING: do not run concurrent reauths — waiters are shared, without correlation; wait for each.
+    // WARNING: still do not run concurrent reauths. Correlation guarantees each reauth() sees ITS
+    // OWN answer, but the server keeps ONE principal per socket+key, so racing tokens still end in
+    // whichever HELLO the server resolved last; wait for each.
     function reauth(token: any) {
         if (disposed) return Promise.resolve({ok: false, reason: 'RPC client disposed'})
         if (!transport.api.connected()) return Promise.resolve({ok: false, reason: 'RPC transport disconnected'})
         authToken = token;
-        authPending = true;
         clearListenEventCaches()
-        socket.emit(key, [Pkt.HELLO, token]);
-        return new Promise<any>(res => authWaiters.push(res));
+        // The waiter is registered by sendHello INSIDE the executor: a synchronous adapter can
+        // deliver the answering MAP before this Promise is even returned.
+        return new Promise<any>(function waitForAuthAck(resolve) { sendHello(token, resolve) });
     }
     // Current authAck (null = server without auth); during ongoing reauth waits for fresh one, not old.
     // After dispose resolve immediately (otherwise waiter never drains — MAP already ignored).
@@ -1212,8 +1564,19 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         init,
         /** Soft re-auth on live socket (subscriptions preserved). Resolves with new authAck. */
         reauth,
-        /** Current server authAck; waits for first/fresh. Resolves null for server without auth. */
+        /** Current server authAck; waits for first/fresh. Resolves null for a server without
+         *  auth, and a local {ok:false} for a client that presented no token — nothing
+         *  acknowledges such a client, so there is no ack to wait for. */
         auth,
+        /** Watch the server's authorization state (Pkt.AUTH: expiring/expired/revoked) and the
+         *  local outcome of an automatic renewal ('renewed', carrying the new deadline when the
+         *  server sent one, or 'renewFailed'). Additive registrar; the off-handle removes only this
+         *  consumer, await — client teardown. Silent unless Caps.AUTH_STATE is negotiated. */
+        onAuthState,
+        /** Install the token renewal seam (the hub installs its token provider here): consulted
+         *  before the HELLO of a fresh connection, on an auth notice, and once per unauthorized
+         *  call. Without it the client never renews and never retries — behavior as before. */
+        setTokenRenew,
         /** Watch client teardown (dispose/break/rotation). Callable off-handle; await — on
          *  disconnect. Subscriptions already unsubscribed by then (honest teardown, no auto-resubscribe). */
         onDisconnect,
@@ -1247,8 +1610,15 @@ export type RpcClientReturn<T extends object> = {
     init: (obj?: object) => Promise<void>;
     /** Soft re-auth on live socket: presents new token, subscriptions preserved. */
     reauth: (token: any) => Promise<any>;
-    /** Current server authAck (5th element of Pkt.MAP); resolves null for server without auth. */
+    /** Current server authAck (5th element of Pkt.MAP); resolves null for a server without auth,
+     *  and a local {ok:false} for a client that presented no token. */
     auth: () => Promise<any>;
+    /** Watch server authorization state (Pkt.AUTH) and the local outcome of an automatic
+     *  renewal ('renewed' with the new deadline when known, 'renewFailed'). */
+    onAuthState: (cb: (event: RpcAuthEvent) => void) => ReturnType<typeof makeOff>;
+    /** Install/remove the token renewal seam: consulted before a fresh HELLO, on an auth
+     *  notice, and once per unauthorized call. */
+    setTokenRenew: (renew: RpcTokenRenew | null) => void;
     /** Watch client teardown (dispose/break/rotation). Callable off-handle; await — on disconnect. */
     onDisconnect: (cb: (reason: string) => void) => ReturnType<typeof makeOff>;
 };

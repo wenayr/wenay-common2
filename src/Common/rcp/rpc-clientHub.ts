@@ -1,5 +1,5 @@
 import {SocketTmpl} from "./rpc-protocol";
-import {createRpcClient} from "./rpc-client";
+import {createRpcClient, type RpcAuthEvent, type RpcAuthRenewRequest} from "./rpc-client";
 import {DeepSocketListen, DeepSocketListenSmart} from "./listen-deep";
 import { type RpcOpt } from "./rpc-caps";
 import {RPC_TRANSPORT_CONTROL, type TransportLifecycleControl} from '../events/transport-lifecycle'
@@ -25,10 +25,28 @@ type TransportClient = {
     [RPC_TRANSPORT_CONTROL]?: TransportLifecycleControl
 }
 
+// ============================================================
+// Token provider — the whole token lifecycle behind ONE application function
+// ============================================================
+// The provider answers "what is the current token"; everything else (soft reauth on the live
+// socket, one retry per unauthorized call) is the facade client's mechanism.
+
+/** Application seam: yields the current token, or null when there is none. */
+export type RpcTokenProvider = (request: RpcAuthRenewRequest) => string | null | undefined | Promise<string | null | undefined>
+
+/** What hub auth observers receive: the client event plus WHICH facade reported it. */
+export type RpcHubAuthEvent = RpcAuthEvent & {key: string}
+
 export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>, T2 extends RpcHubSocket>(
     createSocket: (token: string | null) => T2,
     schemaBuilder: (helper: typeof rpc) => T,
-    hubOpts?: { opt?: RpcOpt },
+    hubOpts?: {
+        opt?: RpcOpt
+        /** One function for the whole token lifecycle: consulted when a connection is
+         *  established, when the server pushes an auth state, and on the unauthorized retry.
+         *  Giving it also starts the hub — the application never calls connect(). */
+        token?: RpcTokenProvider
+    },
 ) {
     const schema = schemaBuilder(rpc);
 
@@ -60,6 +78,7 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
     let onConnectCb: ((count: number) => void) | null = null;
     let onDisconnectCb: ((reason: string) => void) | null = null;
     const connectCbs = new Set<(count: number) => void>()
+    const authCbs = new Set<(event: RpcHubAuthEvent) => void>()
     const disconnectCbs = new Set<(reason: string) => void>()
     let activeContext: SocketContext | null = null
     let resolveFunc: ((facade: FacadeClients) => void)|null = null;
@@ -76,6 +95,63 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
         for (const error of errors) {
             setTimeout(function rethrowLifecycleObserverError() { throw error }, 0)
         }
+    }
+
+    // ===================================================================
+    // Token provider: one call per renewal wave, one precedence rule
+    // ===================================================================
+    // PRECEDENCE — explicit token vs provider. An explicit token wins for its OWN handshake and
+    // for nothing else; "its own" is ONE connection wave, not every wave that follows:
+    //   • connect(token) / setToken(token) win for the wave they raise — that wave's 'connect'
+    //     renewal answers with the explicit token for EVERY facade client of the wave, and the
+    //     provider is not consulted;
+    //   • every LATER wave (a transport reconnect on the same socket, a server generation
+    //     change) and every renewal trigger ('expiring'/'expired'/'revoked'/'unauthorized') go
+    //     to the provider. A token that outlived its wave would be re-presented forever —
+    //     including one the server has already revoked, so every reconnect would start refused;
+    //   • reauth(token) claims no wave at all: its own handshake is the HELLO it issues itself
+    //     on the live socket, so a future connection inherits nothing from it;
+    //   • the provider yielding nothing is not a downgrade — the facade client keeps the token
+    //     already in force, which for the first wave IS the explicit one.
+    const tokenProvider = hubOpts?.token ?? null
+    let explicitToken: string | null = null
+    // Which wave owns explicitToken: connectCount is bumped once per accepted connection, so the
+    // whole wave sees the same answer and the next one cannot.
+    let explicitTokenWave = 0
+    let tokenInFlight: Promise<string | null> | null = null
+
+    // SINGLE-FLIGHT: N triggers (several facade clients, several calls in flight inside one
+    // client) share ONE provider call. The slot is released only after it settles, so the NEXT
+    // wave asks again instead of reusing a stale answer.
+    function provideToken(request: RpcAuthRenewRequest) {
+        if (!tokenProvider) return Promise.resolve(null)
+        const running = tokenInFlight
+        if (running) return running
+        const started = requestToken(request)
+        tokenInFlight = started
+        function clearTokenInFlight() { if (tokenInFlight == started) tokenInFlight = null }
+        // Both settle paths clear the slot, and the rejection is consumed HERE as well:
+        // a provider that throws must reach the facade client, not Node's crash handler.
+        started.then(clearTokenInFlight, clearTokenInFlight)
+        return started
+    }
+
+    async function requestToken(request: RpcAuthRenewRequest) {
+        const token = await tokenProvider!(request)
+        if (token != null) currentToken = token
+        return token ?? null
+    }
+
+    function renewHubToken(request: RpcAuthRenewRequest) {
+        const ownWave = explicitToken != null && explicitTokenWave == connectCount
+        if (request.reason == 'connect' && ownWave) return Promise.resolve(explicitToken)
+        return provideToken(request)
+    }
+
+    function notifyAuthState(event: RpcHubAuthEvent) {
+        const errors: any[] = []
+        for (const cb of [...authCbs]) callObserver(cb, event, errors)
+        rethrowObserverErrors(errors)
     }
 
     function notifyConnect(count: number) {
@@ -126,6 +202,9 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
     }
 
     function setToken(token: string | null) {
+        explicitToken = token
+        // The wave this call raises is the next connection accepted on the new socket.
+        explicitTokenWave = connectCount + 1
         if (activeContext) closeContext(activeContext, 'token rotated')
         // previous promise may have resolved — awaiters of NEW connection need fresh
         if (!resolveFunc) promise = new Promise<FacadeClients>((resolve) => { resolveFunc = resolve; });
@@ -142,6 +221,11 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
             // A direct client is online by default for back-compat. Hub ownership is different:
             // no RPC packet may leave before this socket generation completes its handshake.
             transportClient[RPC_TRANSPORT_CONTROL]?.disconnect('RPC hub awaiting handshake')
+            // The provider is the hub's policy; soft reauth on the live socket and the single
+            // unauthorized retry are the client's mechanism. Observers are relayed even without
+            // a provider — expiry is worth reporting to an application that renews by hand.
+            if (tokenProvider) client.setTokenRenew(renewHubToken)
+            client.onAuthState(function relayAuthState(event) { notifyAuthState({...event, key}) })
             facade[key] = client as FacadeClients[typeof key];
             clients.push(transportClient)
         }
@@ -183,6 +267,9 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
     // Soft re-auth on LIVE socket (NO disconnect/rotation — that's setToken job):
     // present new token to each facade client via Pkt.HELLO; subscriptions preserved.
     function reauth(token: string | null) {
+        // No wave is claimed here (see PRECEDENCE): this token's own handshake is the HELLO each
+        // facade client issues below on the LIVE socket. Pinning it would make every later
+        // connection present it again, long after the server stopped accepting it.
         currentToken = token;
         const ps: Promise<any>[] = [];
         for (const key in schema) {
@@ -195,6 +282,11 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
     function connectListen(cb: (count: number) => void) {
         connectCbs.add(cb)
         return function offConnect() { connectCbs.delete(cb) }
+    }
+
+    function authListen(cb: (event: RpcHubAuthEvent) => void) {
+        authCbs.add(cb)
+        return function offAuth() { authCbs.delete(cb) }
     }
 
     function disconnectListen(cb: (reason: string) => void) {
@@ -221,8 +313,17 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
         connectListen,
         /** Additive disconnect observers, independent from the legacy onDisconnect slot. */
         disconnectListen,
+        /** Additive auth observers: server states (expiring/expired/revoked) of every facade
+         *  plus the local outcome of an automatic renewal — 'renewed' (with the new deadline
+         *  when the server sent one) or 'renewFailed' when the provider yields nothing. */
+        authListen,
         connectCount: () => connectCount,
     };
+
+    // A token provider owns the whole lifecycle, so the hub raises its own socket: the
+    // application writes one function and never calls connect(). An explicit connect(token)
+    // afterwards is still a normal hard rotation and takes precedence for the wave it raises.
+    if (tokenProvider) setToken(null)
 
     return result;
 }

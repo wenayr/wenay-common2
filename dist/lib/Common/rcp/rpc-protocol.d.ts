@@ -11,9 +11,18 @@ export declare const Pkt: {
     readonly CBV: 9;
     readonly CAPS: 10;
     readonly CB_BATCH: 11;
+    readonly AUTH: 12;
+    readonly BATCH: 13;
 };
 export declare const RPC_STOP = "___STOP";
 export declare const IS_RPC_LISTEN: unique symbol;
+export type tAuthState = "expiring" | "expired" | "revoked";
+export type RpcAuthNotice = {
+    state: tAuthState;
+    reason?: any;
+    expiresAt?: number;
+};
+export declare const GRANT_FACTS_KEY = "$rpc";
 export type SocketTmpl = {
     emit: (e: string, d: any) => void;
     on: (e: string, cb: (d: any) => void) => void;

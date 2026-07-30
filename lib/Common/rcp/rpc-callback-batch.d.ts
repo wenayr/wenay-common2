@@ -1,11 +1,13 @@
-import type { RpcOpt } from './rpc-caps';
-type tCallbackPacket = any[];
+import type { RpcBatchOpt } from './rpc-caps';
+export declare const MAX_BATCH_ITEMS = 1024;
+type tBatchedPacket = any[];
 type CallbackPacketBatcherDeps = {
     send: (packet: any[]) => void;
-    opt?: RpcOpt['callbackBatch'];
+    opt?: RpcBatchOpt;
+    envelope?: number;
 };
-export declare function createCallbackPacketBatcher({ send, opt, }: CallbackPacketBatcherDeps): {
-    enqueue: (packet: tCallbackPacket) => void;
+export declare function createCallbackPacketBatcher({ send, opt, envelope, }: CallbackPacketBatcherDeps): {
+    enqueue: (packet: tBatchedPacket) => void;
     flush: () => void;
 };
 export {};

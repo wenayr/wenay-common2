@@ -4,6 +4,7 @@
 > Notation: `name(args: types) -> ret  // note`. Types are shown where they decide a correct call (callback shape,
 > overloads, return). Short names are **canonical**; removed old names are listed in `NAMING_RENAMES.md`.
 > Full surface → **`wenay-common2-rare.md`**. Code style → `CLAUDE.md`. Full RPC guide → `rpc.md`.
+> RPC authorization → **[`RPC-AUTH.md`](RPC-AUTH.md)** (canonical; read before writing auth code).
 > Installed-project Caddy HTTPS management → **[`HTTPS-CLI.md`](HTTPS-CLI.md)**. Public raw-IP/hostname
 > demo, certificate issuance, router ports, and diagnostics → **[`DEMO-HTTPS.md`](DEMO-HTTPS.md)**.
 
@@ -117,43 +118,118 @@ const:  H1_S D1_S W1_S · M1_MS H1_MS D1_MS W1_MS
 ## 🌐 rpc (brief) — transport is ALWAYS caller-supplied (`{emit,on}`); there is NO url / built-in socket
 ```
 // SERVER: `object` is the impl tree, `socket` is a {emit,on} transport adapter
-createRpcServerAuto({ socket: {emit, on}, object, socketKey: string, auth?, limits?, maxPerListen?, throttle?, opt?, replay?, replayOpts? }) -> { api, ... }
+createRpcServerAuto({ socket: {emit, on}, object, socketKey: string, auth?, limits?, maxPerListen?, throttle?, opt?, replay?, replayOpts? }) -> { api, control }
   // Application traffic uses the JSON-array RPC wire. Date/Map/Set/RegExp/BigInt use the existing
   // marker projection; ArrayBuffer/DataView/TypedArray leaves remain native transport attachments.
-  // opt controls only JSON-wire compact subscription shapes and callback batching.
+  // RESERVED KEYS: a plain object whose SINGLE key is $_d/$_m/$_s/$_r/$_b/$_f/$_t is the codec's
+  //   value, not yours — add a second key to any object of yours that would look like one. Full
+  //   contract (payload per key, direction, detection via debug) in doc/wenay-common2-rare.md
+  //   under "RPC application wire"; RESERVED_MARKER_KEYS / reservedMarkerKeyOf are exported.
+  // opt controls only JSON-wire compact subscription shapes, callback batching, the server->client
+  //   authorization-state push (opt.authState, default on; false = Pkt.AUTH never negotiated) and the
+  //   HELLO<->MAP correlation id (opt.helloId, default on) that makes each reauth() see ITS OWN answer.
   // opt.callbackBatch (default negotiated-on): losslessly wraps same-microtask callback packets into one send;
   //   {maxItems:64,maxBytes:65536}, or false for exact packet-per-callback transport. Native binary leaves
   //   bypass the JSON batch wrapper and keep their direct transport-attachment path.
+  // opt.requestBatch (OPT-IN, default off): extends that envelope to CALL/PIPE and RESP as Pkt.BATCH, so a
+  //   burst of concurrent calls costs ONE frame each way instead of one per call; {maxItems:64,maxBytes:65536}
+  //   or true. Needs callbackBatch on (one ordered queue per session), and BOTH peers must ask — a peer that
+  //   does not ask sees byte-identical unbatched traffic. Measured on experiments/rpc-perf-2026-07 `burst`:
+  //   100 frames -> 2 per 50-call burst, throughput 2.27x, CPU/call -72%, bytes -12.1% c2s / -6.0% s2c.
+  //   The isolated `small` family is byte-identical and unchanged in p50/p95 — a lone packet is never wrapped.
+  // opt.compactRows (default negotiated-on): an array of uniform plain-object records inside a RESULT or a
+  //   callback argument travels as its keys once plus rows of values ({"$_t":[shapeId,rows,keys]}), instead of
+  //   repeating every key name per record; false = arrays travel as objects, wire as before. Needs compact on.
+  //   Applies from 4 records up, only when every element is a plain object with the same keys in the same order,
+  //   and never when a value would change meaning by moving into an array (undefined/function/symbol).
+  //   Measured on experiments/rpc-perf-2026-07 `large` (1000 CBar records): 127 912 -> 70 983 B/call (-44.5%),
+  //   p50 3.14 -> 2.39 ms, throughput +26%, CPU/call unchanged. `small`, `ticks`, `flood`, `burst` are byte-identical.
   // replay: false|'auto' (default)|'force' — facade members that are replay lines (replayListen) are exposed
   //   with BOTH surfaces under the SAME key: legacy plain-Listen path byte-for-byte + line/frameLine/since/keyframe/frame.
+  //   Store Replay V2 (`api.replay`, including createReplicatedMap().api) and exposeReplay(...) carry the same
+  //   internal replay-wire identity, so RPC auto adds frameLine to them without shape-sniffing or a public marker.
   //   Upgrading listen -> replayListen is a declaration-site-only change; the facade and clients don't move.
   // replayOpts: {pending?, highWater?, lowWater?, pollMs?} — per-connection lag gate for 'frame'-policy subscribers
-  //   (pending defaults to socket.io writeBuffer; gates close on disconnect automatically). Replay lines are never throttled.
-createRpcServer(opts)        // lower-level core (same { socket, object, socketKey })
+  //   (pending defaults to socket.io writeBuffer). A gate attaches upstream only on its first real frameLine
+  //   consumer, detaches after the last off(), and polls only while that subscribed consumer is over highWater.
+  //   Gates close on disconnect automatically. Replay lines are never throttled.
+createRpcServer(opts)        // lower-level core (same { socket, object, socketKey }) -> { control }
 noStrict(obj)                // mark a dynamic subtree (no schema)
 endCallback(fn)              // mark an RPC stream-callback's end   (alias: rpcEndCallback)
 
+// AUTH (in-band): client presents a token in Pkt.HELLO -> server serves that principal's facade.
+// CANONICAL PAGE: doc/RPC-AUTH.md — read it before writing auth code (rules + ✅/❌ pairs + limits).
+auth: { resolveAuth(token) -> { object?, ack?, expiresAt?, renewBeforeMs? } | Promise<...>, gate?: boolean }
+  // gate:true rejects CALL/PIPE before a successful HELLO (MyError code 'E_UNAUTHORIZED'). It does NOT gate
+  //   Pkt.STRICT: the constructor `object` schema is served to any peer — keep it EMPTY, put the protected
+  //   surface in the facade resolveAuth returns. That same object is also the expiry/revocation fallback.
+  // expiresAt (absolute ms; Infinity = none) arms 'expiring' at expiresAt-renewBeforeMs (default 30_000)
+  //   and 'expired' at the deadline; any other non-finite value fails CLOSED (immediate downgrade).
+  // throw = TRANSIENT rejection, live session untouched; throw a value carrying `revoke: true` = hard
+  //   downgrade (Pkt.AUTH 'revoked' + base facade + authAck {ok:false,state,reason}).
+  // A privilege DECREASE ends the streams of Listen nodes the new facade no longer declares (clean
+  //   RPC_STOP/CB_END). Listen nodes inside noStrict(...) are never walked, so they are never torn down.
+  // A grant's deadline rides authAck in ONE reserved sub-object: ack.$rpc = {expiresAt} (exported key
+  //   GRANT_FACTS_KEY = '$rpc'). Attached on a COPY, so the application's ack is never clobbered; skipped
+  //   for a non-object ack, an ack that already owns '$rpc', or a non-finite deadline -> read it defensively.
+control: (returned by createRpcServer/createRpcServerAuto) — the application's grip on THIS connection
+  control.revoke(reason?) -> boolean    // cut NOW: the SAME corridor an expiring token takes (Pkt.AUTH state,
+  //   stream teardown, base facade, authAck {ok:false,state:'revoked',reason}); only the state name differs.
+  control.grant(grant: RpcAuthGrant) -> boolean   // the HELLO success path with no client HELLO: same facade/
+  //   ack/deadline/timers, but UNCORRELATED — it settles no pending reauth() and emits no 'renewed'.
+  // false means ONLY 'this connection is detached' (nothing was sent), never 'command rejected'. Safe before
+  //   any HELLO, twice in a row and after detach. An application revocation is not undone by a resolveAuth
+  //   that started before it. Exported derived type for a per-session registry (Map<userId, RpcServerControl>):
+  //   RpcServerControl = ReturnType<typeof createRpcServer>['control'].
+createTokenCodec({secret, ttlMs? = 15min, hmac?, now?}) -> {issue, verify}   // 'wenay-common2/server', node-only
+  // one honest default behind resolveAuth: one secret, one pinned algorithm, one expiry.
+  // NOT a security product: no JWT, no key rotation, no revocation list, no refresh, no identity provider.
+
 // CLIENT hub: takes TWO functions — a socket factory + a schema builder; it is NOT an {url} or an options bag
 createRpcClientHub(
-  createSocket: (token: string | null) => socket,             // YOU build the socket, e.g. socket.io io(url, {auth:{token}})
+  createSocket: (token: string | null) => socket,             // YOU build the socket, e.g. socket.io io(url, {transports:['websocket']})
+    // do NOT put the token in the handshake (query leaks it into access logs/proxies/Referer): RPC
+    // presents it in-band via Pkt.HELLO. With hubOpts.token the hub self-starts and this gets null.
   schemaBuilder: (rpc) => ({ key: rpc<Api>('socketKey') }),   // declare each socketKey's typed API
-  hubOpts?: { opt? },
+  hubOpts?: { opt?, token? },
+    // token: (req: {reason: 'connect'|'notice'|'unauthorized', notice?}) => string|null|Promise<...>
+    //   ONE function for the whole token lifecycle; providing it STARTS the hub (never call connect()).
+    //   Single-flight: N triggers across N facade clients -> ONE provider call per wave.
+    //   Precedence: an explicit connect/setToken token wins for the ONE connection wave it raises (every
+    //   facade client of that wave); every LATER wave (transport reconnect, server generation change) and
+    //   every renewal trigger ('expiring'/'expired'/'revoked'/'unauthorized') go to the provider. reauth(token)
+    //   claims no wave — its handshake is the HELLO it issues itself. A provider yielding nothing is not a
+    //   downgrade: the client keeps the token already in force.
 ) -> hub
-hub:     connect(token) -> Promise<clients>  ·  reauth(token)  ·  facade  ·  promise  ·  socket  ·  onConnect/onDisconnect  ·  connectListen/disconnectListen   // connect: was setToken
+hub:     connect(token) -> Promise<clients>  ·  reauth(token)  ·  facade  ·  promise  ·  socket  ·  onConnect/onDisconnect  ·  connectListen/disconnectListen  ·  authListen   // connect: was setToken
          // connect() resolves after the socket 'connect' event and RPC route/auth handshake; for in-proc/loopback (no 'connect') use hub.facade + await hub.promise
+         // connect/setToken = HARD rotation (new socket, no inherited subscriptions); reauth = SOFT (live socket, subscriptions preserved)
+         // authListen(cb) -> off: additive auth observers; cb gets {key, state, reason?, expiresAt?},
+         //   state 'expiring'|'expired'|'revoked' (server) | 'renewed'|'renewFailed' (local, never on the wire).
+         //   'renewed' (with expiresAt when the grant declared one) and 'renewFailed' report an AUTOMATIC
+         //   renewal only: a manual reauth() resolves with that ack itself, and a server control.grant is
+         //   an unsolicited MAP — neither emits an event.
 client (on clients[key], NOT on the hub):  func (proxy) · strict (schema-safe) · close() · ready() · init() · subscriptions()
+         // auth() -> Promise<authAck|null> · reauth(token) · onAuthState(cb) -> off · setTokenRenew(fn|null)
+         //   auth() always answers: authAck, or null for a server WITHOUT auth, or a LOCAL
+         //   {ok:false, reason:'RPC client presented no token'} for a client that never presented one.
+         //   setTokenRenew is the per-client renewal seam the hub installs its provider into. Without a
+         //   renewer the client never renews and never retries. With one, an E_UNAUTHORIZED rejection is
+         //   retried EXACTLY ONCE — and only for a waiting func/strict call whose args carried no callback
+         //   (space/fire-and-forget, callback-carrying calls, pipe and Listen attempts are never retried).
          // pipe = batch a server chain in one packet · space = fire-and-forget
          // func/space/strict paths have stable identity per client+surface: c.func.a.b === c.func.a.b;
          //   all === func. Identity survives reauth/transient reconnect; connect/setToken creates a new client generation.
          // onConnect/onDisconnect keep their legacy single-slot contract; connectListen(cb)/disconnectListen(cb) are additive and return individual off functions.
          // transient reconnect of the SAME Socket.IO object restores active logical Listen subscriptions once the new handshake is ready.
-         // close()/dispose() and connect()/setToken() are terminal for the old generation. Ordinary RPC calls are NEVER retried.
+         // close()/dispose() and connect()/setToken() are terminal for the old generation. Ordinary RPC calls are NEVER
+         //   replayed on transport recovery; the single E_UNAUTHORIZED retry above is a principal refresh, not a reconnect.
 
 // minimal wiring (the part no signature can show):
 const [tick, ticks] = listen<[number]>()
 createRpcServerAuto({ socket, object: { math: { add: (a, b) => a + b, ticks } }, socketKey: 'math' })
-const hub = createRpcClientHub((t) => io(url, { auth: { t } }), (rpc) => ({ math: rpc<Api>('math') }))
-const c = await hub.connect(token)               // c = facade of per-socketKey clients
+const hub = createRpcClientHub(() => io(url), (rpc) => ({ math: rpc<Api>('math') }))
+const c = await hub.connect(token)               // c = facade of per-socketKey clients; token goes out in Pkt.HELLO
 await c.math.ready();  await c.math.func.add(2, 3)
 const l = c.math.func as unknown as DeepSocketListen<Api>  // typed Listen projection; wrap as webListen(c.math) in app code
 const off = l.ticks.on(v => console.log(v))                // canonical stream subscribe; off is callable and awaitable
@@ -162,6 +238,13 @@ l.ticks.once(v => console.log(v))                         // one event, then aut
 l.status.on(v => render(v), {current: true})               // when status is a server listenStore: current tuple first, then live
   // Late local consumers receive the latest tuple observed by the shared physical subscription.
   // That cache is cleared on disconnect/reauth; omitted/false stays live-only, and function-valued option material never crosses the wire.
+
+// auth wiring — the whole token lifecycle behind ONE function (the application never calls connect()):
+const { control } = createRpcServerAuto({ socket, object: {}, socketKey: 'math', auth: { gate: true, resolveAuth } })  // object EMPTY on purpose
+const hub2 = createRpcClientHub(() => io(url), (rpc) => ({ math: rpc<Api>('math') }), { token: mintToken })
+hub2.authListen(({ key, state }) => console.log(key, state))   // 'expiring'|'expired'|'revoked'|'renewed'|'renewFailed'
+control.revoke('logged out elsewhere')   // server-driven cut, same corridor as expiry (no client HELLO needed)
+// rules, ✅/❌ pairs and documented limits → doc/RPC-AUTH.md (read before writing auth code)
 
 // replay upgrade — ONE WORD at the declaration site, everything below follows automatically:
 // const [tick, ticks] = listen<[number]>()                                       // before
@@ -173,6 +256,7 @@ const routed = replayRouteSubscribe(l.ticks, v => {}, {label: 'relay'})
 await routed.switch(nextRemoteTicks, {label: 'direct'})  // relay/direct hand-off: old route closes after catch-up
 await l.ticks.frame(mySeq)                                // pull at YOUR pace (50ms timer etc.) — server condenses via the line's frame lambda
 // full guide + examples → rpc.md; frame model / lag policies → 🎞️ recipe below and rare docs
+// authorization (gate, principal facades, token lifecycle, teardown limits) → doc/RPC-AUTH.md
 ```
 
 ## 🎙️ Media capture + relay/direct routes
@@ -588,7 +672,7 @@ Observe.createStoreMirror(remote, initial, opts?) -> store & { sync(mask, opts?)
 // High-level keyed collection over the same Store Replay stack (normal values in app code; compact tuples stay internal)
 Observe.createReplicatedMap<V, K extends string = string>({keyOf, initial?, store?, delivery: 'latest'|'lossless', replay?})
   -> {api, control: {set, setMany, delete, deleteMany, replaceAll, get, has, snapshot, flush, close}}
-Observe.followReplicatedMap<V, K>(remote, {onBatch?, onStatus?, onError?, staleMs?, drain?, checkpoint?})
+Observe.followReplicatedMap<V, K>(remote, {onBatch?, onStatus?, onError?, staleMs?, drain?, checkpoint?, policy?})
   -> {get, has, snapshot, onKey, batches, keys, ready, status, statusChanges, seq(), replayMode(), delivery(), checkpoint(), isStale, close, debug: {store}}
   // `latest`: duplicate keys in one producer operation collapse to their final value; reconnect may reset by keyframe.
   // `latest.replaceAll(fullSnapshot)` compares every key but clones, mutates and publishes only semantic changes.
@@ -796,7 +880,7 @@ const sub = Replay.replaySubscribe(deep.quotes, cb, {since: saved, policy: 'fram
 const sub2 = Replay.replaySubscribe(deep.quotes, cb2, {since: saved})                // 'queue' (default): ungated live; catch-up may still use producer frame/keyframe
 // own pace (e.g. 50ms skips + condensation): pull on YOUR timer — hint picks the rule, server condenses:
 //   every(50, async () => { for (const ev of await deep.quotes.frame(mySeq, hint)) apply(ev); })
-// store mirror: Observe.syncStoreReplay(mirror, deep.replay, {since: prev.seq()}) — same contract
+// store mirror: Observe.syncStoreReplay(mirror, deep.replay, {since: prev.seq(), policy: 'frame'}) — same gate contract
 // delivery contract: FIRST delivery = snapshot/tail start (same event type), then strictly-newer,
 // seq-ascending and deduped. Raw seq jumps are legal only when a producer frame/keyframe covers them;
 // a sacred retained tail is exact, while sacred eviction closes with onError instead of continuing past a hole.

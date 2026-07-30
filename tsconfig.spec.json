@@ -1,0 +1,18 @@
+{
+  // Type-check project for the executable specs under src/ (rpc.harness.spec.ts and friends).
+  // tsconfig.json EXCLUDES **/*.spec.ts so the build never emits them; tsconfig.type-tests.json
+  // covers only type-tests/. This project closes that hole: same compilerOptions as the library
+  // (nothing relaxed), noEmit so `npm run build` output is untouched. Runs in the gate as
+  // `npm run test:spec-types`. The include is a glob — a new src spec is checked automatically.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": [
+    "./src/**/*.spec.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}

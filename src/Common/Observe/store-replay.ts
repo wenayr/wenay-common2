@@ -17,6 +17,7 @@ import {
 } from '../events/replay-route'
 import {openHistory, type ReplayStorage} from '../events/replay-history'
 import {mapListen} from '../events/mapListen'
+import {brandRpcReplayWire, retransmitRpcReplayWire} from '../events/replay-rpc-wire'
 import {makeOff} from '../rcp/rpc-off'
 import {positiveIntegerOption} from '../positive-integer-option'
 import {
@@ -348,12 +349,18 @@ function exposeStoreReplayWire<W>(
             return encode(cloneStoreReplayBatchEvent(event))
         })
     }
-    return {
+    const facade = {
         line,
         since,
         keyframe,
         frame,
     }
+    return brandRpcReplayWire(facade, {
+        head: replay.head,
+        sequenceOf(value) {
+            return Array.isArray(value) && typeof value[1] == 'number' ? value[1] : undefined
+        },
+    })
 }
 
 function exposeStoreReplayBatch(replay: StoreReplayBatchLine, prepareRead: () => void) {
@@ -514,6 +521,7 @@ export function exposeStoreReplay<T extends object>(store: Store<T>, opts: Store
         batchReplay.close()
     }
     const replayFacade = opts.describe ? {...replayApi, describe} : replayApi
+    retransmitRpcReplayWire(replayApi, replayFacade)
     return {
         /** Wire facade: pass to RPC server (object: api). Compatible with regular exposeStore. */
         api: {...storeApi, replay: replayFacade},

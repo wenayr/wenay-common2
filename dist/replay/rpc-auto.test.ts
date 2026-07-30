@@ -210,9 +210,12 @@ async function main() {
 
         // ============ lag gates (Feature B): policy 'frame' ============
         let fakePending = 0
+        const gateBaselineSubscribers = world.facade.quotes.line.count()
         gateServer = await startRealServer(world.facade, {pending: () => fakePending, highWater: 5, lowWater: 0, pollMs: 10})
         c3 = await startRealClient<Facade>(gateServer.port)
         const deep3 = c3.client.func
+        ok(world.facade.quotes.line.count() == gateBaselineSubscribers,
+            'frameLine gate stays detached until the client really subscribes')
         const gated: Record<string, number> = {}
         let gatedDeliveries = 0
         const gsub = replaySubscribe(deep3.quotes, (sym, px) => { gated[sym] = px; gatedDeliveries++ }, {
@@ -220,6 +223,9 @@ async function main() {
             policy: 'frame',
         })
         await gsub.ready
+        await waitFor('frameLine gate source subscription', function frameLineGateAttached() {
+            return world.facade.quotes.line.count() == gateBaselineSubscribers + 1
+        })
         world.emitQuote('AAPL', 110)
         await waitFor('gated line live while drained', () => gated['AAPL'] == 110)
         ok(true, 'frame policy: live pass-through while socket is drained')
@@ -240,6 +246,9 @@ async function main() {
         await waitFor('live continues after recovery', () => gated['AAPL'] == 500)
         ok(true, 'live stream continues after gate recovery')
         gsub()
+        await waitFor('frameLine gate source teardown', function frameLineGateDetached() {
+            return world.facade.quotes.line.count() == gateBaselineSubscribers
+        })
         sub()
 
         console.log(fails ? `\n${fails} FAILED` : '\nall passed')

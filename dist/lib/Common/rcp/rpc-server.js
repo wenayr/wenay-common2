@@ -19,10 +19,16 @@ function nextServerGeneration() {
     }
     return ++serverGenerationCounter;
 }
-function createServer(socket, key, target, hooks, limits, auth, opt) {
+function createServer(socket, key, target, hooks, limits, auth, opt, debug = false) {
     const lim = (0, rpc_limits_1.resolveLimits)(limits);
+    const onReserved = debug
+        ? function reportReservedKey(markerKey) {
+            console.log('[RPC OUT] reserved key', markerKey, '— an application value of this shape is decoded as a library value by the peer');
+        }
+        : undefined;
     const IS_RPC_PIPE = Symbol.for("isRpcPipe");
     const hasRpcListen = (obj) => !!obj && typeof obj == "object" && Object.prototype.hasOwnProperty.call(obj, rpc_protocol_1.IS_RPC_LISTEN);
+    const listenNodeOrigin = new WeakMap();
     function transformTree(obj) {
         let current = obj;
         if (hooks?.resolveTransform && !(0, rpc_dynamic_1.isNoStrict)(current)) {
@@ -31,8 +37,10 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
         if (current == null || typeof current != "object" || (0, rpc_dynamic_1.isNoStrict)(current))
             return current;
         const out = {};
-        if (hasRpcListen(current))
+        if (hasRpcListen(current)) {
             out[rpc_protocol_1.IS_RPC_LISTEN] = true;
+            listenNodeOrigin.set(out, current);
+        }
         for (const k of Object.keys(current)) {
             if (!(0, rpc_limits_1.isSafeKey)(k))
                 continue;
@@ -77,10 +85,11 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
     let methodPaths = [];
     let routeMap = {};
     let listenPaths = [];
+    let listenNodes = [];
     let strictSchema = {};
     let currentTarget = target;
     function buildDispatch(t) {
-        const m = [], cx = [], paths = [], rm = {}, lp = [];
+        const m = [], cx = [], paths = [], rm = {}, lp = [], ln = [];
         const resolved = transformTree(t);
         (function index(obj, prefix) {
             for (const k of Object.keys(obj)) {
@@ -95,8 +104,10 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
                     paths.push(path);
                 }
                 else if (v && typeof v == "object" && !(0, rpc_dynamic_1.isNoStrict)(v)) {
-                    if (hasRpcListen(v))
+                    if (hasRpcListen(v)) {
                         lp.push((0, rpc_path_1.rpcPathKey)(path));
+                        ln.push(listenNodeOrigin.get(v) ?? v);
+                    }
                     index(v, path);
                 }
             }
@@ -106,6 +117,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
         methodPaths = paths;
         routeMap = rm;
         listenPaths = lp;
+        listenNodes = ln;
         strictSchema = serialize(resolved);
         currentTarget = t;
     }
@@ -117,15 +129,26 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
     }
     const serverCaps = (0, rpc_caps_1.optToCaps)(opt);
     const serverGeneration = nextServerGeneration();
+    const shapeRegistry = (0, rpc_shape_1.createShapeRegistry)();
+    const rowEncoder = (0, rpc_shape_1.createRowEncoder)(shapeRegistry);
     const rawCallbackBatch = (0, rpc_callback_batch_1.createCallbackPacketBatcher)({
         send: sendRaw,
         opt: opt?.callbackBatch,
     });
+    const rawRequestBatch = (0, rpc_callback_batch_1.createCallbackPacketBatcher)({
+        send: sendRaw,
+        opt: opt?.requestBatch,
+        envelope: rpc_protocol_1.Pkt.BATCH,
+    });
     function createSession(id, peerCaps) {
+        const reqBatch = (0, rpc_caps_1.hasCap)(serverCaps & peerCaps, rpc_caps_1.Caps.CB_BATCH | rpc_caps_1.Caps.REQ_BATCH);
+        const rowsOn = (0, rpc_caps_1.hasCap)(serverCaps & peerCaps, rpc_caps_1.Caps.COMPACT | rpc_caps_1.Caps.ROWS);
         return {
             id,
             peerCaps,
-            rawBatch: rawCallbackBatch,
+            reqBatch,
+            rows: rowsOn ? rowEncoder : undefined,
+            rawBatch: reqBatch ? rawRequestBatch : rawCallbackBatch,
         };
     }
     const legacySession = createSession(0, 0);
@@ -138,6 +161,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
         if (session)
             flushSession(session);
         sessions.delete(sessionId);
+        shapeRegistry.forgetSession(sessionId);
         const clientId = clientBySession.get(sessionId);
         clientBySession.delete(sessionId);
         if (clientId != undefined && sessionByClient.get(clientId) == sessionId) {
@@ -148,13 +172,16 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
         session.rawBatch.flush();
     }
     function flushAllSessions() {
-        flushSession(legacySession);
-        for (const session of sessions.values())
-            flushSession(session);
+        rawCallbackBatch.flush();
+        rawRequestBatch.flush();
     }
     function sendChannel(channel, d) {
         if (detached)
             return;
+        if (channel.session.reqBatch) {
+            channel.session.rawBatch.enqueue(d);
+            return;
+        }
         flushSession(channel.session);
         sendRaw(d);
     }
@@ -173,11 +200,12 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
     const cbShapes = (0, rpc_shape_1.createCbShapeServer)();
     function sendCb(channel, cbId, cbArgs) {
         const compactOn = (0, rpc_caps_1.hasCap)(serverCaps & channel.session.peerCaps, rpc_caps_1.Caps.COMPACT);
+        const rows = channel.session.rows;
         if (compactOn && cbArgs.length == 1 && (0, rpc_shape_1.isPlainObject)(cbArgs[0])) {
             const obj = cbArgs[0];
-            const r = cbShapes.offer(cbId, obj);
+            const r = rows ? shapeRegistry.offerTick(channel.session.id, obj) : cbShapes.offer(cbId, obj);
             function packShapeValue(key) {
-                return (0, rpc_walk_1.packResult)(obj[key]);
+                return (0, rpc_walk_1.packResult)(obj[key], rows, onReserved);
             }
             if (r.mode == 'register') {
                 sendCallbackPacket(channel, [rpc_protocol_1.Pkt.SHAPE, cbId, r.shapeId, r.keys]);
@@ -189,14 +217,14 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
                 return;
             }
         }
-        sendCallbackPacket(channel, [rpc_protocol_1.Pkt.CB, cbId, cbArgs.map(rpc_walk_1.packResult)]);
+        sendCallbackPacket(channel, [rpc_protocol_1.Pkt.CB, cbId, cbArgs.map(function packCbArg(a) { return (0, rpc_walk_1.packResult)(a, rows, onReserved); })]);
     }
     function sendCbEnd(channel, cbId) {
         cbShapes.drop(cbId);
         sendChannel(channel, [rpc_protocol_1.Pkt.CB_END, cbId]);
     }
     function sendResult(channel, reqId, value) {
-        sendChannel(channel, [rpc_protocol_1.Pkt.RESP, reqId, (0, rpc_walk_1.packResult)(value)]);
+        sendChannel(channel, [rpc_protocol_1.Pkt.RESP, reqId, (0, rpc_walk_1.packResult)(value, channel.session.rows, onReserved)]);
     }
     function fallbackSerializationError(error) {
         const source = error instanceof Error ? error.message : String(error);
@@ -223,13 +251,133 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
         flushAllSessions();
         sendRaw([rpc_protocol_1.Pkt.CAPS, serverCaps, null, serverGeneration]);
     }
-    function sendMap() {
+    function mapReply(ack, helloId) {
+        return helloId === undefined
+            ? [rpc_protocol_1.Pkt.MAP, routeMap, strictSchema, listenPaths, ack]
+            : [rpc_protocol_1.Pkt.MAP, routeMap, strictSchema, listenPaths, ack, helloId];
+    }
+    function replyHelloId(raw) {
+        if (!(0, rpc_caps_1.hasCap)(serverCaps, rpc_caps_1.Caps.HELLO_ID))
+            return undefined;
+        return Number.isSafeInteger(raw) && raw > 0 ? raw : undefined;
+    }
+    function sendMap(helloId) {
         sendCapsChallenge();
         flushAllSessions();
         sendRaw(authAck !== undefined
-            ? [rpc_protocol_1.Pkt.MAP, routeMap, strictSchema, listenPaths, authAck]
+            ? mapReply(authAck, helloId)
             : [rpc_protocol_1.Pkt.MAP, routeMap, strictSchema, listenPaths]);
     }
+    const DEFAULT_RENEW_BEFORE_MS = 30_000;
+    const MAX_TIMER_MS = 2_147_483_647;
+    let expiringTimer = null;
+    let expiryTimer = null;
+    function authStateOn() {
+        if (!(0, rpc_caps_1.hasCap)(serverCaps, rpc_caps_1.Caps.AUTH_STATE))
+            return false;
+        if ((0, rpc_caps_1.hasCap)(legacySession.peerCaps, rpc_caps_1.Caps.AUTH_STATE))
+            return true;
+        for (const session of sessions.values()) {
+            if ((0, rpc_caps_1.hasCap)(session.peerCaps, rpc_caps_1.Caps.AUTH_STATE))
+                return true;
+        }
+        return false;
+    }
+    function sendAuthState(notice) {
+        if (detached || !authStateOn())
+            return;
+        flushAllSessions();
+        sendRaw([rpc_protocol_1.Pkt.AUTH, notice]);
+    }
+    function clearAuthTimers() {
+        if (expiringTimer) {
+            expiringTimer.cancel();
+            expiringTimer = null;
+        }
+        if (expiryTimer) {
+            expiryTimer.cancel();
+            expiryTimer = null;
+        }
+    }
+    function startAuthTimer(at, fn) {
+        let timer = null;
+        function armChunk() {
+            const left = at - Date.now();
+            timer = left > MAX_TIMER_MS ? setTimeout(armChunk, MAX_TIMER_MS) : setTimeout(fn, Math.max(left, 0));
+            timer.unref?.();
+        }
+        armChunk();
+        return { cancel: () => clearTimeout(timer) };
+    }
+    function armAuthTimers(expiresAt, renewBeforeMs) {
+        clearAuthTimers();
+        if (detached)
+            return;
+        if (expiresAt == Infinity)
+            return;
+        const deadline = Number.isFinite(expiresAt) ? expiresAt : Date.now();
+        const remaining = deadline - Date.now();
+        const before = Math.min(Math.max(renewBeforeMs ?? DEFAULT_RENEW_BEFORE_MS, 0), Math.max(remaining, 0));
+        if (remaining > 0) {
+            expiringTimer = startAuthTimer(deadline - before, function warnExpiring() {
+                expiringTimer = null;
+                sendAuthState({ state: 'expiring', expiresAt: deadline });
+            });
+        }
+        expiryTimer = startAuthTimer(deadline, function expirePrincipal() {
+            expiryTimer = null;
+            downgradePrincipal('expired', 'token expired');
+        });
+    }
+    function applyPrincipal(object) {
+        const previous = listenNodes;
+        buildDispatch(object);
+        const keep = new Set(listenNodes);
+        hooks?.onPrincipalChange?.({ keep, drop: new Set(previous.filter(node => !keep.has(node))) });
+    }
+    function withGrantDeadline(ack, expiresAt) {
+        if (expiresAt == undefined || !Number.isFinite(expiresAt))
+            return ack;
+        if (!(0, rpc_shape_1.isPlainObject)(ack) || rpc_protocol_1.GRANT_FACTS_KEY in ack)
+            return ack;
+        return { ...ack, [rpc_protocol_1.GRANT_FACTS_KEY]: { expiresAt } };
+    }
+    function applyGrant(r, helloId) {
+        if (detached)
+            return false;
+        clearAuthTimers();
+        if (r && r.object !== undefined)
+            applyPrincipal(r.object);
+        authAck = withGrantDeadline(r && r.ack !== undefined ? r.ack : { ok: true }, r?.expiresAt);
+        authed = authAck?.ok !== false;
+        if (r && r.expiresAt != undefined)
+            armAuthTimers(r.expiresAt, r.renewBeforeMs);
+        sendMap(helloId);
+        return true;
+    }
+    function downgradePrincipal(state, reason, helloId) {
+        if (detached)
+            return;
+        clearAuthTimers();
+        sendAuthState({ state, reason });
+        applyPrincipal(target);
+        authAck = { ok: false, state, reason };
+        authed = !auth?.gate;
+        sendMap(helloId);
+    }
+    let revokeEpoch = 0;
+    const control = {
+        revoke: function revokePrincipal(reason) {
+            if (detached)
+                return false;
+            revokeEpoch++;
+            downgradePrincipal('revoked', reason ?? 'revoked by application');
+            return true;
+        },
+        grant: function grantPrincipal(grant) {
+            return applyGrant(grant);
+        },
+    };
     let byKey = SERVERS.get(socket);
     if (!byKey) {
         byKey = new Map();
@@ -244,6 +392,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
         if (detached)
             return;
         flushAllSessions();
+        clearAuthTimers();
         detached = true;
         sessions.clear();
         sessionByClient.clear();
@@ -316,32 +465,38 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
                 sendRaw([rpc_protocol_1.Pkt.CAPS, serverCaps, sessionId, serverGeneration]);
                 return;
             }
-            legacySession.peerCaps = announced & rpc_caps_1.Caps.COMPACT;
+            legacySession.peerCaps = announced & (rpc_caps_1.Caps.COMPACT | rpc_caps_1.Caps.AUTH_STATE);
             sendRaw([rpc_protocol_1.Pkt.CAPS, serverCaps]);
             sendCapsChallenge();
             return;
         }
         if (Array.isArray(msg) && msg[0] === rpc_protocol_1.Pkt.HELLO) {
+            const helloId = replyHelloId(msg[2]);
             if (!auth?.resolveAuth) {
                 sendCapsChallenge();
-                sendRaw([rpc_protocol_1.Pkt.MAP, routeMap, strictSchema, listenPaths, null]);
+                sendRaw(mapReply(null, helloId));
                 return;
             }
             async function resolveHello() {
+                const epoch = revokeEpoch;
                 try {
                     const r = await auth.resolveAuth(msg[1]);
-                    if (r && r.object !== undefined)
-                        buildDispatch(r.object);
-                    authAck = r && r.ack !== undefined ? r.ack : { ok: true };
-                    authed = authAck?.ok !== false;
-                    sendMap();
+                    if (detached)
+                        return;
+                    if (revokeEpoch != epoch) {
+                        sendCapsChallenge();
+                        sendRaw(mapReply(authAck, helloId));
+                        return;
+                    }
+                    applyGrant(r, helloId);
                 }
                 catch (e) {
+                    if (e?.revoke === true) {
+                        downgradePrincipal('revoked', e?.message ?? String(e), helloId);
+                        return;
+                    }
                     sendCapsChallenge();
-                    sendRaw([rpc_protocol_1.Pkt.MAP, routeMap, strictSchema, listenPaths, {
-                            ok: false,
-                            reason: e?.message ?? String(e),
-                        }]);
+                    sendRaw(mapReply({ ok: false, reason: e?.message ?? String(e) }, helloId));
                 }
             }
             const hello = resolveHello();
@@ -352,6 +507,19 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
             finally {
                 if (helloInFlight == hello)
                     helloInFlight = null;
+            }
+            return;
+        }
+        if (Array.isArray(msg) && msg[0] == rpc_protocol_1.Pkt.BATCH) {
+            if (!(0, rpc_caps_1.hasCap)(serverCaps, rpc_caps_1.Caps.CB_BATCH | rpc_caps_1.Caps.REQ_BATCH))
+                return;
+            const batched = msg[1];
+            if (!Array.isArray(batched) || batched.length > rpc_callback_batch_1.MAX_BATCH_ITEMS)
+                return;
+            for (const packet of batched) {
+                if (!Array.isArray(packet) || (packet[0] != rpc_protocol_1.Pkt.CALL && packet[0] != rpc_protocol_1.Pkt.PIPE))
+                    continue;
+                void handleServerPacket(packet);
             }
             return;
         }
@@ -500,6 +668,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt) {
         sendCapsChallenge();
     else
         sendMap();
+    return { control };
 }
 function createRpcServer({ socket, object: target, socketKey: key, debug = false, hooks, limits, auth, opt }) {
     if (debug) {
@@ -520,5 +689,5 @@ function createRpcServer({ socket, object: target, socketKey: key, debug = false
         }
         socket.on = (e, cb) => origOn(e, (d) => { console.log('[RPC IN]', debugPacket(d)); cb(d); });
     }
-    createServer(socket, key, target, hooks, limits, auth, opt);
+    return createServer(socket, key, target, hooks, limits, auth, opt, debug);
 }

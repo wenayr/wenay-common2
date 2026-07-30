@@ -16,6 +16,7 @@ function createRpcClientHub(createSocket, schemaBuilder, hubOpts) {
     let onConnectCb = null;
     let onDisconnectCb = null;
     const connectCbs = new Set();
+    const authCbs = new Set();
     const disconnectCbs = new Set();
     let activeContext = null;
     let resolveFunc = null;
@@ -34,6 +35,41 @@ function createRpcClientHub(createSocket, schemaBuilder, hubOpts) {
         for (const error of errors) {
             setTimeout(function rethrowLifecycleObserverError() { throw error; }, 0);
         }
+    }
+    const tokenProvider = hubOpts?.token ?? null;
+    let explicitToken = null;
+    let explicitTokenWave = 0;
+    let tokenInFlight = null;
+    function provideToken(request) {
+        if (!tokenProvider)
+            return Promise.resolve(null);
+        const running = tokenInFlight;
+        if (running)
+            return running;
+        const started = requestToken(request);
+        tokenInFlight = started;
+        function clearTokenInFlight() { if (tokenInFlight == started)
+            tokenInFlight = null; }
+        started.then(clearTokenInFlight, clearTokenInFlight);
+        return started;
+    }
+    async function requestToken(request) {
+        const token = await tokenProvider(request);
+        if (token != null)
+            currentToken = token;
+        return token ?? null;
+    }
+    function renewHubToken(request) {
+        const ownWave = explicitToken != null && explicitTokenWave == connectCount;
+        if (request.reason == 'connect' && ownWave)
+            return Promise.resolve(explicitToken);
+        return provideToken(request);
+    }
+    function notifyAuthState(event) {
+        const errors = [];
+        for (const cb of [...authCbs])
+            callObserver(cb, event, errors);
+        rethrowObserverErrors(errors);
     }
     function notifyConnect(count) {
         const errors = [];
@@ -89,6 +125,8 @@ function createRpcClientHub(createSocket, schemaBuilder, hubOpts) {
         }
     }
     function setToken(token) {
+        explicitToken = token;
+        explicitTokenWave = connectCount + 1;
         if (activeContext)
             closeContext(activeContext, 'token rotated');
         if (!resolveFunc)
@@ -102,6 +140,9 @@ function createRpcClientHub(createSocket, schemaBuilder, hubOpts) {
             const client = (0, rpc_client_1.createRpcClient)({ socketKey: targetSocketKey, socket: nextSocket, token, opt: hubOpts?.opt });
             const transportClient = client;
             transportClient[transport_lifecycle_1.RPC_TRANSPORT_CONTROL]?.disconnect('RPC hub awaiting handshake');
+            if (tokenProvider)
+                client.setTokenRenew(renewHubToken);
+            client.onAuthState(function relayAuthState(event) { notifyAuthState({ ...event, key }); });
             facade[key] = client;
             clients.push(transportClient);
         }
@@ -153,6 +194,10 @@ function createRpcClientHub(createSocket, schemaBuilder, hubOpts) {
         connectCbs.add(cb);
         return function offConnect() { connectCbs.delete(cb); };
     }
+    function authListen(cb) {
+        authCbs.add(cb);
+        return function offAuth() { authCbs.delete(cb); };
+    }
     function disconnectListen(cb) {
         disconnectCbs.add(cb);
         return function offDisconnect() { disconnectCbs.delete(cb); };
@@ -168,7 +213,10 @@ function createRpcClientHub(createSocket, schemaBuilder, hubOpts) {
         onDisconnect: (func) => { onDisconnectCb = func ?? null; },
         connectListen,
         disconnectListen,
+        authListen,
         connectCount: () => connectCount,
     };
+    if (tokenProvider)
+        setToken(null);
     return result;
 }
