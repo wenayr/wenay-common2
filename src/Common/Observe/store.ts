@@ -3,6 +3,11 @@ import {listenUpdate, listenUpdatePaths, onUpdate, reactive, isReactive, toRaw, 
 import {getRpcMemberState, getRpcSchemaReady, hasRpcMemberLookup} from '../events/transport-lifecycle'
 import {positiveIntegerOption} from '../positive-integer-option'
 import {rpcResultWireMetrics} from '../rcp/rpc-wire-size'
+import {
+    REACTIVE_ARRAY_MUTATIONS,
+    STORE_REPLAY_PATCH_SOURCE,
+    type ReactiveArrayMutations,
+} from './observe-private'
 
 export type StorePath = readonly PropertyKey[]
 export type StoreDrain = "micro" | "immediate" | number | ((flush: () => void) => void)
@@ -514,14 +519,49 @@ function coldListenOptions() {
  * after the window settles, so the array describes one consistent Store state.
  * Cold like the other Store listens: without subscribers it installs no watcher.
  */
-function createStorePatchesListen<T extends object>(store: Store<T>) {
+function exactReplayPatchPaths(change: StoreChange) {
+    const detail = (change as StoreChange & {
+        [REACTIVE_ARRAY_MUTATIONS]?: ReactiveArrayMutations
+    })[REACTIVE_ARRAY_MUTATIONS]
+    if (!detail || detail.paths.length == 0) return change.paths
+
+    const replacements = new Set(detail.replacements.map(pathKey))
+    const mutations = new Map<string, PropertyKey[][]>()
+    for (const path of detail.paths) {
+        const parentKey = pathKey(path.slice(0, -1))
+        let paths = mutations.get(parentKey)
+        if (!paths) {
+            paths = []
+            mutations.set(parentKey, paths)
+        }
+        paths.push(path)
+    }
+
+    const refined: PropertyKey[][] = []
+    for (const path of change.paths) {
+        if (replacements.has(pathKey(path))) {
+            refined.push(path)
+            continue
+        }
+        const exact = mutations.get(pathKey(path))
+        if (!exact || exact.some(item => item[item.length - 1] == 'length')) {
+            refined.push(path)
+            continue
+        }
+        refined.push(...exact)
+    }
+    return refined
+}
+
+function createStorePatchesListen<T extends object>(store: Store<T>, exactArrays = false) {
     function sampleChangedStorePath(path: PropertyKey[]) {
         return makePatch(store.state, path)
     }
 
     function produceStorePatchBatches(emit: (patches: readonly StorePatch[]) => void) {
         const off = store.listenPaths().on(function emitStorePatchBatch(change: StoreChange) {
-            emit(change.paths.map(sampleChangedStorePath))
+            const paths = exactArrays ? exactReplayPatchPaths(change) : change.paths
+            emit(paths.map(sampleChangedStorePath))
         })
         return off
     }
@@ -535,10 +575,10 @@ type StorePatchesListenOwner<T extends object> = Store<T> & {
     [storePatchesListenOwner]?: () => ReturnType<typeof createStorePatchesListen<T>>
 }
 
-function createStorePatchesListenOwner<T extends object>(store: Store<T>) {
+function createStorePatchesListenOwner<T extends object>(store: Store<T>, exactArrays = false) {
     let patches: ReturnType<typeof createStorePatchesListen<T>> | undefined
     return function getStorePatchesListen() {
-        patches ??= createStorePatchesListen(store)
+        patches ??= createStorePatchesListen(store, exactArrays)
         return patches
     }
 }
@@ -551,6 +591,12 @@ function installStorePatchesListenOwner<T extends object>(store: Store<T>) {
         Object.defineProperty(owner, storePatchesListenOwner, {value: getPatches})
     }
     return getPatches
+}
+
+function installStoreReplayPatchesListenOwner<T extends object>(store: Store<T>) {
+    Object.defineProperty(store, STORE_REPLAY_PATCH_SOURCE, {
+        value: createStorePatchesListenOwner(store, true),
+    })
 }
 
 export function listenStorePatches<T extends object>(store: Store<T>) {
@@ -961,6 +1007,7 @@ export function createStore<T extends object>(initial: T, opts: Parameters<typeo
         count: () => Array.from(store._counts.values()).reduce((a: number, b: number) => a + b, 0),
     }
     installStorePatchesListenOwner(store)
+    installStoreReplayPatchesListenOwner(store)
     return store
 }
 

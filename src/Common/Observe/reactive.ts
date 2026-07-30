@@ -34,6 +34,10 @@
 // ============================================================
 
 import {createListen} from "../events/Listen";
+import {
+    REACTIVE_ARRAY_MUTATIONS,
+    type ReactiveArrayMutations,
+} from './observe-private'
 
 type Fn = () => void
 export type ReactiveChange = {paths: PropertyKey[][]}
@@ -79,6 +83,11 @@ type Eng = {
     dirtyPaths: PropertyKey[][]
     dirtyPathKeys: Set<string>   // keyed dedup in O(1) per path — linear scan over dirtyPaths is quadratic on hot-write
     pathKey: (path: PropertyKey[]) => string
+    arrayMutationPaths: PropertyKey[][]
+    arrayMutationPathKeys: Set<string>
+    arrayReplacementPaths: PropertyKey[][]
+    arrayReplacementPathKeys: Set<string>
+    arrayPathKey: (path: PropertyKey[]) => string
     scheduled: boolean
     waiters: Set<Fn>
     depth: number
@@ -100,6 +109,9 @@ export function reactive<T extends object>(root: T, opts: Opts = {}) {
     const eng: Eng = {
         live: 0, pathLive: 0, dirty: new Set(), dirtyPaths: [],
         dirtyPathKeys: new Set(), pathKey: createPathKeyer(),
+        arrayMutationPaths: [], arrayMutationPathKeys: new Set(),
+        arrayReplacementPaths: [], arrayReplacementPathKeys: new Set(),
+        arrayPathKey: createPathKeyer(),
         scheduled: false, waiters: new Set(), depth,
         schedule() {
             if (eng.scheduled) return
@@ -110,8 +122,17 @@ export function reactive<T extends object>(root: T, opts: Opts = {}) {
                 eng.scheduled = false
                 const batch = [...eng.dirty]; eng.dirty.clear()
                 const dirtyPaths = eng.dirtyPaths; eng.dirtyPaths = []
+                const arrayMutations: ReactiveArrayMutations = {
+                    paths: eng.arrayMutationPaths,
+                    replacements: eng.arrayReplacementPaths,
+                }
                 // fresh keyer per window: symbol-identity map does not accumulate foreign symbols
                 eng.dirtyPathKeys = new Set(); eng.pathKey = createPathKeyer()
+                eng.arrayMutationPaths = []
+                eng.arrayMutationPathKeys = new Set()
+                eng.arrayReplacementPaths = []
+                eng.arrayReplacementPathKeys = new Set()
+                eng.arrayPathKey = createPathKeyer()
                 let err: any
                 for (const n of batch) {
                     for (const cb of [...n.subs]) {
@@ -121,7 +142,11 @@ export function reactive<T extends object>(root: T, opts: Opts = {}) {
                     if (n.pathSubs.size) {
                         const paths = pathsForNode(n, dirtyPaths)
                         if (paths.length) for (const cb of [...n.pathSubs]) {
-                            try { cb({paths}) }
+                            try {
+                                const change = {paths}
+                                Object.defineProperty(change, REACTIVE_ARRAY_MUTATIONS, {value: arrayMutations})
+                                cb(change)
+                            }
                             catch (e) { err ??= e }
                         }
                     }
@@ -173,7 +198,8 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
         set(_, k, v) {
             v = toRaw(v)                             // no reactive-in-reactive: state holds raw values only
             const had = Object.prototype.hasOwnProperty.call(node.target, k)
-            if (had && Object.is(node.target[k], v)) return true
+            const old = node.target[k]
+            if (had && Object.is(old, v)) return true
             if (had) {
                 if (!Reflect.set(node.target, k, v, node.target)) return false
             } else {
@@ -190,7 +216,7 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
             const kid = node.kids.get(k)
             if (kid) rebind(kid, v)                  // an existing child slot got a whole new value
             node.eng.onMutation?.(dirtyPathFor(node, k))
-            if (eng.live > 0) bubble(node, k)        // path is computed INSIDE and only when pathLive — cold write does not allocate
+            if (eng.live > 0) bubble(node, k, Array.isArray(old) || Array.isArray(v))
             return true
         },
         defineProperty(_, k, d) {
@@ -211,17 +237,18 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
                     else { node.kids.delete(k); markChanged(kid); detachTree(kid) }
                 }
                 node.eng.onMutation?.(dirtyPathFor(node, k))
-                if (eng.live > 0) bubble(node, k)
+                if (eng.live > 0) bubble(node, k, Array.isArray(old) || Array.isArray(v))
             }
             return true
         },
         deleteProperty(_, k) {
             if (!Object.prototype.hasOwnProperty.call(node.target, k)) return true
+            const old = node.target[k]
             if (!Reflect.deleteProperty(node.target, k)) return false
             const kid = node.kids.get(k)
             if (kid) { node.kids.delete(k); markChanged(kid); detachTree(kid) }
             node.eng.onMutation?.(dirtyPathFor(node, k))
-            if (eng.live > 0) bubble(node, k)
+            if (eng.live > 0) bubble(node, k, Array.isArray(old))
             return true
         },
         has(_, k) { return k in node.target },
@@ -248,9 +275,14 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
 
 // the fact bubbles UP: this node + every ancestor that has subscribers fires once.
 // Full path is materialized only when someone consumes it (pathLive > 0).
-function bubble(from: Node, key: PropertyKey) {
+function bubble(from: Node, key: PropertyKey, replacedArrayBranch = false) {
     const eng = from.eng
-    if (eng.pathLive > 0) addDirtyPath(eng, dirtyPathFor(from, key))
+    if (eng.pathLive > 0) {
+        const dirtyPath = dirtyPathFor(from, key)
+        addDirtyPath(eng, dirtyPath)
+        if (Array.isArray(from.target)) addArrayPath(eng, [...from.path, key], false)
+        else if (replacedArrayBranch) addArrayPath(eng, dirtyPath, true)
+    }
     for (let n: Node | null = from; n && n.active; n = n.parent)
         if (n.subs.size || n.pathSubs.size) eng.dirty.add(n)
     eng.schedule()
@@ -303,6 +335,15 @@ function addDirtyPath(eng: Eng, path: PropertyKey[]) {
     if (eng.dirtyPathKeys.has(k)) return
     eng.dirtyPathKeys.add(k)
     eng.dirtyPaths.push(path)     // path is a fresh array from dirtyPathFor, no copy needed
+}
+
+function addArrayPath(eng: Eng, path: PropertyKey[], replacement: boolean) {
+    const key = eng.arrayPathKey(path)
+    const keys = replacement ? eng.arrayReplacementPathKeys : eng.arrayMutationPathKeys
+    if (keys.has(key)) return
+    keys.add(key)
+    const paths = replacement ? eng.arrayReplacementPaths : eng.arrayMutationPaths
+    paths.push(path)
 }
 
 function startsWithPath(path: PropertyKey[], prefix: PropertyKey[]) {

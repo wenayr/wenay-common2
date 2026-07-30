@@ -7,8 +7,8 @@
 //   3. Store Replay production + in-process mirror application
 //   4. the same Store Replay path over real RPC and Socket.IO/WebSocket
 //
-// Requested load is counted as the fixed-width row payload represented by the
-// Store patches. Changed-row bytes and RPC/WebSocket/TCP bytes stay separate.
+// Requested load keeps the operation count of the original full-array baseline.
+// Changed-row, represented patch and RPC/WebSocket/TCP bytes stay separate.
 
 import {spawn} from 'node:child_process'
 import {createServer, type Server as HttpServer} from 'node:http'
@@ -578,7 +578,7 @@ async function createInProcReplayResource(): Promise<tLoadResource> {
 
     return {
         async run(start, count, sample) {
-            const complete = tracker.expect(sourceBatchCount(count))
+            const complete = tracker.expect(count)
             await driveUpdates({
                 start,
                 count,
@@ -700,7 +700,7 @@ async function createSocketReplayResource(): Promise<tLoadResource> {
     return {
         wire: meter,
         async run(start, count, sample) {
-            const complete = tracker.expect(sourceBatchCount(count))
+            const complete = tracker.expect(count)
             await driveUpdates({
                 start,
                 count,
@@ -829,10 +829,14 @@ async function runUnitInProcess() {
         const endMemory = process.memoryUsage()
         const wire = wireBefore && resource.wire ? resource.wire.diff(wireBefore) : undefined
         const changedBytes = operations * PAYLOAD_BYTES
-        const representedBytes = representedPayloadBytes(operations)
+        const representedBytes = candidate.includes('replay')
+            ? changedBytes
+            : representedPayloadBytes(operations)
         resource.verify(warmupOperations + operations)
 
-        const expectedPatches = sourceBatchCount(operations)
+        const expectedPatches = candidate.includes('replay')
+            ? operations
+            : sourceBatchCount(operations)
         if (candidate != 'plain-array' && resource.metrics().sourcePatches != expectedPatches) {
             throw new Error(candidate + ': produced ' + resource.metrics().sourcePatches
                 + ' patches for ' + expectedPatches + ' array drain windows')

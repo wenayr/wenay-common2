@@ -658,7 +658,7 @@ store.each(opts?) -> Listen<[key, value, ctx]>                 // changed TOP-LE
   //   ONE call per window with the whole dict (a dev warn points to each())
 store.count() -> number
 Observe.cloneStoreValue<T>(value) -> T                            // detached clone with the same rich/binary/cycle semantics as Store snapshots
-Observe.listenStorePatches(store) -> Listen<[readonly StorePatch[]]> // shared settled patch feed: one source array per Store drain
+Observe.listenStorePatches(store) -> Listen<[readonly StorePatch[]]> // public settled patch feed: one source array per Store drain
 
 // network shape: backend exposes snapshots + changed Listen; frontend mirrors selected masks locally
 Observe.exposeStore(store, {push?: true | {maxItems?, maxBytes?}}?) -> { get(mask?), set(path,value), replace(path,value), changed, changedPaths, patches?, patchesBatch?, changedData? }
@@ -688,6 +688,8 @@ Observe.followReplicatedMap<V, K>(remote, {onBatch?, onStatus?, onError?, staleM
 // Sequenced sync (replay line): seq-numbered patch stream — keyframe catch-up, reconnect by seq (tail, not snapshot)
 Observe.exposeStoreReplay(store, {history? = 1024, maxItems?, maxBytes?, maxDelayMs?, patchSource?}) -> { api /* spread into the RPC server object */, replay, batchStats, flushPending, close }
   // api.replay is the sole Store Replay V2 facade. There is no legacy single-patch route or negotiation.
+  // Store-owned Replay refines safe array-slot replacements to exact index patches without changing
+  // public changedPaths/listenStorePatches. Length changes and whole-array replacement stay whole-array patches.
   // maxItems/maxBytes may split one source drain; maxDelayMs>0 may merge adjacent drains.
   // Each resulting bounded V2 envelope owns one seq.
   // A patch whose value itself is undefined remains represented by the V2 patch opcode.
@@ -753,7 +755,7 @@ Observe.managedStore.offline({remote?, initial, storage, storageKey?, tags?, pri
 Observe.createStoreManager(resources) -> {plan(opts?), start(key, opts?), startPlanned(opts?), stop(key), stopAll(), get(key), touch(key, weight?), usage(), statusListen, handles}
   // plan excludes explicitOnly/large by default; {includeExplicit, includeLarge} opts opt them in
 // Slow-client conflation: recipe section 🎞️ below. Full generic surface (any event line, history/time-travel) -> Replay namespace, 🎞️ in rare docs.
-// Object add/delete/deep set are paths. Array mutation dirties the whole array branch, not splice internals.
+// Public Store paths keep array mutation at the whole-array branch; Store-owned Replay may privately refine safe slots.
 ```
 ```
 type Market = {data: {BTC?: number; ETH?: number}; meta: {status?: string}}

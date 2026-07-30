@@ -10,99 +10,67 @@
 - three randomized fresh-process runs per candidate and target
 - 4096 array rows, 128-byte fixed payload per row
 - 128 synchronous element replacements per reactive drain
-- warmup fills every array slot before measurement
 
-The reactive engine reports an array mutation at the array path. Consequently,
-each 128-write drain produces one patch containing all 4096 rows. The two target
-sizes are the fixed-width row payload represented by those full-array patches:
+The target keeps the operation count of the original full-array benchmark:
+3,840 writes for 15 MiB and 12,800 writes for 50 MiB. Public raw Store patches
+remain one complete-array patch per drain. Store Replay now uses private mutation
+metadata to preserve each safe array-slot replacement as an exact path. Array
+length changes and whole-array replacement retain the complete-array fallback.
 
-| Target | Writes | Actually changed payload | Drain / full-array patches | Represented patch payload |
-|---:|---:|---:|---:|---:|
-| 15 MiB | 3,840 | 0.469 MiB | 30 | 15 MiB |
-| 50 MiB | 12,800 | 1.563 MiB | 100 | 50 MiB |
+## Before and after
 
-Thus Store patch production alone has a deterministic 32× payload amplification
-for this shape (`4096 / 128`). Every candidate verified its final array. Both
-replay candidates also produced and applied exactly 30 or 100 patches.
+Medians over three runs on the same machine:
 
-## Throughput
+| 15 MiB workload | 2.2.2 baseline | Exact-slot candidate | Change |
+|---|---:|---:|---:|
+| Socket CPU per write | 292.71 µs | 32.55 µs | −88.9% |
+| Socket wall time | 1,580.0 ms | 164.1 ms | −89.6% |
+| In-process Replay CPU per write | 199.22 µs | 32.55 µs | −83.7% |
+| WebSocket payload | 17.56 MiB | 0.73 MiB | −95.8% |
+| Socket event-loop p95 | 14.02 ms | 0.39 ms | −97.2% |
+| Socket peak heap above base | 101.88 MiB | 31.41 MiB | −69.2% |
+| Socket GC time | 48.63 ms | 0.77 ms | −98.4% |
 
-Values are medians over three runs. CPU covers both endpoints in the socket
-candidate. Plain-array CPU was below the resolution of Windows process CPU
-accounting for these short windows.
+The unchanged raw Store candidate remained noisy but in the same range
+(52.60 µs/write before, 57.03 µs/write after). The gain therefore comes from
+removing synchronization amplification, not from a generally faster machine.
 
-### 15 MiB represented patch payload
+## 50 MiB workload
 
-| Candidate | Wall time | Changes/s | Changed MiB/s | Represented MiB/s | CPU µs/change |
+| Candidate | Wall time | CPU µs/write | Changed MiB/s | Peak heap | Event-loop p95 |
 |---|---:|---:|---:|---:|---:|
-| plain array | 0.2 ms | 19,571,865 | 2,389.14 | — | — |
-| Store + patch production | 101.9 ms | 37,671 | 4.60 | 147.15 | 32.55 |
-| Store Replay + in-process mirror | 510.6 ms | 7,520 | 0.92 | 29.38 | 150.52 |
-| Store Replay + RPC/WebSocket mirror | 618.2 ms | 6,212 | 0.76 | 24.26 | 166.67 |
+| raw Store patches | 1,056.6 ms | 45.08 | 1.48 | 18.79 MiB | — |
+| Store Replay in process | 449.4 ms | 26.80 | 3.48 | 33.26 MiB | — |
+| Store Replay over Socket.IO | 568.2 ms | 32.97 | 2.75 | 33.47 MiB | 1.86 ms |
 
-### 50 MiB represented patch payload
+The previous 50 MiB Socket baseline was 2,139.6 ms, 186.72 µs/write,
+58.70 MiB of WebSocket payload, 159.49 MiB peak heap and 181.01 ms event-loop
+p95. The exact-slot path sent 2.45 MiB over WebSocket and retained the same
+100 physical frames: batching overhead did not increase.
 
-| Candidate | Wall time | Changes/s | Changed MiB/s | Represented MiB/s | CPU µs/change |
-|---|---:|---:|---:|---:|---:|
-| plain array | 0.5 ms | 24,801,395 | 3,027.51 | — | — |
-| Store + patch production | 330.4 ms | 38,740 | 4.73 | 151.33 | 28.13 |
-| Store Replay + in-process mirror | 1,630.2 ms | 7,852 | 0.96 | 30.67 | 135.47 |
-| Store Replay + RPC/WebSocket mirror | 2,139.6 ms | 5,983 | 0.73 | 23.37 | 186.72 |
+## Patch and wire accounting
 
-At 50 MiB, replay sizing/journaling/mirror application costs about 4.9× the
-Store patch-production wall time. Adding real RPC/WebSocket transport increases
-the in-process replay wall time by about 31% and measured CPU per change by about
-38%. The dominant cost still starts before the transport: repeated cloning,
-sizing and application of the complete array.
-
-## Exact wire accounting
-
-| Target | Server frames / RPC emits | WebSocket payload | TCP bytes above WS | WS / represented payload | WS / changed payload |
+| Workload | Source drains | Replay patches | Replay envelopes | Estimated bytes | WebSocket bytes |
 |---:|---:|---:|---:|---:|---:|
-| 15 MiB | 30 / 30 | 17.56 MiB | 300 B | 1.171× | 37.47× |
-| 50 MiB | 100 / 100 | 58.70 MiB | 1,000 B | 1.174× | 37.57× |
+| 15 MiB target | 30 | 3,840 | 30 | 0.73 MiB | 0.73 MiB |
+| 50 MiB target | 100 | 12,800 | 100 | 2.45 MiB | 2.45 MiB |
 
-Each indivisible array patch became one roughly 614–616 KiB WebSocket frame.
-The configured 64 KiB Store Replay byte target cannot split a single patch.
-JSON/RPC structure adds about 17% above the fixed row payload. WebSocket framing
-itself adds exactly 10 bytes per large server frame and is negligible.
+The patch count increases from one full-array fact to one fact per changed slot,
+but the physical envelope count stays one per natural Store drain. At 50 MiB the
+wire carried about 200.5 bytes per changed row, including Store Replay, RPC,
+Socket.IO and WebSocket structure.
 
-The replay batcher's conservative sizing counter reported 21.31 MiB for the
-15 MiB target and 71.20 MiB for the 50 MiB target; the physical WebSocket probe
-is the authoritative byte count.
+## Safety boundaries
 
-## CPU, event loop and memory
+- `reactive().onUpdatePaths` and public `listenStorePatches` keep their existing
+  array-branch behavior.
+- Replacing an array property and then changing one of its slots in the same
+  drain emits the complete array.
+- Any observed `length` mutation emits the complete array, covering truncation,
+  `pop`, `splice` and other structural operations.
+- Exact patches are used only by the Store-owned Replay source. An injected
+  `patchSource` and Replicated Map keep their declared source semantics.
 
-| Target | Socket event-loop p95 | GC time | Peak heap above base | Peak RSS above base | Post-GC heap | Post-GC RSS |
-|---:|---:|---:|---:|---:|---:|---:|
-| 15 MiB | 5.13 ms | 15.33 ms | 86.62 MiB | 57.29 MiB | +0.12 MiB | +17.28 MiB |
-| 50 MiB | 181.01 ms | 74.63 ms | 159.49 MiB | 161.51 MiB | +0.22 MiB | +40.29 MiB |
-
-The post-GC managed heap returned to the warmed baseline in every run. This
-experiment therefore found no retained JavaScript-heap leak. RSS remained
-committed after collection, which is normal allocator behavior and is not by
-itself evidence of a leak.
-
-The transient pressure is real: the 50 MiB unpaced source queues 100 oversized
-full-array messages before the I/O loop catches up. Socket event-loop p95 was
-176–274 ms across the three runs, alongside a roughly 159 MiB heap peak. The
-in-process candidates deliberately remain in a microtask chain and produce no
-timer samples, so their event-loop percentile is omitted rather than reported as
-zero.
-
-## Conclusion
-
-The suspected retained heap leak was not reproduced. The resource problem is
-instead a deterministic synchronization amplification for hot arrays:
-
-1. an element mutation is coarsened to the array path;
-2. Store patch production snapshots the whole array once per drain;
-3. replay sizes, journals and applies that whole value;
-4. a single oversized patch bypasses the 64 KiB batch target;
-5. RPC/WebSocket adds a smaller but measurable cost on top.
-
-For high-frequency independently addressed records, the first corridor to test
-is a keyed object or the existing replicated-map surface, so each changed record
-can remain a bounded patch. If latest-only semantics are acceptable, widening
-the drain so most array elements settle before one snapshot also reduces the
-amplification, at the cost of update latency and intermediate states.
+The retained heap still returns to the warmed baseline after GC. The original
+failure mode was transient allocation and deterministic full-array
+amplification, not a retained JavaScript-heap leak.

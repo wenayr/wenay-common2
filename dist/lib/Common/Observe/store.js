@@ -13,6 +13,7 @@ const reactive_1 = require("./reactive");
 const transport_lifecycle_1 = require("../events/transport-lifecycle");
 const positive_integer_option_1 = require("../positive-integer-option");
 const rpc_wire_size_1 = require("../rcp/rpc-wire-size");
+const observe_private_1 = require("./observe-private");
 const hasSetImmediate = typeof setImmediate == "function";
 function pathText(path) {
     return path.map(String).join(".");
@@ -382,23 +383,54 @@ function manageColdListenLifecycle(type, count, api) {
 function coldListenOptions() {
     return { event: manageColdListenLifecycle };
 }
-function createStorePatchesListen(store) {
+function exactReplayPatchPaths(change) {
+    const detail = change[observe_private_1.REACTIVE_ARRAY_MUTATIONS];
+    if (!detail || detail.paths.length == 0)
+        return change.paths;
+    const replacements = new Set(detail.replacements.map(pathKey));
+    const mutations = new Map();
+    for (const path of detail.paths) {
+        const parentKey = pathKey(path.slice(0, -1));
+        let paths = mutations.get(parentKey);
+        if (!paths) {
+            paths = [];
+            mutations.set(parentKey, paths);
+        }
+        paths.push(path);
+    }
+    const refined = [];
+    for (const path of change.paths) {
+        if (replacements.has(pathKey(path))) {
+            refined.push(path);
+            continue;
+        }
+        const exact = mutations.get(pathKey(path));
+        if (!exact || exact.some(item => item[item.length - 1] == 'length')) {
+            refined.push(path);
+            continue;
+        }
+        refined.push(...exact);
+    }
+    return refined;
+}
+function createStorePatchesListen(store, exactArrays = false) {
     function sampleChangedStorePath(path) {
         return makePatch(store.state, path);
     }
     function produceStorePatchBatches(emit) {
         const off = store.listenPaths().on(function emitStorePatchBatch(change) {
-            emit(change.paths.map(sampleChangedStorePath));
+            const paths = exactArrays ? exactReplayPatchPaths(change) : change.paths;
+            emit(paths.map(sampleChangedStorePath));
         });
         return off;
     }
     return (0, Listen_1.createListen)(produceStorePatchBatches, coldListenOptions());
 }
 const storePatchesListenOwner = Symbol('storePatchesListenOwner');
-function createStorePatchesListenOwner(store) {
+function createStorePatchesListenOwner(store, exactArrays = false) {
     let patches;
     return function getStorePatchesListen() {
-        patches ??= createStorePatchesListen(store);
+        patches ??= createStorePatchesListen(store, exactArrays);
         return patches;
     };
 }
@@ -410,6 +442,11 @@ function installStorePatchesListenOwner(store) {
         Object.defineProperty(owner, storePatchesListenOwner, { value: getPatches });
     }
     return getPatches;
+}
+function installStoreReplayPatchesListenOwner(store) {
+    Object.defineProperty(store, observe_private_1.STORE_REPLAY_PATCH_SOURCE, {
+        value: createStorePatchesListenOwner(store, true),
+    });
 }
 function listenStorePatches(store) {
     return installStorePatchesListenOwner(store)();
@@ -818,6 +855,7 @@ function createStore(initial, opts = {}) {
         count: () => Array.from(store._counts.values()).reduce((a, b) => a + b, 0),
     };
     installStorePatchesListenOwner(store);
+    installStoreReplayPatchesListenOwner(store);
     return store;
 }
 function exposeStore(store, opts = {}) {

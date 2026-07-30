@@ -192,7 +192,7 @@ trade-off. Do not combine these routes without measuring the target deployment:
 
 | Route | Likely benefit | Complexity / risk | Gate before implementation |
 |---|---:|---|---|
-| Transfer decoded Store patch ownership into the mirror instead of cloning it again | Largest remaining 15k Store CPU/live-tree reduction | High: `onBatch`, retained journal and Store must not share mutable values | Define an internal ownership token and mutation tests before removing any clone |
+| Transfer decoded Store patch ownership into the mirror instead of cloning it again | Reduces residual clone cost for indivisible large branches and keyframes | High: `onBatch`, retained journal and Store must not share mutable values | Define an internal ownership token and mutation tests before removing any clone |
 | Declare custom policy locality (`record-local` versus `global`) | Avoids a full projection rescan for record-local rules | High: silently assuming locality can expose revoked records | Add an explicit locality contract plus `invalidateAll`/policy revision |
 | Keyed/chunked offline persistence | Avoids snapshotting the complete Store for a small update | High: changes durable format, migration and crash recovery | Specify chunk revision, atomic manifest and old-snapshot migration |
 | Parallel StoreManager startup | Reduces latency for independent reads | Medium: current failure and side-effect order is observable | Discuss an explicit concurrency option before changing startup behavior |

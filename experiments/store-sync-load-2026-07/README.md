@@ -13,14 +13,17 @@ a fixed-width 128-byte ASCII payload plus sequence, price and flags.
 
 Store writes are made in synchronous groups of 128 and drained after each group.
 That represents an unpaced producer. The current reactive engine deliberately
-coarsens mutations inside an array to the array path, so each drain produces one
-patch containing the complete array rather than 128 element patches.
+coarsens public dirty paths inside an array to the array branch. The raw Store
+candidate therefore produces one complete-array patch per drain; Store Replay's
+private refinement produces 128 exact slot patches in the same envelope.
 
-The requested 15/50 MiB target is therefore the fixed-width row payload
-represented by those complete-array patches. Changed-row bytes, represented
-patch payload, estimated replay bytes and actual WebSocket/TCP bytes are all
-reported separately. This makes array-coarsening amplification visible instead
-of accidentally turning a nominal 15 MiB test into an unlabelled 480 MiB run.
+The requested 15/50 MiB target retains the same operation count as the original
+full-array baseline so before/after runs remain comparable. Raw Store patches
+still expose the public array-branch boundary. Store Replay privately refines
+safe array-slot replacements to their exact index, while length changes and
+whole-array replacement fall back to the complete array. Changed-row bytes,
+represented patch payload, estimated replay bytes and actual WebSocket/TCP
+bytes are reported separately.
 
 The warmup fills every array slot before timing. All candidates verify the final
 array, and replay candidates additionally verify the mirror and exact

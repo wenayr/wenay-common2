@@ -24,6 +24,7 @@ import {
     RPC_MEMBER_LOOKUP, RPC_SCHEMA_READY, RPC_TRANSPORT_LIFECYCLE,
     getRpcMemberState, getRpcSchemaReady, rpcMemberAvailable,
 } from '../events/transport-lifecycle'
+import {STORE_REPLAY_PATCH_SOURCE} from './observe-private'
 import {
     type tStoreReplayWireBatchV2,
     decodeStoreReplayBatchV2,
@@ -525,7 +526,10 @@ export function exposeStoreReplay<T extends object>(store: Store<T>, opts: Store
     const replayApi = exposeStoreReplayBatch(batchReplay.replay, batchReplay.flush)
 
     const {patches: _patches, patchesBatch: _patchesBatch, changedData: _changedData, ...storeApi} = exposeStore(store, {push: true})
-    const patchBatches = opts.patchSource ?? listenStorePatches(store)
+    const getExactPatches = (store as Store<T> & {
+        [STORE_REPLAY_PATCH_SOURCE]?: () => StoreReplayPatchSource
+    })[STORE_REPLAY_PATCH_SOURCE]
+    const patchBatches = opts.patchSource ?? getExactPatches?.() ?? listenStorePatches(store)
 
     const offStore = patchBatches.on(function journalStoreChange(patches) {
         batchReplay.push(patches)

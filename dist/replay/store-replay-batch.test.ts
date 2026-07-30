@@ -4,7 +4,7 @@
 
 import {isDeepStrictEqual} from 'node:util'
 import {flushReactive} from '../src/Common/Observe/reactive'
-import {createStore, type StorePatch} from '../src/Common/Observe/store'
+import {createStore, listenStorePatches, type StorePatch} from '../src/Common/Observe/store'
 import {listen} from '../src/Common/events/Listen'
 import {
     exposeStoreReplay,
@@ -197,6 +197,73 @@ async function main() {
     ok(boundaryStats.emittedBatches == 2 && boundaryStats.emittedPatches == 2,
         'the non-binary sizing fast path preserves the existing batch boundary')
     boundaryExposed.close()
+
+    console.log('\n[store-replay-v2] hot array replacements stay record-sized')
+    type ArrayState = {rows: {id: number, value: string}[]}
+    const arraySource = createStore<ArrayState>({
+        rows: Array.from({length: 8}, (_item, id) => ({id, value: 'old'})),
+    }, {drain: 'micro'})
+    const publicArrayPaths: PropertyKey[][][] = []
+    const offPublicArrays = listenStorePatches(arraySource).on(function collectPublicArrayPatches(next) {
+        publicArrayPaths.push(next.map(patch => patch.path))
+    })
+    const arrayExposed = exposeStoreReplay(arraySource, {history: 16, maxItems: 256})
+    const arrayRemote = arrayExposed.api.replay as StoreReplayRemote
+    const arrayWires: ReturnType<typeof encodeStoreReplayBatchV2>[] = []
+    const offArrayWire = arrayRemote.line.on(function collectArrayWire(wire) { arrayWires.push(wire) })
+    const arrayMirror = createStore<ArrayState>({rows: []}, {drain: 'micro'})
+    const arraySync = syncStoreReplay(arrayMirror, arrayRemote)
+    await arraySync.ready
+
+    arraySource.state.rows[2] = {id: 2, value: 'new-2'}
+    arraySource.state.rows[6] = {id: 6, value: 'new-6'}
+    await flushReactive(arraySource.state)
+    await flushReactive(arrayMirror.state)
+    const recordPaths = arrayWires.flatMap(wire =>
+        decodeStoreReplayBatchV2(wire).event[0].map(patch => patch.path.join('.')))
+    ok(recordPaths.join(',') == 'rows.2,rows.6',
+        'Store Replay refines array-slot replacements to exact record paths')
+    ok(publicArrayPaths.flat().map(path => path.join('.')).join(',') == 'rows',
+        'the public Store patch source keeps its existing whole-array boundary')
+    ok(isDeepStrictEqual(arrayMirror.snapshot(), arraySource.snapshot()),
+        'record-sized array patches converge through the ordinary V2 mirror')
+
+    arrayWires.length = 0
+    arraySource.state.rows.push({id: 8, value: 'pushed'})
+    await flushReactive(arraySource.state)
+    await flushReactive(arrayMirror.state)
+    const pushPaths = arrayWires.flatMap(wire =>
+        decodeStoreReplayBatchV2(wire).event[0].map(patch => patch.path.join('.')))
+    ok(pushPaths.join(',') == 'rows.8' && arrayMirror.state.rows.length == 9,
+        'array growth uses its exact new slot and grows the mirror naturally')
+
+    arrayWires.length = 0
+    arraySource.state.rows.length = 3
+    await flushReactive(arraySource.state)
+    await flushReactive(arrayMirror.state)
+    const truncatePaths = arrayWires.flatMap(wire =>
+        decodeStoreReplayBatchV2(wire).event[0].map(patch => patch.path.join('.')))
+    ok(truncatePaths.join(',') == 'rows' && isDeepStrictEqual(arrayMirror.snapshot(), arraySource.snapshot()),
+        'array length changes fall back to one whole-array patch')
+
+    arrayWires.length = 0
+    arraySource.state.rows = [
+        {id: 10, value: 'replacement'},
+        {id: 11, value: 'replacement'},
+    ]
+    arraySource.state.rows[0] = {id: 10, value: 'same-window-update'}
+    await flushReactive(arraySource.state)
+    await flushReactive(arrayMirror.state)
+    const replacementPaths = arrayWires.flatMap(wire =>
+        decodeStoreReplayBatchV2(wire).event[0].map(patch => patch.path.join('.')))
+    ok(replacementPaths.join(',') == 'rows'
+        && isDeepStrictEqual(arrayMirror.snapshot(), arraySource.snapshot()),
+        'whole-array replacement wins over exact slot metadata from the same drain')
+
+    arraySync()
+    offArrayWire()
+    arrayExposed.close()
+    offPublicArrays()
 
     console.log(failures == 0 ? '\nStore Replay V2 tests: OK' : `\nStore Replay V2 tests: ${failures} FAILED`)
     process.exit(failures == 0 ? 0 : 1)

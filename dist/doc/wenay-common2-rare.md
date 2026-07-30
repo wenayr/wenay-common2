@@ -1172,7 +1172,8 @@ Contract:
 - Dirty paths are facts about changed object routes: add key, delete key, or deep set. Array mutation dirties the whole array branch; no public splice/index diff is promised.
 - `snapshot()`/`update().get()` walk raw targets (`toRaw`), so a snapshot of a cold store creates no lazy reactive nodes.
 - `cloneStoreValue(value)` exposes that detached Store snapshot clone for boundary adapters; it preserves cycles, rich values and binary views.
-- `listenStorePatches(store)` is the shared settled source behind Replay/push: one absolute patch array per natural Store drain. A bounded `patchesBatch` transport may split that source array.
+- `listenStorePatches(store)` is the public settled source behind push: one absolute patch array per natural Store drain. A bounded `patchesBatch` transport may split that source array.
+- Store-owned Replay privately refines safe array-slot replacement/growth facts to exact index patches in the same physical drain envelope. Public `changedPaths`/`listenStorePatches` retain the whole-array boundary. An observed `length` mutation or whole-array property replacement falls back to one complete-array patch; injected `patchSource` and Replicated Map retain their declared source semantics.
 - Fresh batch keyframes encode the owned `snapshot()` directly instead of cloning the complete tree a second time. Live/history/frame events remain defensively detached. Snapshot and columnar materialization use direct own-data writes only when the prototype chain has no setter/non-writable collision; otherwise they retain descriptor-based writes, including `__proto__`.
 - Store paths may contain data keys such as `__proto__`, `constructor` and `prototype`: application uses own-property writes, so they do not mutate prototypes. Replicated Map deliberately has a narrower RPC-safe key contract below.
 - Writing a reactive proxy back into state stores its raw value (no reactive-in-reactive).
@@ -1418,6 +1419,8 @@ followReplicatedMap(remote, {delivery?, checkpoint?, onBatch?, onStatus?, staleM
 exposeStoreReplay(store, {maxItems?, maxBytes?, maxDelayMs?, patchSource?, ...})  <->  syncStoreReplay(mirror, remote, {validateBatch?, onBatch?, ...}) // layer B: V2 patch batches; keyframe = root patch
   // StoreReplayPatchSource = {on(cb: (patches: readonly StorePatch[]) => void) -> off}.
   // api.replay is the sole V2 surface. There is no optional capability, legacy line or fallback coordinate.
+  //   A Store-owned source may turn safe same-drain array slot replacements into exact index patches before
+  //   sampling. Structural length changes and whole-array replacement preserve the complete-array fallback.
   //   validateBatch(patches, mirror) runs after decode and before ANY Store mutation. Throwing is terminal, reports
   //   onError and leaves seq unchanged. onBatch runs after one physical envelope is applied; its throw is also terminal
   //   and leaves seq unchanged, but does not roll the already-applied Store state back.

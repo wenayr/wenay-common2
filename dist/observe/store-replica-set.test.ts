@@ -84,7 +84,7 @@ function createNode(nodeId: string, initialRole: 'leader' | 'follower', epoch = 
         lineId: nodeId + '-line',
         initial: {},
         expose: {history: 100},
-        leadership: {initialRole, epoch, eligible, autoPromoteMs: 35},
+        leadership: {initialRole, epoch, eligible, autoPromoteMs: 200},
         route: {reconnectMs: 15, pingTimeoutMs: 200, hysteresisMs: 2},
     })
 }
@@ -116,7 +116,8 @@ async function main() {
     b.control.addOffer(fast.offer)
     await b.control.probe()
     await waitFor('fast route selected', () => b.api.status.state.routeId == 'direct-a')
-    ok(b.api.status.state.rtt! < 15, 'a shorter measured route replaces the relay')
+    ok(b.api.status.state.routes['direct-a']!.rtt! < b.api.status.state.routes['relay-a']!.rtt!,
+        'a shorter measured route replaces the relay')
 
     const seen: number[] = []
     const offSeen = b.api.store.node.at('seed').at('value').on(function seeReplicaValue(value) { seen.push(value) })
