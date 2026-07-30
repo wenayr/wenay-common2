@@ -182,7 +182,7 @@ export const createWebhookClient = (options: WebhookClientOptions) => {
         }
     };
 
-    const status = async (tag: string) =>
+    const status = async (tag: string): Promise<axios.AxiosResponse<any, any, {}>> =>
         axios.get(`${serverUrl}/webHook_status`, { params: { url: makeUrl(tag) }, headers });
 
     const unsubscribe = async (...tags: string[]) => {
