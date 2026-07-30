@@ -614,7 +614,9 @@ function createPatchesBatchListen(
                 let bytes = Number.isFinite(metrics.byteLength) ? metrics.byteLength + 1 : maxBytes
                 if (pending.length && (pending.length >= maxItems || pendingBytes + bytes > maxBytes)) {
                     flush()
-                    metrics = rpcResultWireMetrics(patch)
+                    // A non-binary patch does not contain attachment indices, so the metric
+                    // measured against the previous batch stays exact after the boundary.
+                    if (metrics.binaryCount > 0) metrics = rpcResultWireMetrics(patch)
                     bytes = Number.isFinite(metrics.byteLength) ? metrics.byteLength + 1 : maxBytes
                 }
                 pending.push(patch)

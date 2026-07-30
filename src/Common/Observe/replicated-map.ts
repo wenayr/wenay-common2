@@ -242,6 +242,46 @@ function copyInitialState<V, K extends string>(initial: Readonly<ReplicatedMapSt
     return state
 }
 
+function copyReplicatedMapRoot<V, K extends string>(source: Readonly<ReplicatedMapState<V, K>>) {
+    const target = Object.create(Object.getPrototypeOf(source)) as ReplicatedMapState<V, K>
+    for (const key of replicatedMapKeys<K>(source)) {
+        Reflect.defineProperty(target, key, {
+            configurable: true,
+            enumerable: true,
+            writable: true,
+            value: source[key],
+        })
+    }
+    return target
+}
+
+function applyPublishedMapPatches<V, K extends string>(
+    state: ReplicatedMapState<V, K>,
+    patches: readonly StorePatch[],
+) {
+    let next = state
+    for (const patch of patches) {
+        if (patch.path.length == 0) {
+            next = copyReplicatedMapRoot<V, K>(
+                requireReplicatedMapRoot(patch.value) as ReplicatedMapState<V, K>,
+            )
+            continue
+        }
+        const key = requireReplicatedMapKey<K>(patch.path[0])
+        if (!patch.exists) {
+            delete next[key]
+            continue
+        }
+        Reflect.defineProperty(next, key, {
+            configurable: true,
+            enumerable: true,
+            writable: true,
+            value: patch.value,
+        })
+    }
+    return next
+}
+
 function replicatedMapDescriptor(descriptor: Record<string, any> | null) {
     const map = descriptor?.['replicatedMap'] as Partial<ReplicatedMapDescriptor> | undefined
     if (map?.version == 1 && (map.delivery == 'latest' || map.delivery == 'lossless')
@@ -291,7 +331,7 @@ export function createReplicatedMap<V, K extends string = string>(deps: CreateRe
         replicatedMap: {version: 1, delivery: deps.delivery, lineId} satisfies ReplicatedMapDescriptor<V, K>,
     }
     validateState(rawState())
-    let lastPublishedState = store.snapshot()
+    let lastPublishedState = ownsPatchSource ? undefined : store.snapshot()
     const exposed = exposeStoreReplay(store, {
         ...replayOpts,
         describe: descriptor,
@@ -351,7 +391,8 @@ export function createReplicatedMap<V, K extends string = string>(deps: CreateRe
         : listenStorePatches(store).on(function forwardInjectedStorePatches(patches) {
             const normalized = normalizeInjectedPatches(patches)
             emitPatches(normalized)
-            lastPublishedState = store.snapshot()
+            if (!lastPublishedState) throw new Error('injected replicated map baseline is missing')
+            lastPublishedState = applyPublishedMapPatches(lastPublishedState, normalized)
         })
 
     // ============== producer business operations ==============
@@ -492,6 +533,7 @@ export function createReplicatedMap<V, K extends string = string>(deps: CreateRe
         if (!ownsPatchSource) {
             validateState(rawState())
             const current = store.snapshot()
+            if (!lastPublishedState) throw new Error('injected replicated map baseline is missing')
             if (!compareDeepValues(lastPublishedState, current)) {
                 emitPatches([{path: [], exists: true, value: current}])
                 lastPublishedState = current

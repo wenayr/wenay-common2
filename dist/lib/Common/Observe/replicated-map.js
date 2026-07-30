@@ -96,6 +96,39 @@ function copyInitialState(initial) {
     }
     return state;
 }
+function copyReplicatedMapRoot(source) {
+    const target = Object.create(Object.getPrototypeOf(source));
+    for (const key of replicatedMapKeys(source)) {
+        Reflect.defineProperty(target, key, {
+            configurable: true,
+            enumerable: true,
+            writable: true,
+            value: source[key],
+        });
+    }
+    return target;
+}
+function applyPublishedMapPatches(state, patches) {
+    let next = state;
+    for (const patch of patches) {
+        if (patch.path.length == 0) {
+            next = copyReplicatedMapRoot(requireReplicatedMapRoot(patch.value));
+            continue;
+        }
+        const key = requireReplicatedMapKey(patch.path[0]);
+        if (!patch.exists) {
+            delete next[key];
+            continue;
+        }
+        Reflect.defineProperty(next, key, {
+            configurable: true,
+            enumerable: true,
+            writable: true,
+            value: patch.value,
+        });
+    }
+    return next;
+}
 function replicatedMapDescriptor(descriptor) {
     const map = descriptor?.['replicatedMap'];
     if (map?.version == 1 && (map.delivery == 'latest' || map.delivery == 'lossless')
@@ -137,7 +170,7 @@ function createReplicatedMap(deps) {
         replicatedMap: { version: 1, delivery: deps.delivery, lineId },
     };
     validateState(rawState());
-    let lastPublishedState = store.snapshot();
+    let lastPublishedState = ownsPatchSource ? undefined : store.snapshot();
     const exposed = (0, store_replay_1.exposeStoreReplay)(store, {
         ...replayOpts,
         describe: descriptor,
@@ -192,7 +225,9 @@ function createReplicatedMap(deps) {
         : (0, store_1.listenStorePatches)(store).on(function forwardInjectedStorePatches(patches) {
             const normalized = normalizeInjectedPatches(patches);
             emitPatches(normalized);
-            lastPublishedState = store.snapshot();
+            if (!lastPublishedState)
+                throw new Error('injected replicated map baseline is missing');
+            lastPublishedState = applyPublishedMapPatches(lastPublishedState, normalized);
         });
     function publish(patches) {
         if (patches.length == 0) {
@@ -323,6 +358,8 @@ function createReplicatedMap(deps) {
         if (!ownsPatchSource) {
             validateState(rawState());
             const current = store.snapshot();
+            if (!lastPublishedState)
+                throw new Error('injected replicated map baseline is missing');
             if (!(0, deep_equal_1.compareDeepValues)(lastPublishedState, current)) {
                 emitPatches([{ path: [], exists: true, value: current }]);
                 lastPublishedState = current;

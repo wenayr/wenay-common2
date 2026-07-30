@@ -169,10 +169,12 @@ function createBatchReplay<T extends object>(store: Store<T>, opts: StoreReplayB
 
     // 48 bytes conservatively covers [version, seq, ts, [...]] with safe-integer coordinates.
     const envelopeBytes = 48
+    const exactEmptyEnvelopeBytes = storeReplayBatchV2WireMetrics([]).byteLength
     let pending: StorePatch[] = []
     const ready: {patches: StorePatch[], bytes: number}[] = []
     let pendingBytes = envelopeBytes
     let pendingBinaryCount = 0
+    let pendingMetricsExact = true
     let timer: any = null
     let closed = false
     let flushing = false
@@ -190,11 +192,13 @@ function createBatchReplay<T extends object>(store: Store<T>, opts: StoreReplayB
         if (pending.length == 0) return
         const sealed = pending
         const estimated = pendingBytes
+        const exactPatchMetrics = pendingMetricsExact
         pending = []
         pendingBytes = envelopeBytes
         pendingBinaryCount = 0
+        pendingMetricsExact = true
         const planned: {patches: StorePatch[], bytes: number}[] = []
-        splitToWireLimit(sealed, estimated, planned)
+        splitToWireLimit(sealed, estimated, planned, exactPatchMetrics)
         target.push(...planned)
     }
 
@@ -202,9 +206,18 @@ function createBatchReplay<T extends object>(store: Store<T>, opts: StoreReplayB
         patches: StorePatch[],
         estimated: number,
         planned: {patches: StorePatch[], bytes: number}[],
+        exactPatchMetrics = false,
     ) {
         if (estimated <= maxBytes) {
             planned.push({patches, bytes: estimated})
+            return
+        }
+        if (patches.length == 1 && exactPatchMetrics) {
+            // Admission already measured this patch from binary index zero. Wrapping its
+            // packed JSON in the fixed V2 envelope adds only the empty-envelope bytes;
+            // walking an indivisible multi-megabyte value again cannot change its boundary.
+            const patchBytes = estimated - envelopeBytes - 1
+            planned.push({patches, bytes: exactEmptyEnvelopeBytes + patchBytes})
             return
         }
         let bytes: number
@@ -258,20 +271,27 @@ function createBatchReplay<T extends object>(store: Store<T>, opts: StoreReplayB
         sourceBatches++
         sourcePatches += patches.length
         const staged: {patches: StorePatch[], bytes: number}[] = []
+        function measurePatch(patch: StorePatch, firstBinaryIndex = 0) {
+            try {
+                return {...storeReplayPatchV2WireMetrics(patch, firstBinaryIndex), exact: true}
+            } catch {
+                return {byteLength: maxBytes, binaryCount: 0, exact: false}
+            }
+        }
         for (const patch of patches) {
-            let metrics: {byteLength: number, binaryCount: number}
-            try { metrics = storeReplayPatchV2WireMetrics(patch, pendingBinaryCount) }
-            catch { metrics = {byteLength: maxBytes, binaryCount: 0} }
+            let metrics = measurePatch(patch, pendingBinaryCount)
             let bytes = metrics.byteLength + 1
             if (pending.length && (pending.length >= maxItems || pendingBytes + bytes > maxBytes)) {
                 sealPending(staged)
-                try { metrics = storeReplayPatchV2WireMetrics(patch) }
-                catch { metrics = {byteLength: maxBytes, binaryCount: 0} }
+                // A non-binary patch's metric is independent of the attachment index.
+                // Binary or failed measurements still restart from index zero.
+                if (metrics.binaryCount > 0 || !metrics.exact) metrics = measurePatch(patch)
                 bytes = metrics.byteLength + 1
             }
             pending.push(patch)
             pendingBytes += bytes
             pendingBinaryCount += metrics.binaryCount
+            pendingMetricsExact = pendingMetricsExact && metrics.exact
             if (pending.length >= maxItems) sealPending(staged)
         }
         if (maxDelayMs == 0) sealPending(staged)

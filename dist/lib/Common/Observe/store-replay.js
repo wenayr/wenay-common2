@@ -84,10 +84,12 @@ function createBatchReplay(store, opts) {
         firstSeq: opts.firstSeq,
     });
     const envelopeBytes = 48;
+    const exactEmptyEnvelopeBytes = (0, store_replay_codec_1.storeReplayBatchV2WireMetrics)([]).byteLength;
     let pending = [];
     const ready = [];
     let pendingBytes = envelopeBytes;
     let pendingBinaryCount = 0;
+    let pendingMetricsExact = true;
     let timer = null;
     let closed = false;
     let flushing = false;
@@ -107,16 +109,23 @@ function createBatchReplay(store, opts) {
             return;
         const sealed = pending;
         const estimated = pendingBytes;
+        const exactPatchMetrics = pendingMetricsExact;
         pending = [];
         pendingBytes = envelopeBytes;
         pendingBinaryCount = 0;
+        pendingMetricsExact = true;
         const planned = [];
-        splitToWireLimit(sealed, estimated, planned);
+        splitToWireLimit(sealed, estimated, planned, exactPatchMetrics);
         target.push(...planned);
     }
-    function splitToWireLimit(patches, estimated, planned) {
+    function splitToWireLimit(patches, estimated, planned, exactPatchMetrics = false) {
         if (estimated <= maxBytes) {
             planned.push({ patches, bytes: estimated });
+            return;
+        }
+        if (patches.length == 1 && exactPatchMetrics) {
+            const patchBytes = estimated - envelopeBytes - 1;
+            planned.push({ patches, bytes: exactEmptyEnvelopeBytes + patchBytes });
             return;
         }
         let bytes;
@@ -173,28 +182,27 @@ function createBatchReplay(store, opts) {
         sourceBatches++;
         sourcePatches += patches.length;
         const staged = [];
-        for (const patch of patches) {
-            let metrics;
+        function measurePatch(patch, firstBinaryIndex = 0) {
             try {
-                metrics = (0, store_replay_codec_1.storeReplayPatchV2WireMetrics)(patch, pendingBinaryCount);
+                return { ...(0, store_replay_codec_1.storeReplayPatchV2WireMetrics)(patch, firstBinaryIndex), exact: true };
             }
             catch {
-                metrics = { byteLength: maxBytes, binaryCount: 0 };
+                return { byteLength: maxBytes, binaryCount: 0, exact: false };
             }
+        }
+        for (const patch of patches) {
+            let metrics = measurePatch(patch, pendingBinaryCount);
             let bytes = metrics.byteLength + 1;
             if (pending.length && (pending.length >= maxItems || pendingBytes + bytes > maxBytes)) {
                 sealPending(staged);
-                try {
-                    metrics = (0, store_replay_codec_1.storeReplayPatchV2WireMetrics)(patch);
-                }
-                catch {
-                    metrics = { byteLength: maxBytes, binaryCount: 0 };
-                }
+                if (metrics.binaryCount > 0 || !metrics.exact)
+                    metrics = measurePatch(patch);
                 bytes = metrics.byteLength + 1;
             }
             pending.push(patch);
             pendingBytes += bytes;
             pendingBinaryCount += metrics.binaryCount;
+            pendingMetricsExact = pendingMetricsExact && metrics.exact;
             if (pending.length >= maxItems)
                 sealPending(staged);
         }

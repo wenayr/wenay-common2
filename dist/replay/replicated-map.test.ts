@@ -696,6 +696,48 @@ async function main() {
         injectedFollower.close()
         injected.control.close()
 
+        const measuredStore = createStore<Record<string, Row>>({A: row('A', 1)}, {drain: 'micro'})
+        const measuredSnapshot = measuredStore.snapshot
+        let measuredSnapshots = 0
+        measuredStore.snapshot = function countMeasuredSnapshot() {
+            measuredSnapshots++
+            return measuredSnapshot()
+        }
+        const measured = createReplicatedMap<Row>({
+            keyOf(value) { return value.id },
+            store: measuredStore,
+            delivery: 'latest',
+        })
+        ok(measuredSnapshots == 1,
+            'an injected map takes one detached baseline snapshot at construction')
+        measuredStore.state.A = row('A', 2)
+        await flushReactive(measuredStore.state)
+        ok(measuredSnapshots == 1,
+            'a drained top-level injected patch updates the baseline without cloning the complete Store')
+        measured.control.close()
+        ok(measuredSnapshots == 2,
+            'injected close still takes one current snapshot for the final pending-drain comparison')
+
+        const replacedStore = createStore<Record<string, Row>>({A: row('A', 1)}, {drain: 'micro'})
+        const replacedSnapshot = replacedStore.snapshot
+        let replacedSnapshots = 0
+        replacedStore.snapshot = function countReplacedSnapshot() {
+            replacedSnapshots++
+            return replacedSnapshot()
+        }
+        const replaced = createReplicatedMap<Row>({
+            keyOf(value) { return value.id },
+            store: replacedStore,
+            delivery: 'latest',
+        })
+        replacedStore.replace({B: row('B', 3)})
+        await flushReactive(replacedStore.state)
+        ok(replacedSnapshots == 1,
+            'a drained multi-key injected batch updates its baseline without a complete Store snapshot')
+        replaced.control.close()
+        ok(replacedSnapshots == 2,
+            'the incrementally updated multi-key baseline suppresses a duplicate final close publication')
+
         const closingStore = createStore<Record<string, Row>>({}, {drain: 'micro'})
         const closing = createReplicatedMap<Row>({
             keyOf(value) { return value.id },

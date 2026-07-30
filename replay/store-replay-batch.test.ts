@@ -5,6 +5,7 @@
 import {isDeepStrictEqual} from 'node:util'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {createStore, type StorePatch} from '../src/Common/Observe/store'
+import {listen} from '../src/Common/events/Listen'
 import {
     exposeStoreReplay,
     type StoreReplayRemote,
@@ -15,6 +16,7 @@ import {
     decodeStoreReplayPatchV2,
     encodeStoreReplayBatchV2,
     encodeStoreReplayPatchV2,
+    storeReplayBatchV2WireMetrics,
 } from '../src/Common/Observe/store-replay-codec'
 
 let failures = 0
@@ -104,6 +106,98 @@ async function main() {
     sync()
     offLive()
     exposed.close()
+
+    console.log('\n[store-replay-v2] sizing traverses each accepted patch only when needed')
+    const largeText = 'x'.repeat(80 * 1024)
+    const expectedOversizePatch: StorePatch = {
+        path: ['LARGE'],
+        exists: true,
+        value: {text: largeText},
+    }
+    const expectedOversizeBytes = storeReplayBatchV2WireMetrics([expectedOversizePatch]).byteLength
+    let oversizeReads = 0
+    const observedOversizeValue = {}
+    Object.defineProperty(observedOversizeValue, 'text', {
+        enumerable: true,
+        get() {
+            oversizeReads++
+            return largeText
+        },
+    })
+    const [emitOversize, oversizeSource] = listen<[readonly StorePatch[]]>()
+    const oversizeExposed = exposeStoreReplay(createStore<Record<string, unknown>>({}), {
+        patchSource: oversizeSource,
+        maxBytes: 512,
+    })
+    emitOversize([{
+        path: ['LARGE'],
+        exists: true,
+        value: observedOversizeValue,
+    }])
+    const oversizeStats = oversizeExposed.batchStats()
+    ok(oversizeReads == 1,
+        'one indivisible oversized patch reuses its first exact metric instead of walking the value twice')
+    ok(oversizeStats.emittedBatches == 1 && oversizeStats.emittedPatches == 1
+        && oversizeStats.estimatedBytes == expectedOversizeBytes,
+    'the oversized singleton keeps its exact batch byte statistic and one-envelope wire boundary')
+    oversizeExposed.close()
+
+    const expectedBinaryPatch: StorePatch = {
+        path: ['BINARY'],
+        exists: true,
+        value: {bytes: new Uint8Array(2 * 1024)},
+    }
+    const expectedBinaryBytes = storeReplayBatchV2WireMetrics([expectedBinaryPatch]).byteLength
+    let binaryReads = 0
+    const observedBinaryValue = {}
+    Object.defineProperty(observedBinaryValue, 'bytes', {
+        enumerable: true,
+        get() {
+            binaryReads++
+            return new Uint8Array(2 * 1024)
+        },
+    })
+    const [emitBinary, binarySource] = listen<[readonly StorePatch[]]>()
+    const binaryExposed = exposeStoreReplay(createStore<Record<string, unknown>>({}), {
+        patchSource: binarySource,
+        maxBytes: 512,
+    })
+    emitBinary([{path: ['BINARY'], exists: true, value: observedBinaryValue}])
+    const binaryStats = binaryExposed.batchStats()
+    ok(binaryReads == 1 && binaryStats.estimatedBytes == expectedBinaryBytes,
+        'an oversized native-binary singleton reuses its metric without changing attachment bytes')
+    binaryExposed.close()
+
+    const firstBoundaryPatch: StorePatch = {
+        path: ['FIRST'],
+        exists: true,
+        value: {bytes: new Uint8Array(300)},
+    }
+    let boundaryReads = 0
+    const observedBoundaryValue = {}
+    Object.defineProperty(observedBoundaryValue, 'text', {
+        enumerable: true,
+        get() {
+            boundaryReads++
+            return 'b'.repeat(300)
+        },
+    })
+    const [emitBoundary, boundarySource] = listen<[readonly StorePatch[]]>()
+    const boundaryExposed = exposeStoreReplay(createStore<Record<string, unknown>>({}), {
+        patchSource: boundarySource,
+        maxBytes: 500,
+    })
+    emitBoundary([
+        firstBoundaryPatch,
+        {path: ['SECOND'], exists: true, value: observedBoundaryValue},
+    ])
+    const boundaryStats = boundaryExposed.batchStats()
+    ok(boundaryReads == 1,
+        'a non-binary patch keeps its metric when a preceding binary batch flush resets attachment indices')
+    ok(boundaryStats.emittedBatches == 2 && boundaryStats.emittedPatches == 2,
+        'the non-binary sizing fast path preserves the existing batch boundary')
+    boundaryExposed.close()
+
     console.log(failures == 0 ? '\nStore Replay V2 tests: OK' : `\nStore Replay V2 tests: ${failures} FAILED`)
     process.exit(failures == 0 ? 0 : 1)
 }
