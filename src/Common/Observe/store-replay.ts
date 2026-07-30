@@ -32,6 +32,24 @@ import {
     storeReplayBatchV2WireMetrics,
     storeReplayPatchV2WireMetrics,
 } from './store-replay-codec'
+import {
+    createStoreReplayViewLayer,
+    type StoreReplayViewOpts,
+    type StoreReplayViewRemote,
+    type StoreReplayViewSyncOpts,
+} from './store-replay-view'
+
+export type {
+    StoreReplayViewCursor,
+    StoreReplayViewDescriptorV1,
+    StoreReplayViewOpts,
+    StoreReplayViewRemote,
+    StoreReplayViewSnapshotChunkV1,
+    StoreReplayViewSnapshotOpenV1,
+    StoreReplayViewSnapshotOpts,
+    StoreReplayViewSnapshotReadV1,
+    StoreReplayViewSyncOpts,
+} from './store-replay-view'
 
 export type StoreReplayBatchOpts = Pick<ReplayListenOptions<[readonly StorePatch[]]>,
     'history' | 'getSince' | 'onJournal' | 'onJournalBatch' | 'now' | 'firstSeq'> & {
@@ -147,14 +165,16 @@ function condenseBatchPatchTail(tail: ReplayEvent<[readonly StorePatch[]]>[]) {
     return [{seq: last.seq, ts: last.ts, event: [held] as [readonly StorePatch[]]}]
 }
 
-function createBatchReplay<T extends object>(store: Store<T>, opts: StoreReplayBatchOpts) {
-    const maxItems = positiveIntegerOption(opts.maxItems, 256, 'exposeStoreReplay: batch.maxItems')
-    const maxBytes = positiveIntegerOption(opts.maxBytes, 64 * 1024, 'exposeStoreReplay: batch.maxBytes')
+function createBatchReplay(
+    currentBatch: () => [readonly StorePatch[]],
+    opts: StoreReplayBatchOpts,
+    label = 'exposeStoreReplay',
+) {
+    const maxItems = positiveIntegerOption(opts.maxItems, 256, label + ': batch.maxItems')
+    const maxBytes = positiveIntegerOption(opts.maxBytes, 64 * 1024, label + ': batch.maxBytes')
     const maxDelayMs = opts.maxDelayMs ?? 0
-    if (!Number.isFinite(maxDelayMs) || maxDelayMs < 0) throw new RangeError('exposeStoreReplay: batch.maxDelayMs must be >= 0')
-
-    function currentBatch() {
-        return [[{path: [], exists: true, value: store.snapshot()}]] as [readonly StorePatch[]]
+    if (!Number.isFinite(maxDelayMs) || maxDelayMs < 0) {
+        throw new RangeError(label + ': batch.maxDelayMs must be >= 0')
     }
 
     const [emitBatch, replay] = replayListen<[readonly StorePatch[]]>({
@@ -336,6 +356,7 @@ function createBatchReplay<T extends object>(store: Store<T>, opts: StoreReplayB
         flush,
         close,
         stats,
+        limits: {maxItems, maxBytes},
     }
 }
 
@@ -522,7 +543,10 @@ function decodeStoreReplayRemote(remote: StoreReplayBatchRemote) {
  * there are no subscribers, otherwise there are holes in the line. Cost: one listenPaths-listener + ring.
  */
 export function exposeStoreReplay<T extends object>(store: Store<T>, opts: StoreReplayOpts = {}) {
-    const batchReplay = createBatchReplay(store, opts)
+    function currentStoreReplayBatch() {
+        return [[{path: [], exists: true, value: store.snapshot()}]] as [readonly StorePatch[]]
+    }
+    const batchReplay = createBatchReplay(currentStoreReplayBatch, opts)
     const replayApi = exposeStoreReplayBatch(batchReplay.replay, batchReplay.flush)
 
     const {patches: _patches, patchesBatch: _patchesBatch, changedData: _changedData, ...storeApi} = exposeStore(store, {push: true})
@@ -559,8 +583,7 @@ export function exposeStoreReplay<T extends object>(store: Store<T>, opts: Store
 }
 
 /**
- * Client side: mirror over line. keyframe/tail/live — by one mechanism
- * applyStorePatches. Reconnect: syncStoreReplay(store, remote, {since: prev.seq()}).
+ * Client side: mirror over line. keyframe/tail/live use one patch mechanism.
  */
 export function syncStoreReplayBatch<T extends object>(
     store: Store<T>, remote: StoreReplayBatchRemote, opts: StoreReplaySyncOpts<T> = {},
@@ -625,6 +648,29 @@ export function syncStoreReplay<T extends object>(store: Store<T>, remote: Store
     return schemaReady
         ? deferStoreReplaySync(store, remote, opts, schemaReady)
         : syncStoreReplayResolved(store, remote, opts)
+}
+
+const storeReplayViewLayer = createStoreReplayViewLayer({
+    createBatchReplay,
+    exposeStoreReplayBatch,
+    syncStoreReplay,
+})
+
+/** Read-only selective replay over one authoritative Store. */
+export function createStoreReplayView<
+    T extends object,
+    K extends Extract<keyof T, string> = Extract<keyof T, string>,
+>(store: Store<T>, opts: StoreReplayViewOpts<K>) {
+    return storeReplayViewLayer.createStoreReplayView(store, opts)
+}
+
+/** Atomic selected-view mirror with bounded snapshot transport. */
+export function syncStoreReplayView<T extends object>(
+    store: Store<T>,
+    remote: StoreReplayViewRemote,
+    opts: StoreReplayViewSyncOpts<T> = {},
+) {
+    return storeReplayViewLayer.syncStoreReplayView(store, remote, opts)
 }
 
 function syncStoreReplayRouteResolved<T extends object>(

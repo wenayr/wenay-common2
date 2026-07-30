@@ -448,6 +448,103 @@ function installStoreReplayPatchesListenOwner(store) {
         value: createStorePatchesListenOwner(store, true),
     });
 }
+function createStoreReplayViewPatchesOwner(store) {
+    const registrations = new Set();
+    const registrationsByKey = new Map();
+    let offStore;
+    function emitSelectedStorePatches(change) {
+        const paths = exactReplayPatchPaths(change);
+        const batches = new Map();
+        function add(registration, patch) {
+            let patches = batches.get(registration);
+            if (!patches) {
+                patches = [];
+                batches.set(registration, patches);
+            }
+            patches.push(patch);
+        }
+        if (paths.some(path => path.length == 0)) {
+            for (const [key, targets] of registrationsByKey) {
+                const patch = makePatch(store.state, [key]);
+                for (const registration of targets)
+                    add(registration, patch);
+            }
+        }
+        else {
+            const sampled = new Map();
+            for (const path of paths) {
+                const key = path[0];
+                if (typeof key != 'string')
+                    continue;
+                const targets = registrationsByKey.get(key);
+                if (!targets)
+                    continue;
+                const id = pathKey(path);
+                if (sampled.has(id))
+                    continue;
+                const patch = makePatch(store.state, path);
+                sampled.set(id, patch);
+                for (const registration of targets)
+                    add(registration, patch);
+            }
+        }
+        const failures = [];
+        for (const [registration, patches] of batches) {
+            try {
+                registration.emit(patches);
+            }
+            catch (error) {
+                failures.push(error);
+            }
+        }
+        if (failures.length == 1)
+            throw failures[0];
+        if (failures.length > 1) {
+            throw new AggregateError(failures, 'Store Replay views rejected a shared patch batch');
+        }
+    }
+    function startStoreWatcher() {
+        offStore ??= store.listenPaths().on(emitSelectedStorePatches);
+    }
+    function stopStoreWatcher() {
+        if (registrations.size != 0)
+            return;
+        offStore?.();
+        offStore = undefined;
+    }
+    return function createSelectedStorePatchSource(keys) {
+        const selection = new Set(keys);
+        function produceSelectedStorePatches(emit) {
+            const registration = { keys: selection, emit };
+            registrations.add(registration);
+            for (const key of selection) {
+                let targets = registrationsByKey.get(key);
+                if (!targets) {
+                    targets = new Set();
+                    registrationsByKey.set(key, targets);
+                }
+                targets.add(registration);
+            }
+            startStoreWatcher();
+            return function removeSelectedStorePatchRegistration() {
+                registrations.delete(registration);
+                for (const key of selection) {
+                    const targets = registrationsByKey.get(key);
+                    targets?.delete(registration);
+                    if (targets?.size == 0)
+                        registrationsByKey.delete(key);
+                }
+                stopStoreWatcher();
+            };
+        }
+        return (0, Listen_1.createListen)(produceSelectedStorePatches, coldListenOptions());
+    };
+}
+function installStoreReplayViewPatchesOwner(store) {
+    Object.defineProperty(store, observe_private_1.STORE_REPLAY_VIEW_PATCH_SOURCE, {
+        value: createStoreReplayViewPatchesOwner(store),
+    });
+}
 function listenStorePatches(store) {
     return installStorePatchesListenOwner(store)();
 }
@@ -503,12 +600,12 @@ function createPatchesBatchListen(batches, opts = {}) {
                 pendingBinaryCount = 0;
             }
             for (const patch of patches) {
-                let metrics = (0, rpc_wire_size_1.rpcResultWireMetrics)(patch, pendingBinaryCount);
+                let metrics = (0, rpc_wire_size_1.rpcResultWireMetricsFast)(patch, pendingBinaryCount);
                 let bytes = Number.isFinite(metrics.byteLength) ? metrics.byteLength + 1 : maxBytes;
                 if (pending.length && (pending.length >= maxItems || pendingBytes + bytes > maxBytes)) {
                     flush();
                     if (metrics.binaryCount > 0)
-                        metrics = (0, rpc_wire_size_1.rpcResultWireMetrics)(patch);
+                        metrics = (0, rpc_wire_size_1.rpcResultWireMetricsFast)(patch);
                     bytes = Number.isFinite(metrics.byteLength) ? metrics.byteLength + 1 : maxBytes;
                 }
                 pending.push(patch);
@@ -856,6 +953,7 @@ function createStore(initial, opts = {}) {
     };
     installStorePatchesListenOwner(store);
     installStoreReplayPatchesListenOwner(store);
+    installStoreReplayViewPatchesOwner(store);
     return store;
 }
 function exposeStore(store, opts = {}) {

@@ -1205,7 +1205,7 @@ withReplayListen(base, {current?, frame?, history?, getSince?, onJournal?, now?,
   //     is retained and still fails on eviction; neither = sacred exact queue — eviction THROWS terminally.
   //   Triggers: reconnect (`since`), client pull (own timer — replaces any server-side interval mode), server gate drain.
   //   The transport sees ONLY seq; entity keys/skip rules live in producer lambdas (hint = opaque per-subscriber pass-through).
-exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?, staleMs?, onStale?, skewMs?, now?, policy?, hint?, catchUp?, gapPolicy?, prepareCatchUp?}) -> off   // wire pair over the EXISTING rpc: line = plain Listen, since/keyframe/frame = plain methods
+exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?, staleMs?, onStale?, skewMs?, now?, policy?, hint?, catchUp?, gapPolicy?, prepareCatchUp?, recoverGap?}) -> off   // wire pair over the EXISTING rpc: line = plain Listen, since/keyframe/frame = plain methods
   // NORMAL PATH: createRpcServerAuto exposes replay listens automatically (see rpc section) — exposeReplay stays
   //   as the manual/custom-transport path. replaySubscribe prefers `frame` when the server has it (one round trip,
   //   server picks tail/mini-frame/keyframe; sacred throw -> onError), uses since/keyframe when frame is unavailable.
@@ -1220,7 +1220,10 @@ exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?, staleMs?
   //   racing envelopes queue, then frame/since catch-up is sorted+deduped. Transport-agnostic remotes without RPC
   //   lifecycle metadata still reconnect by creating a new subscriber with {since: prev.seq()}.
   // catchUp:'tail' bypasses frame compaction; gapPolicy:'error' rejects an evicted or non-contiguous tail/live jump.
-  // prepareCatchUp({initial,since}) is an advanced async identity gate; {reset:true} requests a fresh keyframe.
+  // prepareCatchUp({initial,since,signal}) is an advanced async identity/bootstrap gate. {reset:true} requests a
+  //   fresh keyframe; {since,ts?} declares an external snapshot already applied while the live line was queued.
+  //   recoverGap receives the same AbortSignal after a missing tail and, with catchUp:'tail', may install a bounded
+  //   replacement {since,ts?} before keyframe/error fallback. Hooks must stop external mutation when signal aborts.
   // Delivery commits seq only after cb succeeds. Any cb exception (including Store materialization, validateBatch or
   // low-level onBatch) is terminal through onError and leaves off.seq() at the preceding coordinate. onBatch runs
   // after Store application, so its own exception does not roll the already-applied state back.
@@ -1441,6 +1444,50 @@ exposeStoreReplay(store, {maxItems?, maxBytes?, maxDelayMs?, patchSource?, ...})
   //   replay/batchStats/flushPending stay local for inspection. Journal precommit is before head/fan-out;
   //   failed compact chunks and a non-transactional adapter's uncommitted suffix remain retryable without duplicates.
   //   Oracles: replay/store-replay-batch.test.ts and replay/store-replay-batch-socket.test.ts.
+createStoreReplayView(store, {
+  keys, lineId?, describe?, patchSource?,
+  history?, maxItems?, maxBytes?, maxDelayMs?,
+  snapshot?: {chunkBytes?, windowBytes?, maxItems?, maxSessions?, ttlMs?}
+}) -> {
+  resource: {describe, replay, snapshot: {open, read, close}},
+  events: {replay},
+  view: {lineId, selectionId, keys(), stats()},
+  close
+}
+syncStoreReplayView(mirror, remote, {
+  cursor?: {lineId,selectionId,seq}, snapshotWindowBytes?, snapshotRetries?,
+  onSnapshotProgress?, validateBatch?, onBatch?, ...ReplaySubscribeOpts
+}) -> off & {ready, mode, viewMode, seq(), cursor(), isStale(), lastTs()}
+  // VIEW SHAPE: V1 is a static, server-authorized set of top-level string keys. It is not a
+  //   remotely supplied predicate and it exposes no write methods. Changing authorization/keys creates another
+  //   view/lineId. Reuse one view instance for clients with the same selection. All views of one Store share
+  //   one exact-path watcher; each changed value is detached once for the union of interested views, after
+  //   unselected dirty paths have been discarded. A simultaneously exposed full Replay keeps its own full feed.
+  // COST: a view materializes no child Store and retains no full selected snapshot. It owns a normalized Set,
+  //   one filtered V2 journal and bounded active cursor state. An unselected patch is one Set lookup and creates
+  //   no view event/seq/wire fan-out. Root replacement is projected to selected set/delete facts.
+  // SNAPSHOT: open captures the view head. read sends ordinary V2 patch batches through callback packets, yields
+  //   a macrotask between chunks, and returns only after one configured byte window. That response is cumulative
+  //   credit for the next window; there is no ACK per chunk and no unbounded Socket.IO enqueue. Plain JSON/binary
+  //   patch sizes are counted directly without building a disposable packed graph, JSON string or UTF-8 buffer;
+  //   rich/custom values fall back to the canonical RPC metric.
+  // ATOMICITY: the client assembles callback chunks into an owned, non-reactive root. The visible Store remains
+  //   unchanged until the final response, then receives one root replacement. replaySubscribe attached the live
+  //   line first; tail > baseSeq closes the fuzzy key-by-key scan race. History eviction discards the scratch
+  //   root and retries (default 3) instead of exposing a partial snapshot.
+  // CURSOR: persist lineId, selectionId and seq together through sync.cursor(). Same-line/same-selection
+  //   reconnect uses the cheap V2 tail without opening a snapshot. A different line or authorization
+  //   selection forces a bounded fresh snapshot and removes keys no longer selected.
+  // LIMITS: defaults are 512 KiB chunk, 1 MiB window, 256 patches/chunk, 32 sessions and 30 s TTL. The server
+  //   clamps a client's requested window. One top-level value remains indivisible and may exceed the target;
+  //   large strings/blobs/media belong in Bytestream/storage resources. General cyclic graph fragmentation is
+  //   deliberately not smuggled into Store Replay V2.
+  // COMPATIBILITY: resource.replay remains the ordinary V2 facade, so an older client can still use its
+  //   monolithic keyframe. The bounded path is syncStoreReplayView. A frameLine gate that loses all retained
+  //   history may still build the selected monolithic keyframe for an old/slow recovery; size the view history
+  //   for the expected live lag until gate-aware snapshot windows become a transport capability.
+  // Oracles: replay/store-replay-view.test.ts, replay/store-replay-view-socket.test.ts and
+  //   replay/replay-external-snapshot.test.ts.
 syncStoreReplayRoute(mirror, remote, {validateBatch?, onBatch?, ...}) -> off & {ready, switch(nextRemote, opts), seq(), label(), active(), mode}
   // Same validation/callback/seq contract as syncStoreReplay, but route-replaceable for relay/direct promotion.
 createStoreReplicaOffers(initial?) -> {control, api}                                    // dynamic registry; api = {list, changes}; subscribe-before-list is handled by createStoreReplicaSet

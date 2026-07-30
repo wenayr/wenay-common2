@@ -44,12 +44,13 @@ async function readReplayDescriptor(remote) {
     return (await remote.describe()) ?? null;
 }
 function replaySubscribe(remote, cb, opts = {}) {
-    const { since = -1, onSeq, onError, onLive, staleMs, onStale, skewMs = 0, now = Date.now, policy = 'queue', hint, catchUp: catchUpMode = 'frame', gapPolicy = 'keyframe', prepareCatchUp, } = opts;
+    const { since = -1, onSeq, onError, onLive, staleMs, onStale, skewMs = 0, now = Date.now, policy = 'queue', hint, catchUp: catchUpMode = 'frame', gapPolicy = 'keyframe', prepareCatchUp, recoverGap, } = opts;
     const lifecycle = (0, transport_lifecycle_1.getRpcTransportLifecycle)(remote);
     let lastDelivered = since;
     let replaying = true;
     let closed = false;
     let recoveryGeneration = 0;
+    let recoveryAbort;
     let queue = [];
     let deliveryQueue = [];
     let delivering = false;
@@ -189,6 +190,8 @@ function replaySubscribe(remote, cb, opts = {}) {
             return false;
         closed = true;
         recoveryGeneration++;
+        recoveryAbort?.abort();
+        recoveryAbort = undefined;
         queue.length = 0;
         deliveryQueue.length = 0;
         stopStaleTimer();
@@ -276,18 +279,46 @@ function replaySubscribe(remote, cb, opts = {}) {
     function isCurrent(generation) {
         return !closed && generation == recoveryGeneration;
     }
-    async function catchUp(generation, point, initial) {
+    function preparedPoint(value, point) {
+        if (value?.since == null)
+            return point;
+        if (!Number.isSafeInteger(value.since) || value.since < 0) {
+            throw new TypeError('catch-up snapshot seq must be a non-negative safe integer');
+        }
+        if (value.ts != null) {
+            if (!Number.isFinite(value.ts) || value.ts < 0) {
+                throw new TypeError('catch-up snapshot ts must be a non-negative finite number');
+            }
+        }
+        lastDelivered = value.since;
+        if (value.ts != null)
+            lastTs = value.ts;
+        lastArrival = now();
+        if (onSeq) {
+            try {
+                onSeq(value.since);
+            }
+            catch (error) {
+                setTimeout(function rethrowPreparedOnSeq() { throw error; }, 0);
+            }
+        }
+        return value.since;
+    }
+    async function catchUp(generation, point, initial, signal) {
         try {
             await lineReady;
             if (!isCurrent(generation))
                 return;
-            const preparation = await prepareCatchUp?.({ initial, since: point });
+            const preparation = await prepareCatchUp?.({ initial, since: point, signal });
             if (!isCurrent(generation))
                 return;
             if (preparation?.reset) {
                 point = -1;
                 lastDelivered = -1;
             }
+            point = preparedPoint(preparation, point);
+            if (!isCurrent(generation))
+                return;
             let done = false;
             if (catchUpMode == 'frame' && point >= 0 && (0, transport_lifecycle_1.rpcMemberMayBeAvailable)(remote, 'frame')) {
                 const envelopes = await remote.frame(point, hint);
@@ -306,19 +337,38 @@ function replaySubscribe(remote, cb, opts = {}) {
                     deliverSorted(tail, false);
                 }
                 else {
-                    if (point >= 0 && gapPolicy == 'error') {
-                        throw new Error('journal evicted or unavailable; gap policy forbids keyframe reset');
-                    }
-                    const keyframe = await remote.keyframe();
+                    const recovered = point >= 0
+                        ? await recoverGap?.({ initial, since: point, signal })
+                        : undefined;
                     if (!isCurrent(generation))
                         return;
-                    if (keyframe) {
-                        if (initial && keyframe.seq <= lastDelivered)
-                            lastDelivered = keyframe.seq - 1;
-                        deliver(keyframe);
+                    if (recovered) {
+                        point = preparedPoint(recovered, point);
+                        if (!isCurrent(generation))
+                            return;
+                        const recoveredTail = await remote.since(point);
+                        if (!isCurrent(generation))
+                            return;
+                        if (recoveredTail == null) {
+                            throw new Error('journal evicted while installing the replacement snapshot');
+                        }
+                        deliverSorted(recoveredTail, false);
                     }
-                    else if (point >= 0) {
-                        throw new Error('journal evicted or unavailable; no keyframe can cover the gap');
+                    else {
+                        if (point >= 0 && gapPolicy == 'error') {
+                            throw new Error('journal evicted or unavailable; gap policy forbids keyframe reset');
+                        }
+                        const keyframe = await remote.keyframe();
+                        if (!isCurrent(generation))
+                            return;
+                        if (keyframe) {
+                            if (initial && keyframe.seq <= lastDelivered)
+                                lastDelivered = keyframe.seq - 1;
+                            deliver(keyframe);
+                        }
+                        else if (point >= 0) {
+                            throw new Error('journal evicted or unavailable; no keyframe can cover the gap');
+                        }
                     }
                 }
             }
@@ -347,8 +397,10 @@ function replaySubscribe(remote, cb, opts = {}) {
         if (closed)
             return;
         replaying = true;
+        recoveryAbort?.abort();
+        recoveryAbort = new AbortController();
         const generation = ++recoveryGeneration;
-        void catchUp(generation, lastDelivered, initial);
+        void catchUp(generation, lastDelivered, initial, recoveryAbort.signal);
     }
     if (lifecycle) {
         offDisconnect = lifecycle.onDisconnect(function replayTransportDisconnected() {
@@ -356,6 +408,8 @@ function replaySubscribe(remote, cb, opts = {}) {
                 return;
             replaying = true;
             recoveryGeneration++;
+            recoveryAbort?.abort();
+            recoveryAbort = undefined;
             queue.length = 0;
         });
         offConnect = lifecycle.onConnect(function replayTransportConnected() {

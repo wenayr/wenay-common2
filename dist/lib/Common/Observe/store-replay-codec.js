@@ -64,7 +64,7 @@ function storeReplayBatchV2JsonBytes(wire) {
     return utf8Encoder.encode(JSON.stringify(tuple)).byteLength;
 }
 function storeReplayPatchV2WireMetrics(patch, firstBinaryIndex = 0) {
-    return (0, rpc_wire_size_1.rpcResultWireMetrics)(encodeStoreReplayPatchV2(patch), firstBinaryIndex);
+    return (0, rpc_wire_size_1.rpcResultWireMetricsFast)(encodeStoreReplayPatchV2(patch), firstBinaryIndex);
 }
 function storeReplayPatchV2WireBytes(patch) {
     return storeReplayPatchV2WireMetrics(patch).byteLength;

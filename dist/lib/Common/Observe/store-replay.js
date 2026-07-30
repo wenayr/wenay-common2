@@ -4,6 +4,8 @@ exports.storeReplayMode = storeReplayMode;
 exports.exposeStoreReplay = exposeStoreReplay;
 exports.syncStoreReplayBatch = syncStoreReplayBatch;
 exports.syncStoreReplay = syncStoreReplay;
+exports.createStoreReplayView = createStoreReplayView;
+exports.syncStoreReplayView = syncStoreReplayView;
 exports.syncStoreReplayRoute = syncStoreReplayRoute;
 exports.syncStoreReplayEach = syncStoreReplayEach;
 exports.storeReplayAt = storeReplayAt;
@@ -19,6 +21,7 @@ const positive_integer_option_1 = require("../positive-integer-option");
 const transport_lifecycle_1 = require("../events/transport-lifecycle");
 const observe_private_1 = require("./observe-private");
 const store_replay_codec_1 = require("./store-replay-codec");
+const store_replay_view_1 = require("./store-replay-view");
 function storeReplayMode() { return 'v2'; }
 function cloneStoreReplayPatch(patch) {
     return {
@@ -65,14 +68,12 @@ function condenseBatchPatchTail(tail) {
     const last = tail[tail.length - 1];
     return [{ seq: last.seq, ts: last.ts, event: [held] }];
 }
-function createBatchReplay(store, opts) {
-    const maxItems = (0, positive_integer_option_1.positiveIntegerOption)(opts.maxItems, 256, 'exposeStoreReplay: batch.maxItems');
-    const maxBytes = (0, positive_integer_option_1.positiveIntegerOption)(opts.maxBytes, 64 * 1024, 'exposeStoreReplay: batch.maxBytes');
+function createBatchReplay(currentBatch, opts, label = 'exposeStoreReplay') {
+    const maxItems = (0, positive_integer_option_1.positiveIntegerOption)(opts.maxItems, 256, label + ': batch.maxItems');
+    const maxBytes = (0, positive_integer_option_1.positiveIntegerOption)(opts.maxBytes, 64 * 1024, label + ': batch.maxBytes');
     const maxDelayMs = opts.maxDelayMs ?? 0;
-    if (!Number.isFinite(maxDelayMs) || maxDelayMs < 0)
-        throw new RangeError('exposeStoreReplay: batch.maxDelayMs must be >= 0');
-    function currentBatch() {
-        return [[{ path: [], exists: true, value: store.snapshot() }]];
+    if (!Number.isFinite(maxDelayMs) || maxDelayMs < 0) {
+        throw new RangeError(label + ': batch.maxDelayMs must be >= 0');
     }
     const [emitBatch, replay] = (0, replay_listen_1.replayListen)({
         current: currentBatch,
@@ -245,6 +246,7 @@ function createBatchReplay(store, opts) {
         flush,
         close,
         stats,
+        limits: { maxItems, maxBytes },
     };
 }
 function exposeStoreReplayWire(replay, encode, prepareRead) {
@@ -404,7 +406,10 @@ function decodeStoreReplayRemote(remote) {
     return decodeStoreReplayWireRemote(remote, decodeStoreReplayV2);
 }
 function exposeStoreReplay(store, opts = {}) {
-    const batchReplay = createBatchReplay(store, opts);
+    function currentStoreReplayBatch() {
+        return [[{ path: [], exists: true, value: store.snapshot() }]];
+    }
+    const batchReplay = createBatchReplay(currentStoreReplayBatch, opts);
     const replayApi = exposeStoreReplayBatch(batchReplay.replay, batchReplay.flush);
     const { patches: _patches, patchesBatch: _patchesBatch, changedData: _changedData, ...storeApi } = (0, store_1.exposeStore)(store, { push: true });
     const getExactPatches = store[observe_private_1.STORE_REPLAY_PATCH_SOURCE];
@@ -494,6 +499,17 @@ function syncStoreReplay(store, remote, opts = {}) {
     return schemaReady
         ? deferStoreReplaySync(store, remote, opts, schemaReady)
         : syncStoreReplayResolved(store, remote, opts);
+}
+const storeReplayViewLayer = (0, store_replay_view_1.createStoreReplayViewLayer)({
+    createBatchReplay,
+    exposeStoreReplayBatch,
+    syncStoreReplay,
+});
+function createStoreReplayView(store, opts) {
+    return storeReplayViewLayer.createStoreReplayView(store, opts);
+}
+function syncStoreReplayView(store, remote, opts = {}) {
+    return storeReplayViewLayer.syncStoreReplayView(store, remote, opts);
 }
 function syncStoreReplayRouteResolved(store, remote, opts) {
     const { onBatch, validateBatch, ...routeOpts } = opts;

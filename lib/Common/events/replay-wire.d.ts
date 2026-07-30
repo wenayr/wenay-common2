@@ -42,10 +42,26 @@ export type ReplaySubscribeOpts = {
     prepareCatchUp?: (context: {
         initial: boolean;
         since: number;
+        signal: AbortSignal;
     }) => void | {
-        reset: boolean;
+        reset?: boolean;
+        since?: number;
+        ts?: number;
     } | Promise<void | {
-        reset: boolean;
+        reset?: boolean;
+        since?: number;
+        ts?: number;
+    }>;
+    recoverGap?: (context: {
+        initial: boolean;
+        since: number;
+        signal: AbortSignal;
+    }) => void | {
+        since: number;
+        ts?: number;
+    } | Promise<void | {
+        since: number;
+        ts?: number;
     }>;
 };
 export declare function readReplayDescriptor(remote: Pick<ReplayRemote, 'describe'>): Promise<Record<string, any> | null>;

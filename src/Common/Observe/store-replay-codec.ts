@@ -3,7 +3,7 @@
 // =====================================================================
 
 import type {ReplayEvent} from '../events/replay-listen'
-import {rpcResultWireMetrics} from '../rcp/rpc-wire-size'
+import {rpcResultWireMetrics, rpcResultWireMetricsFast} from '../rcp/rpc-wire-size'
 import type {StorePatch} from './store'
 
 export const STORE_REPLAY_BATCH_V2_VERSION = 2 as const
@@ -81,7 +81,7 @@ export function storeReplayBatchV2JsonBytes(
 }
 
 export function storeReplayPatchV2WireMetrics(patch: StorePatch, firstBinaryIndex = 0) {
-    return rpcResultWireMetrics(encodeStoreReplayPatchV2(patch), firstBinaryIndex)
+    return rpcResultWireMetricsFast(encodeStoreReplayPatchV2(patch), firstBinaryIndex)
 }
 
 export function storeReplayPatchV2WireBytes(patch: StorePatch) {

@@ -700,6 +700,30 @@ Observe.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?} of api.
   // off.ready (catch-up done) · off.mode ('v2') · off.seq()
   // lagging/late client NEVER gets a backlog: evicted seq -> ONE fresh keyframe + live
   // freshness is an option, not consumer boilerplate: {staleMs, onStale} flags a silent line / stale keyframe (edge-triggered both ways; 🎞️ in rare docs)
+// Large selective Store: one authoritative Store, no materialized child Store per client.
+const quotesView = Observe.createStoreReplayView(quotes, {
+  keys: authorizedSymbols,                 // static/server-authorized top-level string keys
+  lineId: 'quotes:account-scope:v1',
+  history: 4096,
+  snapshot: {chunkBytes: 512 * 1024, windowBytes: 1024 * 1024}
+})
+// Expose `quotesView.resource`; clients with the same selection should share this one view instance.
+const selectedMirror = Observe.createStore<Record<string, Quote>>({})
+const selectedSync = Observe.syncStoreReplayView(selectedMirror, api.quotesView, {
+  cursor: persistedCursor                 // {lineId,selectionId,seq}; omit for the first snapshot
+})
+await selectedSync.ready
+persist(selectedSync.cursor())
+  // The view retains only a normalized key Set, one filtered V2 journal and bounded snapshot cursors.
+  // Views share one exact-path Store watcher and detach only the union of selected changed values.
+  // Unselected changes produce no clone, view seq or client fan-out. Initial data is sampled key by key:
+  // callback chunks are separated by a task turn, while each RPC read response grants the next bounded window.
+  // Plain Store values are sized without materializing a second packed/JSON/UTF-8 copy.
+  // Defaults: about 512 KiB/chunk, 1 MiB/window, 256 patches/chunk, 32 cursors, 30 s cursor TTL.
+  // The mirror remains unchanged while chunks arrive, then swaps once and applies the retained V2 tail.
+  // One selected top-level value is indivisible in V1; keep giant blobs/media on a byte-stream resource.
+quotesView.close()
+
 Observe.syncStoreReplayRoute(mirror, remote, {label?, validateBatch?, onBatch?}) -> off & {switch(nextRemote, opts), ready, seq(), label(), active(), mode}
   // relay/direct promotion and re-interposition: replacement route catches up by seq before the old route closes
   // route validation/callback ordering matches syncStoreReplay; every route uses the V2 seq-space

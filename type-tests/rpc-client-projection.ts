@@ -1,6 +1,12 @@
 import type {createListen} from '../src/Common/events/Listen'
 import type {DeepSocketListen, DeepSocketListenSmart} from '../src/Common/rcp/listen-deep'
 import type {ClientAPIAll} from '../src/Common/rcp/rpc-client'
+import {createStore} from '../src/Common/Observe/store'
+import {
+    createStoreReplayView,
+    syncStoreReplayView,
+    type StoreReplayViewRemote,
+} from '../src/Common/Observe/store-replay'
 
 type tBatchV2 = [2, number, number, unknown[]]
 
@@ -55,5 +61,37 @@ function optionalListenKeepsTheProjectedHandle() {
     handle.off()
 }
 
+type tSelectedState = {
+    A: {value: number}
+    B: {value: number}
+}
+
+type tViewProjection = ClientAPIAll<DeepSocketListenSmart<{view: StoreReplayViewRemote}>>
+declare const projectedView: tViewProjection
+
+function selectedViewKeepsItsKeyAndRemoteTypes() {
+    const source = createStore<tSelectedState>({A: {value: 1}, B: {value: 2}})
+    const view = createStoreReplayView(source, {keys: ['A'] as const})
+    const selectedKey: 'A' = view.view.keys()[0]
+    const mirror = createStore<Partial<tSelectedState>>({})
+    const sync = syncStoreReplayView(mirror, projectedView.view)
+    const cursor = sync.cursor()
+    if (cursor) {
+        const lineId: string = cursor.lineId
+        const selectionId: string = cursor.selectionId
+        const seq: number = cursor.seq
+        void lineId
+        void selectionId
+        void seq
+    }
+
+    // @ts-expect-error exact Store keys remain checked at the view boundary
+    createStoreReplayView(source, {keys: ['C'] as const})
+    void selectedKey
+    void view
+    void sync
+}
+
 void projectedOptionalBinaryMembersStayTyped
 void optionalListenKeepsTheProjectedHandle
+void selectedViewKeepsItsKeyAndRemoteTypes

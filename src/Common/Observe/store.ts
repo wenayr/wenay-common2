@@ -2,10 +2,11 @@ import {createListen, type ListenApi} from '../events/Listen'
 import {listenUpdate, listenUpdatePaths, onUpdate, reactive, isReactive, toRaw, ReactiveChange} from "./reactive";
 import {getRpcMemberState, getRpcSchemaReady, hasRpcMemberLookup} from '../events/transport-lifecycle'
 import {positiveIntegerOption} from '../positive-integer-option'
-import {rpcResultWireMetrics} from '../rcp/rpc-wire-size'
+import {rpcResultWireMetricsFast} from '../rcp/rpc-wire-size'
 import {
     REACTIVE_ARRAY_MUTATIONS,
     STORE_REPLAY_PATCH_SOURCE,
+    STORE_REPLAY_VIEW_PATCH_SOURCE,
     type ReactiveArrayMutations,
 } from './observe-private'
 
@@ -599,6 +600,111 @@ function installStoreReplayPatchesListenOwner<T extends object>(store: Store<T>)
     })
 }
 
+type StoreReplayViewPatchRegistration = {
+    keys: ReadonlySet<string>
+    emit: (patches: readonly StorePatch[]) => void
+}
+
+/**
+ * Selective Replay views share one Store watcher. A changed fact is detached
+ * once for the union of interested views, after dirty paths have been filtered.
+ */
+function createStoreReplayViewPatchesOwner<T extends object>(store: Store<T>) {
+    const registrations = new Set<StoreReplayViewPatchRegistration>()
+    const registrationsByKey = new Map<string, Set<StoreReplayViewPatchRegistration>>()
+    let offStore: (() => void) | undefined
+
+    function emitSelectedStorePatches(change: StoreChange) {
+        const paths = exactReplayPatchPaths(change)
+        const batches = new Map<StoreReplayViewPatchRegistration, StorePatch[]>()
+
+        function add(registration: StoreReplayViewPatchRegistration, patch: StorePatch) {
+            let patches = batches.get(registration)
+            if (!patches) {
+                patches = []
+                batches.set(registration, patches)
+            }
+            patches.push(patch)
+        }
+
+        if (paths.some(path => path.length == 0)) {
+            for (const [key, targets] of registrationsByKey) {
+                const patch = makePatch(store.state, [key])
+                for (const registration of targets) add(registration, patch)
+            }
+        } else {
+            const sampled = new Map<string, StorePatch>()
+            for (const path of paths) {
+                const key = path[0]
+                if (typeof key != 'string') continue
+                const targets = registrationsByKey.get(key)
+                if (!targets) continue
+                const id = pathKey(path)
+                if (sampled.has(id)) continue
+                const patch = makePatch(store.state, path)
+                sampled.set(id, patch)
+                for (const registration of targets) add(registration, patch)
+            }
+        }
+
+        const failures: unknown[] = []
+        for (const [registration, patches] of batches) {
+            try {
+                registration.emit(patches)
+            } catch (error) {
+                failures.push(error)
+            }
+        }
+        if (failures.length == 1) throw failures[0]
+        if (failures.length > 1) {
+            throw new AggregateError(failures, 'Store Replay views rejected a shared patch batch')
+        }
+    }
+
+    function startStoreWatcher() {
+        offStore ??= store.listenPaths().on(emitSelectedStorePatches)
+    }
+
+    function stopStoreWatcher() {
+        if (registrations.size != 0) return
+        offStore?.()
+        offStore = undefined
+    }
+
+    return function createSelectedStorePatchSource(keys: readonly string[]) {
+        const selection = new Set(keys)
+        function produceSelectedStorePatches(emit: (patches: readonly StorePatch[]) => void) {
+            const registration = {keys: selection, emit}
+            registrations.add(registration)
+            for (const key of selection) {
+                let targets = registrationsByKey.get(key)
+                if (!targets) {
+                    targets = new Set()
+                    registrationsByKey.set(key, targets)
+                }
+                targets.add(registration)
+            }
+            startStoreWatcher()
+            return function removeSelectedStorePatchRegistration() {
+                registrations.delete(registration)
+                for (const key of selection) {
+                    const targets = registrationsByKey.get(key)
+                    targets?.delete(registration)
+                    if (targets?.size == 0) registrationsByKey.delete(key)
+                }
+                stopStoreWatcher()
+            }
+        }
+        return createListen<[readonly StorePatch[]]>(produceSelectedStorePatches, coldListenOptions())
+    }
+}
+
+function installStoreReplayViewPatchesOwner<T extends object>(store: Store<T>) {
+    Object.defineProperty(store, STORE_REPLAY_VIEW_PATCH_SOURCE, {
+        value: createStoreReplayViewPatchesOwner(store),
+    })
+}
+
 export function listenStorePatches<T extends object>(store: Store<T>) {
     return installStorePatchesListenOwner(store)()
 }
@@ -656,13 +762,13 @@ function createPatchesBatchListen(
                 pendingBinaryCount = 0
             }
             for (const patch of patches) {
-                let metrics = rpcResultWireMetrics(patch, pendingBinaryCount)
+                let metrics = rpcResultWireMetricsFast(patch, pendingBinaryCount)
                 let bytes = Number.isFinite(metrics.byteLength) ? metrics.byteLength + 1 : maxBytes
                 if (pending.length && (pending.length >= maxItems || pendingBytes + bytes > maxBytes)) {
                     flush()
                     // A non-binary patch does not contain attachment indices, so the metric
                     // measured against the previous batch stays exact after the boundary.
-                    if (metrics.binaryCount > 0) metrics = rpcResultWireMetrics(patch)
+                    if (metrics.binaryCount > 0) metrics = rpcResultWireMetricsFast(patch)
                     bytes = Number.isFinite(metrics.byteLength) ? metrics.byteLength + 1 : maxBytes
                 }
                 pending.push(patch)
@@ -1008,6 +1114,7 @@ export function createStore<T extends object>(initial: T, opts: Parameters<typeo
     }
     installStorePatchesListenOwner(store)
     installStoreReplayPatchesListenOwner(store)
+    installStoreReplayViewPatchesOwner(store)
     return store
 }
 

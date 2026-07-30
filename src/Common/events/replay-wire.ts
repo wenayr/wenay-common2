@@ -119,9 +119,24 @@ export type ReplaySubscribeOpts = {
     catchUp?: 'frame' | 'tail'
     /** Missing-tail policy while resuming: keyframe reset (default) or terminal error. */
     gapPolicy?: 'keyframe' | 'error'
-    /** Advanced identity gate before initial/reconnect catch-up; reset requests a fresh keyframe. */
-    prepareCatchUp?: (context: {initial: boolean, since: number}) =>
-        void | {reset: boolean} | Promise<void | {reset: boolean}>
+    /**
+     * Advanced gate before initial/reconnect catch-up. `reset` requests a fresh
+     * keyframe; `since` commits an externally applied snapshot coordinate and
+     * resumes this already-attached live line from there.
+     */
+    prepareCatchUp?: (context: {initial: boolean, since: number, signal: AbortSignal}) =>
+        void
+        | {reset?: boolean, since?: number, ts?: number}
+        | Promise<void | {reset?: boolean, since?: number, ts?: number}>
+    /**
+     * Optional bounded replacement for a missing tail. With `catchUp: 'tail'`
+     * it runs before the ordinary keyframe fallback and may install an
+     * external snapshot.
+     */
+    recoverGap?: (context: {initial: boolean, since: number, signal: AbortSignal}) =>
+        void
+        | {since: number, ts?: number}
+        | Promise<void | {since: number, ts?: number}>
 }
 
 // unsubscribe handle is either a function (Listen) or object (wire SubscriptionHandle)
@@ -159,12 +174,14 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
         catchUp: catchUpMode = 'frame',
         gapPolicy = 'keyframe',
         prepareCatchUp,
+        recoverGap,
     } = opts
     const lifecycle = getRpcTransportLifecycle(remote)
     let lastDelivered = since
     let replaying = true
     let closed = false
     let recoveryGeneration = 0
+    let recoveryAbort: AbortController | undefined
     let queue: ReplayEvent<Z>[] = []
     let deliveryQueue: ReplayEvent<Z>[] = []
     let delivering = false
@@ -290,6 +307,8 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
         if (closed) return false
         closed = true
         recoveryGeneration++
+        recoveryAbort?.abort()
+        recoveryAbort = undefined
         queue.length = 0
         deliveryQueue.length = 0
         stopStaleTimer()
@@ -371,16 +390,38 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
         return !closed && generation == recoveryGeneration
     }
 
-    async function catchUp(generation: number, point: number, initial: boolean) {
+    function preparedPoint(value: {since?: number, ts?: number} | void, point: number) {
+        if (value?.since == null) return point
+        if (!Number.isSafeInteger(value.since) || value.since < 0) {
+            throw new TypeError('catch-up snapshot seq must be a non-negative safe integer')
+        }
+        if (value.ts != null) {
+            if (!Number.isFinite(value.ts) || value.ts < 0) {
+                throw new TypeError('catch-up snapshot ts must be a non-negative finite number')
+            }
+        }
+        lastDelivered = value.since
+        if (value.ts != null) lastTs = value.ts
+        lastArrival = now()
+        if (onSeq) {
+            try { onSeq(value.since) }
+            catch (error) { setTimeout(function rethrowPreparedOnSeq() { throw error }, 0) }
+        }
+        return value.since
+    }
+
+    async function catchUp(generation: number, point: number, initial: boolean, signal: AbortSignal) {
         try {
             await lineReady
             if (!isCurrent(generation)) return
-            const preparation = await prepareCatchUp?.({initial, since: point})
+            const preparation = await prepareCatchUp?.({initial, since: point, signal})
             if (!isCurrent(generation)) return
             if (preparation?.reset) {
                 point = -1
                 lastDelivered = -1
             }
+            point = preparedPoint(preparation, point)
+            if (!isCurrent(generation)) return
             let done = false
             if (catchUpMode == 'frame' && point >= 0 && rpcMemberMayBeAvailable(remote, 'frame')) {
                 const envelopes = await remote.frame!(point, hint)
@@ -396,16 +437,31 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
                 if (tail) {
                     deliverSorted(tail, false)
                 } else {
-                    if (point >= 0 && gapPolicy == 'error') {
-                        throw new Error('journal evicted or unavailable; gap policy forbids keyframe reset')
-                    }
-                    const keyframe = await remote.keyframe()
+                    const recovered = point >= 0
+                        ? await recoverGap?.({initial, since: point, signal})
+                        : undefined
                     if (!isCurrent(generation)) return
-                    if (keyframe) {
-                        if (initial && keyframe.seq <= lastDelivered) lastDelivered = keyframe.seq - 1
-                        deliver(keyframe)
-                    } else if (point >= 0) {
-                        throw new Error('journal evicted or unavailable; no keyframe can cover the gap')
+                    if (recovered) {
+                        point = preparedPoint(recovered, point)
+                        if (!isCurrent(generation)) return
+                        const recoveredTail = await remote.since(point)
+                        if (!isCurrent(generation)) return
+                        if (recoveredTail == null) {
+                            throw new Error('journal evicted while installing the replacement snapshot')
+                        }
+                        deliverSorted(recoveredTail, false)
+                    } else {
+                        if (point >= 0 && gapPolicy == 'error') {
+                            throw new Error('journal evicted or unavailable; gap policy forbids keyframe reset')
+                        }
+                        const keyframe = await remote.keyframe()
+                        if (!isCurrent(generation)) return
+                        if (keyframe) {
+                            if (initial && keyframe.seq <= lastDelivered) lastDelivered = keyframe.seq - 1
+                            deliver(keyframe)
+                        } else if (point >= 0) {
+                            throw new Error('journal evicted or unavailable; no keyframe can cover the gap')
+                        }
                     }
                 }
             }
@@ -427,8 +483,10 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
     function startCatchUp(initial: boolean) {
         if (closed) return
         replaying = true
+        recoveryAbort?.abort()
+        recoveryAbort = new AbortController()
         const generation = ++recoveryGeneration
-        void catchUp(generation, lastDelivered, initial)
+        void catchUp(generation, lastDelivered, initial, recoveryAbort.signal)
     }
 
     if (lifecycle) {
@@ -436,6 +494,8 @@ export function replaySubscribe<Z extends any[]>(remote: ReplayRemote<Z>, cb: Li
             if (closed) return
             replaying = true
             recoveryGeneration++
+            recoveryAbort?.abort()
+            recoveryAbort = undefined
             queue.length = 0
         })
         offConnect = lifecycle.onConnect(function replayTransportConnected() {
