@@ -24,6 +24,10 @@ replaceable implementations receive that state through their injected dependenci
 assemble and fail over through `Observe.createStoreReplicaSet`, independently of implementation
 bindings.
 
+For verified artifact loading, isolation, candidate scopes, HTTP/MCP control adapters, activation,
+and rollback boundaries, read [`DYNAMIC-RUNTIME.md`](DYNAMIC-RUNTIME.md). This runtime remains the
+binding/data-plane primitive; it does not become the executable-code loader.
+
 ## Model
 
 ```text

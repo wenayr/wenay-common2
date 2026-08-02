@@ -182,6 +182,8 @@ an explicitly negotiated retention or persistence change:
   apply before changing the wire path. `experiments/slow-network-2026-08` raised the stakes: a
   monolithic frame that occupies a slow link longer than the heartbeat budget starves the ping and
   kills the connection mid catch-up, so chunking is also the structural fix for reconnect storms.
+  A design sketch for those three gates, plus the five decisions that must be answered before any
+  code, is `doc/target/KEYFRAME-CHUNKING.md`. It is explicitly not an approved protocol.
 - Add a byte budget beside the batch-history entry count. A legal history window can retain many
   large patches even when the number of envelopes is bounded.
 - Add a maximum wait to offline debounce only after defining the write-amplification trade-off; the

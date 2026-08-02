@@ -14,6 +14,7 @@ import {createArtifactHost} from '../src/Common/artifact/artifact-index'
 import {createConversationHost} from '../src/Common/conversation/conversation-index'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 import {createHttpFacadeServer} from '../src/server/httpFacadeServer'
+import {createDevModuleBridge} from './dev-module-bridge'
 import {io as ioClient} from 'socket.io-client'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createStoreFollower} from '../src/Common/Observe/store-follower'
@@ -676,6 +677,29 @@ createHttpFacadeServer({
     limits: httpFacadeLimits,
 })
 
+// ============== optional development module bridge ==============
+// Opt in with DEMO_DEV_MODULE=1 (or a path to your own file). The watched file
+// becomes a live replaceable module and its own methods become routes, so a
+// save is immediately callable. Off by default: it starts a worker thread and
+// exposes whatever methods the module happens to have.
+const devModulePath = process.env.DEMO_DEV_MODULE?.trim() || null
+const devModuleBridge = devModulePath == null ? null : createDevModuleBridge({
+    app,
+    file: devModulePath == '1'
+        ? path.resolve(__dirname, 'dev-module.js')
+        : path.resolve(devModulePath),
+    basePath: '/dev-module',
+    middleware: authorizeDemoHttpFacade,
+    slotId: 'demo.dev',
+    moduleId: 'demo.dev.impl',
+    contractId: 'demo.dev.port',
+    capability: 'demo-dev',
+    onEvent(event) {
+        if (event.type == 'built') console.log(`[demo] dev module build ${event.build} active as ${event.version}`)
+        else console.error(`[demo] dev module build ${event.build} rejected: ${event.error}`)
+    },
+})
+
 app.use(express.static(path.resolve(__dirname, 'public'), {
     // The stand is rebuilt in place; stale browser bundles otherwise keep an
     // old RPC client alive while the page itself still looks healthy.
@@ -1043,6 +1067,19 @@ async function startDemo() {
     console.log(`  HTTP facade auth: Authorization: Bearer ${configuredHttpFacadeToken
         ? '<DEMO_HTTP_FACADE_TOKEN> (configured)'
         : `${httpFacadeToken} (generated for this run)`}`)
+    if (devModuleBridge) {
+        // A failing dev module must never stop the stand from serving.
+        try {
+            const started = await devModuleBridge.control.start()
+            console.log(`  dev module file: ${started.file}`)
+            console.log(`  dev module methods: http://localhost:${port}/dev-module/methods`)
+            console.log(`  dev module call: POST http://localhost:${port}/dev-module/call/greet  body "world"`)
+        } catch (error) {
+            console.error('[demo] dev module bridge failed to start', error)
+        }
+    } else {
+        console.log('  dev module bridge: set DEMO_DEV_MODULE=1 to edit demo/dev-module.js live')
+    }
     if (mirrorOf) console.log(`  this instance mirrors the workboard of ${mirrorOf}`)
 }
 
@@ -1070,6 +1107,9 @@ function closeDemoResources() {
     closeDemoResource('rooms', videoRooms.close)
     closeDemoResource('calls', callPolicy.close)
     closeDemoResource('peer host', host.close)
+    closeDemoResource('dev module bridge', function closeDevModuleBridge() {
+        void devModuleBridge?.control.close()
+    })
     uploadTickets.clear()
     uploadBytes.clear()
     artifactTickets.clear()

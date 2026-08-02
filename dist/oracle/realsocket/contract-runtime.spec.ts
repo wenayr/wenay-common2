@@ -11,6 +11,7 @@ const PORT = 3168
 type State = {value: number, writer: string}
 type RemoteEditor = {
     identity: () => Promise<string>
+    delayedIdentity: (waitMs: number) => Promise<string>
     add: (value: number) => Promise<number>
 }
 
@@ -66,6 +67,10 @@ async function main() {
     function editor(id: string) {
         return {
             identity: () => id,
+            async delayedIdentity(waitMs: number) {
+                await delay(waitMs)
+                return id
+            },
             async add(value: number) {
                 authoritative.state.value += value
                 authoritative.state.writer = id
@@ -103,9 +108,9 @@ async function main() {
     const first = runtime.api.acquire<RemoteEditor>('counter')
     await check('first binding invokes the real RPC facade', () => first.api.identity(), 'rpc-editor-a')
     await first.api.add(2)
-    first.release()
     await waitFor('first RPC write reaches the mirror', () => mirror.state.value == 3)
     const seqBeforeSwap = sync.seq()
+    const oldInFlight = first.api.delayedIdentity(80)
 
     await runtime.control.addOffer(rpcOffer('rpc-editor-b', 5, connection, connection.api.editorB))
     await waitFor('higher-priority RPC binding activates', () => runtime.api.binding('counter')?.offerId == 'rpc-editor-b')
@@ -114,15 +119,58 @@ async function main() {
     await second.api.add(4)
     second.release()
     await waitFor('second RPC write reaches the same mirror', () => mirror.state.value == 7)
+    await check('old in-flight RPC remains pinned to the retired binding', () => oldInFlight, 'rpc-editor-a')
+    first.release()
 
     await check('Store mirror remains continuous across the contract swap', () => ({
         state: mirror.snapshot(),
         seqAdvanced: sync.seq() > seqBeforeSwap,
     }), {state: {value: 7, writer: 'rpc-editor-b'}, seqAdvanced: true})
-    await check('binding history records one atomic replacement', () => runtime.api.history().map(event => [
+    const socket = connection.hub.socket as any
+    const connectCount = connection.hub.connectCount()
+    const engine = socket.io?.engine
+    if (!engine?.close) throw new Error('Engine.IO close() is unavailable')
+    engine.close()
+    await waitFor('real transport disconnect', () => !socket.connected)
+    authoritative.state.value = 11
+    authoritative.state.writer = 'offline-source'
+    await flushReactive(authoritative.state)
+    await waitFor('same Socket.IO object reconnects', () =>
+        socket.connected && connection.hub.connectCount() == connectCount + 1)
+    await waitFor('mirror catches up after transport reconnect', () => mirror.state.value == 11)
+    await check('reconnect preserves the same logical Socket.IO object', () => connection.hub.socket == socket, true)
+    await check('reconnect keeps one Store Replay wire subscription', () =>
+        connection.client.api.subscriptions().length, 1)
+
+    const afterReconnect = runtime.api.acquire<RemoteEditor>('counter')
+    await check('active implementation still serves calls after reconnect', () =>
+        afterReconnect.api.identity(), 'rpc-editor-b')
+    afterReconnect.release()
+
+    const rolledBack = await runtime.control.rollback('counter')
+    await check('rollback reactivates the previous verified offer', () => ({
+        offerId: rolledBack.offerId,
+        generation: rolledBack.bindingGeneration,
+    }), {offerId: 'rpc-editor-a', generation: 3})
+    const afterRollback = runtime.api.acquire<RemoteEditor>('counter')
+    await check('new calls route through the rolled-back implementation', () =>
+        afterRollback.api.identity(), 'rpc-editor-a')
+    await afterRollback.api.add(5)
+    afterRollback.release()
+    await waitFor('rollback write reaches the continuous mirror', () => mirror.state.value == 16)
+
+    await check('binding history records replacement and rollback', () => runtime.api.history().map(event => [
         event.from?.offerId ?? null,
         event.to?.offerId ?? null,
-    ]), [[null, 'rpc-editor-a'], ['rpc-editor-a', 'rpc-editor-b']])
+    ]), [
+        [null, 'rpc-editor-a'],
+        ['rpc-editor-a', 'rpc-editor-b'],
+        ['rpc-editor-b', 'rpc-editor-a'],
+    ])
+    await check('one Store mirror spans both swaps and reconnect', () => ({
+        state: mirror.snapshot(),
+        seqAdvanced: sync.seq() > seqBeforeSwap,
+    }), {state: {value: 16, writer: 'rpc-editor-a'}, seqAdvanced: true})
 
     runtime.close()
     sync()
@@ -137,4 +185,3 @@ main().catch(function fatal(error) {
     console.error(error)
     process.exit(2)
 })
-
