@@ -36,7 +36,13 @@ Where it goes next: [`demo/`](demo/) is the full runnable stand (`npm run demo`)
 - Brief API cheat sheet: [`doc/wenay-common2.md`](doc/wenay-common2.md)
 - Extended API cheat sheet: [`doc/wenay-common2-rare.md`](doc/wenay-common2-rare.md)
 - Runtime protocols: [`AI`](doc/AI-RUN-PROTOCOL.md) · [`Artifact`](doc/ARTIFACT-RUNTIME.md) ·
-  [`Conversation`](doc/CONVERSATION-RUNTIME.md) · [`Contract`](doc/CONTRACT-RUNTIME.md)
+  [`Conversation`](doc/CONVERSATION-RUNTIME.md) · [`Contract`](doc/CONTRACT-RUNTIME.md) ·
+  [`Dynamic modules`](doc/DYNAMIC-RUNTIME.md)
+- Dynamic runtime executable evidence: [`internal vertical slice`](doc/DYNAMIC-RUNTIME-IMPLEMENTATION.md)
+- Implementation prompts: [`Dynamic runtime skeleton`](doc/prompts/IMPLEMENT-DYNAMIC-RUNTIME.md),
+  [`Dynamic MCP contributions`](doc/prompts/IMPLEMENT-MCP-CONTRIBUTION-GATEWAY.md),
+  [`MCP architect`](doc/prompts/MCP-ARCHITECT.md),
+  [`Agent HTTP control, dev hot-reload and dynamic tools`](doc/prompts/IMPLEMENT-AGENT-HTTP-CONTROL.md)
 - Installed-project HTTPS CLI and renewal: [`doc/HTTPS-CLI.md`](doc/HTTPS-CLI.md)
 - Public HTTPS/WSS demo stand and certificates: [`doc/DEMO-HTTPS.md`](doc/DEMO-HTTPS.md)
 - Generated `.d.ts` overview workflow for TypeScript/TSX projects:

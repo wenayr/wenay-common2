@@ -9,6 +9,9 @@ Use these rules by default — no need to ask.
 - Never change a public interface without explicit discussion.
 - RPC authorization has a canonical page: `doc/RPC-AUTH.md`. Read it before writing or reviewing any
   RPC auth code, and keep it in sync when the auth surface changes.
+- Dynamic module loading and replacement has a canonical architecture page:
+  `doc/DYNAMIC-RUNTIME.md`. Read it before writing or reviewing runtime loading, activation,
+  rollback, or MCP/HTTP control adapters, and keep it in sync when that surface changes.
 
 ## Construction order
 

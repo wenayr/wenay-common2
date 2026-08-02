@@ -432,7 +432,9 @@ outside. Three things made it harder than it should be:
    confounded by 15.6 ms granularity.
 6. Measure with `perMessageDeflate` on. Repeated JSON keys are exactly what a deflate context
    removes, so the 49.26 % key share measured here is an upper bound on what a table encoding
-   can be worth on a compressed link.
+   can be worth on a compressed link. — Done 2026-08: `experiments/slow-network-2026-08`
+   measured deflate at 90 %+ byte reduction on rows-shaped JSON for ~2× CPU, and its RESULTS.md
+   records when to enable it.
 
 ---
 

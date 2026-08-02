@@ -179,7 +179,9 @@ an explicitly negotiated retention or persistence change:
 
 - Chunk large keyframes before encoding. A single Store keyframe is still monolithic and measured
   about 3.3 MiB at 100,000 representative keys. Define chunk identity, total revision and atomic
-  apply before changing the wire path.
+  apply before changing the wire path. `experiments/slow-network-2026-08` raised the stakes: a
+  monolithic frame that occupies a slow link longer than the heartbeat budget starves the ping and
+  kills the connection mid catch-up, so chunking is also the structural fix for reconnect storms.
 - Add a byte budget beside the batch-history entry count. A legal history window can retain many
   large patches even when the number of envelopes is bounded.
 - Add a maximum wait to offline debounce only after defining the write-amplification trade-off; the
@@ -207,8 +209,50 @@ Application traffic and CAPS/MAP/HELLO bootstrap use JSON arrays. Binary busines
 native transport attachments rather than being expanded into JSON number arrays.
 
 Reverse-proxy compression applies to HTTP assets, facade responses and polling, not WebSocket
-messages after Upgrade. Socket-level `perMessageDeflate` is the first candidate for
-bandwidth-constrained RPC, but it needs a production CPU/latency measurement and should avoid
-already-compressed media. Application-frame compression would require a separate capability,
-uncompressed-size limits and decompression-bomb protection; there is no current evidence that its
-complexity is justified.
+messages after Upgrade. Socket-level `perMessageDeflate` is now measured
+(`experiments/slow-network-2026-08`): on replay/rows-shaped JSON it removes 90 %+ of wire bytes for
+about 2× CPU on large messages, which converts to 4.8–8.2× faster delivery on a ≈1 Mbit/s link and
+by itself prevented the measured ping-starvation disconnect. On loopback/LAN it is a pure CPU and
+latency loss, matching the July stands. So the rule is deployment-shaped: enable it where bandwidth
+is the ceiling, keep it off where CPU is. Deflate also compresses binary frames, so keep
+already-compressed media off deflated connections. Application-frame compression still would require
+a separate capability, uncompressed-size limits and decompression-bomb protection; deflate at the
+socket removes the evidence that its complexity could be justified.
+
+### Slow-network Socket.IO profile (measured 2026-08)
+
+The library never creates sockets, so this is application guidance. The failure mode on slow links,
+reproduced in `experiments/slow-network-2026-08`: one frame occupying the link longer than the
+heartbeat budget starves the queued ping, the client declares `ping timeout`, reconnects, catch-up
+resends a large frame, and the cycle repeats. With default `pingInterval` 25 s / `pingTimeout` 20 s,
+any frame above ~2.5 MiB at 1 Mbit/s is in the kill zone — a measured 100k-key Store keyframe
+(~3.3 MiB) qualifies.
+
+Recommended server options for bandwidth-constrained deployments:
+
+```ts
+new Server(httpServer, {
+    pingTimeout: 60_000,                      // survive one large frame on a slow link
+    perMessageDeflate: {threshold: 1024},     // measured: 90 %+ bytes off replay-shaped JSON
+    maxHttpBufferSize: /* largest legal client frame */
+})
+```
+
+Node clients add `perMessageDeflate: true` (browsers offer the extension automatically; the server
+side is the deciding switch). Client reconnection defaults (1 s → 5 s backoff, infinite attempts)
+are already reasonable; raise the client `timeout` only if the connect handshake itself times out on
+the target route.
+
+What this profile does not solve, with the honest route for each:
+
+- Reconnect cost: already handled above the socket — the replay catch-up ladder (`frame`/`since`)
+  and declared-Listen recovery survive reconnects; keep journal retention long enough that a flap
+  costs a tail, not a keyframe.
+- In-flight RPC calls still reject on disconnect by design; an opt-in idempotent-retry/outbox layer
+  is a public-contract discussion, not a config knob.
+- Socket.IO `connectionStateRecovery` could make short flaps invisible below the RPC layer, but the
+  hub re-handshakes on every connect regardless, so its value here is unproven. Gate: run
+  `oracle/realsocket/replay-reconnect.spec.ts` and the stale-packet paths against a recovery-enabled
+  server before recommending it.
+- Real packet loss and per-connection deflate memory under fan-out are unmeasured; repeat the stand
+  over the actual deployment route before freezing production values.
