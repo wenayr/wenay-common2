@@ -36,8 +36,18 @@ import {listenStorePatches, type Store, type StorePatch} from './store'
 // Wire shapes
 // =====================================================================
 
-/** "I have every key up to `key`, as of `revision`." `key: null` = nothing yet. */
+/**
+ * "I have every key up to `key`, as of `revision`, on line `lineId`."
+ * `key: null` = nothing yet.
+ *
+ * `lineId` is what makes the claim checkable. A revision only means something inside
+ * one host lifetime: after a restart the counter begins again, so without an identity
+ * a cursor from the previous lifetime would be accepted, find nothing to catch up, and
+ * resume the fill past keys it only ASSUMES it holds. `replay-listen` guards the same
+ * hazard by refusing a seq "from another server lifetime".
+ */
 export type StoreLazyCursor = {
+    lineId: string
     key: string | null
     revision: number
 }
@@ -67,9 +77,10 @@ export type StoreLazyReadV1 = {
     filled: boolean
     revision: number
     /**
-     * The cursor is older than the host can still prove correct, because tombstones
-     * that old were pruned. Restart from a null cursor — silently continuing would
-     * leave deleted keys alive in the mirror forever.
+     * The cursor cannot be honoured: either it is older than the host can still prove
+     * correct because tombstones that old were pruned, or it belongs to a different
+     * line lifetime. Restart from a null cursor AND sweep the mirror — silently
+     * continuing would leave keys alive that the host no longer has.
      */
     stale?: true
 }
@@ -100,10 +111,19 @@ export type StoreLazyLineOpts = {
      * could otherwise keep a key that no longer exists.
      */
     tombstoneKeepMs?: number
+    /**
+     * Identity of this line's lifetime. A cursor from a different lineId is refused,
+     * because a revision counter only means something inside one lifetime. Pass an
+     * explicit value ONLY when the host genuinely preserves its revision counter and
+     * key history across restarts; otherwise let it default to a fresh per-instance id.
+     */
+    lineId?: string
     /** Static descriptor served as describe(). */
     describe?: Record<string, any>
     now?: () => number
 }
+
+let lazyLineCounter = 0
 
 // =====================================================================
 // Local helpers
@@ -129,6 +149,9 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
     const windowBytes = positiveInteger(opts.windowBytes, 512 * 1024, 'exposeStoreLazyLine: windowBytes')
     const tombstoneKeepMs = positiveInteger(opts.tombstoneKeepMs, 600_000, 'exposeStoreLazyLine: tombstoneKeepMs')
     const now = opts.now ?? Date.now
+    // Must differ across process restarts, or a cursor from a dead lifetime would be
+    // silently trusted. Time plus a counter separates both restarts and instances.
+    const lineId = opts.lineId ?? ('lazy-' + Date.now().toString(36) + '-' + (++lazyLineCounter))
 
     /** Revision of the last change to each key, including keys that were deleted. */
     const keyRevision = new Map<string, number>()
@@ -208,9 +231,17 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
         emit: (chunk: StoreLazyChunkV1) => void,
     ): StoreLazyReadV1 {
         if (closed) throw new Error('exposeStoreLazyLine: host is closed')
-        const cursor: StoreLazyCursor = request.cursor ?? {key: null, revision: 0}
-        if (cursor.key != null && cursor.revision < oldestProvableRevision) {
-            return {cursor: {key: null, revision: 0}, remaining: keysInOrder().length, filled: false, revision, stale: true}
+        const cursor: StoreLazyCursor = request.cursor ?? {lineId, key: null, revision: 0}
+        // A cursor is only meaningful inside the lifetime that issued it, and only while
+        // every deletion it missed is still provable.
+        if (cursor.key != null && (cursor.lineId != lineId || cursor.revision < oldestProvableRevision)) {
+            return {
+                cursor: {lineId, key: null, revision: 0},
+                remaining: keysInOrder().length,
+                filled: false,
+                revision,
+                stale: true,
+            }
         }
 
         const budget = Math.min(
@@ -286,7 +317,7 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
         return {
             // The revision only advances when the catch-up half completed; otherwise
             // the rest of what the subscriber missed would be skipped silently.
-            cursor: {key: nextCursorKey, revision: caughtUp ? readRevision : cursor.revision},
+            cursor: {lineId, key: nextCursorKey, revision: caughtUp ? readRevision : cursor.revision},
             remaining,
             filled: remaining == 0,
             revision,
@@ -368,6 +399,8 @@ export type StoreLazySyncOpts = {
         remaining: number
         filled: boolean
         chunks: number
+        /** Mirror keys removed by the end-of-pass sweep because the host no longer has them. */
+        swept: number
     }) => void
     onError?: (error: unknown) => void
 }
@@ -390,6 +423,12 @@ export function syncStoreLazyLine<T extends object>(
     let cursor: StoreLazyCursor | null = opts.cursor ?? null
     let received = 0
     let chunks = 0
+    // Keys delivered during a full pass from a null cursor. A pass from scratch walks
+    // EVERY key that currently exists, so anything left in the mirror afterwards that
+    // this pass never mentioned does not exist on the host — including a key whose
+    // tombstone expired while the subscriber was away. Sweeping at the END of the pass
+    // rather than clearing up front is what keeps the mirror populated throughout.
+    let sweepSeen: Set<string> | null = cursor == null ? new Set<string>() : null
     let timer: ReturnType<typeof setTimeout> | null = null
     let settleFirstPass: (() => void) | null = null
     const firstPass = new Promise<void>(function captureFirstPass(resolve) {
@@ -401,12 +440,29 @@ export function syncStoreLazyLine<T extends object>(
         const state = mirror.state as Record<string, unknown>
         for (const key of Object.keys(chunk.values)) {
             state[key] = chunk.values[key]
+            sweepSeen?.add(key)
             received++
         }
         for (const key of chunk.deleted) {
             delete state[key]
+            sweepSeen?.add(key)
             received++
         }
+    }
+
+    /** Drop mirror keys a full pass never mentioned. Returns how many were removed. */
+    function sweepUnseen() {
+        if (sweepSeen == null) return 0
+        const state = mirror.state as Record<string, unknown>
+        const seen = sweepSeen
+        sweepSeen = null
+        let swept = 0
+        for (const key of Object.keys(state)) {
+            if (seen.has(key)) continue
+            delete state[key]
+            swept++
+        }
+        return swept
     }
 
     async function step() {
@@ -415,15 +471,22 @@ export function syncStoreLazyLine<T extends object>(
             const result = await remote.read({cursor, maxBytes: readBytes}, applyChunk)
             if (stopped) return
             if (result.stale) {
-                // Too far behind to be brought up to date incrementally: start clean
-                // rather than keep keys the host can no longer prove still exist.
+                // Too far behind to be brought up to date incrementally. Restart the
+                // walk AND arm a sweep: the host can no longer prove which keys were
+                // deleted while this subscriber was away, so anything the fresh pass
+                // does not mention must be dropped at the end of it. Resetting only the
+                // cursor would leave a key deleted long ago alive in the mirror forever.
                 cursor = null
+                if (sweepSeen == null) sweepSeen = new Set<string>()
                 schedule(fillIntervalMs)
                 return
             }
             cursor = result.cursor
             opts.onCursor?.(result.cursor)
-            opts.onProgress?.({received, remaining: result.remaining, filled: result.filled, chunks})
+            // Sweep BEFORE settling `filled`, so awaiting it guarantees a mirror that
+            // holds exactly what the host holds.
+            const swept = result.filled ? sweepUnseen() : 0
+            opts.onProgress?.({received, remaining: result.remaining, filled: result.filled, chunks, swept})
             if (result.filled && settleFirstPass) {
                 settleFirstPass()
                 settleFirstPass = null
@@ -443,7 +506,10 @@ export function syncStoreLazyLine<T extends object>(
     function schedule(delayMs: number) {
         if (stopped) return
         timer = setTimeout(function runLazyStep() { void step() }, delayMs)
-        timer.unref?.()
+        // The first pass keeps the process alive, because a caller awaiting `filled`
+        // would otherwise see it stall silently in an idle process. Live polling after
+        // that is background work and must not hold the process open.
+        if (settleFirstPass == null) timer.unref?.()
     }
 
     function close() {

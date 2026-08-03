@@ -164,7 +164,13 @@ function decorateReplayListen<T>(
     let head = firstSeq
     // Entries in seq order. A fixed-modulo ring cannot evict by age, so retention
     // is a head/tail window: `entries[start]` is the oldest retained event.
-    let entries: ReplayEvent<Z>[] = []
+    //
+    // An evicted slot is nulled IMMEDIATELY rather than waiting for compaction. The
+    // fixed-modulo ring it replaced overwrote each slot in place and therefore held
+    // exactly `history` event graphs; a head/tail window that only drops references at
+    // compaction time holds the consumed prefix as well, which measured up to 5x the
+    // configured window on a busy line. Slots below `start` are always undefined.
+    let entries: (ReplayEvent<Z> | undefined)[] = []
     let start = 0
     // Count cap bit the window before the age target could — reported, never silent.
     let cappedByCount = false
@@ -177,9 +183,17 @@ function decorateReplayListen<T>(
     })
     line.run()
 
-    // Drop the consumed prefix once it dominates, so `start` cannot grow forever.
+    /** Release the event AND advance past it, so no evicted graph stays reachable. */
+    function dropOldest() {
+        entries[start] = undefined
+        start++
+    }
+
+    // Reclaim the empty prefix once it dominates. Only array slots are reclaimed here —
+    // the events themselves were released at eviction — so the bound is on slot count,
+    // not on retained heap.
     function compactJournal() {
-        if (start > 1_024 && start * 2 > entries.length) {
+        if (start > 64 && start * 2 > entries.length) {
             entries = entries.slice(start)
             start = 0
         }
@@ -190,7 +204,7 @@ function decorateReplayListen<T>(
     function pruneJournalByAge() {
         if (ageLimitMs == 0 || start >= entries.length) return
         const cutoff = now() - ageLimitMs
-        while (start < entries.length && entries[start].ts < cutoff) start++
+        while (start < entries.length && entries[start]!.ts < cutoff) dropOldest()
         compactJournal()
     }
 
@@ -204,11 +218,11 @@ function decorateReplayListen<T>(
         if (seq == head) return [] as ReplayEvent<Z>[]
         pruneJournalByAge()
         if (start >= entries.length) return undefined
-        const oldest = Math.max(firstSeq + 1, entries[start].seq)
+        const oldest = Math.max(firstSeq + 1, entries[start]!.seq)
         if (seq + 1 < oldest) return undefined
         const out: ReplayEvent<Z>[] = []
-        for (let index = start + (seq + 1 - entries[start].seq); index < entries.length; index++) {
-            out.push(entries[index])
+        for (let index = start + (seq + 1 - entries[start]!.seq); index < entries.length; index++) {
+            out.push(entries[index]!)
         }
         return out
     }
@@ -219,9 +233,9 @@ function decorateReplayListen<T>(
         const retained = entries.length - start
         return {
             entries: retained,
-            oldestSeq: retained > 0 ? entries[start].seq : null,
+            oldestSeq: retained > 0 ? entries[start]!.seq : null,
             head,
-            ageMs: retained > 0 ? now() - entries[start].ts : 0,
+            ageMs: retained > 0 ? now() - entries[start]!.ts : 0,
             historyLimit: history,
             keepMs: ageLimitMs,
             /** true = the count cap cut the window shorter than keepMs asked for. */
@@ -282,7 +296,7 @@ function decorateReplayListen<T>(
             // cannot grow the journal without bound.
             if (history > 0) {
                 while (entries.length - start > history) {
-                    start++
+                    dropOldest()
                     cappedByCount = true
                 }
                 compactJournal()

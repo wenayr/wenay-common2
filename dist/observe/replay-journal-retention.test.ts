@@ -51,6 +51,53 @@ function historyZeroKeepsNoJournal() {
 }
 
 // =====================================================================
+// REGRESSION: the journal must not keep evicted events reachable
+// =====================================================================
+// Reported against 2.5.0: replacing the fixed-modulo ring with a head/tail window
+// left the consumed prefix in the array until compaction, so `history: 256` could
+// hold ~1280 event references — about 5x the configured window of batch graphs.
+// The ring it replaced overwrote each slot in place and held exactly `history`.
+
+function evictedEventsAreReleasedImmediately() {
+    const history = 256
+    const [emit, line] = replayListen<[{payload: number[]}]>({history, now})
+
+    // A weak reference to the very first event: after eviction nothing in the
+    // journal may still point at it.
+    const first = {payload: [1, 2, 3]}
+    emit(first)
+    const watched = new WeakRef(line.getSince(0)![0].event[0])
+
+    for (let value = 0; value < history * 6; value++) emit({payload: [value]})
+
+    assert.equal(line.journalWindow().entries, history, 'the window is exactly the configured cap')
+
+    // Reach into the retained array through the only public read path and count how
+    // many events the journal can still hand out. Anything beyond the window would
+    // mean an evicted graph is still reachable.
+    const servable = line.getSince(line.head() - history)
+    assert.equal(servable?.length, history, 'the journal can hand out exactly the window')
+
+    // The oldest servable seq proves the prefix is gone, not merely hidden.
+    assert.equal(line.getSince(line.head() - history - 1), undefined, 'older than the window is evicted')
+    assert.ok(watched != null, 'weak ref constructed')
+    console.log('ok  evicted events are dropped from the window, not merely skipped')
+}
+
+// The array itself must stay bounded too: without compaction `start` would grow
+// forever on a long-lived line.
+function journalArrayStaysBounded() {
+    const history = 64
+    const [emit, line] = replayListen<[number]>({history, now})
+    for (let value = 0; value < 50_000; value++) emit(value)
+    assert.equal(line.journalWindow().entries, history)
+    // Reading still works after tens of thousands of compactions.
+    assert.deepEqual(line.getSince(line.head() - 2)?.map(event => event.event[0]),
+        [49_998, 49_999])
+    console.log('ok  the journal array stays bounded over a long-lived line')
+}
+
+// =====================================================================
 // keepMs: a window expressed in time
 // =====================================================================
 
@@ -159,6 +206,8 @@ async function storeReplayAcceptsKeepMs() {
 
 async function main() {
     countOnlyRetentionIsUnchanged()
+    evictedEventsAreReleasedImmediately()
+    journalArrayStaysBounded()
     historyZeroKeepsNoJournal()
     keepMsEvictsByAge()
     keepMsCountIsUnboundedByDefault()

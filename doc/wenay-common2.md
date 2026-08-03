@@ -713,11 +713,16 @@ Observe.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?} of api.
   // freshness is an option, not consumer boilerplate: {staleMs, onStale} flags a silent line / stale keyframe (edge-triggered both ways; 🎞️ in rare docs)
 // Very slow link, merge semantics (top-level value is absolute, last write per key wins):
 // fill progressively instead of ever sending a keyframe.
-const lazy = Observe.exposeStoreLazyLine(store, {chunkBytes: 32 * 1024, windowBytes: 512 * 1024, tombstoneKeepMs: 600_000})
+const lazy = Observe.exposeStoreLazyLine(store, {chunkBytes: 32 * 1024, windowBytes: 512 * 1024, tombstoneKeepMs: 600_000, lineId})
 const fill = Observe.syncStoreLazyLine(mirror, lazy.api, {cursor: savedCursor, onCursor: persist})
 await fill.filled                                    // promise: every key delivered at least once
   // THERE IS NO SNAPSHOT — not of values, not even of a key list. Progress is one cursor the
-  // SUBSCRIBER holds, {key, revision} = "I have every key up to `key`, as of `revision`".
+  // SUBSCRIBER holds, {lineId, key, revision} = "I have every key up to `key`, as of `revision`,
+  // on line `lineId`". lineId is what makes the claim checkable: a revision only means something
+  // inside one host lifetime, so a cursor from a restarted host is refused instead of trusted.
+  // A refused cursor comes back as {stale: true}; the subscriber then restarts the pass AND
+  // sweeps every mirror key the fresh pass never mentioned, because the host can no longer prove
+  // which keys were deleted while it was away. Resetting only the cursor would keep ghosts.
   // The host keeps no per-subscriber state, so a reconnect RESUMES the fill instead of
   // restarting it; persist the cursor through onCursor and hand it back to continue.
   // Values are read AT SEND TIME: a key rewritten beyond the cursor costs zero extra bytes and

@@ -229,6 +229,147 @@ async function cursorOlderThanTombstoneRetentionIsRefused() {
 }
 
 // =====================================================================
+// REGRESSION: a stale cursor must not leave a deleted key alive in the mirror
+// =====================================================================
+// Reported against 2.6.0: the stale branch reset the cursor but not the mirror,
+// so a key whose tombstone had expired stayed in the mirror forever while the
+// host no longer held it.
+
+async function staleCursorSweepsKeysTheHostNoLongerHas() {
+    const store = createStore<Record<string, Quote>>({})
+    store.state['a'] = {bid: 1}
+    store.state['b'] = {bid: 2}
+    await flushReactive(store.state)
+
+    const host = exposeStoreLazyLine(store, {tombstoneKeepMs: 1_000, now})
+    const mirror = createStore<Record<string, Quote>>({})
+
+    // 1. The subscriber syncs fully and persists its cursor.
+    let saved: StoreLazyCursor | null = null
+    const first = syncStoreLazyLine(mirror, host.api, {
+        fillOnly: true,
+        onCursor: value => { saved = value },
+    })
+    await first.filled
+    first.close()
+    assert.deepEqual(Object.keys(mirror.state).sort(), ['a', 'b'], 'mirror starts in sync')
+    assert.ok(saved != null, 'a cursor was persisted')
+
+    // 2. `a` is deleted while the subscriber is away, and its tombstone expires.
+    delete store.state['a']
+    await flushReactive(store.state)
+    clock += 10_000
+    store.state['b'] = {bid: 22}
+    await flushReactive(store.state)
+
+    // 3. The host can no longer prove the deletion.
+    const refused = host.api.read({cursor: saved}, function ignore() {}) as any
+    assert.equal(refused.stale, true, 'the host refuses a cursor it cannot prove')
+
+    // 4. The subscriber returns with that stale cursor and must end up correct.
+    let sweptReported = 0
+    const second = syncStoreLazyLine(mirror, host.api, {
+        cursor: saved,
+        fillOnly: true,
+        onProgress: progress => { sweptReported += progress.swept },
+    })
+    await second.filled
+    second.close()
+
+    assert.deepEqual(Object.keys(mirror.state).sort(), ['b'],
+        'the mirror must not keep a key the host no longer has')
+    assert.equal((mirror.state as any)['b'].bid, 22, 'and the surviving key is current')
+    assert.equal(sweptReported, 1, 'the sweep is reported, not silent')
+    host.close()
+    console.log('ok  a stale cursor sweeps keys the host no longer has')
+}
+
+// A cursor from a PREVIOUS host lifetime must not be trusted: revisions restart at
+// zero, so without a line identity the host would find nothing to catch up and
+// resume the fill past keys the subscriber only ASSUMES it holds.
+async function cursorFromAnotherHostLifetimeIsRefused() {
+    const store = createStore<Record<string, Quote>>({})
+    store.state['a'] = {bid: 1}
+    store.state['b'] = {bid: 2}
+    await flushReactive(store.state)
+
+    const before = exposeStoreLazyLine(store, {now})
+    const mirror = createStore<Record<string, Quote>>({})
+    let saved: StoreLazyCursor | null = null
+    const first = syncStoreLazyLine(mirror, before.api, {
+        fillOnly: true,
+        onCursor: value => { saved = value },
+    })
+    await first.filled
+    first.close()
+    before.close()
+    assert.ok(saved != null && saved!.key != null, 'a cursor was persisted')
+
+    // The host restarts. Its revision counter begins again from zero, and while it
+    // was down `a` was removed.
+    delete store.state['a']
+    await flushReactive(store.state)
+    const after = exposeStoreLazyLine(store, {now})
+
+    const refused = after.api.read({cursor: saved}, function ignore() {}) as any
+    assert.equal(refused.stale, true, 'a cursor from a dead lifetime is refused')
+
+    const second = syncStoreLazyLine(mirror, after.api, {cursor: saved, fillOnly: true})
+    await second.filled
+    second.close()
+    assert.deepEqual(Object.keys(mirror.state).sort(), ['b'],
+        'and the mirror is reconciled instead of silently diverging')
+    after.close()
+    console.log('ok  a cursor from another host lifetime is refused')
+}
+
+// A pass from scratch must also reconcile a mirror restored from disk.
+async function freshPassReconcilesAPrePopulatedMirror() {
+    const store = createStore<Record<string, Quote>>({})
+    store.state['keep'] = {bid: 1}
+    await flushReactive(store.state)
+    const host = exposeStoreLazyLine(store, {now})
+
+    // A mirror rehydrated from an old snapshot holds a key the host never had.
+    const mirror = createStore<Record<string, Quote>>({})
+    mirror.state['ghost'] = {bid: 999}
+    mirror.state['keep'] = {bid: 0}
+
+    const sync = syncStoreLazyLine(mirror, host.api, {fillOnly: true})
+    await sync.filled
+    sync.close()
+
+    assert.deepEqual(Object.keys(mirror.state).sort(), ['keep'], 'the stale key is reconciled away')
+    assert.equal((mirror.state as any)['keep'].bid, 1)
+    host.close()
+    console.log('ok  a pass from scratch reconciles a pre-populated mirror')
+}
+
+// A RESUMED pass must NOT sweep: keys that simply did not change were not re-sent.
+async function resumeDoesNotSweepUnchangedKeys() {
+    const store = makeStore(200)
+    const host = exposeStoreLazyLine(store, {chunkBytes: 1_000, windowBytes: 4_000, now})
+    const mirror = createStore<Record<string, Quote>>({})
+
+    let saved: StoreLazyCursor | null = null
+    const first = syncStoreLazyLine(mirror, host.api, {
+        readBytes: 4_000,
+        onCursor: value => { saved = value },
+    })
+    await first.filled
+    first.close()
+    assert.equal(Object.keys(mirror.state).length, 200)
+
+    const second = syncStoreLazyLine(mirror, host.api, {cursor: saved, fillOnly: true})
+    await second.filled
+    second.close()
+    assert.equal(Object.keys(mirror.state).length, 200,
+        'a valid resume must not delete keys merely because they did not change')
+    host.close()
+    console.log('ok  a valid resume does not sweep unchanged keys')
+}
+
+// =====================================================================
 // End to end
 // =====================================================================
 
@@ -290,6 +431,10 @@ async function main() {
     await fillResumesAfterDisconnect()
     await resumeCatchesUpWhatChangedWhileAway()
     await cursorOlderThanTombstoneRetentionIsRefused()
+    await staleCursorSweepsKeysTheHostNoLongerHas()
+    await cursorFromAnotherHostLifetimeIsRefused()
+    await freshPassReconcilesAPrePopulatedMirror()
+    await resumeDoesNotSweepUnchangedKeys()
     readBudgetIsRespected()
     await mirrorConvergesUnderConstantChurn()
     console.log('\nstore lazy line: all checks passed')

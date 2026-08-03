@@ -1,5 +1,6 @@
 import { type Store } from './store';
 export type StoreLazyCursor = {
+    lineId: string;
     key: string | null;
     revision: number;
 };
@@ -29,6 +30,7 @@ export type StoreLazyLineOpts = {
     maxItems?: number;
     windowBytes?: number;
     tombstoneKeepMs?: number;
+    lineId?: string;
     describe?: Record<string, any>;
     now?: () => number;
 };
@@ -61,6 +63,7 @@ export type StoreLazySyncOpts = {
         remaining: number;
         filled: boolean;
         chunks: number;
+        swept: number;
     }) => void;
     onError?: (error: unknown) => void;
 };
