@@ -345,6 +345,53 @@ async function freshPassReconcilesAPrePopulatedMirror() {
     console.log('ok  a pass from scratch reconciles a pre-populated mirror')
 }
 
+// REGRESSION (2.6.1): a stale arriving PART-WAY THROUGH a pass that is already
+// sweeping must restart the evidence, not extend it. The keys the aborted pass
+// delivered say nothing about the restarted one — a key it sent and the fresh pass
+// never mentions is precisely the key that has to go.
+async function staleDuringAFirstPassRestartsTheSweepEvidence() {
+    const store = makeStore(40)
+    const before = exposeStoreLazyLine(store, {chunkBytes: 100, windowBytes: 100, now})
+    const mirror = createStore<Record<string, Quote>>({})
+
+    // The host dies after the subscriber's first partial read, and the key that read
+    // delivered is gone by the time it comes back. `keyOf(0)` sorts first, so the
+    // first read is guaranteed to have carried it.
+    let after: ReturnType<typeof exposeStoreLazyLine<Record<string, Quote>>> | null = null
+    let calls = 0
+    const remote = {
+        read(request: any, emit: any) {
+            calls++
+            if (calls == 1) return before.api.read(request, emit)
+            if (after == null) {
+                delete store.state[keyOf(0)]
+                // A fresh lifetime never knew the key, so it cannot announce a tombstone
+                // for it — the mirror can only be corrected by the sweep.
+                after = exposeStoreLazyLine(store, {chunkBytes: 100, windowBytes: 100, now})
+            }
+            return after.api.read(request, emit)
+        },
+    }
+
+    let sweptReported = 0
+    const sync = syncStoreLazyLine(mirror, remote, {
+        readBytes: 100,
+        fillOnly: true,
+        onProgress: progress => { sweptReported += progress.swept },
+    })
+    await sync.filled
+    sync.close()
+
+    assert.ok(calls > 2, 'the fill really was part-way through when the host was replaced')
+    assert.ok(!(keyOf(0) in mirror.state),
+        'a key delivered by the ABORTED pass must not survive the restarted one')
+    assert.equal(Object.keys(mirror.state).length, 39, 'and every surviving key is present')
+    assert.equal(sweptReported, 1, 'the sweep is reported')
+    before.close()
+    after!.close()
+    console.log('ok  a stale mid-pass restarts the sweep evidence instead of extending it')
+}
+
 // A RESUMED pass must NOT sweep: keys that simply did not change were not re-sent.
 async function resumeDoesNotSweepUnchangedKeys() {
     const store = makeStore(200)
@@ -434,6 +481,7 @@ async function main() {
     await staleCursorSweepsKeysTheHostNoLongerHas()
     await cursorFromAnotherHostLifetimeIsRefused()
     await freshPassReconcilesAPrePopulatedMirror()
+    await staleDuringAFirstPassRestartsTheSweepEvidence()
     await resumeDoesNotSweepUnchangedKeys()
     readBudgetIsRespected()
     await mirrorConvergesUnderConstantChurn()

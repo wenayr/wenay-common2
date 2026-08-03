@@ -264,8 +264,7 @@ function syncStoreLazyLine(mirror, remote, opts = {}) {
                 return;
             if (result.stale) {
                 cursor = null;
-                if (sweepSeen == null)
-                    sweepSeen = new Set();
+                sweepSeen = new Set();
                 schedule(fillIntervalMs);
                 return;
             }

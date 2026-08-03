@@ -476,8 +476,13 @@ export function syncStoreLazyLine<T extends object>(
                 // deleted while this subscriber was away, so anything the fresh pass
                 // does not mention must be dropped at the end of it. Resetting only the
                 // cursor would leave a key deleted long ago alive in the mirror forever.
+                //
+                // The set is REPLACED, never kept. A stale can arrive part-way through a
+                // pass that is already sweeping, and the keys that pass delivered are not
+                // evidence about the restarted one: a key the aborted pass sent and the
+                // fresh pass never mentions is exactly the key that must be swept.
                 cursor = null
-                if (sweepSeen == null) sweepSeen = new Set<string>()
+                sweepSeen = new Set<string>()
                 schedule(fillIntervalMs)
                 return
             }
