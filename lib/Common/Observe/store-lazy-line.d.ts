@@ -1,6 +1,7 @@
 import { type Store } from './store';
 export type StoreLazyCursor = {
     lineId: string;
+    selectionId?: string;
     key: string | null;
     revision: number;
 };
@@ -26,6 +27,7 @@ export type StoreLazyRemote = {
     }, emit: (chunk: StoreLazyChunkV1) => void) => StoreLazyReadV1 | Promise<StoreLazyReadV1>;
 };
 export type StoreLazyLineOpts = {
+    keys?: readonly string[];
     chunkBytes?: number;
     maxItems?: number;
     windowBytes?: number;
@@ -37,10 +39,14 @@ export type StoreLazyLineOpts = {
 export declare function exposeStoreLazyLine<T extends object>(store: Store<T>, opts?: StoreLazyLineOpts): {
     api: StoreLazyRemote;
     view: {
+        lineId: string;
+        selectionId: string | undefined;
+        keys: () => string[] | null;
         snapshot: () => {
             revision: number;
             oldestProvableRevision: number;
             keys: number;
+            selectedKeys: number | null;
             tombstones: number;
             trackedKeys: number;
             chunkBytes: number;

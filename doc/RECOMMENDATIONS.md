@@ -261,3 +261,23 @@ What this profile does not solve, with the honest route for each:
   server before recommending it.
 - Real packet loss and per-connection deflate memory under fan-out are unmeasured; repeat the stand
   over the actual deployment route before freezing production values.
+
+## Lazy line scaling follow-ups (deferred 2026-08)
+
+`exposeStoreLazyLine` gained static selections (`keys`) in 2.7.0, which covers per-partition
+publishing (one Store per `(category, quoteAsset)` or several selected lines over one Store).
+Three follow-ups were considered and deliberately deferred:
+
+- **Changed-key index.** `read()` catch-up is a linear walk of the sorted key array; at 350 keys
+  it is negligible, at 20 000 keys x N live subscribers x 250 ms polling it trades RAM for CPU.
+  Before building an index (revision-ordered skip structure or bucketed dirty sets), measure with
+  the stand: `experiments/store-lazy-2026-08` already models the live phase — add a multi-client
+  scenario and profile the host. Build only if the walk shows up.
+- **Shared patch watcher.** Every lazy line on one Store registers its own `listenStorePatches`
+  subscriber; V lines see every batch V times. Values are never cloned, so the cost is iteration
+  only. If many selected lines share one Store in practice, dispatch top-level keys once through a
+  shared registrar (the selective replay-view watcher in `store.ts` is the model to follow).
+- **Full `createStoreLazyView` facade.** A dedicated `{resource, view, close}` wrapper with
+  descriptor-carried `selectionId` (like `StoreReplayViewDescriptorV1`) is only worth adding when a
+  consumer needs remote selection discovery; today the selection rides the cursor and `view` on the
+  host side, and syncStoreLazyLine needs nothing more.

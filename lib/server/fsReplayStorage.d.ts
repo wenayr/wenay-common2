@@ -4,6 +4,7 @@ export type FsReplayStorageOpts = {
         stringify: (v: any) => string;
         parse: (line: string) => any;
     };
+    maxBytes?: number;
 };
 export declare function openFsReplayStorage<Z extends any[] = any[]>(file: string, opts?: FsReplayStorageOpts): {
     putEvent: (event: ReplayEvent<Z>) => void;
@@ -18,6 +19,8 @@ export declare function openFsReplayStorage<Z extends any[] = any[]>(file: strin
     size: () => {
         events: number;
         keyframes: number;
+        bytes: number;
+        overBudget: boolean;
     };
 };
 export type FsReplayStorage = ReturnType<typeof openFsReplayStorage>;

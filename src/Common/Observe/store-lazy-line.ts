@@ -31,6 +31,7 @@
 
 import {rpcResultWireMetricsFast} from '../rcp/rpc-wire-size'
 import {listenStorePatches, type Store, type StorePatch} from './store'
+import {normalizeStoreSelectionKeys, storeSelectionId} from './store-selection'
 
 // =====================================================================
 // Wire shapes
@@ -48,6 +49,8 @@ import {listenStorePatches, type Store, type StorePatch} from './store'
  */
 export type StoreLazyCursor = {
     lineId: string
+    /** Present when the line carries a static key selection; a different set => stale. */
+    selectionId?: string
     key: string | null
     revision: number
 }
@@ -94,6 +97,14 @@ export type StoreLazyRemote = {
 }
 
 export type StoreLazyLineOpts = {
+    /**
+     * Static server-owned selection: only these top-level keys travel. Absent = the
+     * whole Store. A selection is part of the line's identity (`selectionId` rides
+     * the cursor), so publishing a different set makes old cursors stale and the
+     * subscriber reconciles by a full pass + sweep. Changes to unselected keys cost
+     * nothing: no clone, no revision bump, no wake-up of this line.
+     */
+    keys?: readonly string[]
     /** Packed payload target for one chunk (default 32 KiB; one indivisible value may exceed it). */
     chunkBytes?: number
     /** Hard key ceiling for one chunk (default 512). */
@@ -152,6 +163,11 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
     // Must differ across process restarts, or a cursor from a dead lifetime would be
     // silently trusted. Time plus a counter separates both restarts and instances.
     const lineId = opts.lineId ?? ('lazy-' + Date.now().toString(36) + '-' + (++lazyLineCounter))
+    const selectedKeys = opts.keys == null
+        ? null
+        : normalizeStoreSelectionKeys(opts.keys, 'exposeStoreLazyLine')
+    const selected = selectedKeys == null ? null : new Set<string>(selectedKeys)
+    const selectionId = selectedKeys == null ? undefined : storeSelectionId(selectedKeys)
 
     /** Revision of the last change to each key, including keys that were deleted. */
     const keyRevision = new Map<string, number>()
@@ -169,22 +185,34 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
     // more often than it adds or removes keys, so this stays cold in the hot path.
 
     function keysInOrder() {
-        if (sortedKeys == null) sortedKeys = Object.keys(store.state as object).sort()
+        if (sortedKeys == null) {
+            const state = store.state as object
+            // A normalized selection is already sorted, so the selected form is one
+            // filter pass instead of a sort.
+            sortedKeys = selectedKeys == null
+                ? Object.keys(state).sort()
+                : selectedKeys.filter(function selectedKeyExists(key) {
+                    return Object.prototype.hasOwnProperty.call(state, key)
+                })
+        }
         return sortedKeys
     }
 
     function onStorePatches(patches: readonly StorePatch[]) {
         if (closed) return
-        revision++
         const state = store.state as Record<string, unknown>
+        // Unselected changes must not advance this line at all: no revision bump
+        // means a subscriber's catch-up finds nothing to re-send.
+        let touched = false
         for (const patch of patches) {
             if (patch.path.length == 0) {
-                // Root replacement: every key is new information for everyone.
-                sortedKeys = null
-                for (const key of Object.keys(state)) keyRevision.set(key, revision)
+                if (!touched) { touched = true; revision++ }
+                applyRootReplacement(state)
                 continue
             }
             const key = String(patch.path[0])
+            if (selected != null && !selected.has(key)) continue
+            if (!touched) { touched = true; revision++ }
             const known = keyRevision.has(key)
             keyRevision.set(key, revision)
             const exists = Object.prototype.hasOwnProperty.call(state, key)
@@ -196,6 +224,25 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
             }
         }
         pruneTombstones()
+    }
+
+    // Root replacement delivered as ONE patch (path: []). The Store engine itself
+    // decomposes store.replace() into per-key patches including deletes, so this
+    // branch serves custom patch sources that batch a whole-root swap; such a patch
+    // never names the removed keys, so they must be tombstoned here or a mirror
+    // would keep them forever.
+    function applyRootReplacement(state: Record<string, unknown>) {
+        sortedKeys = null
+        const scope = selectedKeys ?? [...new Set([...keyRevision.keys(), ...Object.keys(state)])]
+        for (const key of scope) {
+            if (Object.prototype.hasOwnProperty.call(state, key)) {
+                keyRevision.set(key, revision)
+                tombstones.delete(key)
+            } else if (keyRevision.has(key)) {
+                keyRevision.set(key, revision)
+                if (!tombstones.has(key)) tombstones.set(key, now())
+            }
+        }
     }
 
     function pruneTombstones() {
@@ -212,6 +259,12 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
     }
 
     const offPatches = listenStorePatches(store).on(onStorePatches)
+
+    // Keys already present when the line attaches are part of its knowledge: the
+    // line serves them from state, so a later root swap must be able to tombstone
+    // them even though no patch ever named them. Revision 0 means "never changed
+    // since attach" — no cursor ever re-fetches them for this entry alone.
+    for (const key of keysInOrder()) keyRevision.set(key, 0)
 
     /** Current value of one key, or the absent marker when it is gone. */
     function currentValue(key: string) {
@@ -231,12 +284,17 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
         emit: (chunk: StoreLazyChunkV1) => void,
     ): StoreLazyReadV1 {
         if (closed) throw new Error('exposeStoreLazyLine: host is closed')
-        const cursor: StoreLazyCursor = request.cursor ?? {lineId, key: null, revision: 0}
-        // A cursor is only meaningful inside the lifetime that issued it, and only while
-        // every deletion it missed is still provable.
-        if (cursor.key != null && (cursor.lineId != lineId || cursor.revision < oldestProvableRevision)) {
+        // A read is the only guaranteed activity on a quiet line, so expiry must run
+        // here too — otherwise a store that stopped changing would retain every
+        // tombstone (and keep refusing old cursors it could in fact never prove).
+        pruneTombstones()
+        const cursor: StoreLazyCursor = request.cursor ?? {lineId, selectionId, key: null, revision: 0}
+        // A cursor is only meaningful inside the lifetime AND selection that issued it,
+        // and only while every deletion it missed is still provable.
+        if (cursor.key != null && (cursor.lineId != lineId || cursor.selectionId != selectionId
+            || cursor.revision < oldestProvableRevision)) {
             return {
-                cursor: {lineId, key: null, revision: 0},
+                cursor: {lineId, selectionId, key: null, revision: 0},
                 remaining: keysInOrder().length,
                 filled: false,
                 revision,
@@ -317,7 +375,7 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
         return {
             // The revision only advances when the catch-up half completed; otherwise
             // the rest of what the subscriber missed would be skipped silently.
-            cursor: {lineId, key: nextCursorKey, revision: caughtUp ? readRevision : cursor.revision},
+            cursor: {lineId, selectionId, key: nextCursorKey, revision: caughtUp ? readRevision : cursor.revision},
             remaining,
             filled: remaining == 0,
             revision,
@@ -341,6 +399,7 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
             revision,
             oldestProvableRevision,
             keys: keysInOrder().length,
+            selectedKeys: selectedKeys?.length ?? null,
             tombstones: tombstones.size,
             trackedKeys: keyRevision.size,
             chunkBytes,
@@ -355,7 +414,13 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
     return {
         /** Remote surface: expose this object through RPC. */
         api,
-        view: {snapshot},
+        view: {
+            lineId,
+            selectionId,
+            /** The static selection, or null when the line serves the whole Store. */
+            keys: () => selectedKeys == null ? null : [...selectedKeys],
+            snapshot,
+        },
         close: function closeHost() {
             if (closed) return
             closed = true

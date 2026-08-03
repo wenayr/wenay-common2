@@ -5,6 +5,7 @@ const store_1 = require("./store");
 const replay_rpc_wire_1 = require("../events/replay-rpc-wire");
 const rpc_walk_1 = require("../rcp/rpc-walk");
 const positive_integer_option_1 = require("../positive-integer-option");
+const store_selection_1 = require("./store-selection");
 const observe_private_1 = require("./observe-private");
 const reactive_1 = require("./reactive");
 const store_replay_codec_1 = require("./store-replay-codec");
@@ -22,32 +23,6 @@ function createStoreReplayViewLayer(deps) {
         }
         return value;
     }
-    function normalizeStoreReplayViewKeys(keys) {
-        if (!Array.isArray(keys))
-            throw new TypeError('createStoreReplayView: keys must be an array');
-        const unique = new Set();
-        for (const key of keys) {
-            if (typeof key != 'string') {
-                throw new TypeError('createStoreReplayView: keys must contain only strings');
-            }
-            unique.add(key);
-        }
-        return Object.freeze([...unique].sort());
-    }
-    function storeReplayViewSelectionId(keys) {
-        let first = 0x811c9dc5;
-        let second = 0x9e3779b9;
-        for (const key of keys) {
-            const text = key.length + ':' + key + ';';
-            for (let index = 0; index < text.length; index++) {
-                const code = text.charCodeAt(index);
-                first = Math.imul(first ^ code, 0x01000193);
-                second = Math.imul(second ^ code, 0x85ebca6b);
-            }
-        }
-        const hex = (value) => (value >>> 0).toString(16).padStart(8, '0');
-        return 'keys-v1:' + keys.length + ':' + hex(first) + hex(second);
-    }
     function storeReplayViewSnapshotTask() {
         return new Promise(function yieldSnapshotChunk(resolve) {
             if (typeof setImmediate == 'function')
@@ -57,9 +32,9 @@ function createStoreReplayViewLayer(deps) {
         });
     }
     function createStoreReplayView(store, opts) {
-        const keys = normalizeStoreReplayViewKeys(opts.keys);
+        const keys = (0, store_selection_1.normalizeStoreSelectionKeys)(opts.keys, 'createStoreReplayView');
         const selected = new Set(keys);
-        const selectionId = storeReplayViewSelectionId(keys);
+        const selectionId = (0, store_selection_1.storeSelectionId)(keys);
         const lineId = requireStoreReplayViewLineId(opts.lineId ?? storeReplayViewId('store-view'));
         const snapshotOpts = opts.snapshot ?? {};
         const snapshotChunkBytes = (0, positive_integer_option_1.positiveIntegerOption)(snapshotOpts.chunkBytes, 512 * 1024, 'createStoreReplayView: snapshot.chunkBytes');

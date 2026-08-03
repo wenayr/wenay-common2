@@ -9,6 +9,7 @@ import type {replayListen} from '../events/replay-listen'
 import {retransmitRpcReplayWire} from '../events/replay-rpc-wire'
 import {rpcEndCallback} from '../rcp/rpc-walk'
 import {positiveIntegerOption} from '../positive-integer-option'
+import {normalizeStoreSelectionKeys, storeSelectionId} from './store-selection'
 import {STORE_REPLAY_PATCH_SOURCE, STORE_REPLAY_VIEW_PATCH_SOURCE} from './observe-private'
 import {toRaw} from './reactive'
 import {
@@ -179,33 +180,6 @@ export function createStoreReplayViewLayer(deps: StoreReplayViewLayerDeps) {
         return value
     }
 
-    function normalizeStoreReplayViewKeys(keys: readonly string[]) {
-        if (!Array.isArray(keys)) throw new TypeError('createStoreReplayView: keys must be an array')
-        const unique = new Set<string>()
-        for (const key of keys) {
-            if (typeof key != 'string') {
-                throw new TypeError('createStoreReplayView: keys must contain only strings')
-            }
-            unique.add(key)
-        }
-        return Object.freeze([...unique].sort())
-    }
-
-    function storeReplayViewSelectionId(keys: readonly string[]) {
-        let first = 0x811c9dc5
-        let second = 0x9e3779b9
-        for (const key of keys) {
-            const text = key.length + ':' + key + ';'
-            for (let index = 0; index < text.length; index++) {
-                const code = text.charCodeAt(index)
-                first = Math.imul(first ^ code, 0x01000193)
-                second = Math.imul(second ^ code, 0x85ebca6b)
-            }
-        }
-        const hex = (value: number) => (value >>> 0).toString(16).padStart(8, '0')
-        return 'keys-v1:' + keys.length + ':' + hex(first) + hex(second)
-    }
-
     function storeReplayViewSnapshotTask() {
         return new Promise<void>(function yieldSnapshotChunk(resolve) {
             if (typeof setImmediate == 'function') setImmediate(resolve)
@@ -222,9 +196,9 @@ export function createStoreReplayViewLayer(deps: StoreReplayViewLayerDeps) {
         T extends object,
         K extends Extract<keyof T, string> = Extract<keyof T, string>,
     >(store: Store<T>, opts: StoreReplayViewOpts<K>) {
-        const keys = normalizeStoreReplayViewKeys(opts.keys) as readonly K[]
+        const keys = normalizeStoreSelectionKeys(opts.keys, 'createStoreReplayView') as readonly K[]
         const selected = new Set<string>(keys)
-        const selectionId = storeReplayViewSelectionId(keys)
+        const selectionId = storeSelectionId(keys)
         const lineId = requireStoreReplayViewLineId(opts.lineId ?? storeReplayViewId('store-view'))
         const snapshotOpts = opts.snapshot ?? {}
         const snapshotChunkBytes = positiveIntegerOption(

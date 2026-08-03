@@ -417,6 +417,190 @@ async function resumeDoesNotSweepUnchangedKeys() {
 }
 
 // =====================================================================
+// Static key selection (2.7.0)
+// =====================================================================
+
+async function selectionDeliversOnlySelectedKeys() {
+    const store = makeStore(30)
+    const keys = [keyOf(3), keyOf(7), keyOf(11), keyOf(25)]
+    const host = exposeStoreLazyLine(store, {keys, now})
+    const reader = manualReader(host)
+    reader.drain()
+
+    const delivered = reader.keysDelivered()
+    assert.deepEqual([...delivered.keys()].sort(), [...keys].sort(), 'exactly the selection travels')
+    assert.equal(host.view.selectionId?.startsWith('keys-v1:'), true)
+    assert.deepEqual(host.view.keys(), [...keys].sort())
+    host.close()
+    console.log('ok  a selected line delivers exactly its selection')
+}
+
+async function unselectedChurnCostsNothing() {
+    const store = makeStore(30)
+    const host = exposeStoreLazyLine(store, {keys: [keyOf(1), keyOf(2)], now})
+    const reader = manualReader(host)
+    reader.drain()
+    const revisionBefore = host.view.snapshot().revision
+
+    // Heavy churn entirely outside the selection.
+    for (let round = 0; round < 5; round++) {
+        for (let index = 10; index < 30; index++) store.state[keyOf(index)] = {bid: 100 + round}
+        await flushReactive(store.state)
+    }
+    delete store.state[keyOf(20)]
+    await flushReactive(store.state)
+
+    assert.equal(host.view.snapshot().revision, revisionBefore,
+        'unselected changes must not advance the line revision')
+    const result = reader.read(4_000)
+    assert.equal(reader.deliveries(), 2, 'and a live read re-sends nothing')
+    assert.equal(result.filled, true)
+    host.close()
+    console.log('ok  unselected churn does not advance the line and re-sends nothing')
+}
+
+async function selectionChangeMakesOldCursorStale() {
+    const store = makeStore(10)
+    const first = exposeStoreLazyLine(store, {keys: [keyOf(0), keyOf(1), keyOf(2)], now})
+    const mirror = createStore<Record<string, Quote>>({})
+    let saved: StoreLazyCursor | null = null
+    const sync = syncStoreLazyLine(mirror, first.api, {fillOnly: true, onCursor: value => { saved = value }})
+    await sync.filled
+    sync.close()
+    assert.deepEqual(Object.keys(mirror.state).sort(), [keyOf(0), keyOf(1), keyOf(2)])
+    assert.equal(saved!.selectionId, first.view.selectionId, 'the cursor carries the selection identity')
+    first.close()
+
+    // The server republishes the line with a narrower selection on the SAME lineId:
+    // even then the old cursor must not be honoured, because it was issued for a
+    // different key set.
+    const second = exposeStoreLazyLine(store, {keys: [keyOf(1), keyOf(4)], lineId: first.view.lineId, now})
+    const refused = second.api.read({cursor: saved}, function ignore() {}) as any
+    assert.equal(refused.stale, true, 'a cursor from another selection is refused')
+
+    const resync = syncStoreLazyLine(mirror, second.api, {cursor: saved, fillOnly: true})
+    await resync.filled
+    resync.close()
+    assert.deepEqual(Object.keys(mirror.state).sort(), [keyOf(1), keyOf(4)],
+        'the mirror reconciles to the new selection, deselected keys swept')
+    second.close()
+    console.log('ok  a selection change makes old cursors stale and the mirror reconciles')
+}
+
+async function selectedAndFullLinesShareOneStore() {
+    const store = makeStore(20)
+    const full = exposeStoreLazyLine(store, {now})
+    const selectedLine = exposeStoreLazyLine(store, {keys: [keyOf(5)], now})
+
+    const fullMirror = createStore<Record<string, Quote>>({})
+    const selectedMirror = createStore<Record<string, Quote>>({})
+    const syncFull = syncStoreLazyLine(fullMirror, full.api, {fillOnly: true})
+    const syncSelected = syncStoreLazyLine(selectedMirror, selectedLine.api, {fillOnly: true})
+    await Promise.all([syncFull.filled, syncSelected.filled])
+    syncFull.close()
+    syncSelected.close()
+
+    assert.equal(Object.keys(fullMirror.state).length, 20)
+    assert.deepEqual(Object.keys(selectedMirror.state), [keyOf(5)])
+    // A full-line cursor must not be accepted by the selected line even on read.
+    const foreign = full.api.read({}, function ignore() {}) as any
+    const crossed = selectedLine.api.read({
+        cursor: {...foreign.cursor, lineId: selectedLine.view.lineId},
+    }, function ignore() {}) as any
+    assert.equal(crossed.stale, true, 'cursors do not cross between selections of one store')
+    full.close()
+    selectedLine.close()
+    console.log('ok  full and selected lines coexist on one store without cursor bleed')
+}
+
+// =====================================================================
+// Root replacement must tombstone the keys it removed
+// =====================================================================
+// store.replace() decomposes into per-key patches (deletes included) inside the
+// Store engine, so this passes through the ordinary tombstone path; the line's
+// dedicated `path: []` branch additionally covers custom patch sources that ship
+// a root swap as one patch (verified separately below).
+
+async function rootReplacementTombstonesVanishedKeys() {
+    const store = createStore<Record<string, Quote>>({})
+    store.state['a'] = {bid: 1}
+    store.state['b'] = {bid: 2}
+    store.state['c'] = {bid: 3}
+    await flushReactive(store.state)
+    const host = exposeStoreLazyLine(store, {now})
+    const mirror = createStore<Record<string, Quote>>({})
+
+    let saved: StoreLazyCursor | null = null
+    const first = syncStoreLazyLine(mirror, host.api, {fillOnly: true, onCursor: value => { saved = value }})
+    await first.filled
+    first.close()
+    assert.deepEqual(Object.keys(mirror.state).sort(), ['a', 'b', 'c'])
+
+    // The whole root is replaced; `b` and `c` are gone, `d` appears.
+    store.replace({a: {bid: 10}, d: {bid: 40}} as any)
+    await flushReactive(store.state)
+
+    const resumed = syncStoreLazyLine(mirror, host.api, {cursor: saved, fillOnly: true})
+    await resumed.filled
+    resumed.close()
+    assert.deepEqual(Object.keys(mirror.state).sort(), ['a', 'd'],
+        'keys removed by a root replacement must reach the mirror as tombstones')
+    assert.equal((mirror.state as any)['a'].bid, 10)
+    host.close()
+    console.log('ok  root replacement tombstones the keys it removed')
+}
+
+// The dedicated `path: []` branch: a custom patch source may ship a whole-root
+// swap as ONE patch that never names the removed keys. Driven directly through
+// the store's patch listen, because the engine itself always decomposes.
+async function rootPatchFromACustomSourceTombstonesVanishedKeys() {
+    const store = createStore<Record<string, Quote>>({})
+    store.state['a'] = {bid: 1}
+    store.state['b'] = {bid: 2}
+    await flushReactive(store.state)
+    const host = exposeStoreLazyLine(store, {now})
+    const reader = manualReader(host)
+    reader.drain()
+
+    // Mutate the RAW state so no per-key patches fire, then announce the swap as a
+    // single root patch — the way a batching patch source would. This isolates the
+    // `path: []` branch: nothing else tells the line that `b` is gone.
+    const {toRaw} = await import('../src/Common/Observe/reactive')
+    const raw = toRaw(store.state) as Record<string, Quote>
+    delete raw['b']
+    raw['d'] = {bid: 4}
+    const {listenStorePatches} = await import('../src/Common/Observe/store')
+    ;(listenStorePatches(store) as any).emit([{path: [], value: store.state}])
+
+    reader.drain()
+    const delivered = reader.keysDelivered()
+    assert.equal(delivered.get('b'), undefined, 'the root patch tombstoned the vanished key')
+    assert.equal((delivered.get('d') as Quote | undefined)?.bid, 4)
+    host.close()
+    console.log('ok  a single root patch from a custom source tombstones vanished keys')
+}
+
+// Tombstones must also expire on a line nobody writes to anymore: a read is the
+// only guaranteed activity, so expiry runs there too.
+async function quietLineReleasesTombstonesOnRead() {
+    const store = makeStore(5)
+    const host = exposeStoreLazyLine(store, {tombstoneKeepMs: 1_000, now})
+    const reader = manualReader(host)
+    reader.drain()
+
+    delete store.state[keyOf(0)]
+    await flushReactive(store.state)
+    assert.equal(host.view.snapshot().tombstones, 1)
+
+    // No further writes, only time and a read.
+    clock += 5_000
+    host.api.read({}, function ignore() {})
+    assert.equal(host.view.snapshot().tombstones, 0, 'a read on a quiet line releases expired tombstones')
+    host.close()
+    console.log('ok  a quiet line releases expired tombstones on read')
+}
+
+// =====================================================================
 // End to end
 // =====================================================================
 
@@ -483,6 +667,13 @@ async function main() {
     await freshPassReconcilesAPrePopulatedMirror()
     await staleDuringAFirstPassRestartsTheSweepEvidence()
     await resumeDoesNotSweepUnchangedKeys()
+    await selectionDeliversOnlySelectedKeys()
+    await unselectedChurnCostsNothing()
+    await selectionChangeMakesOldCursorStale()
+    await selectedAndFullLinesShareOneStore()
+    await rootReplacementTombstonesVanishedKeys()
+    await rootPatchFromACustomSourceTombstonesVanishedKeys()
+    await quietLineReleasesTombstonesOnRead()
     readBudgetIsRespected()
     await mirrorConvergesUnderConstantChurn()
     console.log('\nstore lazy line: all checks passed')

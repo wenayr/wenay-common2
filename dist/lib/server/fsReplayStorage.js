@@ -37,10 +37,25 @@ exports.openFsReplayStorage = openFsReplayStorage;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const replay_history_1 = require("../Common/events/replay-history");
+const positive_integer_option_1 = require("../Common/positive-integer-option");
 function openFsReplayStorage(file, opts = {}) {
     const codec = opts.codec ?? { stringify: JSON.stringify, parse: JSON.parse };
+    const maxBytes = opts.maxBytes == null ? null : (0, positive_integer_option_1.positiveIntegerOption)(opts.maxBytes, 1, 'openFsReplayStorage: maxBytes');
+    const pruneTarget = maxBytes == null ? null : Math.max(1, (maxBytes >> 2) * 3);
+    const pruneRegrowth = maxBytes == null ? 0 : Math.max(1, maxBytes >> 4);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     let mem = (0, replay_history_1.createMemoryReplayStorage)();
+    let records = [];
+    let totalBytes = 0;
+    let lastPruneBytes = null;
+    function applyToMem(record) {
+        if (record.t == 'e')
+            mem.putEvent(record.v);
+        else if (record.t == 'b')
+            mem.putEvents(record.v);
+        else
+            mem.putKeyframe(record.v);
+    }
     if (fs.existsSync(file)) {
         const bytes = fs.readFileSync(file);
         const committedBytes = bytes.lastIndexOf(10) + 1;
@@ -50,16 +65,16 @@ function openFsReplayStorage(file, opts = {}) {
             if (!line.trim())
                 continue;
             const rec = codec.parse(line);
-            if (rec?.t == 'e')
-                mem.putEvent(rec.v);
-            else if (rec?.t == 'b')
-                mem.putEvents(rec.v);
-            else if (rec?.t == 'k')
-                mem.putKeyframe(rec.v);
+            if (rec?.t != 'e' && rec?.t != 'b' && rec?.t != 'k')
+                continue;
+            const record = { t: rec.t, v: rec.v, bytes: Buffer.byteLength(line, 'utf8') + 1 };
+            records.push(record);
+            totalBytes += record.bytes;
+            applyToMem(record);
         }
     }
-    function appendRecord(record) {
-        const line = codec.stringify(record) + '\n';
+    function appendRecord(t, v) {
+        const line = codec.stringify({ t, v }) + '\n';
         const start = fs.existsSync(file) ? fs.statSync(file).size : 0;
         try {
             fs.appendFileSync(file, line);
@@ -72,23 +87,85 @@ function openFsReplayStorage(file, opts = {}) {
             catch { }
             throw error;
         }
+        const record = { t, v, bytes: Buffer.byteLength(line, 'utf8') };
+        records.push(record);
+        totalBytes += record.bytes;
     }
-    function append(t, v) {
-        appendRecord({ t, v });
+    function rewriteFrom(cut) {
+        const kept = records.slice(cut);
+        const tmp = file + '.tmp';
+        fs.writeFileSync(tmp, kept.map(function encodeKeptRecord(record) {
+            return codec.stringify({ t: record.t, v: record.v }) + '\n';
+        }).join(''));
+        fs.renameSync(tmp, file);
+        records = kept;
+        totalBytes = 0;
+        mem = (0, replay_history_1.createMemoryReplayStorage)();
+        for (const record of records) {
+            totalBytes += record.bytes;
+            applyToMem(record);
+        }
+    }
+    function keyframeIndexes() {
+        const indexes = [];
+        for (let index = 0; index < records.length; index++) {
+            if (records[index].t == 'k')
+                indexes.push(index);
+        }
+        return indexes;
+    }
+    function maybePrune() {
+        if (maxBytes == null || totalBytes <= maxBytes)
+            return;
+        if (lastPruneBytes != null && totalBytes - lastPruneBytes < pruneRegrowth)
+            return;
+        const keyframes = keyframeIndexes();
+        if (keyframes.length == 0) {
+            lastPruneBytes = totalBytes;
+            return;
+        }
+        const suffix = new Array(records.length + 1);
+        suffix[records.length] = 0;
+        for (let index = records.length - 1; index >= 0; index--) {
+            suffix[index] = suffix[index + 1] + records[index].bytes;
+        }
+        let cut = -1;
+        for (const index of keyframes) {
+            if (suffix[index] <= pruneTarget) {
+                cut = index;
+                break;
+            }
+        }
+        if (cut < 0)
+            for (const index of keyframes) {
+                if (suffix[index] <= maxBytes) {
+                    cut = index;
+                    break;
+                }
+            }
+        if (cut < 0)
+            cut = keyframes[keyframes.length - 1];
+        if (cut > 0)
+            rewriteFrom(cut);
+        lastPruneBytes = totalBytes;
     }
     function putEvents(events) {
         if (events.length == 0)
             return;
-        const record = events.length == 1 ? { t: 'e', v: events[0] } : { t: 'b', v: events };
-        appendRecord(record);
+        if (events.length == 1)
+            appendRecord('e', events[0]);
+        else
+            appendRecord('b', events);
         mem.putEvents(events);
+        maybePrune();
     }
     function putEvent(event) {
         putEvents([event]);
     }
     function putKeyframe(keyframe) {
-        append('k', keyframe);
+        appendRecord('k', keyframe);
         mem.putKeyframe(keyframe);
+        maybePrune();
     }
     function getKeyframe(at) {
         return mem.getKeyframe(at);
@@ -97,24 +174,17 @@ function openFsReplayStorage(file, opts = {}) {
         return mem.getEvents(from, to);
     }
     function compact() {
-        const keyframe = mem.getKeyframe();
-        if (!keyframe)
+        const keyframes = keyframeIndexes();
+        if (keyframes.length == 0)
             return;
-        const tail = mem.getEvents(keyframe.seq, Infinity);
-        const tmp = file + '.tmp';
-        const lines = [codec.stringify({ t: 'k', v: keyframe }), ...tail.map(function encodeTailEvent(event) {
-                return codec.stringify({ t: 'e', v: event });
-            })];
-        fs.writeFileSync(tmp, lines.join('\n') + '\n');
-        fs.renameSync(tmp, file);
-        const next = (0, replay_history_1.createMemoryReplayStorage)();
-        next.putKeyframe(keyframe);
-        for (const event of tail)
-            next.putEvent(event);
-        mem = next;
+        rewriteFrom(keyframes[keyframes.length - 1]);
     }
     function size() {
-        return mem.size();
+        return {
+            ...mem.size(),
+            bytes: totalBytes,
+            overBudget: maxBytes != null && totalBytes > maxBytes,
+        };
     }
     return {
         putEvent,

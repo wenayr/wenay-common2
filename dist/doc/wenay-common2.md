@@ -738,6 +738,12 @@ await fill.filled                                    // promise: every key deliv
   // hundred keys it is at best parity — a small keyframe is already cheap.
   // The mirror shows a MIX of fresh and stale keys while the first pass runs: that is the
   // trade. For an all-or-nothing transfer use createStoreReplayView instead.
+  // keys: [...] makes the line SELECTED: only those top-level keys travel, unselected churn
+  // costs nothing (no clone, no revision bump), and the cursor gains selectionId — publishing a
+  // different set makes old cursors {stale: true} and the subscriber reconciles by pass + sweep.
+  // One store can carry several lazy lines (full + per-partition selections) side by side.
+  // view: {lineId, selectionId, keys(), snapshot()}. Tombstones also expire on read, so a quiet
+  // line does not retain them; a root-swap patch from a custom source tombstones vanished keys.
 // Large selective Store: one authoritative Store, no materialized child Store per client.
 const quotesView = Observe.createStoreReplayView(quotes, {
   keys: authorizedSymbols,                 // static/server-authorized top-level string keys
@@ -981,6 +987,13 @@ import { openFsReplayStorage } from "wenay-common2/server"
 // The persistence PORT is Replay.ReplayStorage {putEvent, putEvents?, putKeyframe, getKeyframe, getEvents}:
 // createMemoryReplayStorage (reference), openFsReplayStorage(file) (node, JSONL append-log,
 // .compact() = atomic [latest keyframe + tail] rewrite), or your DB adapter behind the same lambdas.
+// Retention is ADAPTER policy, always OPT-IN: memory takes {maxEvents?, maxKeyframes?}; the fs
+// adapter takes {maxBytes?} — absent = append-only forever; present = the log is pruned at a
+// KEYFRAME boundary to ~3/4 of the budget, keeping the LONGEST suffix that fits, so the budget
+// buys "how long can a client be away and still get its exact tail". A reader older than the cut
+// gets a keyframe reset (the wire semantics an evicted seq already has). The lossless floor
+// [latest keyframe + tail] is never cut into: size().overBudget reports it instead.
+// NB the reference fs adapter mirrors the file in RAM (it IS the seek index): budget the two together.
 
 Observe.createDurableStoreReplay<T>({storage, initial?, everyEvents? = 64, everyMs?, drain?, expose?})
     -> {store, api, replay, restored: {seq, fromArchive}, stats, retry, close}
