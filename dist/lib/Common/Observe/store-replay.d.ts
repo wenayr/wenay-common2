@@ -6,7 +6,7 @@ import { type ReplayStorage } from '../events/replay-history';
 import { type tStoreReplayWireBatchV2 } from './store-replay-codec';
 import { type StoreReplayViewOpts, type StoreReplayViewRemote, type StoreReplayViewSyncOpts } from './store-replay-view';
 export type { StoreReplayViewCursor, StoreReplayViewDescriptorV1, StoreReplayViewOpts, StoreReplayViewRemote, StoreReplayViewSnapshotChunkV1, StoreReplayViewSnapshotOpenV1, StoreReplayViewSnapshotOpts, StoreReplayViewSnapshotReadV1, StoreReplayViewSyncOpts, } from './store-replay-view';
-export type StoreReplayBatchOpts = Pick<ReplayListenOptions<[readonly StorePatch[]]>, 'history' | 'getSince' | 'onJournal' | 'onJournalBatch' | 'now' | 'firstSeq'> & {
+export type StoreReplayBatchOpts = Pick<ReplayListenOptions<[readonly StorePatch[]]>, 'history' | 'keepMs' | 'getSince' | 'onJournal' | 'onJournalBatch' | 'now' | 'firstSeq'> & {
     maxItems?: number;
     maxBytes?: number;
     maxDelayMs?: number;
@@ -78,6 +78,15 @@ export declare function exposeStoreReplay<T extends object>(store: Store<T>, opt
         isStale: () => boolean;
         lastTs: () => number;
         close: () => void;
+        journalWindow: () => {
+            entries: number;
+            oldestSeq: number | null;
+            head: number;
+            ageMs: number;
+            historyLimit: number;
+            keepMs: number;
+            cappedByCount: boolean;
+        };
         line: import("../..").ListenApi<[ReplayEvent<[readonly StorePatch[]]>]>;
         hasKeyframe: boolean;
         on: import("../events/replay-listen").ListenOnReplay<[readonly StorePatch[]]>;
@@ -130,6 +139,15 @@ export declare function createStoreReplayView<T extends object, K extends Extrac
             lastTs: () => number;
             close: () => void;
             getSince: (seq: number) => ReplayEvent<[readonly StorePatch[]]>[] | undefined;
+            journalWindow: () => {
+                entries: number;
+                oldestSeq: number | null;
+                head: number;
+                ageMs: number;
+                historyLimit: number;
+                keepMs: number;
+                cappedByCount: boolean;
+            };
             line: import("../..").ListenApi<[ReplayEvent<[readonly StorePatch[]]>]>;
             hasKeyframe: boolean;
             keyframe: () => ReplayEvent<[readonly StorePatch[]]> | undefined;

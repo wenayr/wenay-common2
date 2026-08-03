@@ -52,7 +52,7 @@ export type {
 } from './store-replay-view'
 
 export type StoreReplayBatchOpts = Pick<ReplayListenOptions<[readonly StorePatch[]]>,
-    'history' | 'getSince' | 'onJournal' | 'onJournalBatch' | 'now' | 'firstSeq'> & {
+    'history' | 'keepMs' | 'getSince' | 'onJournal' | 'onJournalBatch' | 'now' | 'firstSeq'> & {
     /** Hard item ceiling per envelope (default 256). */
     maxItems?: number
     /** Conservative packed V2 RPC payload target (default 64 KiB; one indivisible patch may exceed it). */
@@ -181,6 +181,7 @@ function createBatchReplay(
         current: currentBatch,
         frame: condenseBatchPatchTail,
         history: opts.getSince ? undefined : (opts.history ?? 1024),
+        keepMs: opts.getSince ? undefined : opts.keepMs,
         getSince: opts.getSince,
         onJournal: opts.onJournal,
         onJournalBatch: opts.onJournalBatch,

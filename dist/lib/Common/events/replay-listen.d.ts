@@ -17,6 +17,7 @@ export type ReplayListenOptions<Z extends any[]> = {
     current?: ListenCurrentProvider<Z> | 'last';
     frame?: (tail: ReplayEvent<Z>[], hint?: unknown) => ReplayEvent<Z>[];
     history?: number;
+    keepMs?: number;
     getSince?: (seq: number) => ReplayEvent<Z>[] | undefined;
     onJournal?: (ev: ReplayEvent<Z>) => void;
     onJournalBatch?: (events: readonly ReplayEvent<Z>[]) => void;
@@ -48,6 +49,15 @@ export declare function withReplayListen<T>(base: ListenApi<T>, options?: Replay
     lastTs: () => number;
     close: () => void;
     getSince: (seq: number) => ReplayEvent<NormalizeTuple<T>>[] | undefined;
+    journalWindow: () => {
+        entries: number;
+        oldestSeq: number | null;
+        head: number;
+        ageMs: number;
+        historyLimit: number;
+        keepMs: number;
+        cappedByCount: boolean;
+    };
     line: ListenApi<[ReplayEvent<NormalizeTuple<T>>]>;
     hasKeyframe: boolean;
     keyframe: () => ReplayEvent<NormalizeTuple<T>> | undefined;
@@ -75,6 +85,15 @@ export declare function replayListen<T>(options?: ReplayListenUseOptions<T>): re
     lastTs: () => number;
     close: () => void;
     getSince: (seq: number) => ReplayEvent<NormalizeTuple<T>>[] | undefined;
+    journalWindow: () => {
+        entries: number;
+        oldestSeq: number | null;
+        head: number;
+        ageMs: number;
+        historyLimit: number;
+        keepMs: number;
+        cappedByCount: boolean;
+    };
     line: ListenApi<[ReplayEvent<NormalizeTuple<T>>]>;
     hasKeyframe: boolean;
     keyframe: () => ReplayEvent<NormalizeTuple<T>> | undefined;

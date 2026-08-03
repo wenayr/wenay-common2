@@ -177,6 +177,15 @@ export declare function createStoreReplicaSet<T extends object>(deps: StoreRepli
             isStale: () => boolean;
             lastTs: () => number;
             close: () => void;
+            journalWindow: () => {
+                entries: number;
+                oldestSeq: number | null;
+                head: number;
+                ageMs: number;
+                historyLimit: number;
+                keepMs: number;
+                cappedByCount: boolean;
+            };
             line: import("../..").ListenApi<[import("../events/replay-listen").ReplayEvent<[readonly StorePatch[]]>]>;
             hasKeyframe: boolean;
             on: import("../events/replay-listen").ListenOnReplay<[readonly StorePatch[]]>;

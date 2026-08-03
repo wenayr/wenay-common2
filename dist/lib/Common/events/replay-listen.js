@@ -34,16 +34,34 @@ function withReplayListen(base, options = {}) {
     return decorateReplayListen(base, options, createReplayDeliveryControl());
 }
 function decorateReplayListen(base, options, deliveryControl) {
-    const { current: currentOpt, frame: condense, history = 0, getSince, onJournal, onJournalBatch, now = Date.now, staleMs, onStale, firstSeq = 0, } = options;
+    const { current: currentOpt, frame: condense, history = 0, keepMs, getSince, onJournal, onJournalBatch, now = Date.now, staleMs, onStale, firstSeq = 0, } = options;
+    const ageLimitMs = keepMs != undefined && keepMs > 0 ? keepMs : 0;
+    const journalEnabled = history > 0 || ageLimitMs > 0;
     let lastEv;
     const current = currentOpt == 'last' ? () => lastEv?.event : currentOpt;
     let head = firstSeq;
-    const ring = [];
+    let entries = [];
+    let start = 0;
+    let cappedByCount = false;
     let emitting = null;
     const line = (0, Listen_1.createListen)(function noReplayLineProducer() { }, {
         [Listen_1.LISTEN_DISPATCH_ERROR]: deliveryControl.capture,
     });
     line.run();
+    function compactJournal() {
+        if (start > 1_024 && start * 2 > entries.length) {
+            entries = entries.slice(start);
+            start = 0;
+        }
+    }
+    function pruneJournalByAge() {
+        if (ageLimitMs == 0 || start >= entries.length)
+            return;
+        const cutoff = now() - ageLimitMs;
+        while (start < entries.length && entries[start].ts < cutoff)
+            start++;
+        compactJournal();
+    }
     function journalSince(seq) {
         if (getSince)
             return getSince(seq);
@@ -51,13 +69,30 @@ function decorateReplayListen(base, options, deliveryControl) {
             return undefined;
         if (seq == head)
             return [];
-        const oldest = Math.max(firstSeq + 1, head - history + 1);
+        pruneJournalByAge();
+        if (start >= entries.length)
+            return undefined;
+        const oldest = Math.max(firstSeq + 1, entries[start].seq);
         if (seq + 1 < oldest)
             return undefined;
         const out = [];
-        for (let s = seq + 1; s <= head; s++)
-            out.push(ring[(s - 1) % history]);
+        for (let index = start + (seq + 1 - entries[start].seq); index < entries.length; index++) {
+            out.push(entries[index]);
+        }
         return out;
+    }
+    function journalWindow() {
+        pruneJournalByAge();
+        const retained = entries.length - start;
+        return {
+            entries: retained,
+            oldestSeq: retained > 0 ? entries[start].seq : null,
+            head,
+            ageMs: retained > 0 ? now() - entries[start].ts : 0,
+            historyLimit: history,
+            keepMs: ageLimitMs,
+            cappedByCount,
+        };
     }
     function currentValue(c) {
         if (typeof c == 'function')
@@ -106,8 +141,17 @@ function decorateReplayListen(base, options, deliveryControl) {
     let publishing = false;
     function commitJournalEvent(ev, deliveryErrors) {
         head = ev.seq;
-        if (history > 0)
-            ring[(ev.seq - 1) % history] = ev;
+        if (journalEnabled) {
+            entries.push(ev);
+            pruneJournalByAge();
+            if (history > 0) {
+                while (entries.length - start > history) {
+                    start++;
+                    cappedByCount = true;
+                }
+                compactJournal();
+            }
+        }
         if (currentOpt == 'last')
             lastEv = ev;
         touchStale(ev.ts);
@@ -201,6 +245,7 @@ function decorateReplayListen(base, options, deliveryControl) {
             base.close();
         },
         getSince: journalSince,
+        journalWindow,
         line,
         hasKeyframe: current != null,
         keyframe: () => {
@@ -283,7 +328,7 @@ function decorateReplayListen(base, options, deliveryControl) {
     return api;
 }
 function replayListen(options = {}) {
-    const { current, frame, history, getSince, onJournal, onJournalBatch, now, staleMs, onStale, firstSeq, ...listenOptions } = options;
+    const { current, frame, history, keepMs, getSince, onJournal, onJournalBatch, now, staleMs, onStale, firstSeq, ...listenOptions } = options;
     let t;
     const deliveryControl = createReplayDeliveryControl();
     const base = (0, Listen_1.createListen)(function captureReplayEmit(e) { t = e; }, {
@@ -292,7 +337,7 @@ function replayListen(options = {}) {
         [Listen_1.LISTEN_DISPATCH_ERROR]: deliveryControl.capture,
     });
     const listen = decorateReplayListen(base, {
-        current, frame, history, getSince, onJournal, onJournalBatch, now, staleMs, onStale, firstSeq,
+        current, frame, history, keepMs, getSince, onJournal, onJournalBatch, now, staleMs, onStale, firstSeq,
     }, deliveryControl);
     base.run();
     t = listen.emit;

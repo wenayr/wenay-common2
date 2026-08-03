@@ -116,6 +116,15 @@ export declare function createStoreReplayViewLayer(deps: StoreReplayViewLayerDep
                 lastTs: () => number;
                 close: () => void;
                 getSince: (seq: number) => import("../events/replay-listen").ReplayEvent<[readonly StorePatch[]]>[] | undefined;
+                journalWindow: () => {
+                    entries: number;
+                    oldestSeq: number | null;
+                    head: number;
+                    ageMs: number;
+                    historyLimit: number;
+                    keepMs: number;
+                    cappedByCount: boolean;
+                };
                 line: import("../..").ListenApi<[import("../events/replay-listen").ReplayEvent<[readonly StorePatch[]]>]>;
                 hasKeyframe: boolean;
                 keyframe: () => import("../events/replay-listen").ReplayEvent<[readonly StorePatch[]]> | undefined;

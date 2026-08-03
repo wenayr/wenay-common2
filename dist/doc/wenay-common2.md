@@ -249,6 +249,9 @@ control.revoke('logged out elsewhere')   // server-driven cut, same corridor as 
 // replay upgrade — ONE WORD at the declaration site, everything below follows automatically:
 // const [tick, ticks] = listen<[number]>()                                       // before
 const [tick, ticks] = replayListen<[number]>({history: 1024, current: 'last'})    // after — same facade, same key
+// history = hard cap in events; keepMs = retention target in ms (either bound alone enables the journal)
+const [tick2, ticks2] = replayListen<[number]>({history: 50_000, keepMs: 60_000, current: 'last'})
+ticks2.journalWindow()   // {entries, oldestSeq, head, ageMs, historyLimit, keepMs, cappedByCount}
 // legacy subscribers unchanged (byte-for-byte). Replay consumers now also get:
 const sub = replaySubscribe(l.ticks, v => {}, {since: saved, onSeq: s => saved = s})  // catch-up + live; no uncovered loss/dups (a producer frame/keyframe may jump raw seq)
 const sub2 = replaySubscribe(c.math.func.ticks, v => {})  // replay members project on func/strict directly — no cast needed
@@ -686,7 +689,15 @@ Observe.followReplicatedMap<V, K>(remote, {onBatch?, onStatus?, onError?, staleM
   // Store Replay V2 is the only batch wire and travels through the JSON-array RPC lane.
 
 // Sequenced sync (replay line): seq-numbered patch stream — keyframe catch-up, reconnect by seq (tail, not snapshot)
-Observe.exposeStoreReplay(store, {history? = 1024, maxItems?, maxBytes?, maxDelayMs?, patchSource?}) -> { api /* spread into the RPC server object */, replay, batchStats, flushPending, close }
+Observe.exposeStoreReplay(store, {history? = 1024, keepMs?, maxItems?, maxBytes?, maxDelayMs?, patchSource?}) -> { api /* spread into the RPC server object */, replay, batchStats, flushPending, close }
+  // history = hard cap in ENVELOPES, so its depth in wall-clock time follows the write rate.
+  // keepMs = retention target in milliseconds: what a reconnect window is actually expressed in.
+  //   Set it when the requirement is "a client returning within N seconds must cost a journal tail,
+  //   not a keyframe" — a short window is what turns a reconnect into a full snapshot, and on a slow
+  //   link that snapshot is itself what starves the heartbeat (experiments/slow-network-2026-08).
+  //   history still wins as the hard cap; with only keepMs set the count is unbounded and memory is
+  //   rate x keepMs. replay.journalWindow() reports the window actually retained and whether the
+  //   count cap cut a keepMs target short.
   // api.replay is the sole Store Replay V2 facade. There is no legacy single-patch route or negotiation.
   // Store-owned Replay refines safe array-slot replacements to exact index patches without changing
   // public changedPaths/listenStorePatches. Length changes and whole-array replacement stay whole-array patches.

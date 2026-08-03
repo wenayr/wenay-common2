@@ -54,6 +54,15 @@ export declare function playbackStoreReplay<T extends object>(storage: ReplaySto
         isStale: () => boolean;
         lastTs: () => number;
         close: () => void;
+        journalWindow: () => {
+            entries: number;
+            oldestSeq: number | null;
+            head: number;
+            ageMs: number;
+            historyLimit: number;
+            keepMs: number;
+            cappedByCount: boolean;
+        };
         line: import("../..").ListenApi<[ReplayEvent<[readonly StorePatch[]]>]>;
         hasKeyframe: boolean;
         on: import("../events/replay-listen").ListenOnReplay<[readonly StorePatch[]]>;

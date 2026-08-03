@@ -62,6 +62,15 @@ export declare function createStoreFollower<T extends object>(deps: StoreFollowe
         isStale: () => boolean;
         lastTs: () => number;
         close: () => void;
+        journalWindow: () => {
+            entries: number;
+            oldestSeq: number | null;
+            head: number;
+            ageMs: number;
+            historyLimit: number;
+            keepMs: number;
+            cappedByCount: boolean;
+        };
         line: import("../..").ListenApi<[import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]>]>;
         hasKeyframe: boolean;
         on: import("../events/replay-listen").ListenOnReplay<[readonly import("./store").StorePatch[]]>;
@@ -90,6 +99,15 @@ export declare function createStoreFollower<T extends object>(deps: StoreFollowe
             isStale: () => boolean;
             lastTs: () => number;
             close: () => void;
+            journalWindow: () => {
+                entries: number;
+                oldestSeq: number | null;
+                head: number;
+                ageMs: number;
+                historyLimit: number;
+                keepMs: number;
+                cappedByCount: boolean;
+            };
             line: import("../..").ListenApi<[import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]>]>;
             hasKeyframe: boolean;
             on: import("../events/replay-listen").ListenOnReplay<[readonly import("./store").StorePatch[]]>;

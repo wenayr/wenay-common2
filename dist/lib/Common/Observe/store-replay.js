@@ -79,6 +79,7 @@ function createBatchReplay(currentBatch, opts, label = 'exposeStoreReplay') {
         current: currentBatch,
         frame: condenseBatchPatchTail,
         history: opts.getSince ? undefined : (opts.history ?? 1024),
+        keepMs: opts.getSince ? undefined : opts.keepMs,
         getSince: opts.getSince,
         onJournal: opts.onJournal,
         onJournalBatch: opts.onJournalBatch,

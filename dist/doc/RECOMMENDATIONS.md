@@ -185,7 +185,10 @@ an explicitly negotiated retention or persistence change:
   A design sketch for those three gates, plus the five decisions that must be answered before any
   code, is `doc/target/KEYFRAME-CHUNKING.md`. It is explicitly not an approved protocol.
 - Add a byte budget beside the batch-history entry count. A legal history window can retain many
-  large patches even when the number of envelopes is bounded.
+  large patches even when the number of envelopes is bounded. This became more relevant, not less,
+  once `keepMs` shipped: a time-only window deliberately leaves the count unbounded, so memory is
+  rate x keepMs and only a byte bound can cap it directly. `journalWindow()` currently reports
+  entries and age, not bytes.
 - Add a maximum wait to offline debounce only after defining the write-amplification trade-off; the
   current quiet-period debounce can postpone persistence under a permanently busy feed.
 

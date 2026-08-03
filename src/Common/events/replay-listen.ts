@@ -77,8 +77,21 @@ export type ReplayListenOptions<Z extends any[]> = {
      * hint — end-to-end opaque from subscriber (arbitrary skip rules), wire doesn't look inside.
      */
     frame?: (tail: ReplayEvent<Z>[], hint?: unknown) => ReplayEvent<Z>[]
-    /** Internal journal: ring of last N events. */
+    /** Internal journal: hard cap of retained events. 0 = no internal journal. */
     history?: number
+    /**
+     * Internal journal retention target in milliseconds: an entry older than this is
+     * evicted even while the count cap still allows it. Set it when the meaningful
+     * unit is "a reconnect within N seconds must cost a tail, not a keyframe" —
+     * an envelope count cannot express that, because its depth in wall-clock time
+     * depends entirely on the write rate.
+     *
+     * `history` remains the hard cap and wins: with both set the window is whichever
+     * bites first, so a burst cannot grow the journal without bound. With only
+     * `keepMs` set the count is unbounded and memory is rate x keepMs — deliberate,
+     * and the reason `journalWindow()` reports the window actually retained.
+     */
+    keepMs?: number
     /**
      * External journal (memory outside — preferred): events with seq > specified,
      * in order. undefined = evicted (seq too old) → fallback to keyframe.
@@ -134,9 +147,13 @@ function decorateReplayListen<T>(
 ) {
     type Z = NormalizeTuple<T>
     const {
-        current: currentOpt, frame: condense, history = 0, getSince, onJournal, onJournalBatch,
+        current: currentOpt, frame: condense, history = 0, keepMs, getSince, onJournal, onJournalBatch,
         now = Date.now, staleMs, onStale, firstSeq = 0,
     } = options
+    const ageLimitMs = keepMs != undefined && keepMs > 0 ? keepMs : 0
+    // The journal exists when either bound asks for it. `history` alone is the
+    // historical behaviour; `keepMs` alone is a time-only window.
+    const journalEnabled = history > 0 || ageLimitMs > 0
     // 'last' — keyframe from last journal event: single-entity line,
     // last tick = complete state. lastEv is written in the numbering emit below.
     let lastEv: ReplayEvent<Z> | undefined
@@ -145,8 +162,12 @@ function decorateReplayListen<T>(
 
     // === journal ===
     let head = firstSeq
-    // fixed-size ring: event slot seq = (seq-1) % history
-    const ring: ReplayEvent<Z>[] = []
+    // Entries in seq order. A fixed-modulo ring cannot evict by age, so retention
+    // is a head/tail window: `entries[start]` is the oldest retained event.
+    let entries: ReplayEvent<Z>[] = []
+    let start = 0
+    // Count cap bit the window before the age target could — reported, never silent.
+    let cappedByCount = false
     // current sync fan-out event: subscriber's liveTap learns seq without
     // envelope-protocol. save/restore → survives re-entrant emit.
     let emitting: ReplayEvent<Z> | null = null
@@ -156,16 +177,56 @@ function decorateReplayListen<T>(
     })
     line.run()
 
+    // Drop the consumed prefix once it dominates, so `start` cannot grow forever.
+    function compactJournal() {
+        if (start > 1_024 && start * 2 > entries.length) {
+            entries = entries.slice(start)
+            start = 0
+        }
+    }
+
+    // Age eviction is lazy: applied on write and before every read, so a quiet
+    // line frees memory without owning a timer.
+    function pruneJournalByAge() {
+        if (ageLimitMs == 0 || start >= entries.length) return
+        const cutoff = now() - ageLimitMs
+        while (start < entries.length && entries[start].ts < cutoff) start++
+        compactJournal()
+    }
+
     function journalSince(seq: number) {
         if (getSince) return getSince(seq)
         // seq from the future (another server lifetime) — don't trust journal, keyframe only
         if (seq > head) return undefined
+        // Already at the head: nothing to replay, and no journal is needed to say so.
+        // This must stay ahead of the retention check, or a line quiet for longer
+        // than keepMs would answer an up-to-date consumer with a keyframe.
         if (seq == head) return [] as ReplayEvent<Z>[]
-        const oldest = Math.max(firstSeq + 1, head - history + 1)
+        pruneJournalByAge()
+        if (start >= entries.length) return undefined
+        const oldest = Math.max(firstSeq + 1, entries[start].seq)
         if (seq + 1 < oldest) return undefined
         const out: ReplayEvent<Z>[] = []
-        for (let s = seq + 1; s <= head; s++) out.push(ring[(s - 1) % history])
+        for (let index = start + (seq + 1 - entries[start].seq); index < entries.length; index++) {
+            out.push(entries[index])
+        }
         return out
+    }
+
+    /** The window actually retained right now — so a bitten cap is visible, not guessed. */
+    function journalWindow() {
+        pruneJournalByAge()
+        const retained = entries.length - start
+        return {
+            entries: retained,
+            oldestSeq: retained > 0 ? entries[start].seq : null,
+            head,
+            ageMs: retained > 0 ? now() - entries[start].ts : 0,
+            historyLimit: history,
+            keepMs: ageLimitMs,
+            /** true = the count cap cut the window shorter than keepMs asked for. */
+            cappedByCount,
+        }
     }
 
     function currentValue(c?: ListenCurrent<Z>) {
@@ -214,7 +275,19 @@ function decorateReplayListen<T>(
 
     function commitJournalEvent(ev: ReplayEvent<Z>, deliveryErrors: any[]) {
         head = ev.seq
-        if (history > 0) ring[(ev.seq - 1) % history] = ev
+        if (journalEnabled) {
+            entries.push(ev)
+            pruneJournalByAge()
+            // Hard count cap last: it must win over the age target so a burst
+            // cannot grow the journal without bound.
+            if (history > 0) {
+                while (entries.length - start > history) {
+                    start++
+                    cappedByCount = true
+                }
+                compactJournal()
+            }
+        }
         if (currentOpt == 'last') lastEv = ev
         touchStale(ev.ts)
         // Persistence already owns this coordinate. A broken wire consumer must
@@ -305,6 +378,12 @@ function decorateReplayListen<T>(
         },
         /** Journal tail after seq (or undefined = evicted). For store-layer / introspection. */
         getSince: journalSince,
+        /**
+         * Retention actually in force: entries, oldest retained seq, its age, the
+         * configured bounds and whether the count cap cut a `keepMs` target short.
+         * A retention window that cannot be observed cannot be trusted.
+         */
+        journalWindow,
         /** Line of envelopes {seq, ts, event} — for wire (exposeReplay) and external journals. */
         line,
         /** Is current-provider set — can recovery with fresh keyframe occur (fallback, conflation). */
@@ -400,7 +479,7 @@ export type ReplayListenUseOptions<T> = ListenOptions<T> & ReplayListenOptions<N
 /** [emit, listen]: emit numbers and journals (goes through decorator, not bypassing it). */
 export function replayListen<T>(options: ReplayListenUseOptions<T> = {}) {
     const {
-        current, frame, history, getSince, onJournal, onJournalBatch,
+        current, frame, history, keepMs, getSince, onJournal, onJournalBatch,
         now, staleMs, onStale, firstSeq, ...listenOptions
     } = options
     let t: ((...a: NormalizeTuple<T>) => void)
@@ -411,7 +490,7 @@ export function replayListen<T>(options: ReplayListenUseOptions<T> = {}) {
         [LISTEN_DISPATCH_ERROR]: deliveryControl.capture,
     })
     const listen = decorateReplayListen<T>(base, {
-        current, frame, history, getSince, onJournal, onJournalBatch, now, staleMs, onStale, firstSeq,
+        current, frame, history, keepMs, getSince, onJournal, onJournalBatch, now, staleMs, onStale, firstSeq,
     }, deliveryControl)
     base.run()
     t = listen.emit  // IMPORTANT: through decorator — otherwise events bypass journal
