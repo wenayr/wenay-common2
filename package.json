@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "description": "Typed RPC over sockets, replayable Listen wires, reactive stores with replication and failover, peer packet mesh, media/artifact/AI/conversation runtimes",
   "keywords": [
     "rpc",
@@ -51,6 +51,7 @@
     "test:stress:extended": "npm run test:stress && node scripts/run-oracles.mjs --extended-stress",
     "experiment:transport": "tsx experiments/transport-2026-07/bench.ts",
     "experiment:slow-network": "tsx experiments/slow-network-2026-08/bench.ts",
+    "experiment:store-lazy": "tsx experiments/store-lazy-2026-08/bench.ts",
     "experiment:rpc-perf": "tsx experiments/rpc-perf-2026-07/bench.ts",
     "experiment:store-load": "tsx experiments/store-sync-load-2026-07/bench.ts",
     "experiment:store-view": "node --expose-gc --import tsx experiments/store-replay-view-2026-07/bench.ts",

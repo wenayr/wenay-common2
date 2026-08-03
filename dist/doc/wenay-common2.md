@@ -711,6 +711,28 @@ Observe.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?} of api.
   // off.ready (catch-up done) · off.mode ('v2') · off.seq()
   // lagging/late client NEVER gets a backlog: evicted seq -> ONE fresh keyframe + live
   // freshness is an option, not consumer boilerplate: {staleMs, onStale} flags a silent line / stale keyframe (edge-triggered both ways; 🎞️ in rare docs)
+// Very slow link, merge semantics (top-level value is absolute, last write per key wins):
+// fill progressively instead of ever sending a keyframe.
+const lazy = Observe.exposeStoreLazyLine(store, {chunkBytes: 32 * 1024, windowBytes: 512 * 1024, tombstoneKeepMs: 600_000})
+const fill = Observe.syncStoreLazyLine(mirror, lazy.api, {cursor: savedCursor, onCursor: persist})
+await fill.filled                                    // promise: every key delivered at least once
+  // THERE IS NO SNAPSHOT — not of values, not even of a key list. Progress is one cursor the
+  // SUBSCRIBER holds, {key, revision} = "I have every key up to `key`, as of `revision`".
+  // The host keeps no per-subscriber state, so a reconnect RESUMES the fill instead of
+  // restarting it; persist the cursor through onCursor and hand it back to continue.
+  // Values are read AT SEND TIME: a key rewritten beyond the cursor costs zero extra bytes and
+  // still lands newest; a key changed behind the cursor is re-sent. That is all convergence
+  // needs — no frozen snapshot, no second copy, no restart when the Store changes mid-transfer.
+  // A deleted key behind the cursor travels as a tombstone; tombstoneKeepMs bounds how long
+  // that stays provable, and a cursor older than the last prune is refused with {stale: true}.
+  // Pull-based: readBytes is the rate control, so a background fill cannot queue ahead of an
+  // urgent line. Keep it ABOVE the link's bandwidth-delay product or the link idles between
+  // reads (measured: a 16 KiB budget on a 128 KiB/s x 160 ms link was latency-bound).
+  // Measured on 20 000 keys at ~1 Mbit/s: first paint 718 ms vs 11 579 ms for a keyframe, 6 %
+  // fewer bytes, 1.33x slower full convergence (experiments/store-lazy-2026-08). On a few
+  // hundred keys it is at best parity — a small keyframe is already cheap.
+  // The mirror shows a MIX of fresh and stale keys while the first pass runs: that is the
+  // trade. For an all-or-nothing transfer use createStoreReplayView instead.
 // Large selective Store: one authoritative Store, no materialized child Store per client.
 const quotesView = Observe.createStoreReplayView(quotes, {
   keys: authorizedSymbols,                 // static/server-authorized top-level string keys
