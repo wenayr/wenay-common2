@@ -15,6 +15,7 @@ import {
     createCallbackPacketBatcher,
     MAX_BATCH_ITEMS,
 } from './rpc-callback-batch'
+import { rpcFlowClosedError, type RpcFlowOpts, type tRpcFlowGate } from './rpc-flow'
 import { MyError } from "../../toError/myThrow";
 
 type Func = (...args: any[]) => any;
@@ -299,8 +300,161 @@ function createServer<T extends object>(
         channel.session.rawBatch.enqueue(packet)
     }
 
+    // ===================================================================
+    // flow-paced callbacks (flowCallback) — server half of the credit window
+    // ===================================================================
+    // A method that wraps its callback gets a gate with two independent signals:
+    //   credit (negotiated, Caps.CB_FLOW): the client acks cumulatively, push waits when
+    //     sent - acked >= window; an old client never acks and the bit is simply absent;
+    //   watermark (local): pending() > highWater suspends until <= lowWater — the
+    //     conflateReplay hysteresis, fed by an explicit lambda or the socket.io probe below.
+    // Frames are counted in sendCb, not in push: both peers count exactly the frames that
+    // follow the CB_FLOW declaration on the ordered callback queue, whatever path sent them.
+    type tServerFlow = {
+        cbId: number
+        negotiated: boolean
+        window: number
+        sent: number
+        acked: number
+        /** Watermark hysteresis: true from > highWater until <= lowWater. */
+        draining: boolean
+        closedReason: string | null
+        waiters: {resolve: () => void; reject: (e: unknown) => void}[]
+        pending: (() => number) | undefined
+        highWater: number
+        lowWater: number
+        pollMs: number
+        timer: ReturnType<typeof setInterval> | null
+        gate: tRpcFlowGate
+    }
+
+    const flows = new Map<number, tServerFlow>()
+
+    // Best-effort socket.io shape probe: engine.io keeps unflushed packets in conn.writeBuffer.
+    // A foreign adapter without that shape simply has no local watermark.
+    function defaultFlowPending(): (() => number) | undefined {
+        const conn = (socket as any)?.conn
+        if (conn && Array.isArray(conn.writeBuffer)) {
+            return function pendingTransportPackets() { return conn.writeBuffer.length }
+        }
+        return undefined
+    }
+
+    function transportDown() {
+        const s = socket as any
+        return s.disconnected === true || s.connected === false
+    }
+
+    function creditBlocked(flow: tServerFlow) {
+        return flow.negotiated && flow.sent - flow.acked >= flow.window
+    }
+
+    function watermarkBlocked(flow: tServerFlow) {
+        if (!flow.pending) return false
+        const n = flow.pending()
+        if (flow.draining) {
+            if (n > flow.lowWater) return true
+            flow.draining = false
+            return false
+        }
+        if (n > flow.highWater) { flow.draining = true; return true }
+        return false
+    }
+
+    function flowWait(flow: tServerFlow): Promise<void> {
+        if (flow.closedReason != null) return Promise.reject(rpcFlowClosedError(flow.closedReason))
+        if (!creditBlocked(flow) && !watermarkBlocked(flow)) return Promise.resolve()
+        return new Promise(function waitForFlowWindow(resolve, reject) {
+            flow.waiters.push({resolve, reject})
+            // The poll is the liveness net: an ack wakes credit waiters directly, but a dead
+            // transport sends no acks and a watermark drains silently.
+            if (!flow.timer) {
+                flow.timer = setInterval(function pollFlowWindow() {
+                    if (transportDown()) { closeFlow(flow.cbId, 'disconnected'); return }
+                    wakeFlow(flow)
+                }, flow.pollMs)
+                ;(flow.timer as any).unref?.()
+            }
+        })
+    }
+
+    function wakeFlow(flow: tServerFlow) {
+        if (flow.closedReason != null || flow.waiters.length == 0) return
+        if (creditBlocked(flow) || watermarkBlocked(flow)) return
+        const waiters = flow.waiters
+        flow.waiters = []
+        if (flow.timer) { clearInterval(flow.timer); flow.timer = null }
+        for (const w of waiters) w.resolve()
+    }
+
+    function closeFlow(cbId: number, reason: string) {
+        const flow = flows.get(cbId)
+        if (!flow) return
+        flows.delete(cbId)
+        flow.closedReason = reason
+        if (flow.timer) { clearInterval(flow.timer); flow.timer = null }
+        const waiters = flow.waiters
+        flow.waiters = []
+        for (const w of waiters) w.reject(rpcFlowClosedError(reason))
+    }
+
+    function closeAllFlows(reason: string) {
+        for (const cbId of [...flows.keys()]) closeFlow(cbId, reason)
+    }
+
+    // The unpack hook: every wire callback wrapper gets an opener, flowCallback() may never
+    // call it — and then nothing here exists for that stream. Zero cost when unused.
+    function createFlowHost(channel: tSendChannel, settleScope?: Set<number>) {
+        return function flowHostForCallback(cbId: number) {
+            return function openFlow(opts?: RpcFlowOpts): tRpcFlowGate {
+                const existing = flows.get(cbId)
+                if (existing) return existing.gate
+                const window = Number.isSafeInteger(opts?.window) && opts!.window! > 0 ? opts!.window! : 32
+                const ackEvery = Number.isSafeInteger(opts?.ackEvery) && opts!.ackEvery! > 0
+                    ? Math.min(opts!.ackEvery!, window)
+                    : Math.max(1, window >> 2)
+                const highWater = Number.isFinite(opts?.highWater) && opts!.highWater! > 0 ? opts!.highWater! : 128
+                const lowWater = Number.isFinite(opts?.lowWater) && opts!.lowWater! >= 0
+                    ? Math.min(opts!.lowWater!, highWater)
+                    : Math.floor(highWater / 4)
+                const flow: tServerFlow = {
+                    cbId,
+                    negotiated: !detached && hasCap(serverCaps & channel.session.peerCaps, Caps.CB_FLOW),
+                    window,
+                    sent: 0,
+                    acked: 0,
+                    draining: false,
+                    closedReason: null,
+                    waiters: [],
+                    pending: opts?.pending ?? defaultFlowPending(),
+                    highWater,
+                    lowWater,
+                    pollMs: Number.isFinite(opts?.pollMs) && opts!.pollMs! > 0 ? opts!.pollMs! : 25,
+                    timer: null,
+                    gate: undefined as unknown as tRpcFlowGate,
+                }
+                flow.gate = {
+                    wait: function waitFlow() { return flowWait(flow) },
+                    pending: function pendingFlow() {
+                        return flow.negotiated ? flow.sent - flow.acked : (flow.pending?.() ?? 0)
+                    },
+                    closedReason: function flowClosedReason() { return flow.closedReason },
+                }
+                if (detached) { flow.closedReason = 'detached'; return flow.gate }
+                flows.set(cbId, flow)
+                settleScope?.add(cbId)
+                // The declaration rides the ORDERED callback queue: the client counts exactly
+                // the frames that follow it, which is exactly what sendCb counts here.
+                if (flow.negotiated) sendCallbackPacket(channel, [Pkt.CB_FLOW, cbId, ackEvery])
+                return flow.gate
+            }
+        }
+    }
+
     const cbShapes = createCbShapeServer()
     function sendCb(channel: tSendChannel, cbId: number, cbArgs: any[]) {
+        const flow = flows.get(cbId)
+        if (flow) flow.sent++
         const compactOn = hasCap(serverCaps & channel.session.peerCaps, Caps.COMPACT)
         const rows = channel.session.rows
         if (compactOn && cbArgs.length == 1 && isPlainObject(cbArgs[0])) {
@@ -331,6 +485,7 @@ function createServer<T extends object>(
     }
 
     function sendCbEnd(channel: tSendChannel, cbId: number) {
+        closeFlow(cbId, 'ended')
         cbShapes.drop(cbId)
         sendChannel(channel, [Pkt.CB_END, cbId])
     }
@@ -570,6 +725,7 @@ function createServer<T extends object>(
         // The old generation's queued callbacks form a final ordered prefix.
         flushAllSessions()
         clearAuthTimers() // a deadline firing on a dead socket is a leak, not a feature
+        closeAllFlows('detached') // pending pushes reject instead of waiting for acks forever
         detached = true
         sessions.clear()
         sessionByClient.clear()
@@ -701,6 +857,19 @@ function createServer<T extends object>(
             finally { if (helloInFlight == hello) helloInFlight = null; }
             return;
         }
+        // Caps.CB_FLOW: cumulative ack — "delivered n frames of cbId". Coalesced by the client
+        // (one per ackEvery frames and on queue drain); a later ack supersedes a lost one, so
+        // nothing here retries. Clamped to `sent`: forged over-credit opens nothing.
+        if (Array.isArray(msg) && msg[0] == Pkt.CB_ACK) {
+            const cbId = msg[1]
+            const count = msg[2]
+            if (!Number.isSafeInteger(cbId) || !Number.isSafeInteger(count) || count < 0) return
+            const flow = flows.get(cbId)
+            if (!flow || count <= flow.acked) return
+            flow.acked = Math.min(count, flow.sent)
+            wakeFlow(flow)
+            return
+        }
         // Caps.REQ_BATCH: the client's ordered envelope. Unwrapping is the whole of it — every
         // item still carries its own session id at index 5, so each is dispatched exactly as a
         // separate frame would have been, in array order. Dispatch is deliberately not awaited:
@@ -750,6 +919,11 @@ function createServer<T extends object>(
             return;
         }
 
+        // Flow gates opened by THIS awaited call: the client drops the call's callbacks when
+        // the response lands, so a gate must not outlive the promise — a late push rejects
+        // instead of waiting for acks that can no longer come. No-wait calls keep their
+        // streams: a subscription's lifetime ends at endCallback, not at settle.
+        const settleScope = wait ? new Set<number>() : undefined
         try {
             let fn: Function | undefined, ctx: any;
 
@@ -830,6 +1004,7 @@ function createServer<T extends object>(
                             (id, args) => sendCb(channel, id, args),
                             id => sendCbEnd(channel, id),
                             lim,
+                            createFlowHost(channel, settleScope),
                         )
                         current = current(...stepArgs);
                     }
@@ -847,6 +1022,7 @@ function createServer<T extends object>(
                     (id, values) => sendCb(channel, id, values),
                     id => sendCbEnd(channel, id),
                     lim,
+                    createFlowHost(channel, settleScope),
                 )
                 const res = await fn.apply(ctx, args);
                 if (wait) sendResult(channel, reqId, res)
@@ -854,6 +1030,8 @@ function createServer<T extends object>(
 
         } catch (e) {
             if (wait) sendError(channel, reqId, e)
+        } finally {
+            if (settleScope) for (const id of settleScope) closeFlow(id, 'settled')
         }
     }
     // Listen before the first declaration: synchronous in-memory adapters may answer

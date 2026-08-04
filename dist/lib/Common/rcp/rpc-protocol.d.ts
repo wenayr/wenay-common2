@@ -13,6 +13,8 @@ export declare const Pkt: {
     readonly CB_BATCH: 11;
     readonly AUTH: 12;
     readonly BATCH: 13;
+    readonly CB_FLOW: 14;
+    readonly CB_ACK: 15;
 };
 export declare const RPC_STOP = "___STOP";
 export declare const IS_RPC_LISTEN: unique symbol;

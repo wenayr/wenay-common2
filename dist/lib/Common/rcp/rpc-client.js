@@ -313,6 +313,68 @@ function createClient(socket, key, opts) {
         const error = errors.length == 1 ? errors[0] : new AggregateError(errors, message);
         setTimeout(function rethrowRpcConsumerErrors() { throw error; }, 0);
     }
+    const flowStreams = new Map();
+    const flowOn = () => (0, rpc_caps_1.hasCap)(clientCaps & peerServerCaps, rpc_caps_1.Caps.CB_FLOW);
+    function enqueueFlowFrame(cbId, stream, args) {
+        stream.queue.push(args);
+        if (!stream.draining)
+            void drainFlowStream(cbId, stream);
+    }
+    async function drainFlowStream(cbId, stream) {
+        stream.draining = true;
+        try {
+            while (stream.queue.length) {
+                if (disposed || flowStreams.get(cbId) != stream)
+                    return;
+                const args = stream.queue.shift();
+                if (args) {
+                    const cb = callbacks.get(cbId);
+                    if (cb) {
+                        try {
+                            const r = cb(...args);
+                            if (r && typeof r.then == 'function')
+                                await r;
+                        }
+                        catch (error) {
+                            rethrowConsumerErrors([error], 'RPC flow callback consumer failed');
+                        }
+                    }
+                }
+                stream.delivered++;
+                if (!disposed && flowStreams.get(cbId) == stream
+                    && (stream.queue.length == 0 || stream.delivered - stream.acked >= stream.ackEvery)) {
+                    stream.acked = stream.delivered;
+                    socket.emit(key, [rpc_protocol_1.Pkt.CB_ACK, cbId, stream.delivered]);
+                }
+            }
+        }
+        finally {
+            stream.draining = false;
+            if (stream.queue.length == 0)
+                releaseFlowDrainWaiters(stream);
+        }
+    }
+    function releaseFlowDrainWaiters(stream) {
+        const waiters = stream.onDrained;
+        if (!waiters)
+            return;
+        stream.onDrained = undefined;
+        for (const resolve of waiters)
+            resolve();
+    }
+    function dropFlowStream(cbId) {
+        const stream = flowStreams.get(cbId);
+        if (!stream)
+            return;
+        flowStreams.delete(cbId);
+        releaseFlowDrainWaiters(stream);
+    }
+    function flowDrained(cbId) {
+        const stream = flowStreams.get(cbId);
+        if (!stream || (!stream.draining && stream.queue.length == 0))
+            return null;
+        return new Promise(function waitFlowDrain(resolve) { (stream.onDrained ??= []).push(resolve); });
+    }
     function releaseZombiePacket(packet) {
         if (!Array.isArray(packet))
             return;
@@ -341,11 +403,17 @@ function createClient(socket, key, opts) {
                         pool.release(msg[1]);
                     break;
                 }
+                const drains = req.cbs.map(flowDrained).filter(Boolean);
+                if (drains.length) {
+                    void Promise.all(drains).then(function resumeRespAfterFlowDrain() { handlePacket(msg); });
+                    break;
+                }
                 pending.delete(msg[1]);
                 pool.release(msg[1]);
                 for (const cbId of req.cbs) {
                     if (callbacks.delete(cbId))
                         pool.release(cbId);
+                    dropFlowStream(cbId);
                 }
                 if (msg.length > 3) {
                     try {
@@ -369,6 +437,7 @@ function createClient(socket, key, opts) {
                 const cb = callbacks.get(msg[1]);
                 if (!cb)
                     break;
+                const flow = flowStreams.get(msg[1]);
                 let cbArgs;
                 try {
                     cbArgs = (msg[2] || []).map((a) => (0, rpc_walk_1.unpackResult)(a, lim, rows()));
@@ -376,6 +445,12 @@ function createClient(socket, key, opts) {
                 catch (e) {
                     if (debug)
                         console.log("[RPC CB] dropped:", e);
+                    if (flow)
+                        enqueueFlowFrame(msg[1], flow, null);
+                    break;
+                }
+                if (flow) {
+                    enqueueFlowFrame(msg[1], flow, cbArgs);
                     break;
                 }
                 try {
@@ -416,12 +491,19 @@ function createClient(socket, key, opts) {
                 const cb = callbacks.get(msg[1]);
                 if (!cb)
                     break;
+                const flow = flowStreams.get(msg[1]);
                 const keys = rowsOn() ? shapeDecoder.keysOf(msg[2]) : compactShapes.get(msg[1])?.get(msg[2]);
-                if (!keys)
+                if (!keys) {
+                    if (flow)
+                        enqueueFlowFrame(msg[1], flow, null);
                     break;
+                }
                 const vals = msg[3];
-                if (!Array.isArray(vals) || vals.length != keys.length)
+                if (!Array.isArray(vals) || vals.length != keys.length) {
+                    if (flow)
+                        enqueueFlowFrame(msg[1], flow, null);
                     break;
+                }
                 let obj;
                 try {
                     obj = {};
@@ -434,6 +516,12 @@ function createClient(socket, key, opts) {
                 catch (e) {
                     if (debug)
                         console.log("[RPC CBV] dropped:", e);
+                    if (flow)
+                        enqueueFlowFrame(msg[1], flow, null);
+                    break;
+                }
+                if (flow) {
+                    enqueueFlowFrame(msg[1], flow, [obj]);
                     break;
                 }
                 try {
@@ -450,6 +538,7 @@ function createClient(socket, key, opts) {
             case rpc_protocol_1.Pkt.CB_END: {
                 const cbId = msg[1];
                 compactShapes.delete(cbId);
+                dropFlowStream(cbId);
                 if (callbacks.delete(cbId))
                     pool.release(cbId);
                 else if (zombies.delete(cbId))
@@ -484,6 +573,18 @@ function createClient(socket, key, opts) {
                 }
                 break;
             }
+            case rpc_protocol_1.Pkt.CB_FLOW: {
+                if (!flowOn())
+                    break;
+                const cbId = msg[1];
+                if (!Number.isSafeInteger(cbId) || !callbacks.has(cbId))
+                    break;
+                const ackEvery = Number.isSafeInteger(msg[2]) && msg[2] >= 1 ? msg[2] : 1;
+                if (!flowStreams.has(cbId)) {
+                    flowStreams.set(cbId, { ackEvery, queue: [], draining: false, delivered: 0, acked: 0 });
+                }
+                break;
+            }
             case rpc_protocol_1.Pkt.CB_BATCH: {
                 if (!callbackBatchOn() || !Array.isArray(msg[1]))
                     break;
@@ -492,7 +593,8 @@ function createClient(socket, key, opts) {
                     break;
                 const valid = packets.every(function isCallbackPacket(packet) {
                     return Array.isArray(packet)
-                        && (packet[0] == rpc_protocol_1.Pkt.CB || packet[0] == rpc_protocol_1.Pkt.SHAPE || packet[0] == rpc_protocol_1.Pkt.CBV);
+                        && (packet[0] == rpc_protocol_1.Pkt.CB || packet[0] == rpc_protocol_1.Pkt.SHAPE || packet[0] == rpc_protocol_1.Pkt.CBV
+                            || packet[0] == rpc_protocol_1.Pkt.CB_FLOW);
                 });
                 if (!valid)
                     break;
@@ -517,7 +619,8 @@ function createClient(socket, key, opts) {
                 const valid = batched.every(function isBatchedPacket(packet) {
                     return Array.isArray(packet)
                         && (packet[0] == rpc_protocol_1.Pkt.CB || packet[0] == rpc_protocol_1.Pkt.SHAPE || packet[0] == rpc_protocol_1.Pkt.CBV
-                            || packet[0] == rpc_protocol_1.Pkt.CB_END || packet[0] == rpc_protocol_1.Pkt.RESP);
+                            || packet[0] == rpc_protocol_1.Pkt.CB_END || packet[0] == rpc_protocol_1.Pkt.RESP
+                            || packet[0] == rpc_protocol_1.Pkt.CB_FLOW);
                 });
                 if (!valid)
                     break;
@@ -1247,6 +1350,8 @@ function createClient(socket, key, opts) {
         drainWireSubs(socketAlive);
         abortAll(reason);
         disposed = true;
+        for (const cbId of [...flowStreams.keys()])
+            dropFlowStream(cbId);
         transport.control.close(reason);
         abandonHellos({ ok: false, reason });
         const sw = strictWaiters;

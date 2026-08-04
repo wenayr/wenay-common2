@@ -1,5 +1,6 @@
 import { idPool } from "../id-pool";
 import { type RpcLimits } from "./rpc-limits";
+import { type RpcFlowOpts, type tRpcFlowGate } from "./rpc-flow";
 export declare const ROW_MARKER = "$_t";
 export declare const RESERVED_MARKER_KEYS: ReadonlySet<string>;
 export declare function reservedMarkerKeyOf(value: any): string | undefined;
@@ -20,7 +21,7 @@ export declare function createRpcCallbackWrapper({ id, sender, onEnd, legacyStop
     legacyStopSentinel?: boolean;
 }): (...args: any[]) => void;
 export declare function rpcEndCallback(fn: Function): void;
-export declare function unpack(args: any[], sender: (id: number, a: any[]) => void, onEnd: (id: number) => void, lim?: Required<RpcLimits>): any[];
+export declare function unpack(args: any[], sender: (id: number, a: any[]) => void, onEnd: (id: number) => void, lim?: Required<RpcLimits>, flowHost?: (id: number) => (opts?: RpcFlowOpts) => tRpcFlowGate): any[];
 export declare function unpackResult(value: any, lim?: Required<RpcLimits>, rows?: tRowCodec): any;
 export declare const errToObj: (e: any) => any;
 export declare const resolveCA: (path: string[], args: any[]) => [string[], any[]];

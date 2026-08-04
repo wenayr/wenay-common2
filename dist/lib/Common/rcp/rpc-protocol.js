@@ -16,6 +16,8 @@ exports.Pkt = {
     CB_BATCH: 11,
     AUTH: 12,
     BATCH: 13,
+    CB_FLOW: 14,
+    CB_ACK: 15,
 };
 exports.RPC_STOP = "___STOP";
 exports.IS_RPC_LISTEN = Symbol.for("isRpcListen");

@@ -24,6 +24,7 @@ __exportStar(require("./rpc-path"), exports);
 __exportStar(require("./rpc-caps"), exports);
 __exportStar(require("./rpc-limits"), exports);
 __exportStar(require("./rpc-walk"), exports);
+__exportStar(require("./rpc-flow"), exports);
 __exportStar(require("./rpc-client"), exports);
 __exportStar(require("./rpc-server"), exports);
 __exportStar(require("./rpc-client-auto"), exports);

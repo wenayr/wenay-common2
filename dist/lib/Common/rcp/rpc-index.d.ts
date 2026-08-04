@@ -7,6 +7,7 @@ export * from "./rpc-path";
 export * from "./rpc-caps";
 export * from "./rpc-limits";
 export * from "./rpc-walk";
+export * from "./rpc-flow";
 export * from "./rpc-client";
 export * from "./rpc-server";
 export * from "./rpc-client-auto";

@@ -21,6 +21,7 @@ export const Caps = {
     HELLO_ID: 1 << 3,  // request correlation for in-band auth (Pkt.HELLO id echoed by Pkt.MAP)
     REQ_BATCH: 1 << 4, // the same ordered envelope for CALL/PIPE and RESP too (Pkt.BATCH)
     ROWS: 1 << 5,      // connection-scoped shape registry + row-encoded record arrays ($_t)
+    CB_FLOW: 1 << 6,   // flow-paced callbacks: credit window + cumulative acks (Pkt.CB_FLOW/CB_ACK)
 } as const
 
 export type tCaps = number
@@ -32,6 +33,7 @@ export const CAPS_ALL: tCaps = Caps.COMPACT
     | Caps.HELLO_ID
     | Caps.REQ_BATCH
     | Caps.ROWS
+    | Caps.CB_FLOW
 
 /** Whether capability c is in negotiated bitset. */
 export const hasCap = (caps: tCaps, c: number) => (caps & c) === c
@@ -73,15 +75,20 @@ export type RpcOpt = {
      *  default; false = uncorrelated wire as before, and `reauth()` again settles on whatever
      *  authAck-bearing MAP arrives next. */
     helloId?: boolean
+    /** Flow-paced callbacks (`flowCallback`): per-stream credit window with cumulative client
+     *  acks (Pkt.CB_FLOW/CB_ACK). Enabled by default; false = never negotiated. Zero wire cost
+     *  either way for methods that never wrap their callback. */
+    flowCallback?: boolean
 }
 
 /** Intent → bitset we advertise. JSON wire features default on. */
 export function optToCaps(opt?: RpcOpt): tCaps {
-    let c: tCaps = Caps.COMPACT | Caps.CB_BATCH | Caps.AUTH_STATE | Caps.HELLO_ID | Caps.ROWS
+    let c: tCaps = Caps.COMPACT | Caps.CB_BATCH | Caps.AUTH_STATE | Caps.HELLO_ID | Caps.ROWS | Caps.CB_FLOW
     if (opt?.compact === false) c &= ~Caps.COMPACT
     if (opt?.callbackBatch === false) c &= ~Caps.CB_BATCH
     if (opt?.authState === false) c &= ~Caps.AUTH_STATE
     if (opt?.helloId === false) c &= ~Caps.HELLO_ID
+    if (opt?.flowCallback === false) c &= ~Caps.CB_FLOW
     // The one bit that is off by default: it changes the framing of the REQUEST path, where the
     // measured win needs genuinely concurrent calls. Asking for it is a claim about the workload.
     if (opt?.requestBatch) c |= Caps.REQ_BATCH

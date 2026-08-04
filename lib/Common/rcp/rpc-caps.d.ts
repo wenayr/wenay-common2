@@ -5,6 +5,7 @@ export declare const Caps: {
     readonly HELLO_ID: number;
     readonly REQ_BATCH: number;
     readonly ROWS: number;
+    readonly CB_FLOW: number;
 };
 export type tCaps = number;
 export declare const CAPS_ALL: tCaps;
@@ -20,5 +21,6 @@ export type RpcOpt = {
     compactRows?: boolean;
     authState?: boolean;
     helloId?: boolean;
+    flowCallback?: boolean;
 };
 export declare function optToCaps(opt?: RpcOpt): tCaps;

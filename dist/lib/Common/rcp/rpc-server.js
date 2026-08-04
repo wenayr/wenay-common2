@@ -9,6 +9,7 @@ const rpc_protocol_1 = require("./rpc-protocol");
 const rpc_path_1 = require("./rpc-path");
 const rpc_caps_1 = require("./rpc-caps");
 const rpc_callback_batch_1 = require("./rpc-callback-batch");
+const rpc_flow_1 = require("./rpc-flow");
 const myThrow_1 = require("../../toError/myThrow");
 const SERVERS = new WeakMap();
 const MAX_CLIENT_SESSIONS = 16;
@@ -197,8 +198,143 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
         }
         channel.session.rawBatch.enqueue(packet);
     }
+    const flows = new Map();
+    function defaultFlowPending() {
+        const conn = socket?.conn;
+        if (conn && Array.isArray(conn.writeBuffer)) {
+            return function pendingTransportPackets() { return conn.writeBuffer.length; };
+        }
+        return undefined;
+    }
+    function transportDown() {
+        const s = socket;
+        return s.disconnected === true || s.connected === false;
+    }
+    function creditBlocked(flow) {
+        return flow.negotiated && flow.sent - flow.acked >= flow.window;
+    }
+    function watermarkBlocked(flow) {
+        if (!flow.pending)
+            return false;
+        const n = flow.pending();
+        if (flow.draining) {
+            if (n > flow.lowWater)
+                return true;
+            flow.draining = false;
+            return false;
+        }
+        if (n > flow.highWater) {
+            flow.draining = true;
+            return true;
+        }
+        return false;
+    }
+    function flowWait(flow) {
+        if (flow.closedReason != null)
+            return Promise.reject((0, rpc_flow_1.rpcFlowClosedError)(flow.closedReason));
+        if (!creditBlocked(flow) && !watermarkBlocked(flow))
+            return Promise.resolve();
+        return new Promise(function waitForFlowWindow(resolve, reject) {
+            flow.waiters.push({ resolve, reject });
+            if (!flow.timer) {
+                flow.timer = setInterval(function pollFlowWindow() {
+                    if (transportDown()) {
+                        closeFlow(flow.cbId, 'disconnected');
+                        return;
+                    }
+                    wakeFlow(flow);
+                }, flow.pollMs);
+                flow.timer.unref?.();
+            }
+        });
+    }
+    function wakeFlow(flow) {
+        if (flow.closedReason != null || flow.waiters.length == 0)
+            return;
+        if (creditBlocked(flow) || watermarkBlocked(flow))
+            return;
+        const waiters = flow.waiters;
+        flow.waiters = [];
+        if (flow.timer) {
+            clearInterval(flow.timer);
+            flow.timer = null;
+        }
+        for (const w of waiters)
+            w.resolve();
+    }
+    function closeFlow(cbId, reason) {
+        const flow = flows.get(cbId);
+        if (!flow)
+            return;
+        flows.delete(cbId);
+        flow.closedReason = reason;
+        if (flow.timer) {
+            clearInterval(flow.timer);
+            flow.timer = null;
+        }
+        const waiters = flow.waiters;
+        flow.waiters = [];
+        for (const w of waiters)
+            w.reject((0, rpc_flow_1.rpcFlowClosedError)(reason));
+    }
+    function closeAllFlows(reason) {
+        for (const cbId of [...flows.keys()])
+            closeFlow(cbId, reason);
+    }
+    function createFlowHost(channel, settleScope) {
+        return function flowHostForCallback(cbId) {
+            return function openFlow(opts) {
+                const existing = flows.get(cbId);
+                if (existing)
+                    return existing.gate;
+                const window = Number.isSafeInteger(opts?.window) && opts.window > 0 ? opts.window : 32;
+                const ackEvery = Number.isSafeInteger(opts?.ackEvery) && opts.ackEvery > 0
+                    ? Math.min(opts.ackEvery, window)
+                    : Math.max(1, window >> 2);
+                const highWater = Number.isFinite(opts?.highWater) && opts.highWater > 0 ? opts.highWater : 128;
+                const lowWater = Number.isFinite(opts?.lowWater) && opts.lowWater >= 0
+                    ? Math.min(opts.lowWater, highWater)
+                    : Math.floor(highWater / 4);
+                const flow = {
+                    cbId,
+                    negotiated: !detached && (0, rpc_caps_1.hasCap)(serverCaps & channel.session.peerCaps, rpc_caps_1.Caps.CB_FLOW),
+                    window,
+                    sent: 0,
+                    acked: 0,
+                    draining: false,
+                    closedReason: null,
+                    waiters: [],
+                    pending: opts?.pending ?? defaultFlowPending(),
+                    highWater,
+                    lowWater,
+                    pollMs: Number.isFinite(opts?.pollMs) && opts.pollMs > 0 ? opts.pollMs : 25,
+                    timer: null,
+                    gate: undefined,
+                };
+                flow.gate = {
+                    wait: function waitFlow() { return flowWait(flow); },
+                    pending: function pendingFlow() {
+                        return flow.negotiated ? flow.sent - flow.acked : (flow.pending?.() ?? 0);
+                    },
+                    closedReason: function flowClosedReason() { return flow.closedReason; },
+                };
+                if (detached) {
+                    flow.closedReason = 'detached';
+                    return flow.gate;
+                }
+                flows.set(cbId, flow);
+                settleScope?.add(cbId);
+                if (flow.negotiated)
+                    sendCallbackPacket(channel, [rpc_protocol_1.Pkt.CB_FLOW, cbId, ackEvery]);
+                return flow.gate;
+            };
+        };
+    }
     const cbShapes = (0, rpc_shape_1.createCbShapeServer)();
     function sendCb(channel, cbId, cbArgs) {
+        const flow = flows.get(cbId);
+        if (flow)
+            flow.sent++;
         const compactOn = (0, rpc_caps_1.hasCap)(serverCaps & channel.session.peerCaps, rpc_caps_1.Caps.COMPACT);
         const rows = channel.session.rows;
         if (compactOn && cbArgs.length == 1 && (0, rpc_shape_1.isPlainObject)(cbArgs[0])) {
@@ -220,6 +356,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
         sendCallbackPacket(channel, [rpc_protocol_1.Pkt.CB, cbId, cbArgs.map(function packCbArg(a) { return (0, rpc_walk_1.packResult)(a, rows, onReserved); })]);
     }
     function sendCbEnd(channel, cbId) {
+        closeFlow(cbId, 'ended');
         cbShapes.drop(cbId);
         sendChannel(channel, [rpc_protocol_1.Pkt.CB_END, cbId]);
     }
@@ -393,6 +530,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
             return;
         flushAllSessions();
         clearAuthTimers();
+        closeAllFlows('detached');
         detached = true;
         sessions.clear();
         sessionByClient.clear();
@@ -510,6 +648,18 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
             }
             return;
         }
+        if (Array.isArray(msg) && msg[0] == rpc_protocol_1.Pkt.CB_ACK) {
+            const cbId = msg[1];
+            const count = msg[2];
+            if (!Number.isSafeInteger(cbId) || !Number.isSafeInteger(count) || count < 0)
+                return;
+            const flow = flows.get(cbId);
+            if (!flow || count <= flow.acked)
+                return;
+            flow.acked = Math.min(count, flow.sent);
+            wakeFlow(flow);
+            return;
+        }
         if (Array.isArray(msg) && msg[0] == rpc_protocol_1.Pkt.BATCH) {
             if (!(0, rpc_caps_1.hasCap)(serverCaps, rpc_caps_1.Caps.CB_BATCH | rpc_caps_1.Caps.REQ_BATCH))
                 return;
@@ -560,6 +710,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
                 sendError(channel, reqId, new Error("Invalid args: expected array"));
             return;
         }
+        const settleScope = wait ? new Set() : undefined;
         try {
             let fn, ctx;
             if (typeof ref == "number") {
@@ -641,7 +792,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
                     else if (step.type === 'call') {
                         if (typeof current !== "function")
                             throw new Error("Attempted to call a non-function in pipe");
-                        const stepArgs = (0, rpc_walk_1.unpack)(step.args, (id, args) => sendCb(channel, id, args), id => sendCbEnd(channel, id), lim);
+                        const stepArgs = (0, rpc_walk_1.unpack)(step.args, (id, args) => sendCb(channel, id, args), id => sendCbEnd(channel, id), lim, createFlowHost(channel, settleScope));
                         current = current(...stepArgs);
                     }
                 }
@@ -652,7 +803,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
                     sendResult(channel, reqId, current);
             }
             else {
-                const args = (0, rpc_walk_1.unpack)(rawArgsOrSteps, (id, values) => sendCb(channel, id, values), id => sendCbEnd(channel, id), lim);
+                const args = (0, rpc_walk_1.unpack)(rawArgsOrSteps, (id, values) => sendCb(channel, id, values), id => sendCbEnd(channel, id), lim, createFlowHost(channel, settleScope));
                 const res = await fn.apply(ctx, args);
                 if (wait)
                     sendResult(channel, reqId, res);
@@ -661,6 +812,11 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
         catch (e) {
             if (wait)
                 sendError(channel, reqId, e);
+        }
+        finally {
+            if (settleScope)
+                for (const id of settleScope)
+                    closeFlow(id, 'settled');
         }
     }
     socket.on(key, handleServerPacket);

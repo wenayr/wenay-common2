@@ -1,6 +1,7 @@
 import { idPool } from "../id-pool";
 import { isSafeKey, PayloadLimitError, type RpcLimits } from "./rpc-limits";
 import { RPC_STOP } from "./rpc-protocol";
+import { registerRpcFlowHost, type RpcFlowOpts, type tRpcFlowGate } from "./rpc-flow";
 
 const FN_MARKER     = "$_f";
 const DATE_MARKER   = "$_d";
@@ -284,6 +285,7 @@ export function unpack(
     sender: (id: number, a: any[]) => void,
     onEnd: (id: number) => void,
     lim?: Required<RpcLimits>,
+    flowHost?: (id: number) => (opts?: RpcFlowOpts) => tRpcFlowGate,
 ): any[] {
     if (lim && args.length > lim.maxArgs) throw new PayloadLimitError("too many args");
     let cbCount = 0;
@@ -292,12 +294,16 @@ export function unpack(
             if (lim && ++cbCount > lim.maxCallbacks) throw new PayloadLimitError("too many callbacks");
             const id = leaf[FN_MARKER];
             if (typeof id !== "number" || !Number.isFinite(id)) throw new PayloadLimitError("invalid callback id");
-            return createRpcCallbackWrapper({
+            const wrapper = createRpcCallbackWrapper({
                 id,
                 sender,
                 onEnd,
                 legacyStopSentinel: true,
             });
+            // flowCallback(wrapper) finds its gate here; a host that offers none leaves the
+            // wrapper unregistered and the wrap degrades to a local pass-through.
+            if (flowHost) registerRpcFlowHost(wrapper, flowHost(id));
+            return wrapper;
         }
         return deserializeLeaf(leaf, undefined, lim);
     }, lim));

@@ -156,6 +156,18 @@ createRpcServerAuto({ socket: {emit, on}, object, socketKey: string, auth?, limi
 createRpcServer(opts)        // lower-level core (same { socket, object, socketKey }) -> { control }
 noStrict(obj)                // mark a dynamic subtree (no schema)
 endCallback(fn)              // mark an RPC stream-callback's end   (alias: rpcEndCallback)
+flowCallback(cb, opts?)      // pace an RPC stream-callback (backpressure) -> { push, pending, closed }
+  \ Sibling of endCallback: one ENDS a stream, this one PACES it. In a server method:
+  \   const flow = flowCallback(cb, {window: 100}); ...; await flow.push(chunk)
+  \ push() sends the frame exactly like cb() and resolves when producing more is OK. Two signals:
+  \   credit window (Caps.CB_FLOW, on by default): client runtime acks cumulatively (coalesced,
+  \     one per ackEvery frames) after each frame's consumer call settles — an async consumer
+  \     paces the server by its real speed; flow frames are delivered sequentially;
+  \   local watermark fallback (old peers): {pending, highWater, lowWater, pollMs} — the replay
+  \     lag-gate vocabulary; default pending probes the socket.io write buffer when available.
+  \ Disconnect / endCallback / method settle reject pending pushes (MyError 'E_FLOW_CLOSED').
+  \ A local (non-wire) callback passes through: producer code is identical in-process and over RPC.
+  \ opt.flowCallback: false disables negotiation. Unwrapped callbacks are byte-identical on the wire.
 
 // AUTH (in-band): client presents a token in Pkt.HELLO -> server serves that principal's facade.
 // CANONICAL PAGE: doc/RPC-AUTH.md — read it before writing auth code (rules + ✅/❌ pairs + limits).

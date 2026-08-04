@@ -21,6 +21,11 @@
 // by Caps.AUTH_STATE: a peer that doesn't advertise the bit never receives it. Deliberately a
 // CONTROL packet and not a Listen node: such a node lives inside the principal's facade and
 // would vanish exactly when the state has to be reported.
+// CB_FLOW/CB_ACK — flow-paced callbacks (flowCallback), negotiated by Caps.CB_FLOW.
+// [CB_FLOW, cbId, ackEvery] rides the ORDERED callback queue: everything the client counts is
+// exactly what the server counts, because both start at this packet. [CB_ACK, cbId, n] is the
+// client's CUMULATIVE "delivered n frames" — coalesced (one per ackEvery frames and on queue
+// drain), never one per frame, so a lost or reordered ack is superseded by the next one.
 export const Pkt = {
     CALL: 0,
     RESP: 1,
@@ -36,6 +41,8 @@ export const Pkt = {
     CB_BATCH: 11,
     AUTH: 12,
     BATCH: 13,
+    CB_FLOW: 14,
+    CB_ACK: 15,
 } as const
 
 // Stream end sentinel. Goes ON WIRE as first callback argument —

@@ -511,6 +511,81 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         setTimeout(function rethrowRpcConsumerErrors() { throw error }, 0)
     }
 
+    // --- flow-paced streams (Caps.CB_FLOW) ---
+    // The server declared cbId flow-paced (Pkt.CB_FLOW): frames are delivered one at a time —
+    // the next one after the previous consumer call settles (its returned promise included), so
+    // an async consumer paces the producer by its real speed. Acks are cumulative and coalesced
+    // (one per ackEvery frames plus one on queue drain), never one per frame. A frame whose
+    // payload the decoder drops is still COUNTED: the ack means "consumed from the wire", and a
+    // silent gap would stall the producer forever.
+    type tClientFlowStream = {
+        ackEvery: number
+        /** Decoded frame args in arrival order; null = payload dropped (counted anyway). */
+        queue: (any[] | null)[]
+        draining: boolean
+        delivered: number
+        acked: number
+        onDrained?: (() => void)[]
+    }
+    const flowStreams = new Map<number, tClientFlowStream>()
+    const flowOn = () => hasCap(clientCaps & peerServerCaps, Caps.CB_FLOW)
+
+    function enqueueFlowFrame(cbId: number, stream: tClientFlowStream, args: any[] | null) {
+        stream.queue.push(args)
+        if (!stream.draining) void drainFlowStream(cbId, stream)
+    }
+
+    async function drainFlowStream(cbId: number, stream: tClientFlowStream) {
+        stream.draining = true
+        try {
+            while (stream.queue.length) {
+                if (disposed || flowStreams.get(cbId) != stream) return
+                const args = stream.queue.shift()!
+                if (args) {
+                    const cb = callbacks.get(cbId)
+                    if (cb) {
+                        try {
+                            const r = cb(...args)
+                            if (r && typeof r.then == 'function') await r
+                        } catch (error) {
+                            rethrowConsumerErrors([error], 'RPC flow callback consumer failed')
+                        }
+                    }
+                }
+                stream.delivered++
+                if (!disposed && flowStreams.get(cbId) == stream
+                    && (stream.queue.length == 0 || stream.delivered - stream.acked >= stream.ackEvery)) {
+                    stream.acked = stream.delivered
+                    socket.emit(key, [Pkt.CB_ACK, cbId, stream.delivered])
+                }
+            }
+        } finally {
+            stream.draining = false
+            if (stream.queue.length == 0) releaseFlowDrainWaiters(stream)
+        }
+    }
+
+    function releaseFlowDrainWaiters(stream: tClientFlowStream) {
+        const waiters = stream.onDrained
+        if (!waiters) return
+        stream.onDrained = undefined
+        for (const resolve of waiters) resolve()
+    }
+
+    function dropFlowStream(cbId: number) {
+        const stream = flowStreams.get(cbId)
+        if (!stream) return
+        flowStreams.delete(cbId)
+        releaseFlowDrainWaiters(stream)
+    }
+
+    /** null when the stream has nothing queued; else a promise for its drain. */
+    function flowDrained(cbId: number) {
+        const stream = flowStreams.get(cbId)
+        if (!stream || (!stream.draining && stream.queue.length == 0)) return null
+        return new Promise<void>(function waitFlowDrain(resolve) { (stream.onDrained ??= []).push(resolve) })
+    }
+
     // After dispose the only thing still owed is the shared id space: an id whose owner is gone
     // must come back, whether its RESP/CB_END arrived alone or inside an envelope.
     function releaseZombiePacket(packet: any) {
@@ -534,9 +609,16 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             case Pkt.RESP: {
                 const req = pending.get(msg[1]);
                 if (!req) { if (zombies.delete(msg[1])) pool.release(msg[1]); break; }
+                // Flow streams deliver asynchronously, so their queued frames must land before
+                // the response settles — the ordering the synchronous path had for free.
+                const drains = req.cbs.map(flowDrained).filter(Boolean) as Promise<void>[]
+                if (drains.length) {
+                    void Promise.all(drains).then(function resumeRespAfterFlowDrain() { handlePacket(msg) })
+                    break
+                }
                 pending.delete(msg[1]);
                 pool.release(msg[1]);
-                for (const cbId of req.cbs) { if (callbacks.delete(cbId)) pool.release(cbId); }
+                for (const cbId of req.cbs) { if (callbacks.delete(cbId)) pool.release(cbId); dropFlowStream(cbId); }
                 // Presence of the fourth slot is the error discriminant. Truthiness
                 // loses legitimate `throw false`, `throw 0`, `throw ''` and `throw undefined`.
                 if (msg.length > 3) {
@@ -558,13 +640,19 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             case Pkt.CB: {
                 const cb = callbacks.get(msg[1]);
                 if (!cb) break;
+                const flow = flowStreams.get(msg[1])
                 let cbArgs: any[];
                 // stream has no error channel — drop corrupt/limit-exceeding packet
                 // (previously .map(unpackResult) also passed index as a second argument like lim)
                 try {
                     cbArgs = (msg[2] || []).map((a: any) => unpackResult(a, lim, rows()))
                 }
-                catch (e) { if (debug) console.log("[RPC CB] dropped:", e); break; }
+                catch (e) {
+                    if (debug) console.log("[RPC CB] dropped:", e);
+                    if (flow) enqueueFlowFrame(msg[1], flow, null)
+                    break;
+                }
+                if (flow) { enqueueFlowFrame(msg[1], flow, cbArgs); break }
                 try {
                     cb(...cbArgs)
                 } catch (error) {
@@ -595,10 +683,14 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 // compact tick: reconstruct object from shape + values and call callback as regular CB
                 const cb = callbacks.get(msg[1]);
                 if (!cb) break;
+                const flow = flowStreams.get(msg[1])
                 const keys = rowsOn() ? shapeDecoder.keysOf(msg[2]) : compactShapes.get(msg[1])?.get(msg[2])
-                if (!keys) break;
+                if (!keys) { if (flow) enqueueFlowFrame(msg[1], flow, null); break; }
                 const vals = msg[3]
-                if (!Array.isArray(vals) || vals.length != keys.length) break
+                if (!Array.isArray(vals) || vals.length != keys.length) {
+                    if (flow) enqueueFlowFrame(msg[1], flow, null)
+                    break
+                }
                 let obj: any;
                 try {
                     obj = {}
@@ -607,7 +699,12 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                         obj[k] = unpackResult(vals[i], lim, rows())
                     })
                 }
-                catch (e) { if (debug) console.log("[RPC CBV] dropped:", e); break; }
+                catch (e) {
+                    if (debug) console.log("[RPC CBV] dropped:", e);
+                    if (flow) enqueueFlowFrame(msg[1], flow, null)
+                    break;
+                }
+                if (flow) { enqueueFlowFrame(msg[1], flow, [obj]); break }
                 try {
                     cb(obj)
                 } catch (error) {
@@ -619,6 +716,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             case Pkt.CB_END: {
                 const cbId = msg[1] as number;
                 compactShapes.delete(cbId);
+                dropFlowStream(cbId);
                 // release only if id is ours (tracked) — foreign/late CB_END must not
                 // release id occupied by another request
                 if (callbacks.delete(cbId)) pool.release(cbId);
@@ -653,13 +751,26 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 }
                 break;
             }
+            case Pkt.CB_FLOW: {
+                // Un-negotiated feature: the packet is not ours to interpret (as CB_BATCH).
+                if (!flowOn()) break
+                const cbId = msg[1]
+                if (!Number.isSafeInteger(cbId) || !callbacks.has(cbId)) break
+                const ackEvery = Number.isSafeInteger(msg[2]) && msg[2] >= 1 ? msg[2] : 1
+                // Re-declaration must not reset counters: the server's sent/acked survive too.
+                if (!flowStreams.has(cbId)) {
+                    flowStreams.set(cbId, {ackEvery, queue: [], draining: false, delivered: 0, acked: 0})
+                }
+                break;
+            }
             case Pkt.CB_BATCH: {
                 if (!callbackBatchOn() || !Array.isArray(msg[1])) break
                 const packets = msg[1]
                 if (packets.length > 1024) break
                 const valid = packets.every(function isCallbackPacket(packet: any) {
                     return Array.isArray(packet)
-                        && (packet[0] == Pkt.CB || packet[0] == Pkt.SHAPE || packet[0] == Pkt.CBV)
+                        && (packet[0] == Pkt.CB || packet[0] == Pkt.SHAPE || packet[0] == Pkt.CBV
+                            || packet[0] == Pkt.CB_FLOW)
                 })
                 if (!valid) break
                 const callbackErrors: any[] = []
@@ -682,7 +793,8 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
                 const valid = batched.every(function isBatchedPacket(packet: any) {
                     return Array.isArray(packet)
                         && (packet[0] == Pkt.CB || packet[0] == Pkt.SHAPE || packet[0] == Pkt.CBV
-                            || packet[0] == Pkt.CB_END || packet[0] == Pkt.RESP)
+                            || packet[0] == Pkt.CB_END || packet[0] == Pkt.RESP
+                            || packet[0] == Pkt.CB_FLOW)
                 })
                 if (!valid) break
                 const batchedErrors: any[] = []
@@ -1434,6 +1546,8 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         drainWireSubs(socketAlive)
         abortAll(reason)
         disposed = true
+        // Flow drain waiters (deferred responses) resume into the disposed early-return.
+        for (const cbId of [...flowStreams.keys()]) dropFlowStream(cbId)
         transport.control.close(reason)
         abandonHellos({ok: false, reason})
         const sw = strictWaiters

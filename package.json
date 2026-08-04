@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "2.7.0",
+  "version": "2.8.0",
   "description": "Typed RPC over sockets, replayable Listen wires, reactive stores with replication and failover, peer packet mesh, media/artifact/AI/conversation runtimes",
   "keywords": [
     "rpc",
@@ -20,7 +20,7 @@
     "wenay-https": "./lib/cli/wenay-https.js"
   },
   "scripts": {
-    "test": "npm run test:rpc-guards && npm run test:types && npm run test:spec-types && npm run test:rpc && npm run test:rpc-markers && npm run test:https && npm run test:dynamic-runtime && npm run --prefix ./test test",
+    "test": "npm run test:rpc-guards && npm run test:types && npm run test:spec-types && npm run test:rpc && npm run test:rpc-flow && npm run test:rpc-markers && npm run test:https && npm run test:dynamic-runtime && npm run --prefix ./test test",
     "build & watch": "npm run _clearDir  &&  tsc --watch",
     "build": "npm run _clearDir  &&  tsc --build --verbose  &&  npm run _afterBuild",
     "types:generate": "tsc -p tsconfig.json --emitDeclarationOnly",
@@ -42,11 +42,12 @@
     "test:types": "tsc -p tsconfig.type-tests.json",
     "test:spec-types": "tsc -p tsconfig.spec.json",
     "test:rpc": "tsx src/Common/rcp/rpc.harness.spec.ts",
+    "test:rpc-flow": "tsx src/Common/rcp/rpc-flow.spec.ts",
     "test:rpc-markers": "tsx src/Common/rcp/rpc-marker-contract.spec.ts",
     "test:https": "tsx src/Common/https/https-config.spec.ts",
     "test:dynamic-runtime": "tsx observe/dynamic-module-manifest.test.ts && tsx observe/dynamic-module-worker.test.ts && tsx observe/dynamic-module-mcp-registrar.test.ts && tsx observe/dynamic-module-runtime.test.ts && tsx observe/dynamic-module-host-races.test.ts && tsx observe/dynamic-module-artifact-registry.test.ts && tsx observe/dynamic-module-rollout-journal.test.ts && tsx experiments/dynamic-runtime/fleet-self-client.ts",
     "test:dynamic-runtime:acceptance": "npm run test:dynamic-runtime && tsx oracle/realsocket/contract-runtime.spec.ts && tsx oracle/realsocket/replay-reconnect.spec.ts && tsx oracle/realsocket/store-chaos.spec.ts && tsx replay/offline-store-socket.test.ts && tsx observe/store-replica-set.test.ts",
-    "test:all": "npm run test:rpc-guards && npm run test:types && npm run test:spec-types && npm run test:rpc && npm run test:rpc-markers && npm run test:https && node scripts/run-oracles.mjs",
+    "test:all": "npm run test:rpc-guards && npm run test:types && npm run test:spec-types && npm run test:rpc && npm run test:rpc-flow && npm run test:rpc-markers && npm run test:https && node scripts/run-oracles.mjs",
     "test:stress": "node scripts/run-oracles.mjs --stress",
     "test:stress:extended": "npm run test:stress && node scripts/run-oracles.mjs --extended-stress",
     "experiment:transport": "tsx experiments/transport-2026-07/bench.ts",

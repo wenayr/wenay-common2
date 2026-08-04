@@ -280,6 +280,38 @@ async function myMethod(cb: (data: any) => void) {
 }
 ```
 
+### 4.2.1 Flow-Paced Streaming Callbacks (Backpressure)
+The sibling of `endCallback`: one marks the END of a stream, this one PACES it. A server method
+that pushes many chunks through a client-supplied callback wraps it once — `push()` sends the
+frame exactly like `cb()` would and resolves when it is OK to produce more:
+```typescript
+import { flowCallback } from "wenay-common2";
+
+async function readBackStream(a: tArgs, cb: (page: tPage) => void) {
+  const flow = flowCallback(cb, { window: 100 }); // window: max unacked frames in flight
+  while (hasMore) {
+    await flow.push(await readNext()); // stalls ONLY when the client genuinely lags
+  }
+  return { total }; // promise open => callback alive (§2.2.5) — unchanged
+}
+```
+Two independent signals gate `push`, negotiated like every wire feature (`Caps.CB_FLOW`,
+`opt.flowCallback`, on by default):
+- **Credit window** (new peers): the client runtime acks cumulatively (`Pkt.CB_ACK`, coalesced —
+  one per `ackEvery` frames, never one per frame) after delivering each frame to the app
+  callback — and if that callback returns a promise, after it settles. An async consumer
+  (`async (page) => { await db.put(page) }`) therefore paces the server by its real speed.
+  Frames of a flow stream are delivered sequentially: the next after the previous settles.
+- **Local watermark** (fallback, old peers): `pending() > highWater` suspends until
+  `<= lowWater` (`{pending, highWater, lowWater, pollMs}` — the replay lag-gate vocabulary;
+  default `pending` probes the socket.io write buffer when available).
+
+On a fast link acks refill the window before it drains — the producer streams at full speed and
+never stalls. Disconnect, `endCallback`, or the method promise settling reject pending `push`es
+with `MyError('E_FLOW_CLOSED')`, so producer loops exit instead of hanging. On a callback that
+did not come over the wire (local call, tests) the wrapper is a transparent pass-through.
+Methods that never wrap their callback are byte-identical on the wire.
+
 ### 4.3 Call / Apply Support on Client
 The client proxy can transparently handle standard JS `call` and `apply` calls. Server correctly normalizes them ("collapses" the path):
 ```typescript
