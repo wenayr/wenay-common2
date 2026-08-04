@@ -1007,6 +1007,20 @@ import { openFsReplayStorage } from "wenay-common2/server"
 // [latest keyframe + tail] is never cut into: size().overBudget reports it instead.
 // NB the reference fs adapter mirrors the file in RAM (it IS the seek index): budget the two together.
 
+openFsSpillJournal(file, {history, maxBytes, codec?}) -> {line: {getSince, onJournal}, size, close}
+  // the THIRD retention mode, between "bounded RAM ring" and the always-on durable journal:
+  // recent history lives in a RAM ring (`history` events), the disk is written ONLY on eviction —
+  // steady state with every consumer inside the window costs ZERO SSD writes. The spilled prefix
+  // extends "how long can a client be away and still get its exact tail" up to `maxBytes`
+  // (two rotated JSONL segments — prune drops the older segment, never rewrites; the disk part
+  // is NOT mirrored in RAM, reads open the file only on a cache-miss getSince).
+  // Wire it as the line's memory-outside: exposeStoreReplay(store, {...spill.line}) or
+  // replayListen(base, {current, ...spill.line}). Deliberately NOT restart-durable (open()
+  // starts a fresh lifetime — a dead process's RAM suffix leaves an unfillable gap; restarts
+  // are createDurableStoreReplay's job) and best-effort on disk trouble: a failed spill shrinks
+  // the window to RAM (size().spillErrors counts), old readers degrade to the keyframe reset
+  // the wire already knows — never to a broken tail. Oracle: replay/fs-spill-journal.test.ts
+
 Observe.createDurableStoreReplay<T>({storage, initial?, everyEvents? = 64, everyMs?, drain?, expose?})
     -> {store, api, replay, restored: {seq, fromArchive}, stats, retry, close}
   // the line SURVIVES a process restart: state hydrates from [keyframe + deltas], seq numbering

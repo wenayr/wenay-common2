@@ -312,6 +312,36 @@ with `MyError('E_FLOW_CLOSED')`, so producer loops exit instead of hanging. On a
 did not come over the wire (local call, tests) the wrapper is a transparent pass-through.
 Methods that never wrap their callback are byte-identical on the wire.
 
+**Recipe — resumable flow stream.** A flow stream is call-scoped: the callback dies with the
+connection, so "continue after reconnect" is NOT a server buffer — the resume point is a method
+argument, because only the client knows what it durably consumed. The server keeps nothing:
+```typescript
+// server: the source (disk pages, a scan) is already durable — serve from the cursor
+async function readBackStream(a: { from?: number }, cb: (page: tPage) => void) {
+  const flow = flowCallback(cb, { window: 100 });
+  let seq = a.from ?? 0;
+  try {
+    for (let page = await readAfter(seq); page; page = await readAfter(seq)) {
+      await flow.push(page);
+      seq = page.seq;
+    }
+  } catch (e: any) {
+    if (e?.code !== 'E_FLOW_CLOSED') throw e; // disconnect: exit quietly, client will resume
+  }
+  return { last: seq };
+}
+
+// client: remember the last page it SAVED, resume from it after any reconnect
+let last = await db.lastSavedSeq();
+await api.func.readBackStream({ from: last }, async (page: tPage) => {
+  await db.put(page);      // the ack (and so the server's pace) follows this settle
+  last = page.seq;
+});
+```
+For LIVE events that must survive the client's absence this recipe is wrong by construction —
+that is a replay line's job (`exposeStoreReplay` + `since`, optionally `openFsSpillJournal` /
+`openFsReplayStorage` behind it, see 🎞️/💾 in the library docs).
+
 ### 4.3 Call / Apply Support on Client
 The client proxy can transparently handle standard JS `call` and `apply` calls. Server correctly normalizes them ("collapses" the path):
 ```typescript
