@@ -28,7 +28,6 @@
 import {Immutable, KeysWithoutType, Mutable, MutableFull, PickTypes, ReadonlyFull} from "./BaseTypes";
 import {compareDeepValues} from './deep-equal'
 
-import "../node_console"
 //import "./Time";
 
 export function GetEnumKeys<TT extends {[key:string]:any}> (T :TT) : readonly (keyof typeof T)[] { return Object.keys(T).filter(k => isNaN(k as any)); }
@@ -100,11 +99,11 @@ export function shallowClone<T>(val :T) : Mutable<T> {
 
 // Deep cloning of any type
 
-export function _deepClone<T>(src :T, map? :Map<object,object>) {
+export function _deepClone<T>(src :T, map? :Map<object,object>) :T {
 	if (!src || typeof src!="object") return src;
     const srcObj = src as unknown as object;
     const cached = map?.get(srcObj);
-    if (cached) return cached as any;
+    if (cached) return cached as T;
 
     const cloneValue = (value: any) =>
         value && typeof value=="object"
@@ -135,7 +134,7 @@ export function _deepClone<T>(src :T, map? :Map<object,object>) {
         return newobject;
     }
 	for(let [key,value] of Object.entries(src)) newobject[key] = cloneValue(value);
-	return newobject as { [key in keyof T] : T[key] };
+	return newobject as T;
 }
 
 /** @deprecated use {@link clone} */

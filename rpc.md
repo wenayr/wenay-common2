@@ -543,6 +543,7 @@ application revocation is not undone by a `resolveAuth` that started before it.
 
 ### 5.6 `createTokenCodec` is a default, not a security product
 
-`import { createTokenCodec } from "wenay-common2/server"` gives one honest default: one secret, one
+`import { createTokenCodec } from "wenay-common2/server/auth"` (or the compatibility
+`wenay-common2/server` facade) gives one honest default: one secret, one
 pinned algorithm, one expiry (`issue` / `verify`, default TTL 15 min). No JWT, no key rotation, no
 revocation list, no refresh flow, no identity provider — those are the application's.

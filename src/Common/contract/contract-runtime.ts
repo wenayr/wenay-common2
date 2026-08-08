@@ -5,7 +5,7 @@
 // authority order, atomic binding replacement, leases, failure and rollback.
 
 import {deepEqual} from '../core/common'
-import {listen} from '../events/Listen'
+import {LISTEN_DISPATCH_ERROR, listen} from '../events/Listen'
 import {createStore} from '../Observe/store'
 import {
     ContractBinding,
@@ -106,6 +106,10 @@ function rejectedError(message: string) {
     return error
 }
 
+function reportContractBindingObserverError(error: unknown) {
+    setTimeout(function rethrowContractBindingObserverError() { throw error }, 0)
+}
+
 export function createContractRuntime(deps: ContractRuntimeDeps = {}) {
     const policy = deps.policy ?? {}
     const compareDemands = policy.compareDemands ?? defaultCompareContractDemands
@@ -118,7 +122,9 @@ export function createContractRuntime(deps: ContractRuntimeDeps = {}) {
     const failures = new Map<string, OfferFailure>()
     const slots = new Map<string, Slot>()
     const history: ContractBindingEvent[] = []
-    const [emitBinding, bindingEvents] = listen<[ContractBindingEvent]>()
+    const [emitBinding, bindingEvents] = listen<[ContractBindingEvent]>({
+        [LISTEN_DISPATCH_ERROR]: reportContractBindingObserverError,
+    })
     let closed = false
     let opChain: Promise<unknown> = Promise.resolve()
 

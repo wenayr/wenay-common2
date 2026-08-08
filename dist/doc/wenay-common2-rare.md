@@ -128,7 +128,9 @@ isSimilarColors(c1, c2, maxDelta=32) -> boolean
 ```
 callerLine(lvl=0) -> "file:line:col  func"          // V8 caller frame   (alias: __LineFile2; __LineFile/__LineFiles->callerLines)
 callerLines(start=0, end=5) -> string[]             // (alias: __LineFiles)
-enable(flag=true) / disable()                       // clickable source links in console (IDE)
+installConsoleCallerAnnotations()                   // Node opt-in; installs wrappers once + enables clickable source links
+enable(flag=true) / disable()                       // enable(true) also installs; false/disable keep transparent wrappers
+  // imports never mutate console; first browser/attached-inspector install is a no-op; no uninstall by design
 installProxyTracking()                              // call once at startup (browser fallback). isProxy(v)->boolean   (alias: isProxyInit)
 createIdPool() -> { next() -> number, release(id) }                                       // reuses released ids
 createRateWindow() -> { add(item), prune(type, ms?), sumWeight(type), readyAt(...), ...legacy }   // alias: funcTimeW
@@ -266,7 +268,7 @@ RpcPrincipalChange = { keep: ReadonlySet<object>, drop: ReadonlySet<object> }   
   //   createRpcServerAuto consumes this hook (unsubscribeUnreachable) and still relays yours; each dropped
   //   subscriber gets rpcEndCallback (RPC_STOP -> CB_END) BEFORE losing the server subscription, so client
   //   consumers resolve instead of hanging. A source kept by another exposed node is never torn down.
-createTokenCodec({secret, ttlMs? = 15*60_000, hmac?, now?}) -> {issue, verify}   // 'wenay-common2/server', node-only
+createTokenCodec({secret, ttlMs? = 15*60_000, hmac?, now?}) -> {issue, verify}   // 'wenay-common2/server/auth' (or /server), node-only
   // issue<T extends IssueClaims>(claims: T, {ttlMs?}?) -> `v1.<base64url(payload)>.<base64url(hmac-sha256)>`
   //   `exp` and `jti` are MINTED, never accepted from the caller; throws only on caller error (empty `sub`).
   // verify(token: unknown) -> {ok:true, claims: TokenClaims} | {ok:false, reason: 'malformed'|'signature'|'expired'}
@@ -520,13 +522,14 @@ can settle no pending `reauth()`).
 
 ### HTTP facade server: static GET/POST mirror
 
-`createHttpFacadeServer` is exported only from `wenay-common2/server`. It receives a caller-owned Express app and
+`createHttpFacadeServer` is exported from `wenay-common2/server/http` and the compatibility
+`wenay-common2/server` facade. It receives a caller-owned Express app and
 walks the supplied object once at server setup. Every nested enumerable string-keyed function becomes a route whose
 URL segments match its object path:
 
 ```ts
 import express from 'express'
-import {createHttpFacadeServer} from 'wenay-common2/server'
+import {createHttpFacadeServer} from 'wenay-common2/server/http'
 
 const app = express()
 app.use(express.json())
@@ -1023,6 +1026,9 @@ class CQuotesHistoryMutable / CQuotesHistoryMutable2 extends CQuotesHistory
 ```
 
 ## 🧩 server / socket helpers
+> Focused Node entrypoints: `wenay-common2/server/fs`, `/server/auth`, `/server/http`, and
+> `/server/webhook`; `wenay-common2/server` remains the compatibility facade.
+
 ```
 SocketServerHook(opt?) · WebSocketServerHook(hook, params?, disconnect?)    // server-side socket wiring
 saveKeyValue({ dirDef, key? }) -> SaveKeyValueStore                          // fs-backed key/value store
@@ -1534,7 +1540,7 @@ conflateReplay(replay, {pending, highWater, lowWater?, pollMs?, keyOf?, maxKeys?
   // keyOf (@deprecated — declare `frame` on the LINE instead; held-map path kept working for generic replay calls):
   //   while lagged keep the LAST envelope per key, drain -> tail of those (ascending seq) instead of a full keyframe;
   //   events must be ABSOLUTE per key; keyOf -> null or over maxKeys (1024) degrades to keyframe recovery
-ReplayStorage = {putEvent, putEvents?, putKeyframe, getKeyframe({seq?|ts?}?), getEvents(from, to)}   // layer C: putEvents is atomic all-or-throw; createMemoryReplayStorage(caps?) = reference impl
+ReplayStorage = {putEvent, putEvents?, putKeyframe, getKeyframe({seq?|ts?}?) -> ReplayEvent | undefined, getEvents(from, to)}   // layer C: putEvents is atomic all-or-throw; createMemoryReplayStorage(caps?) = reference impl
 archiveReplay(replay, {storage, everyEvents? = 64, everyMs?}) -> {close, stats}          // event log + keyframe cadence (every N events OR T ms of line-ts, whichever first; frames only ON events)
 openHistory(storage, live?) -> {at({seq?|ts?}?), subscribe(cb, {since?|ts?, onSeq?}) -> off}   // seek + playback, SAME subscriber interface; with live: archive -> live journal -> live handover
   // seamless rewind->live: create the line with getSince reading the same storage («memory outside»); else the gap closes with a keyframe jump (still consistent)

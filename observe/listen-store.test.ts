@@ -49,6 +49,38 @@ async function main() {
         ok(JSON.stringify(seen) == '[5]', 'wrapper delegates event delivery and off() to base listen')
     }
 
+    console.log('\n[listen-store] failed current delivery removes the subscription')
+    {
+        const providerError = new Error('current provider failed')
+        const [, listen] = listenStore<[number]>({
+            current: function readCurrent() {
+                throw providerError
+            },
+        })
+        let caught: unknown
+        try {
+            listen.on(function ignoreCurrent() {}, {current: true})
+        } catch (error) {
+            caught = error
+        }
+        ok(caught == providerError, 'provider error is rethrown synchronously unchanged')
+        ok(listen.count() == 0, 'provider error removes the registered callback')
+    }
+    {
+        const callbackError = new Error('current callback failed')
+        const [, listen] = listenStore<[number]>({current: () => [1]})
+        let caught: unknown
+        try {
+            listen.on(function failCurrentCallback() {
+                throw callbackError
+            }, {current: true})
+        } catch (error) {
+            caught = error
+        }
+        ok(caught == callbackError, 'callback error is rethrown synchronously unchanged')
+        ok(listen.count() == 0, 'callback error removes the registered callback')
+    }
+
     console.log(`\n${fails == 0 ? 'ALL GREEN' : fails + ' FAILURE(S)'}`)
     process.exit(fails == 0 ? 0 : 1)
 }

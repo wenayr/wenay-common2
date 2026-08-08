@@ -1164,7 +1164,9 @@ process/container required for untrusted code or hard OS isolation.
 10. An MCP contribution is inert until verified and explicitly attached; every catalog lease has
     exactly one `host`, `generation`, or `session` owner and cannot outlive that owner.
 11. Required rollout probes are enforced by policy, not by hoping an agent follows a prompt.
-12. Catalog replacement is generation-based: a call resolves one immutable backing contribution
+12. Outward lifecycle facts cannot alter an already committed candidate or binding transition;
+    observer failures remain loud outside the state transaction and do not suppress sibling facts.
+13. Catalog replacement is generation-based: a call resolves one immutable backing contribution
     and cannot jump versions while in flight.
 
 **Deferred, requiring separate decisions.**

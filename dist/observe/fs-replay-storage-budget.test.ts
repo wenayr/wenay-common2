@@ -26,6 +26,12 @@ function keyframe(payload: string): ReplayEvent<[string]> {
     return {seq, ts: seq, event: [payload]}
 }
 
+function emptyStorageHasNoKeyframe() {
+    const storage = openFsReplayStorage<[string]>(fileOf('empty'))
+    assert.equal(storage.getKeyframe(), undefined, 'empty file storage has no keyframe')
+    console.log('ok  empty file storage reports no keyframe')
+}
+
 // =====================================================================
 // Without the option: append-only, nothing is ever deleted
 // =====================================================================
@@ -164,6 +170,7 @@ function manualCompactUnchanged() {
 
 function main() {
     try {
+        emptyStorageHasNoKeyframe()
         withoutBudgetNothingIsDeleted()
         budgetBoundsTheFile()
         pruneKeepsTheOldestSuffixThatFits()

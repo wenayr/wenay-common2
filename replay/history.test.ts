@@ -53,6 +53,12 @@ function makeCounterLine(storage: ReplayStorage<[number]>, everyEvents: number, 
 const lastValue = (envs: ReplayEvent<[number]>[] | undefined) => envs ? envs[envs.length - 1].event[0] : undefined
 
 async function main() {
+    console.log('\n[history] empty storage has no keyframe')
+    {
+        const storage = createMemoryReplayStorage<[number]>()
+        ok(storage.getKeyframe() == undefined, 'memory storage reports an absent keyframe honestly')
+    }
+
     console.log('\n[history] archiver cadence + seek by seq and ts')
     {
         const storage = createMemoryReplayStorage<[number]>()

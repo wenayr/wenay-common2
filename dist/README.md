@@ -67,4 +67,6 @@ Where it goes next: [`demo/`](demo/) is the full runnable stand (`npm run demo`)
   `wenay-https` is the separate installed server-tool entrypoint. Examples import from the repo's
   `src/`; in application code the same API comes from
   `wenay-common2` / `wenay-common2/peer` / `wenay-common2/replay` / `wenay-common2/observe` /
-  `wenay-common2/contract`.
+  `wenay-common2/contract`; focused lower-level entrypoints are `wenay-common2/listen`,
+  `wenay-common2/rpc`, `wenay-common2/server/fs`, `wenay-common2/server/auth`,
+  `wenay-common2/server/http`, and `wenay-common2/server/webhook`.

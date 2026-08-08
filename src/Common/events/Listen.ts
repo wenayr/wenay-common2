@@ -258,9 +258,14 @@ export function withStoreListen<T>(base: ListenApi<T>, currentProvider: ListenCu
         ...base,
         on: ((cb: Listener<Z>, {cbClose, key, current}: {cbClose?: CloseCallback; key?: ListenKey; current?: ListenCurrent<Z>} = {}) => {
             const off = base.on(cb, {cbClose, key})
-            if (current) {
-                const value = currentValue(current)
-                if (value) cb(...value)
+            try {
+                if (current) {
+                    const value = currentValue(current)
+                    if (value) cb(...value)
+                }
+            } catch (error) {
+                try { off() }
+                finally { throw error }
             }
             return off
         }) as ListenOnCurrent<Z>,

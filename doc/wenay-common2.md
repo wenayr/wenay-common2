@@ -25,6 +25,9 @@ Installed CLI: `npm exec wenay-https -- ensure|status|doctor|stop`. The consumin
 an authenticated administrative route. Full setup and security boundary → [`HTTPS-CLI.md`](HTTPS-CLI.md).
 
 ## ⭐ events — `listen` / `listenStore`
+> `import {listen, listenStore, mapListen} from 'wenay-common2'` or the narrow
+> `import {listen, listenStore, mapListen} from 'wenay-common2/listen'`.
+
 ```
 import { listen, listenStore, mapListen } from "wenay-common2"
 
@@ -54,6 +57,19 @@ joinListens(listens | ports, keyExtractor?) -> { listen, add(port, key?), pendin
 ```
 sleepAsync(ms = 0) -> Promise<void>
 ```
+
+## Console caller links (Node, opt-in)
+```ts
+import {installConsoleCallerAnnotations, enable, disable} from 'wenay-common2/debug-console'
+
+installConsoleCallerAnnotations()    // idempotently wrap console methods and enable clickable caller links
+disable()                            // keep wrappers installed, but pass calls through without annotations
+enable()                             // enable again; also installs on first use
+enable(false)                        // same transparent mode as disable()
+```
+Importing the root package or `debug-console` does not modify the global console. A first install in
+a browser or while the Node inspector is already attached is a safe no-op. There is deliberately no
+uninstall: replacing wrappers later could overwrite wrappers installed by another tool.
 
 ## ⏱️ async
 ```
@@ -116,6 +132,8 @@ const:  H1_S D1_S W1_S · M1_MS H1_MS D1_MS W1_MS
 ```
 
 ## 🌐 rpc (brief) — transport is ALWAYS caller-supplied (`{emit,on}`); there is NO url / built-in socket
+> Existing root imports remain supported; `wenay-common2/rpc` is the focused RPC entrypoint.
+
 ```
 // SERVER: `object` is the impl tree, `socket` is a {emit,on} transport adapter
 createRpcServerAuto({ socket: {emit, on}, object, socketKey: string, auth?, limits?, maxPerListen?, throttle?, opt?, replay?, replayOpts? }) -> { api, control }
@@ -193,7 +211,7 @@ control: (returned by createRpcServer/createRpcServerAuto) — the application's
   //   any HELLO, twice in a row and after detach. An application revocation is not undone by a resolveAuth
   //   that started before it. Exported derived type for a per-session registry (Map<userId, RpcServerControl>):
   //   RpcServerControl = ReturnType<typeof createRpcServer>['control'].
-createTokenCodec({secret, ttlMs? = 15min, hmac?, now?}) -> {issue, verify}   // 'wenay-common2/server', node-only
+createTokenCodec({secret, ttlMs? = 15min, hmac?, now?}) -> {issue, verify}   // 'wenay-common2/server/auth' (or /server), node-only
   // one honest default behind resolveAuth: one secret, one pinned algorithm, one expiry.
   // NOT a security product: no JWT, no key rotation, no revocation list, no refresh, no identity provider.
 
@@ -994,9 +1012,10 @@ parity, frame equivalence, gate lag sim), plus `replay/conflate-socket.test.ts`,
 ## 💾 durability, flight recorder, node health
 ```
 import { Observe, Replay, createNodeIdMinter } from "wenay-common2"
-import { openFsReplayStorage } from "wenay-common2/server"
+import { openFsReplayStorage } from "wenay-common2/server/fs"
 
-// The persistence PORT is Replay.ReplayStorage {putEvent, putEvents?, putKeyframe, getKeyframe, getEvents}:
+// The persistence PORT is Replay.ReplayStorage {putEvent, putEvents?, putKeyframe,
+// getKeyframe -> ReplayEvent | undefined, getEvents}:
 // createMemoryReplayStorage (reference), openFsReplayStorage(file) (node, JSONL append-log,
 // .compact() = atomic [latest keyframe + tail] rewrite), or your DB adapter behind the same lambdas.
 // Retention is ADAPTER policy, always OPT-IN: memory takes {maxEvents?, maxKeyframes?}; the fs

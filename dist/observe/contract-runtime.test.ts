@@ -22,6 +22,20 @@ function ok(condition: unknown, message: string) {
 
 const delay = (ms: number) => new Promise<void>(function wait(resolve) { setTimeout(resolve, ms) })
 
+function nextUncaught(label: string) {
+    return new Promise<unknown>(function waitForUncaught(resolve, reject) {
+        const timeout = setTimeout(function uncaughtTimedOut() {
+            process.removeListener('uncaughtException', captureUncaught)
+            reject(new Error('timeout waiting for uncaught exception: ' + label))
+        }, 1000)
+        function captureUncaught(error: unknown) {
+            clearTimeout(timeout)
+            resolve(error)
+        }
+        process.once('uncaughtException', captureUncaught)
+    })
+}
+
 async function waitFor(label: string, condition: () => boolean | Promise<boolean>, attempts = 200) {
     for (let i = 0; i < attempts; i++) {
         if (await condition()) return
@@ -91,6 +105,42 @@ async function main() {
     ok(authorityA.accepted && authorityZ.accepted && !losingAuthority.accepted && newEpoch.accepted,
         'epoch then authority id then generation gives deterministic demand authority')
     authorityRuntime.close()
+
+    console.log('\n[contract-runtime] binding facts do not control committed state')
+    let factSessionCloses = 0
+    const factRuntime = createContractRuntime({drainTimeoutMs: 0})
+    let throwBindingFact = true
+    const bindingFacts: string[] = []
+    factRuntime.api.changed.on(function failFirstBindingObserver() {
+        if (!throwBindingFact) return
+        throwBindingFact = false
+        throw new Error('binding observer failed')
+    })
+    factRuntime.api.changed.on(function collectBindingFact(event) {
+        bindingFacts.push(event.to?.offerId ?? 'none')
+    })
+    await factRuntime.control.addOffer({
+        id: 'fact-offer',
+        priority: 1,
+        descriptor: descriptor('fact-offer'),
+        open() {
+            return {
+                api: {} as EditorApi,
+                close() { factSessionCloses++ },
+            }
+        },
+    })
+    const bindingObserverError = nextUncaught('binding observer')
+    const factRequired = await factRuntime.control.require(demand())
+    const bindingError = await bindingObserverError
+    ok(factRequired.accepted && factRuntime.api.binding('editor')?.offerId == 'fact-offer',
+        'throwing binding observer cannot reclassify a committed activation as offer failure')
+    ok(bindingFacts.join(',') == 'fact-offer', 'sibling binding observer still receives the committed fact')
+    ok((bindingError as Error).message == 'binding observer failed', 'binding observer error remains loud asynchronously')
+    ok(factSessionCloses == 0, 'active session is not closed because an observer failed')
+    factRuntime.close()
+    await delay(0)
+    ok(factSessionCloses == 1, 'fact-line observer failure does not cause duplicate session close')
 
     console.log('\n[contract-runtime] atomic update, leases and shared Store continuity')
     const shared = createStore({value: 1})
@@ -170,8 +220,23 @@ async function main() {
     ok(rolledBack.offerId == 'editor-a' && rolledBack.bindingGeneration > beforeRollback,
         'rollback reopens the previous offer as a new binding generation')
 
+    let throwFailureFact = true
+    const failureFacts: string[] = []
+    runtime.api.changed.on(function failSessionFailureObserver(event) {
+        if (event.reason != 'session failed' || !throwFailureFact) return
+        throwFailureFact = false
+        throw new Error('session failure observer failed')
+    })
+    runtime.api.changed.on(function collectSessionFailureFact(event) {
+        if (event.reason == 'session failed') failureFacts.push(event.reason)
+    })
+    const failureObserverError = nextUncaught('session failure observer')
     sessions['editor-a'].at(-1)!.fail(new Error('editor-a transport lost'))
     await waitFor('session failure falls back to B', () => runtime.api.binding('editor')?.offerId == 'editor-b')
+    const failureError = await failureObserverError
+    ok((failureError as Error).message == 'session failure observer failed',
+        'session failure observer error remains loud asynchronously')
+    ok(failureFacts.join(',') == 'session failed', 'throwing failure observer does not suppress sibling facts')
     ok(runtime.api.history().some(event => event.reason == 'session failed'), 'active session failure is preserved in binding history')
 
     console.log('\n[contract-runtime] new contract generation and optional degradation')

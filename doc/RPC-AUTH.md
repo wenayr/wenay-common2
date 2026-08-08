@@ -161,7 +161,7 @@ const hub = createRpcClientHub(() => io(url), (rpc) => ({main: rpc<Api>()}))
 ✅ **Right** — server side:
 
 ```ts
-import {createTokenCodec} from 'wenay-common2/server'
+import {createTokenCodec} from 'wenay-common2/server/auth'
 
 const codec = createTokenCodec({secret: process.env.RPC_SECRET!, ttlMs: 5 * 60_000})
 const revoked = new Set<string>()
@@ -500,7 +500,8 @@ what HELLO has always meant.
 
 ## Rule 8 — `createTokenCodec` is a default, not a security product
 
-`createTokenCodec` (server-only, `wenay-common2/server`) exists so in-band auth has one honest
+`createTokenCodec` (server-only, `wenay-common2/server/auth`; also retained on the compatibility
+`wenay-common2/server` facade) exists so in-band auth has one honest
 working default for docs, demo and tests: one secret, one pinned algorithm (HMAC-SHA256 behind a
 `v1` format tag), one expiry. Non-goals, on purpose:
 
@@ -618,7 +619,7 @@ GRANT_FACTS_KEY = '$rpc'                 // reserved sub-object of authAck: ack.
 //   contract — read it defensively. No wire change: it rides inside the existing 5th MAP element.
 ```
 
-Token codec (`wenay-common2/server`, node-only):
+Token codec (`wenay-common2/server/auth`, node-only; also available from `wenay-common2/server`):
 
 ```ts
 createTokenCodec({secret: string; ttlMs?: number; hmac?; now?}) -> {issue, verify}

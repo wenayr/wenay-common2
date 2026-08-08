@@ -13,80 +13,82 @@ const {self, window} = globalThis as any;
 //console.log("!!!!!",typeof self, typeof window);
 
 let _enabled = false;
+let _installed = false
 
-export function enable(flag=true) { _enabled= flag; }
-export function disable()         { _enabled= false; }
-
-// Before there was a private setupLogs2 for source-map-support (never called,
-// so its wrapCallSite was always undefined). Deleted: current setupLogs below
-// relies on source maps runtime (tsx / node --enable-source-maps).
-function setupLogs(){
-    if (typeof self != 'object' && typeof window!="object") { // if running on node.js
-
-        function moduleName(name :string) { return name; }
-        let inspector= require(/* webpackIgnore: true */ moduleName('inspector')) as typeof import('inspector');
-        if (inspector.url()!=undefined) return;  // running in debugger
-
-        _enabled= true;
-        const origLogMethod= console.log;
-        const origErrorMethod = console.error;
-        let _callee :string|undefined;
-
-        for(let methodName of [
-            'debug', 'info', 'log', 'warn', 'error', 'group', 'groupCollapsed', 'table', 'timeLog', 'timeEnd',
-            'count', 'assert', 'dir', 'dirxml'
-        ] satisfies (keyof typeof console)[])
-        {
-            const origMethod = console[methodName] as typeof console.log;
-
-            console[methodName] = ((...args :any[]) => {
-                if (!_enabled) return origMethod(...args);
-
-                // We use regular Error.stack - tsx already applies source maps
-                const stack = new Error().stack;
-                if (!stack) return origMethod(...args);
-
-                const lines = stack.split('\n');
-                const callerLine = lines[2]; // 0=Error, 1=console wrapper, 2=caller
-
-                if (!callerLine) return origMethod(...args);
-
-                // Parse the string: "at functionName (file:line:col)" or "at file:line:col"
-                const match = callerLine.match(/at\s+(?:(.+?)\s+\()?(.+?):(\d+):(\d+)\)?/);
-                if (!match) return origMethod(...args);
-
-                const [, functionName, fileName, lineNumber, columnNumber] = match;
-                const funcName = functionName || '<anonymous>';
-
-                let fileAndLine = `${fileName}:${lineNumber}:${columnNumber}  ${funcName}`;
-                fileAndLine = fileAndLine.replaceAll("\\","/");
-                fileAndLine = fileAndLine.replace("webpack:///","");
-                fileAndLine = fileAndLine.replace("?","");
-
-                if (!fileAndLine.startsWith("./"))
-                    if (!fileAndLine.toLowerCase().startsWith("file:///"))
-                        fileAndLine = "file:///" + fileAndLine;
-
-                // Some methods need special handling
-                if (!methodName.match(/debug|info|log|warn|error|dirxml/)) {
-                    _callee ??= fileAndLine;
-                    return origMethod(...args);
-                }
-
-                if (_callee) {
-                    fileAndLine = _callee;
-                    _callee = undefined;
-                }
-
-                origMethod(...args, "", fileAndLine);
-            }) as any;
-        }
+export function enable(flag=true) {
+    if (!flag) {
+        disable()
+        return
     }
-
+    installConsoleCallerAnnotations()
 }
 
-if (1)
-    setupLogs();
+export function disable() { _enabled= false; }
+
+// === Console installation ===
+
+// Explicit opt-in: importing the package must not mutate the process console.
+export function installConsoleCallerAnnotations() {
+    _enabled = true
+    if (_installed) return
+    if (typeof self == 'object' || typeof window == 'object') return
+
+    function moduleName(name :string) { return name; }
+    const inspector = require(/* webpackIgnore: true */ moduleName('inspector')) as typeof import('inspector')
+    if (inspector.url() != undefined) return
+
+    _installed = true
+    let _callee :string|undefined
+
+    for (const methodName of [
+        'debug', 'info', 'log', 'warn', 'error', 'group', 'groupCollapsed', 'table', 'timeLog', 'timeEnd',
+        'count', 'assert', 'dir', 'dirxml'
+    ] satisfies (keyof typeof console)[]) {
+        const origMethod = console[methodName] as typeof console.log
+
+        console[methodName] = function consoleCallerAnnotated(...args :any[]) {
+            if (!_enabled) return origMethod(...args)
+
+            // We use regular Error.stack - tsx already applies source maps
+            const stack = new Error().stack
+            if (!stack) return origMethod(...args)
+
+            const lines = stack.split('\n')
+            const callerLine = lines[2] // 0=Error, 1=console wrapper, 2=caller
+
+            if (!callerLine) return origMethod(...args)
+
+            // Parse the string: "at functionName (file:line:col)" or "at file:line:col"
+            const match = callerLine.match(/at\s+(?:(.+?)\s+\()?(.+?):(\d+):(\d+)\)?/)
+            if (!match) return origMethod(...args)
+
+            const [, functionName, fileName, lineNumber, columnNumber] = match
+            const funcName = functionName || '<anonymous>'
+
+            let fileAndLine = `${fileName}:${lineNumber}:${columnNumber}  ${funcName}`
+            fileAndLine = fileAndLine.replaceAll('\\','/')
+            fileAndLine = fileAndLine.replace('webpack:///','')
+            fileAndLine = fileAndLine.replace('?','')
+
+            if (!fileAndLine.startsWith('./'))
+                if (!fileAndLine.toLowerCase().startsWith('file:///'))
+                    fileAndLine = 'file:///' + fileAndLine
+
+            // Some methods need special handling
+            if (!methodName.match(/debug|info|log|warn|error|dirxml/)) {
+                _callee ??= fileAndLine
+                return origMethod(...args)
+            }
+
+            if (_callee) {
+                fileAndLine = _callee
+                _callee = undefined
+            }
+
+            origMethod(...args, '', fileAndLine)
+        } as any
+    }
+}
 
 /** @deprecated use {@link callerLine} (V8 impl) */
 export function __LineFile(lvl = 0){

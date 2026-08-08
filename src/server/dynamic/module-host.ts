@@ -6,7 +6,7 @@ import {
     ContractSession,
 } from '../../Common/contract/contract-data'
 import {createContractRuntime, ContractRuntime} from '../../Common/contract/contract-runtime'
-import {listen as createListenPair} from '../../Common/events/Listen'
+import {LISTEN_DISPATCH_ERROR, listen as createListenPair} from '../../Common/events/Listen'
 import {
     ModuleArtifactVerifier,
     tModuleArtifactBytes,
@@ -148,6 +148,10 @@ function healthy(value: unknown) {
     return typeof value == 'object' && value != null && (value as {ok?: unknown}).ok == true
 }
 
+function reportDynamicModuleObserverError(error: unknown) {
+    setTimeout(function rethrowDynamicModuleObserverError() { throw error }, 0)
+}
+
 export function createDynamicModuleHost(deps: DynamicModuleHostDeps) {
     const now = deps.now ?? Date.now
     const auditLimit = Math.max(1, deps.auditLimit ?? 500)
@@ -157,7 +161,9 @@ export function createDynamicModuleHost(deps: DynamicModuleHostDeps) {
     const candidates = new Map<string, CandidateRecord>()
     const sessions = new Set<ModuleIsolationSession>()
     const audit: DynamicModuleAuditEvent[] = []
-    const [emitEvent, events] = createListenPair<[tDynamicModuleHostEvent]>()
+    const [emitEvent, events] = createListenPair<[tDynamicModuleHostEvent]>({
+        [LISTEN_DISPATCH_ERROR]: reportDynamicModuleObserverError,
+    })
     let nextCandidateId = 0
     let nextCorrelationId = 0
     let closed = false

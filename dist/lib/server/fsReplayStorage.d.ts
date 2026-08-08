@@ -13,7 +13,7 @@ export declare function openFsReplayStorage<Z extends any[] = any[]>(file: strin
     getKeyframe: (at?: {
         seq?: number;
         ts?: number;
-    }) => ReplayEvent<Z>;
+    }) => ReplayEvent<Z> | undefined;
     getEvents: (from: number, to: number) => ReplayEvent<Z>[];
     compact: () => void;
     size: () => {

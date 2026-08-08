@@ -12,7 +12,7 @@ export declare function loadJsonlReplay<Z extends any[] = any[]>(lines: Iterable
     getKeyframe: (at?: {
         seq?: number;
         ts?: number;
-    }) => ReplayEvent<Z>;
+    }) => ReplayEvent<Z> | undefined;
     getEvents: (from: number, to: number) => ReplayEvent<Z>[];
     size: () => {
         events: number;

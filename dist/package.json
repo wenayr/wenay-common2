@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "2.9.0",
+  "version": "2.10.0",
   "description": "Typed RPC over sockets, replayable Listen wires, reactive stores with replication and failover, peer packet mesh, media/artifact/AI/conversation runtimes",
   "keywords": [
     "rpc",
@@ -49,6 +49,9 @@
     ".": "./lib/index.js",
     "./observe": "./lib/Common/Observe/index.js",
     "./replay": "./lib/Common/events/replay-index.js",
+    "./listen": "./lib/Common/events/listen-index.js",
+    "./rpc": "./lib/Common/rcp/rpc-index.js",
+    "./debug-console": "./lib/debug-console.js",
     "./lib/client": "./lib/client.js",
     "./lib/server": "./lib/server.js",
     "./client": "./lib/client.js",
@@ -61,6 +64,10 @@
     "./artifact": "./lib/Common/artifact/artifact-index.js",
     "./conversation": "./lib/Common/conversation/conversation-index.js",
     "./contract": "./lib/Common/contract/contract-index.js",
-    "./https": "./lib/Common/https/https-index.js"
+    "./https": "./lib/Common/https/https-index.js",
+    "./server/fs": "./lib/server/fs-index.js",
+    "./server/auth": "./lib/server/auth-token.js",
+    "./server/http": "./lib/server/httpFacadeServer.js",
+    "./server/webhook": "./lib/server/WebHook3.js"
   }
 }

@@ -1,5 +1,4 @@
 import { Immutable, KeysWithoutType, Mutable, MutableFull, ReadonlyFull } from "./BaseTypes";
-import "../node_console";
 export declare function GetEnumKeys<TT extends {
     [key: string]: any;
 }>(T: TT): readonly (keyof typeof T)[];
@@ -7,11 +6,11 @@ type const_Date = Omit<Date, "setTime" | "setFullYear" | "setMonth" | "setDate" 
 export declare function isDate<T>(value: T & (Extract<T, const_Date> extends never ? never : T)): value is Extract<typeof value, const_Date>;
 export { Mutable };
 export declare function shallowClone<T>(val: T): Mutable<T>;
-export declare function _deepClone<T>(src: T, map?: Map<object, object>): any;
-export declare function deepClone<T>(object: T): any;
+export declare function _deepClone<T>(src: T, map?: Map<object, object>): T;
+export declare function deepClone<T>(object: T): T;
 export declare const clone: typeof deepClone;
 export declare function deepCloneMutable<T>(value: T): MutableFull<T>;
-export declare function deepCloneObject<T extends object>(object: T): any;
+export declare function deepCloneObject<T extends object>(object: T): T;
 export declare function deepCloneObjectMutable<T extends object>(object: T): MutableFull<T>;
 export declare function toImmutable<T extends object>(object: T): Immutable<T>;
 export declare function readonlyFull<T>(arg: T): ReadonlyFull<T>;

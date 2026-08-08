@@ -24,6 +24,9 @@ function copyCandidate(candidate) {
 function healthy(value) {
     return typeof value == 'object' && value != null && value.ok == true;
 }
+function reportDynamicModuleObserverError(error) {
+    setTimeout(function rethrowDynamicModuleObserverError() { throw error; }, 0);
+}
 function createDynamicModuleHost(deps) {
     const now = deps.now ?? Date.now;
     const auditLimit = Math.max(1, deps.auditLimit ?? 500);
@@ -33,7 +36,9 @@ function createDynamicModuleHost(deps) {
     const candidates = new Map();
     const sessions = new Set();
     const audit = [];
-    const [emitEvent, events] = (0, Listen_1.listen)();
+    const [emitEvent, events] = (0, Listen_1.listen)({
+        [Listen_1.LISTEN_DISPATCH_ERROR]: reportDynamicModuleObserverError,
+    });
     let nextCandidateId = 0;
     let nextCorrelationId = 0;
     let closed = false;

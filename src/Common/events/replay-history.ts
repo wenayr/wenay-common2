@@ -103,7 +103,8 @@ function createMemoryReplayLog<E>(limit?: number) {
     }
 
     function latest(k: (value: E) => number, value: number) {
-        return at(upper(k, value) - 1)
+        const index = upper(k, value) - 1
+        return index < 0 ? undefined : at(index)
     }
 
     return {append, between, latest, size: () => length}

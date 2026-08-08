@@ -83,6 +83,20 @@ async function waitFor(label: string, check: () => boolean) {
     }
 }
 
+function nextUncaught(label: string) {
+    return new Promise<unknown>(function waitForUncaught(resolve, reject) {
+        const timeout = setTimeout(function uncaughtTimedOut() {
+            process.removeListener('uncaughtException', captureUncaught)
+            reject(new Error('timeout waiting for uncaught exception: ' + label))
+        }, 1000)
+        function captureUncaught(error: unknown) {
+            clearTimeout(timeout)
+            resolve(error)
+        }
+        process.once('uncaughtException', captureUncaught)
+    })
+}
+
 async function closeDuringVerification() {
     const verified = verifier()
     const verificationStarted = deferred<void>()
@@ -320,10 +334,95 @@ async function failureDuringOfferHandoff() {
     assert.equal(terminations, 1)
 }
 
+async function outwardObserverFailureIsolation() {
+    function session(): ModuleIsolationSession {
+        const [, events] = listen<[tModuleIsolationEvent]>()
+        let state: 'idle' | 'ready' | 'closed' = 'idle'
+        return {
+            control: {
+                async start() { state = 'ready' },
+                async terminate() {
+                    state = 'closed'
+                    events.close()
+                },
+            },
+            resource: {
+                call<T>() { return Promise.resolve({ok: true} as T) },
+            },
+            events: {on: events.on},
+            view: {
+                snapshot: () => ({state, methods: [], failure: null}),
+            },
+            health: {
+                snapshot: () => ({
+                    health: state == 'ready' ? 'healthy' as const : 'closed' as const,
+                    inFlight: 0,
+                }),
+            },
+        }
+    }
+
+    const host = createDynamicModuleHost({
+        verifier: verifier(),
+        isolation: {resource: {open: session}},
+        drainTimeoutMs: 0,
+    })
+    await host.control.require({
+        slotId: 'race.observer',
+        contractId: 'race.port',
+        versionRange: '1.0.0',
+        generation: 1,
+        authorityId: 'race-test',
+        authorityEpoch: 1,
+        required: true,
+    })
+
+    let throwCandidateFact = true
+    const facts: string[] = []
+    host.events.on(function failFirstCandidateObserver(event) {
+        if (event.type != 'candidate' || !throwCandidateFact) return
+        throwCandidateFact = false
+        throw new Error('candidate observer failed')
+    })
+    host.events.on(function collectHostFacts(event) {
+        facts.push(event.type)
+    })
+
+    const candidateObserverError = nextUncaught('candidate observer')
+    const input = await artifact('3.0.0')
+    const staged = await host.control.stage({
+        candidateId: 'observer-v3',
+        slotId: 'race.observer',
+        ...input,
+    })
+    const candidateError = await candidateObserverError
+    assert.equal((candidateError as Error).message, 'candidate observer failed')
+    assert.equal(staged.state, 'ready', 'candidate observer cannot stop verification and staging')
+    assert.equal(host.view.candidate(staged.candidateId)?.state, 'ready')
+    assert.ok(facts.filter(type => type == 'candidate').length >= 2, 'sibling sees candidate lifecycle facts')
+
+    let throwBindingFact = true
+    host.events.on(function failFirstBindingObserver(event) {
+        if (event.type != 'binding' || !throwBindingFact) return
+        throwBindingFact = false
+        throw new Error('host binding observer failed')
+    })
+    const bindingObserverError = nextUncaught('host binding observer')
+    const binding = await host.control.activate(staged.candidateId)
+    const bindingError = await bindingObserverError
+    assert.equal((bindingError as Error).message, 'host binding observer failed')
+    assert.equal(binding.offerId, staged.offerId, 'binding observer cannot reject committed activation')
+    assert.equal(host.view.binding('race.observer')?.offerId, staged.offerId)
+    assert.equal(host.view.candidate(staged.candidateId)?.state, 'active')
+    assert.ok(facts.includes('binding'), 'sibling sees the committed binding fact')
+    await host.close()
+}
+
 async function main() {
     await closeDuringVerification()
     await leaseDrainAndDiscard()
     await failureDuringOfferHandoff()
+    await outwardObserverFailureIsolation()
     console.log('dynamic module host races: all passed')
 }
 

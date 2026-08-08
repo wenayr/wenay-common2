@@ -19,6 +19,15 @@ let failures = 0
 const tests: Array<{name: string; run: () => void | Promise<void>}> = []
 const requireFromSpec = createRequire(__filename)
 const rootDir = resolve(__dirname, '../..')
+const focusedExports = [
+    {subpath: 'listen', target: './lib/Common/events/listen-index.js', sentinel: 'listen'},
+    {subpath: 'rpc', target: './lib/Common/rcp/rpc-index.js', sentinel: 'createRpcClient'},
+    {subpath: 'debug-console', target: './lib/debug-console.js', sentinel: 'installConsoleCallerAnnotations'},
+    {subpath: 'server/fs', target: './lib/server/fs-index.js', sentinel: 'openFsReplayStorage'},
+    {subpath: 'server/auth', target: './lib/server/auth-token.js', sentinel: 'createTokenCodec'},
+    {subpath: 'server/http', target: './lib/server/httpFacadeServer.js', sentinel: 'createHttpFacadeServer'},
+    {subpath: 'server/webhook', target: './lib/server/WebHook3.js', sentinel: 'createWebhookServer'},
+] as const
 
 function test(name: string, run: () => void | Promise<void>) {
     tests.push({name, run})
@@ -106,6 +115,26 @@ test("package.json exports './conversation'", () => {
     assertEq(packageJson.exports?.['./conversation'], './lib/Common/conversation/conversation-index.js',
         "package.json exports['./conversation']")
 })
+
+for (const entry of focusedExports) {
+    test(`package.json exports './${entry.subpath}'`, () => {
+        const packageJson = requireFromSpec(resolve(rootDir, 'package.json'))
+        assertEq(packageJson.exports?.[`./${entry.subpath}`], entry.target,
+            `package.json exports['./${entry.subpath}']`)
+
+        const packageName = `wenay-common2/${entry.subpath}`
+        const resolved = requireFromSpec.resolve(packageName)
+        assert(
+            resolved.replace(/\\/g, '/').endsWith(entry.target.slice(1)),
+            `${packageName} resolved to unexpected path: ${resolved}`,
+        )
+        const api = requireFromSpec(packageName)
+        assertEq(typeof api[entry.sentinel], 'function', `${packageName}.${entry.sentinel} export`)
+
+        const declaration = resolve(rootDir, entry.target.slice(2).replace(/\.js$/, '.d.ts'))
+        assert(existsSync(declaration), `${packageName} declaration is present`)
+    })
+}
 
 test("package.json exports './contract'", () => {
     const packageJson = requireFromSpec(resolve(rootDir, 'package.json'))

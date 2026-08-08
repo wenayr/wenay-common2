@@ -1,8 +1,8 @@
 ﻿// run-oracles.mjs — run ALL oracles with one command (npm run test:all).
 // Convention oracle/README.md: tsx, PASS/FAIL to log,
 // nonzero exit on failure. Sequential run: socket-oracles hold ports.
-// NOT in the publish gate (fast npm run test stays there) — this is the
-// command to 'verify everything' when touching core (events / Observe / replay / rpc).
+// The release gate runs this after the faster npm test suite. Use it directly to
+// verify everything when touching core (events / Observe / replay / rpc).
 // Files named *-extended-stress.* stay outside that routine gate and run through
 // --extended-stress; their stdout is retained because workload counters are the result.
 import {readdirSync} from 'node:fs'

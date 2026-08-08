@@ -20,7 +20,7 @@ export declare function createMemoryReplayStorage<Z extends any[] = any[]>(opts?
     getKeyframe: (at?: {
         seq?: number;
         ts?: number;
-    }) => ReplayEvent<Z>;
+    }) => ReplayEvent<Z> | undefined;
     getEvents: (from: number, to: number) => ReplayEvent<Z>[];
     size: () => {
         events: number;
