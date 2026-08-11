@@ -3,7 +3,7 @@
 // =====================================================================
 // Artifact version = hash of its bytes: content substitution in transit between
 // nodes is detected by a single check, without PKI and signatures. Works in both
-// Node (>=18) and browser — via WebCrypto (globalThis.crypto.subtle).
+// Node (>=20) and browser — via WebCrypto (globalThis.crypto.subtle).
 
 const encoder = new TextEncoder()
 

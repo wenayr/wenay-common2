@@ -608,9 +608,9 @@ MCP resources are suitable for discovery and “resource changed, reread” noti
 high-rate replay. Store Replay remains the exact event/data mechanism. The internal experiment pins
 `@modelcontextprotocol/sdk@1.30.0`. Its own metadata says Node `>=18`, but the current secure
 dependency resolution includes `@hono/node-server@2.0.12`, which says Node `>=20`; therefore the
-MCP experiment has an effective Node 20 floor. The library package engine remains unchanged at Node
-`>=18` because MCP is dev-only and unexported. Recheck the complete dependency graph before
-promotion rather than trusting only the root SDK metadata.
+MCP experiment's effective Node 20 floor matches the library package engine `>=20`. MCP remains
+dev-only and unexported. Recheck the complete dependency graph before promotion rather than
+trusting only the root SDK metadata.
 
 Dynamic catalogs are protocol-aligned rather than a repository-specific workaround: the MCP
 architecture defines list operations plus `list_changed` notifications, and the official client

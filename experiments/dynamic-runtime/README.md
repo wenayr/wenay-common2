@@ -23,8 +23,8 @@ npm install --save-dev --save-exact @modelcontextprotocol/sdk@1.30.0 zod@4.4.3
 ```
 
 Run this experiment on Node 20 or newer. Although the SDK root declares Node `>=18`, its currently
-resolved secure `@hono/node-server@2.0.12` dependency declares Node `>=20`. The experiment remains
-dev-only and does not change the library's exported Node `>=18` engine.
+resolved secure `@hono/node-server@2.0.12` dependency declares Node `>=20`. This matches the
+library package engine `>=20`; the experiment remains dev-only and unexported.
 
 Run the type check and the self-client from the repository root:
 

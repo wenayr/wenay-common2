@@ -223,7 +223,9 @@ export function createDevModuleBridge(deps: DevModuleBridgeDeps) {
     function methods() {
         const binding = handle.view.binding()
         if (binding == null) return []
-        const session = isolation.view.session(binding.descriptor.integrity)
+        const contentHash = binding.descriptor.integrity
+        if (contentHash == undefined) throw new Error('active dev binding has no content hash')
+        const session = isolation.view.session(contentHash)
         return [...(session?.view.snapshot().methods ?? [])].sort()
     }
 
@@ -262,8 +264,8 @@ export function createDevModuleBridge(deps: DevModuleBridgeDeps) {
         express.json({limit: bodyLimit, strict: false}),
         async function callDevMethod(req, res) {
             const method = req.params.method
-            if (!methods().includes(method)) {
-                res.status(404).json({ok: false, error: {message: 'no such method: ' + method}})
+            if (typeof method != 'string' || !methods().includes(method)) {
+                res.status(404).json({ok: false, error: {message: 'no such method: ' + String(method)}})
                 return
             }
             try {

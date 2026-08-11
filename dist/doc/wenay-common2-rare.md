@@ -3,6 +3,7 @@
 > The full surface. For everyday helpers use **`wenay-common2.md`** (brief). Root import:
 > `import { ... } from "wenay-common2"`. Notation: `name(args) -> ret  // note`. Short names are
 > canonical. Removed old names are listed in `NAMING_RENAMES.md`.
+> Node runtime: `>=20`.
 > Installed-project Caddy HTTPS management → **[`HTTPS-CLI.md`](HTTPS-CLI.md)**. Public raw-IP/hostname
 > demo, certificate issuance, router ports, and diagnostics → **[`DEMO-HTTPS.md`](DEMO-HTTPS.md)**.
 

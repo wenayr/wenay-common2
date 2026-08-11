@@ -23,9 +23,16 @@ function textFromTool(result: unknown) {
     return JSON.parse(text.text) as any
 }
 
-function textFromResource(result: Awaited<ReturnType<ReturnType<typeof createModuleControlMcpClient>['resource']['read']>>) {
+function textFromResource(
+    result: Awaited<ReturnType<ReturnType<typeof createModuleControlMcpClient>['resource']['read']>>,
+    expectedUri: string,
+) {
+    assert.equal(result.contents.length, 1)
     const content = result.contents[0]
     assert(content != null && 'text' in content)
+    assert.equal(content.uri, expectedUri)
+    assert.equal(content.mimeType, 'text/markdown')
+    assert(content.text.length > 0)
     return content.text
 }
 
@@ -78,10 +85,17 @@ async function exerciseClient(endpoint: URL, bearerToken: string) {
             DYNAMIC_RUNTIME_PROMPT_URI,
         ])
 
-        const guide = textFromResource(await client.resource.read({uri: DYNAMIC_RUNTIME_GUIDE_URI}))
-        const prompt = textFromResource(await client.resource.read({uri: DYNAMIC_RUNTIME_PROMPT_URI}))
+        const guide = textFromResource(
+            await client.resource.read({uri: DYNAMIC_RUNTIME_GUIDE_URI}),
+            DYNAMIC_RUNTIME_GUIDE_URI,
+        )
+        const prompt = textFromResource(
+            await client.resource.read({uri: DYNAMIC_RUNTIME_PROMPT_URI}),
+            DYNAMIC_RUNTIME_PROMPT_URI,
+        )
         assert.match(guide, /^# Dynamic runtime architecture/m)
-        assert.match(prompt, /^# Prompt: implement the dynamic runtime skeleton/m)
+        assert.match(prompt, /following doc\/DYNAMIC-RUNTIME\.md and doc\/DYNAMIC-RUNTIME-IMPLEMENTATION\.md/)
+        assert.match(prompt, /Do not treat this document itself as authorization to change\s+the public API\./)
 
         const staged = textFromTool(await client.control.callTool({
             name: 'module.stage',

@@ -178,7 +178,7 @@ Build closure factories with one deps object and derived ReturnType aliases.
    - Keep Authoring MCP separate from Runtime Control MCP.
    - Preserve an HTTP option for ChatGPT/scripts/operators where MCP setup or context cost is
      undesirable.
-   - Do not raise wenay-common2's Node >=18 engine floor without an explicit decision.
+   - Do not change wenay-common2's Node >=20 engine floor without an explicit decision.
 
 10. Dynamic MCP contributions [when explicitly approved]
    - A host/module/companion may return `mcp.create`; a candidate may also return

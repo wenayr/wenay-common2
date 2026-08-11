@@ -79,7 +79,7 @@ async function startHost(moduleFile: string, guideText: string) {
     })
 
     // The static half: commands and self-description, walked once.
-    const {createHttpFacadeServer} = await import('../../src/server/httpFacadeServer')
+    const {createHttpFacadeServer} = await import('../../src/server/httpFacadeServer.js')
     const limits = {maxDepth: 8, maxKeys: 200, maxArgs: 4, maxArrayLen: 100, maxStringLen: 1_000_000}
     createHttpFacadeServer({
         app,

@@ -252,6 +252,7 @@ async function startHost() {
     // new backing version only after the binding itself is ready.
     function syncCatalog(binding: NonNullable<ReturnType<typeof handle.view.binding>>) {
         const contentHash = binding.descriptor.integrity
+        if (contentHash == undefined) throw new Error('active module binding has no content hash')
         const session = isolation.view.session(contentHash)
         if (!session) throw new Error('no isolated session for ' + contentHash)
         const source = {

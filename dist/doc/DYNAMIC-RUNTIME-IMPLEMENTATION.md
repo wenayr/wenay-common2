@@ -402,7 +402,8 @@ the current descriptor does not yet contain a method allowlist.
 The experiment pins `@modelcontextprotocol/sdk@1.30.0` and `zod@4.4.3` as development
 dependencies. The SDK root declares Node `>=18`, but its currently resolved secure
 `@hono/node-server@2.0.12` dependency declares Node `>=20`; run the MCP experiment on Node 20 or
-newer. This does not change the library's exported Node `>=18` runtime. The adapter registers:
+newer. This matches the library package engine `>=20`; the MCP dependencies remain dev-only and
+are not shipped with the library. The adapter registers:
 
 - tools: `module.stage`, `module.activate`, `module.rollback`, `module.explain`, `module.health`;
 - resources: `wenay://dynamic-runtime/guide` and

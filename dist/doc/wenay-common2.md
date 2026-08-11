@@ -1,6 +1,7 @@
 # wenay-common2 — BRIEF cheat sheet (notation)
 
 > Root import: `import { ... } from "wenay-common2"`.
+> Node runtime: `>=20`.
 > Notation: `name(args: types) -> ret  // note`. Types are shown where they decide a correct call (callback shape,
 > overloads, return). Short names are **canonical**; removed old names are listed in `NAMING_RENAMES.md`.
 > Full surface → **`wenay-common2-rare.md`**. Code style → `CLAUDE.md`. Full RPC guide → `rpc.md`.
