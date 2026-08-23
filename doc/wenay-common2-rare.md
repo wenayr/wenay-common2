@@ -586,8 +586,10 @@ Both routes require `Authorization: Bearer <token>`. Set `DEMO_HTTP_FACADE_TOKEN
 stand generates one for that run and prints it beside the URLs. Authorization runs before the POST JSON parser. The
 example lives in `demo/server.ts` and deliberately exposes only status/echo rather than the account-scoped RPC facade.
 
-### RPC dynamic maps: prefer `noStrict` for personal/runtime keys
+### RPC dynamic maps: `noStrict` for personal/runtime keys
 Use `noStrict(obj)` for user-scoped or runtime-keyed objects whose children are not a stable API schema: strategy maps, account maps, ORM/DB proxies, per-session private objects. The name is exactly `noStrict`.
+
+Since 2.11.0 this is a requirement, not a preference, for a surface whose members exist only in proxy traps: the string-path fallback resolves own members only, so a `Proxy` with no own keys resolves nothing without the mark. Marking it is also what makes it addressable at all — the schema renders an unmarked empty node as `{}` and the strict lane cannot descend past that, while a marked node renders as `"dynamic"` and opens arbitrary descent. A proxy reached *through* a marked node needs no mark of its own; the flag latches for the rest of the path.
 
 ```ts
 return {
@@ -599,6 +601,7 @@ await client.func.strategies["mystrategy.2020"].start()
 
 Contract:
 - `noStrict` stops schema walking and routeMap indexing below that object.
+- It is the only way to expose a proxy-backed surface: without it the string-path fallback resolves own members only, and a trap-only proxy has none.
 - It is not an access-control boundary and does not bypass safe-key/path limits. Validate user-owned names in your facade if they are security-sensitive.
 - RPC paths are arrays of string segments. `"mystrategy.2020"` is one segment, so the call above is `["strategies", "mystrategy.2020", "start"]`, not `["strategies", "mystrategy", "2020", "start"]`.
 - The failure mode to avoid is treating `path.join(".")` as identity: `["a.b", "c"]` and `["a", "b", "c"]` both display as `a.b.c` but are different RPC paths.

@@ -110,6 +110,31 @@ A method absent from the schema is stronger than a method that checks: it is nev
 rejects with `Not a function`. A check inside the body is one edit away from being wrong, and it
 tells every client that the method exists.
 
+**Absent means absent from the OWN keys.** The schema is built from `Object.keys`, so the
+fallback resolves own members only (`ownMember`, not `in`). A facade shaped as a class instance
+therefore exposes its own fields and nothing from its prototype, and no facade exposes
+`Object.prototype` members such as `toString` or `__defineGetter__`. That was not true before
+2.11.0: the fallback used `in`, so every prototype method of a class-shaped facade was callable
+without ever being indexed. If a facade relies on prototype methods being reachable, move them to
+own members — the schema never advertised them.
+
+`noStrict` is the one exception, and it is the reason this fallback exists at all: below a marked
+node the application resolves the subtree itself and answers `in` from its own trap, so the check
+switches back to `in` and the flag latches for the rest of the path — a proxy reached through a
+marked node needs no mark of its own. A proxy-backed surface must therefore be marked; unmarked, it
+resolves nothing, and it was never addressable from the schema either (an unmarked empty node
+renders as `{}` and the strict lane cannot descend past it, while a marked one renders as
+`"dynamic"`). Marking is not an access-control boundary: `isSafeKey` still filters every segment.
+
+**A `PIPE` step is a route segment too.** Each `{type:'get', prop}` walks a name into the facade
+exactly as a path segment does, so it passes the same `isSafeKey` filter as `ref`, and the whole
+chain is validated before any stage runs — a rejected chain never executes its leading `call`.
+`__proto__`, `constructor` and `prototype` are refused with `pipe step N: forbidden path segment`;
+a malformed step (not an object, unknown `type`, non-string `prop`, non-array `args`) is refused
+the same way. Before 2.11.0 steps were unfiltered, and `constructor` on the bound method yielded
+`Function` — two further `call` steps then ran arbitrary source inside the server process.
+A gate rejects the caller; this rejects the route, which is why both exist.
+
 ❌ **Wrong** — one facade, per-call checks:
 
 ```ts

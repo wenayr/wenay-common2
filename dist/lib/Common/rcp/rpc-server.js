@@ -20,6 +20,28 @@ function nextServerGeneration() {
     }
     return ++serverGenerationCounter;
 }
+function invalidPipeStep(steps) {
+    for (let i = 0; i < steps.length; i++) {
+        const step = steps[i];
+        if (step == null || typeof step != "object" || Array.isArray(step))
+            return `pipe step ${i}: not an object`;
+        if (step.type === "get") {
+            if (typeof step.prop != "string")
+                return `pipe step ${i}: get prop must be a string`;
+            if (!(0, rpc_limits_1.isSafeKey)(step.prop))
+                return `pipe step ${i}: forbidden path segment`;
+            continue;
+        }
+        if (step.type === "call") {
+            if (!Array.isArray(step.args))
+                return `pipe step ${i}: call args must be an array`;
+            continue;
+        }
+        return `pipe step ${i}: unknown step type`;
+    }
+    return null;
+}
+const reachableMember = (obj, key, dynamic) => dynamic ? key in obj : Object.prototype.hasOwnProperty.call(obj, key);
 function createServer(socket, key, target, hooks, limits, auth, opt, debug = false) {
     const lim = (0, rpc_limits_1.resolveLimits)(limits);
     const onReserved = debug
@@ -710,6 +732,15 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
                 sendError(channel, reqId, new Error("Invalid args: expected array"));
             return;
         }
+        if (isPipe) {
+            const badStep = invalidPipeStep(rawArgsOrSteps);
+            if (badStep) {
+                hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: badStep });
+                if (wait)
+                    sendError(channel, reqId, new Error(badStep));
+                return;
+            }
+        }
         const settleScope = wait ? new Set() : undefined;
         try {
             let fn, ctx;
@@ -737,20 +768,23 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
                 }
                 else {
                     let curr = currentTarget;
+                    let dynamic = (0, rpc_dynamic_1.isNoStrict)(curr);
                     for (let i = 0; i < ref.length - 1; i++) {
                         const seg = ref[i];
-                        if (curr == null || typeof curr !== "object" || !(seg in curr)) {
+                        if (curr == null || typeof curr !== "object" || !reachableMember(curr, seg, dynamic)) {
                             curr = undefined;
                             break;
                         }
                         curr = curr[seg];
                         if (hooks?.resolveTransform && !(0, rpc_dynamic_1.isNoStrict)(curr))
                             curr = hooks.resolveTransform(curr);
+                        if ((0, rpc_dynamic_1.isNoStrict)(curr))
+                            dynamic = true;
                     }
                     const last = ref[ref.length - 1];
                     if (curr != null && typeof curr == "object") {
                         ctx = curr;
-                        fn = last in curr ? curr[last] : undefined;
+                        fn = reachableMember(curr, last, dynamic) ? curr[last] : undefined;
                     }
                 }
             }

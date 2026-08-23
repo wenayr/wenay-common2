@@ -89,6 +89,52 @@ function nextServerGeneration() {
     return ++serverGenerationCounter
 }
 
+// ===================================================================
+// PIPE step validation — the same filter the path in `ref` already passes
+// ===================================================================
+// A step is wire input, not a local call: `get` names a property to walk into and
+// `call` invokes whatever that walk found. The chain starts at `fn.bind(ctx)`, so an
+// unfiltered `{type:'get',prop:'constructor'}` hands the caller `Function`, and the two
+// `call` steps after it compile and run arbitrary source inside the process.
+// Rejecting the WHOLE chain up front (rather than per step during the walk) is what
+// keeps a legitimate leading `call` from firing its side effect before the refusal.
+// An unrecognized step type is rejected too: silently skipping it would compute
+// something other than what the caller asked for.
+function invalidPipeStep(steps: readonly any[]): string | null {
+    for (let i = 0; i < steps.length; i++) {
+        const step = steps[i];
+        if (step == null || typeof step != "object" || Array.isArray(step)) return `pipe step ${i}: not an object`;
+        if (step.type === "get") {
+            if (typeof step.prop != "string") return `pipe step ${i}: get prop must be a string`;
+            if (!isSafeKey(step.prop)) return `pipe step ${i}: forbidden path segment`;
+            continue;
+        }
+        if (step.type === "call") {
+            // pack() always maps args to an array (no row codec on the argument lane),
+            // so a non-array here is malformed input, never a negotiated encoding.
+            if (!Array.isArray(step.args)) return `pipe step ${i}: call args must be an array`;
+            continue;
+        }
+        return `pipe step ${i}: unknown step type`;
+    }
+    return null;
+}
+
+// Member test for the string-path fallback. `in` walks the prototype chain, but the schema
+// (transformTree/serialize) is built from Object.keys — own enumerable only. Using `in`
+// everywhere therefore exposed what routeMap deliberately never indexed: Object.prototype
+// members on any facade, and every prototype method of a class-shaped facade.
+// doc/RPC-AUTH.md Rule 3 rests on those NOT being reachable.
+//
+// `noStrict` is the one documented exception, and it is the whole reason this fallback
+// exists: transformTree stops at such a node, serialize marks it "dynamic" and buildDispatch
+// does not descend, so the schema describes nothing below it — the application resolves that
+// subtree itself and answers `in` from its own proxy trap. The flag LATCHES: a value reached
+// through a dynamic node is part of that same app-resolved subtree, and the marker sits on
+// the node the application handed over, not on everything it later returns.
+const reachableMember = (obj: any, key: string, dynamic: boolean) =>
+    dynamic ? key in obj : Object.prototype.hasOwnProperty.call(obj, key);
+
 function createServer<T extends object>(
     socket: SocketTmpl,
     key: string,
@@ -918,6 +964,16 @@ function createServer<T extends object>(
             if (wait) sendError(channel, reqId, new Error("Invalid args: expected array"))
             return;
         }
+        // Before route resolution and before any application hook: a malformed or unsafe
+        // chain must not reach onRequest, and must not execute its first legitimate stage.
+        if (isPipe) {
+            const badStep = invalidPipeStep(rawArgsOrSteps);
+            if (badStep) {
+                hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: badStep });
+                if (wait) sendError(channel, reqId, new Error(badStep))
+                return;
+            }
+        }
 
         // Flow gates opened by THIS awaited call: the client drops the call's callbacks when
         // the response lands, so a gate must not outlive the promise — a late push rejects
@@ -945,16 +1001,18 @@ function createServer<T extends object>(
                     fn = methods[idx]; ctx = contexts[idx];
                 } else {
                     let curr: any = currentTarget;
+                    let dynamic = isNoStrict(curr);
                     for (let i = 0; i < ref.length - 1; i++) {
                         const seg = ref[i];
-                        if (curr == null || typeof curr !== "object" || !(seg in curr)) { curr = undefined; break; }
+                        if (curr == null || typeof curr !== "object" || !reachableMember(curr, seg, dynamic)) { curr = undefined; break; }
                         curr = curr[seg];
                         if (hooks?.resolveTransform && !isNoStrict(curr)) curr = hooks.resolveTransform(curr);
+                        if (isNoStrict(curr)) dynamic = true;
                     }
                     const last = ref[ref.length - 1];
                     if (curr != null && typeof curr == "object") {
                         ctx = curr;
-                        fn = last in curr ? curr[last] : undefined;
+                        fn = reachableMember(curr, last, dynamic) ? curr[last] : undefined;
                     }
                 }
             }

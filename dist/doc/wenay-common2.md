@@ -173,7 +173,7 @@ createRpcServerAuto({ socket: {emit, on}, object, socketKey: string, auth?, limi
   //   consumer, detaches after the last off(), and polls only while that subscribed consumer is over highWater.
   //   Gates close on disconnect automatically. Replay lines are never throttled.
 createRpcServer(opts)        // lower-level core (same { socket, object, socketKey }) -> { control }
-noStrict(obj)                // mark a dynamic subtree (no schema)
+noStrict(obj)                // mark a dynamic subtree (no schema; required for proxy-backed surfaces)
 endCallback(fn)              // mark an RPC stream-callback's end   (alias: rpcEndCallback)
 flowCallback(cb, opts?)      // pace an RPC stream-callback (backpressure) -> { push, pending, closed }
   \ Sibling of endCallback: one ENDS a stream, this one PACES it. In a server method:
