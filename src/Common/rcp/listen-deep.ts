@@ -44,8 +44,20 @@ export type ReplaySocketListen<Z extends any[]> = WithSubHandle<ReturnType<typeo
     frame: (seq: number, hint?: unknown) => Promise<ReplayEvent<Z>[]>
 }
 // Replay member detection at type level — mirrors runtime brand (structurally:
-// plain Listen lacks getSince/keyframe/line, store-Listen — getSince/line).
-export type IsReplayMember<V> = V extends { getSince: Function; keyframe: Function; line: object; on: Function } ? true : false
+// plain Listen lacks keyframe/line, store-Listen carries them).
+//
+// The tail is read in BOTH of its spellings on purpose. A server member exposes `getSince`;
+// once DeepSocketListen* has projected it, the client surface spells the same thing `since`
+// (ReplaySocketListen below). createRpcClientHub composes the two passes —
+// ClientAPIAll<DeepSocketListenSmart<T>> — so a detector that knew only the server spelling
+// missed on the second pass and dropped the member to a plain subscription, losing
+// line/since/keyframe. Accepting both makes the projection idempotent, which is what
+// composing two passes requires.
+export type IsReplayMember<V> = V extends { keyframe: Function; line: object; on: Function }
+    ? V extends { getSince: Function } ? true
+    : V extends { since: Function } ? true
+    : false
+    : false
 
 // The client-side surface of ONE plain Listen member: `on` hands back a callable
 // SubscriptionHandle instead of the base Promise<void>. Named because three projections

@@ -20,11 +20,14 @@ export type ReplaySocketListen<Z extends any[]> = WithSubHandle<ReturnType<typeo
     frame: (seq: number, hint?: unknown) => Promise<ReplayEvent<Z>[]>;
 };
 export type IsReplayMember<V> = V extends {
-    getSince: Function;
     keyframe: Function;
     line: object;
     on: Function;
-} ? true : false;
+} ? V extends {
+    getSince: Function;
+} ? true : V extends {
+    since: Function;
+} ? true : false : false;
 export type SocketListenMember<Z extends any[]> = WithSubHandle<ReturnType<typeof listenSocket<Z>>>;
 export type IsListenMember<V> = V extends {
     on: Function;
