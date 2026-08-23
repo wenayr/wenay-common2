@@ -244,7 +244,7 @@ function serveReplayChannel(source, channel) {
                 const wire = snapshotEncoder.encode(ev);
                 return {
                     binary: true,
-                    value: snapshotDecoder.decode(wire),
+                    value: snapshotDecoder.decodeTrusted(wire),
                     bytes: wire.byteLength,
                 };
             }

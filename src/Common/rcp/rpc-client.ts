@@ -27,7 +27,7 @@ import {
 } from '../events/transport-lifecycle'
 // Types only (no runtime cycle): replay members of the API are projected into the client
 // replay surface (line/since/keyframe/frame) — replaySubscribe(client.func.key) without casts
-import type { IsReplayMember, InferArgs, ReplaySocketListen } from "./listen-deep";
+import type { IsReplayMember, IsListenMember, InferArgs, ReplaySocketListen, SocketListenMember } from "./listen-deep";
 
 // Shared id pool per (socket × key): two clients on the same socket+key share the id space,
 // otherwise their reqId collide and a foreign RESP resolves both waits.
@@ -148,6 +148,13 @@ export type ClientAPIAll<T> = {
         // structurally compatible with ReplayRemote: replaySubscribe(client.func.key) without casts
         IsReplayMember<NonNullable<T[K]>> extends true
             ? ReplaySocketListen<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null>
+            // plain Listen member → the same subscription surface DeepSocketListen gives.
+            // Without this branch the object recursion below reaches `on` as an ordinary
+            // method and maps it to Promise<DeepDataOnly<SubscriptionHandle>>; the handle is
+            // callable, DeepDataOnly kills Function, and the result collapses to
+            // Promise<never> — which is why subscribing used to need a cast.
+            : IsListenMember<NonNullable<T[K]>> extends true
+            ? SocketListenMember<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null>
             : NonNullable<T[K]> extends (...args: infer A) => infer R
                 // Regular call returns ONLY Promise with clean data. No chain continuation.
                 ? ((...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>>) | Extract<T[K], undefined | null>
@@ -168,6 +175,9 @@ export type ClientAPIStrict<T> = {
     // ClientAPIStrict<DeepSocketListen<T>>) does not reach here (it has no getSince) and is mapped below
     IsReplayMember<NonFalsy<T[K]>> extends true
         ? ReplaySocketListen<InferArgs<NonFalsy<T[K]>>>
+        // plain Listen member — same branch as ClientAPIAll, same reason
+        : IsListenMember<NonFalsy<T[K]>> extends true
+        ? SocketListenMember<InferArgs<NonFalsy<T[K]>>>
         : NonFalsy<T[K]> extends (...args: infer A) => infer R
             ? (...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>>
             : NonFalsy<T[K]> extends object

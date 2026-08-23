@@ -25,10 +25,14 @@ export type IsReplayMember<V> = V extends {
     line: object;
     on: Function;
 } ? true : false;
+export type SocketListenMember<Z extends any[]> = WithSubHandle<ReturnType<typeof listenSocket<Z>>>;
+export type IsListenMember<V> = V extends {
+    on: Function;
+} ? IsReplayMember<V> extends true ? false : true : false;
 export type DeepSocketListen<T> = {
     [K in keyof T]: IsReplayMember<NonNullable<T[K]>> extends true ? ReplaySocketListen<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null> : NonNullable<T[K]> extends {
         on: Function;
-    } ? WithSubHandle<ReturnType<typeof listenSocket<InferArgs<NonNullable<T[K]>>>>> | Extract<T[K], undefined | null> : NonNullable<T[K]> extends ListenOn<infer Z> ? WithSubHandle<ReturnType<typeof listenSocket<Z>>> | Extract<T[K], undefined | null> : NonNullable<T[K]> extends (...a: any[]) => any ? T[K] : NonNullable<T[K]> extends Promise<any> ? T[K] : NonNullable<T[K]> extends typeof Promise ? T[K] : NonNullable<T[K]> extends object ? DeepSocketListen<NonNullable<T[K]>> | Extract<T[K], undefined | null> : T[K];
+    } ? SocketListenMember<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null> : NonNullable<T[K]> extends ListenOn<infer Z> ? WithSubHandle<ReturnType<typeof listenSocket<Z>>> | Extract<T[K], undefined | null> : NonNullable<T[K]> extends (...a: any[]) => any ? T[K] : NonNullable<T[K]> extends Promise<any> ? T[K] : NonNullable<T[K]> extends typeof Promise ? T[K] : NonNullable<T[K]> extends object ? DeepSocketListen<NonNullable<T[K]>> | Extract<T[K], undefined | null> : T[K];
 };
 export type DeepSocketListenFirst<T> = {
     [K in keyof T]: T[K] extends {

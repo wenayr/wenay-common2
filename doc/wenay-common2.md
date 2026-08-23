@@ -262,11 +262,12 @@ createRpcServerAuto({ socket, object: { math: { add: (a, b) => a + b, ticks } },
 const hub = createRpcClientHub(() => io(url), (rpc) => ({ math: rpc<Api>('math') }))
 const c = await hub.connect(token)               // c = facade of per-socketKey clients; token goes out in Pkt.HELLO
 await c.math.ready();  await c.math.func.add(2, 3)
-const l = c.math.func as unknown as DeepSocketListen<Api>  // typed Listen projection; wrap as webListen(c.math) in app code
-const off = l.ticks.on(v => console.log(v))                // canonical stream subscribe; off is callable and awaitable
+const off = c.math.func.ticks.on(v => console.log(v))      // canonical stream subscribe; off is callable and awaitable
 off()                                                     // unsubscribe; .callback/.removeCallback are legacy compat, don't teach them
-l.ticks.once(v => console.log(v))                         // one event, then auto-off
-l.status.on(v => render(v), {current: true})               // when status is a server listenStore: current tuple first, then live
+c.math.func.ticks.once(v => console.log(v))               // one event, then auto-off
+c.math.func.status.on(v => render(v), {current: true})    // when status is a server listenStore: current tuple first, then live
+  // Since 2.12.0 the typed lane projects Listen members directly; the old
+  // `as unknown as DeepSocketListen<Api>` cast still compiles but is no longer needed.
   // Late local consumers receive the latest tuple observed by the shared physical subscription.
   // That cache is cleared on disconnect/reauth; omitted/false stays live-only, and function-valued option material never crosses the wire.
 

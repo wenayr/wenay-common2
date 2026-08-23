@@ -19,8 +19,6 @@ export declare function createCbShapeServer(threshold?: number, maxShapes?: numb
 };
 export declare function createShapeRegistry(threshold?: number, maxShapes?: number, minRows?: number): {
     offerTick: (sessionId: number, obj: any) => {
-        shapeId?: undefined;
-        keys?: undefined;
         mode: 'full';
     } | {
         mode: 'compact';

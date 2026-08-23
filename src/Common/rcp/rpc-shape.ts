@@ -134,6 +134,18 @@ export function createShapeRegistry(
         registered.set(sh.sig, sh)
     }
 
+    // Last shape offered by a tick, and the exact key array that produced it. Per registry,
+    // so per connection: two interleaved tick streams of different shapes just miss the memo
+    // and take the normal path.
+    let lastKeys: string[] | null = null
+    let lastShape: tRegistered | null = null
+
+    function sameKeys(a: readonly string[], b: readonly string[]) {
+        if (a.length != b.length) return false
+        for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+        return true
+    }
+
     function register(sig: string, keys: string[]) {
         evictOldest(registered, maxShapes)
         candidates.delete(sig)
@@ -156,15 +168,31 @@ export function createShapeRegistry(
     // repeat `threshold` times before it earns an id — but repetitions are counted per
     // CONNECTION now, and a shape an array already registered needs no further evidence.
     function offerTick(sessionId: number, obj: any) {
-        const keys = safeKeys(obj)
+        const raw = Object.keys(obj)
+        // A tick stream repeats ONE shape for thousands of packets, so sort+stringify is paid
+        // over and over for an answer that has not changed. Remember the last accepted pair and
+        // compare the incoming keys IN ORDER: an ordered match cannot produce a different sorted
+        // signature, and keys that passed isSafeKey stay safe. A reordered object simply misses
+        // and takes the full path — the memo can skip work, never decide differently. The
+        // identity re-check keeps an evicted shape from being resurrected past the LRU bound.
+        if (lastShape && lastKeys && sameKeys(raw, lastKeys) && registered.get(lastShape.sig) === lastShape) {
+            return declare(lastShape, sessionId)
+        }
+        const keys = raw.every(isSafeKey) ? raw : null
         if (!keys) return {mode: 'full' as const}
         const sig = signature(keys)
         let sh = registered.get(sig)
-        if (sh) touch(sh)
-        else {
+        if (!sh) {
             if (countCandidate(sig) < threshold) return {mode: 'full' as const}
             sh = register(sig, keys)
         }
+        lastKeys = keys
+        lastShape = sh
+        return declare(sh, sessionId)   // declare() does the LRU touch for both branches
+    }
+
+    function declare(sh: tRegistered, sessionId: number) {
+        touch(sh)
         if (sh.declared.has(sessionId)) return {mode: 'compact' as const, shapeId: sh.id, keys: sh.keys}
         sh.declared.add(sessionId)
         return {mode: 'register' as const, shapeId: sh.id, keys: sh.keys}

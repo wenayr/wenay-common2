@@ -280,7 +280,13 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
                 const wire = snapshotEncoder.encode(ev)
                 return {
                     binary: true,
-                    value: snapshotDecoder.decode(wire),
+                    // The bytes were produced one line above by our own encoder and have not
+                    // crossed any boundary, so the untrusted reader's per-key work — safe-key
+                    // filtering, duplicate detection, prototype shadow checks — is spent on
+                    // input that cannot be hostile. decodeTrusted keeps the limits and drops
+                    // exactly that; it also pairs with trustReplayBinaryLeaf, which lets the
+                    // re-encode below skip re-enumerating binary leaves.
+                    value: snapshotDecoder.decodeTrusted(wire),
                     bytes: wire.byteLength,
                 }
             } catch {

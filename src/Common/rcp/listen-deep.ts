@@ -47,12 +47,24 @@ export type ReplaySocketListen<Z extends any[]> = WithSubHandle<ReturnType<typeo
 // plain Listen lacks getSince/keyframe/line, store-Listen — getSince/line).
 export type IsReplayMember<V> = V extends { getSince: Function; keyframe: Function; line: object; on: Function } ? true : false
 
+// The client-side surface of ONE plain Listen member: `on` hands back a callable
+// SubscriptionHandle instead of the base Promise<void>. Named because three projections
+// need exactly this shape — DeepSocketListen below and both client lanes in rpc-client.
+export type SocketListenMember<Z extends any[]> = WithSubHandle<ReturnType<typeof listenSocket<Z>>>
+
+// Plain Listen member at type level: it subscribes, but carries no replay coordinates.
+// Replay is checked FIRST at every use site, so the two never overlap. The `{on: Function}`
+// shape is the same detector DeepSocketListen has always used — this only gives it a name.
+export type IsListenMember<V> = V extends { on: Function }
+    ? IsReplayMember<V> extends true ? false : true
+    : false
+
 // Types for various Socket listener variants
 export type DeepSocketListen<T> = {
     [K in keyof T]: IsReplayMember<NonNullable<T[K]>> extends true
         ? ReplaySocketListen<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null>
         : NonNullable<T[K]> extends { on: Function }
-        ? WithSubHandle<ReturnType<typeof listenSocket<InferArgs<NonNullable<T[K]>>>>>
+        ? SocketListenMember<InferArgs<NonNullable<T[K]>>>
             | Extract<T[K], undefined | null>
         : NonNullable<T[K]> extends ListenOn<infer Z>   // bare on (branded) → same subscription {on, once, close, ...}
         ? WithSubHandle<ReturnType<typeof listenSocket<Z>>> | Extract<T[K], undefined | null>

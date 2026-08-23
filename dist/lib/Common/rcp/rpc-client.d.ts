@@ -2,7 +2,7 @@ import { type RpcAuthNotice, type SocketTmpl, type tAuthState } from "./rpc-prot
 import { type RpcLimits } from './rpc-limits';
 import { makeOff } from "./rpc-off";
 import { type RpcOpt } from './rpc-caps';
-import type { IsReplayMember, InferArgs, ReplaySocketListen } from "./listen-deep";
+import type { IsReplayMember, IsListenMember, InferArgs, ReplaySocketListen, SocketListenMember } from "./listen-deep";
 type UnwrapPromise<T> = T extends Promise<infer R> ? R : T;
 export type DeepDataOnly<T> = T extends Function ? never : T extends ArrayBuffer | ArrayBufferView ? T : T extends readonly any[] ? {
     [I in keyof T]: DeepDataOnly<T[I]>;
@@ -10,11 +10,11 @@ export type DeepDataOnly<T> = T extends Function ? never : T extends ArrayBuffer
     [K in keyof T as T[K] extends Function ? never : K]: DeepDataOnly<T[K]>;
 } : T;
 export type ClientAPIAll<T> = {
-    [K in keyof T as NonNullable<T[K]> extends Function ? K : NonNullable<T[K]> extends object ? K : never]: IsReplayMember<NonNullable<T[K]>> extends true ? ReplaySocketListen<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null> : NonNullable<T[K]> extends (...args: infer A) => infer R ? ((...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>>) | Extract<T[K], undefined | null> : NonNullable<T[K]> extends object ? ClientAPIAll<NonNullable<T[K]>> | Extract<T[K], undefined | null> : never;
+    [K in keyof T as NonNullable<T[K]> extends Function ? K : NonNullable<T[K]> extends object ? K : never]: IsReplayMember<NonNullable<T[K]>> extends true ? ReplaySocketListen<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null> : IsListenMember<NonNullable<T[K]>> extends true ? SocketListenMember<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null> : NonNullable<T[K]> extends (...args: infer A) => infer R ? ((...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>>) | Extract<T[K], undefined | null> : NonNullable<T[K]> extends object ? ClientAPIAll<NonNullable<T[K]>> | Extract<T[K], undefined | null> : never;
 };
 type NonFalsy<T> = Exclude<T, false | null | 0 | "" | undefined>;
 export type ClientAPIStrict<T> = {
-    [K in keyof T as NonFalsy<T[K]> extends Function ? K : NonFalsy<T[K]> extends object ? K : never]: IsReplayMember<NonFalsy<T[K]>> extends true ? ReplaySocketListen<InferArgs<NonFalsy<T[K]>>> : NonFalsy<T[K]> extends (...args: infer A) => infer R ? (...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>> : NonFalsy<T[K]> extends object ? ClientAPIStrict<NonFalsy<T[K]>> : never;
+    [K in keyof T as NonFalsy<T[K]> extends Function ? K : NonFalsy<T[K]> extends object ? K : never]: IsReplayMember<NonFalsy<T[K]>> extends true ? ReplaySocketListen<InferArgs<NonFalsy<T[K]>>> : IsListenMember<NonFalsy<T[K]>> extends true ? SocketListenMember<InferArgs<NonFalsy<T[K]>>> : NonFalsy<T[K]> extends (...args: infer A) => infer R ? (...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>> : NonFalsy<T[K]> extends object ? ClientAPIStrict<NonFalsy<T[K]>> : never;
 };
 export interface PipeArrayAPI<T> extends Promise<DeepDataOnly<T[]>> {
     [index: number]: PipeAPI<T>;
