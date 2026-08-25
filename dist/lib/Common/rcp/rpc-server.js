@@ -390,6 +390,12 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
         const reason = source.length > 2_000 ? source.slice(0, 2_000) + '…' : source;
         return new TypeError('RPC response serialization failed: ' + reason);
     }
+    function reportInvalid(ctx) {
+        try {
+            void Promise.resolve(hooks?.onInvalid?.(ctx)).catch(function ignoreInvalidHookFailure() { });
+        }
+        catch { }
+    }
     function sendError(channel, reqId, error) {
         try {
             sendChannel(channel, [rpc_protocol_1.Pkt.RESP, reqId, null, (0, rpc_walk_1.errToObj)(error)]);
@@ -508,7 +514,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
         if (r && r.object !== undefined)
             applyPrincipal(r.object);
         authAck = withGrantDeadline(r && r.ack !== undefined ? r.ack : { ok: true }, r?.expiresAt);
-        authed = authAck?.ok !== false;
+        authed = authAck?.ok !== false ? true : !auth?.gate;
         if (r && r.expiresAt != undefined)
             armAuthTimers(r.expiresAt, r.renewBeforeMs);
         sendMap(helloId);
@@ -712,7 +718,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
         const [, reqId, ref, rawArgsOrSteps, w] = msg;
         const wait = w !== false;
         if (!Number.isSafeInteger(reqId) || reqId < 0) {
-            hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "reqId is not a valid number" });
+            reportInvalid({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "reqId is not a valid number" });
             return;
         }
         if (!authed) {
@@ -721,13 +727,13 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
             return;
         }
         if (typeof ref !== "number" && !Array.isArray(ref)) {
-            hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "ref must be number or string[]" });
+            reportInvalid({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "ref must be number or string[]" });
             if (wait)
                 sendError(channel, reqId, new Error("Invalid ref type"));
             return;
         }
         if (!Array.isArray(rawArgsOrSteps)) {
-            hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "args/steps must be an array" });
+            reportInvalid({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "args/steps must be an array" });
             if (wait)
                 sendError(channel, reqId, new Error("Invalid args: expected array"));
             return;
@@ -735,7 +741,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
         if (isPipe) {
             const badStep = invalidPipeStep(rawArgsOrSteps);
             if (badStep) {
-                hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: badStep });
+                reportInvalid({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: badStep });
                 if (wait)
                     sendError(channel, reqId, new Error(badStep));
                 return;
@@ -750,13 +756,13 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
             }
             else {
                 if (!ref.every((s) => typeof s == "string" && (0, rpc_limits_1.isSafeKey)(s))) {
-                    hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps });
+                    reportInvalid({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps });
                     if (wait)
                         sendError(channel, reqId, new Error("Forbidden path segment"));
                     return;
                 }
                 if (ref.length > lim.maxPathLen) {
-                    hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "path too long" });
+                    reportInvalid({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "path too long" });
                     if (wait)
                         sendError(channel, reqId, new rpc_limits_1.PayloadLimitError("path too long"));
                     return;
@@ -789,7 +795,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
                 }
             }
             if (typeof fn !== "function") {
-                hooks?.onInvalid?.({ reason: "not_function", key: ref, request: rawArgsOrSteps });
+                reportInvalid({ reason: "not_function", key: ref, request: rawArgsOrSteps });
                 if (wait)
                     sendError(channel, reqId, new Error("Not a function: " + ref));
                 return;

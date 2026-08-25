@@ -423,6 +423,12 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
     let recorder: any = null
     let pcmPacketizer: ReturnType<typeof createPcmPacketizer> | null = null
     let seq = 0
+    // Same guard the video source carries. stop() runs synchronously BEFORE the await on
+    // getUserMedia, so a second start() cannot cancel the first: both resolve and overwrite
+    // the shared stream/audioCtx/workletNode, and the first set is then unreachable but still
+    // running — the microphone light stays on and its worklet keeps pushing PCM into the same
+    // shell. A double click, or setDevice() while the first grant is pending, is enough.
+    let generation = 0
 
     function emitPcm(samples: Float32Array, sampleRate: number, channels: number, frames: number) {
         const codec = opts.format == 'float32' ? 'float32' : 'pcm16'
@@ -512,6 +518,7 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
     }
 
     function stop() {
+        generation++
         recorder?.stop?.()
         recorder = null
         pcmPacketizer = null
@@ -534,12 +541,21 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
                 return shell.state
             }
             stop()
+            const run = generation
             shell.setState('requesting')
             shell.stats.startedAt = nowMono()
             const constraints: any = {audio: {deviceId: deviceId ? {exact: deviceId} : undefined, channelCount: opts.channels, sampleRate: opts.sampleRate}}
-            stream = await resolveMediaStream(opts.stream, () => (globalThis as any).navigator.mediaDevices.getUserMedia(constraints))
+            // Land the grant in a LOCAL first: publishing it into `stream` before the
+            // generation check would hand a superseded start the right to be torn down by
+            // the newer one, and leave the newer one's tracks orphaned instead.
+            const nextStream = await resolveMediaStream(opts.stream, () => (globalThis as any).navigator.mediaDevices.getUserMedia(constraints))
+            if (run != generation) { stopTracks(nextStream); return shell.state }
+            stream = nextStream
             if (opts.mode == 'record') startRecord(stream)
             else await startPcm(stream)
+            // startPcm awaits the worklet module: the same race reopens here, and by now the
+            // context and node are already wired to this stream, so stop() undoes them.
+            if (run != generation) { stop(); return shell.state }
             shell.setState('live')
             return shell.state
         } catch (e) {

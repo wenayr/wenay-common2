@@ -315,7 +315,11 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
 
         let spent = 0
         let chunkIndex = 0
-        let values: Record<string, unknown> = {}
+        // Object.create(null), not {}: a store key is user data, and assigning the key
+        // "__proto__" on a normal literal replaces the PROTOTYPE instead of creating an own
+        // key — Object.keys never sees it, so the entry vanishes from the chunk silently.
+        // store-replay-view solves the same problem with Reflect.defineProperty.
+        let values: Record<string, unknown> = Object.create(null)
         let deleted: string[] = []
         let count = 0
         let chunkSize = 0
@@ -327,7 +331,7 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
         function flush() {
             if (count == 0) return
             emit({index: chunkIndex++, values, deleted, kind: chunkKind})
-            values = {}
+            values = Object.create(null)
             deleted = []
             count = 0
             chunkSize = 0
@@ -504,7 +508,14 @@ export function syncStoreLazyLine<T extends object>(
         chunks++
         const state = mirror.state as Record<string, unknown>
         for (const key of Object.keys(chunk.values)) {
-            state[key] = chunk.values[key]
+            // Plain assignment on the hot path; only the one name that assignment cannot
+            // express as an own property takes the slower route. "__proto__" would replace
+            // the mirror's prototype instead of storing the value.
+            if (key == '__proto__') {
+                Reflect.defineProperty(state, key, {
+                    configurable: true, enumerable: true, writable: true, value: chunk.values[key],
+                })
+            } else state[key] = chunk.values[key]
             sweepSeen?.add(key)
             received++
         }

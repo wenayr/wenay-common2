@@ -202,6 +202,11 @@ export function persistStore<T extends object>(store: Store<T>, opts: PersistSto
             savedAt = nextSavedAt
             updateStatus({saving: false, error: undefined})
         } catch (e) {
+            // `dirty` was cleared before the await so writes racing this one are not lost.
+            // On failure that clearing is a lie: nothing reached storage, and the finally
+            // below would see a clean flag and reschedule nothing — one transient storage
+            // error then dropped the snapshot until the store happened to change again.
+            dirty = true
             updateStatus({saving: false, error: e})
             throw e
         } finally {

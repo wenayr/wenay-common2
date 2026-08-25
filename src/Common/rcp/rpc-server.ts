@@ -549,6 +549,15 @@ function createServer<T extends object>(
         return new TypeError('RPC response serialization failed: ' + reason)
     }
 
+    // onInvalid is typed `void | Promise<void>` and fires on malformed input from the wire,
+    // so an async hook that rejects hands Node an unhandled rejection triggered by a remote
+    // peer. The CAPS branch already awaits its calls; the request path cannot (it is inside
+    // early returns), so it settles the promise here instead of dropping it on the floor.
+    function reportInvalid(ctx: Parameters<NonNullable<typeof hooks>['onInvalid'] & Function>[0]) {
+        try { void Promise.resolve(hooks?.onInvalid?.(ctx)).catch(function ignoreInvalidHookFailure() {}) }
+        catch { /* a synchronous throw from the hook must not settle the caller's request */ }
+    }
+
     function sendError(channel: tSendChannel, reqId: number, error: unknown) {
         try {
             sendChannel(channel, [Pkt.RESP, reqId, null, errToObj(error)])
@@ -705,7 +714,12 @@ function createServer<T extends object>(
         clearAuthTimers() // the previous grant's deadline is void from here on
         if (r && r.object !== undefined) applyPrincipal(r.object) // new principal facade
         authAck = withGrantDeadline(r && r.ack !== undefined ? r.ack : {ok: true}, r?.expiresAt)
-        authed = authAck?.ok !== false
+        // `ok: false` is a documented way for resolveAuth to refuse WITHOUT throwing, and on a
+        // server with no `gate` it must not close the connection: downgradePrincipal below reads
+        // the same fact as `!auth?.gate`, and the two paths have to agree. Without this an
+        // ungated server that answered one reauth with {ack:{ok:false}} refused every later
+        // CALL/PIPE forever, while the principal facade from r.object was already installed.
+        authed = authAck?.ok !== false ? true : !auth?.gate
         if (r && r.expiresAt != undefined) armAuthTimers(r.expiresAt, r.renewBeforeMs) // absent = no lifetime, as before
         sendMap(helloId) // principal-specific routeMap + authAck
         return true
@@ -947,7 +961,7 @@ function createServer<T extends object>(
         const wait = w !== false;
 
         if (!Number.isSafeInteger(reqId) || reqId < 0) {
-            hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "reqId is not a valid number" });
+            reportInvalid({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "reqId is not a valid number" });
             return;
         }
         if (!authed) { // gate: calls before successful HELLO
@@ -955,12 +969,12 @@ function createServer<T extends object>(
             return;
         }
         if (typeof ref !== "number" && !Array.isArray(ref)) {
-            hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "ref must be number or string[]" });
+            reportInvalid({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "ref must be number or string[]" });
             if (wait) sendError(channel, reqId, new Error("Invalid ref type"))
             return;
         }
         if (!Array.isArray(rawArgsOrSteps)) {
-            hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "args/steps must be an array" });
+            reportInvalid({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "args/steps must be an array" });
             if (wait) sendError(channel, reqId, new Error("Invalid args: expected array"))
             return;
         }
@@ -969,7 +983,7 @@ function createServer<T extends object>(
         if (isPipe) {
             const badStep = invalidPipeStep(rawArgsOrSteps);
             if (badStep) {
-                hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: badStep });
+                reportInvalid({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: badStep });
                 if (wait) sendError(channel, reqId, new Error(badStep))
                 return;
             }
@@ -987,12 +1001,12 @@ function createServer<T extends object>(
                 fn = methods[ref]; ctx = contexts[ref];
             } else {
                 if (!ref.every((s: any) => typeof s == "string" && isSafeKey(s))) {
-                    hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps });
+                    reportInvalid({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps });
                     if (wait) sendError(channel, reqId, new Error("Forbidden path segment"))
                     return;
                 }
                 if (ref.length > lim.maxPathLen) {
-                    hooks?.onInvalid?.({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "path too long" });
+                    reportInvalid({ reason: "invalid_payload", key: ref, request: rawArgsOrSteps, error: "path too long" });
                     if (wait) sendError(channel, reqId, new PayloadLimitError("path too long"))
                     return;
                 }
@@ -1017,7 +1031,7 @@ function createServer<T extends object>(
                 }
             }
             if (typeof fn !== "function") {
-                hooks?.onInvalid?.({ reason: "not_function", key: ref, request: rawArgsOrSteps });
+                reportInvalid({ reason: "not_function", key: ref, request: rawArgsOrSteps });
                 if (wait) sendError(channel, reqId, new Error("Not a function: " + ref))
                 return;
             }

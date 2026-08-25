@@ -139,7 +139,7 @@ function exposeStoreLazyLine(store, opts = {}) {
         const keys = keysInOrder();
         let spent = 0;
         let chunkIndex = 0;
-        let values = {};
+        let values = Object.create(null);
         let deleted = [];
         let count = 0;
         let chunkSize = 0;
@@ -151,7 +151,7 @@ function exposeStoreLazyLine(store, opts = {}) {
             if (count == 0)
                 return;
             emit({ index: chunkIndex++, values, deleted, kind: chunkKind });
-            values = {};
+            values = Object.create(null);
             deleted = [];
             count = 0;
             chunkSize = 0;
@@ -275,7 +275,13 @@ function syncStoreLazyLine(mirror, remote, opts = {}) {
         chunks++;
         const state = mirror.state;
         for (const key of Object.keys(chunk.values)) {
-            state[key] = chunk.values[key];
+            if (key == '__proto__') {
+                Reflect.defineProperty(state, key, {
+                    configurable: true, enumerable: true, writable: true, value: chunk.values[key],
+                });
+            }
+            else
+                state[key] = chunk.values[key];
             sweepSeen?.add(key);
             received++;
         }
