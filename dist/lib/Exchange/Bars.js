@@ -245,7 +245,7 @@ class CBarsBase extends IBars {
     _ticksize;
     get _tickSize() { return this._ticksize; }
     get data() { return this._data; }
-    get tickSize() { return this._ticksize ??= lib.MaxCommonDivisorOnArray(this.closes); }
+    get tickSize() { return this._ticksize ||= lib.MaxCommonDivisorOnArray(this.closes); }
     _Add(bars) { this._data = this._data.concat(bars); }
     constructor(tf, bars, tickSize) {
         super(tf);

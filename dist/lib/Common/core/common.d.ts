@@ -237,6 +237,7 @@ export declare class CObjectID<TObject, TOwner> implements ObjectID<TObject, TOw
     readonly value: number;
     readonly [Symbol.species]: ObjectID<TObject, TOwner>;
     readonly toString: () => string;
+    readonly toJSON: () => string;
     constructor(object: TObject, owner: TOwner);
     static getInfo<TObject, TOwner>(id: ObjectID<TObject, TOwner>): {
         object: TObject;

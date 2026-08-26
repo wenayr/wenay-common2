@@ -130,6 +130,13 @@ durationToStr(ms: number) -> string                        // humanized
 minDate(a: Date | null, b: Date | null) / maxDate(a, b) -> Date | null      // null-tolerant   (alias: MinTime/MaxTime)
 convertDatesToStrings(obj)                                 // Date -> strings, recursively (logs)
 const:  H1_S D1_S W1_S · M1_MS H1_MS D1_MS W1_MS
+  // GLOBAL PATCH: importing the ROOT, './client' or './server' replaces Date.prototype
+  // toString/toDateString/toTimeString process-wide with the local 'yyyy-MM-dd HH:mm:ss GMT+H'
+  // form. Subpath entrypoints (./rpc ./observe ./replay ./listen ./media ./peer ./ai ...) do NOT
+  // reach Time and leave Date alone. toJSON / JSON.stringify / valueOf are untouched.
+  // The patched toString parses back through new Date() to SECOND precision in whole-hour zones
+  // only; in fractional-offset zones (UTC+5:30, +5:45) it yields Invalid Date. Never persist a
+  // date via toString — use toJSON or valueOf.
 ```
 
 ## 🌐 rpc (brief) — transport is ALWAYS caller-supplied (`{emit,on}`); there is NO url / built-in socket

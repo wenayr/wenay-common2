@@ -1161,6 +1161,10 @@ export class CObjectID<TObject, TOwner> implements ObjectID<TObject, TOwner> {
 	readonly [Symbol.species] = this as ObjectID<TObject, TOwner>; //ObjectID<TObject, TOwner>;
 	// readonly [Symbol.species]: IdClassName;
 	readonly toString = ()=>{ return this.value+""; }
+	// An id travels as its value, not as {"value":1}. Declaring that here is what lets the
+	// global JSON.stringify stay the real one: the engine calls toJSON before the replacer,
+	// so a caller's replacer sees the converted value exactly as it did under the old patch.
+	readonly toJSON = ()=>{ return this.value+""; }
 	constructor(object :TObject, owner :TOwner) { this.#object= object;  this.#owner= owner; }
 	// static getPrivateInfo<IdClassName extends string, TObject, TOwner>(data :CObjectID<IdClassName, TObject, TOwner>) {
 	static getInfo<TObject, TOwner>(id :ObjectID<TObject, TOwner>) : { object: TObject, owner: TOwner } {
@@ -1169,21 +1173,6 @@ export class CObjectID<TObject, TOwner> implements ObjectID<TObject, TOwner> {
 	}
 	static getObjectByOwner<TObject, TOwner>(id :ObjectID<TObject, TOwner>, owner :TOwner) { let data= CObjectID.getInfo(id);  return data.owner==owner ? data.object : undefined; }
 }
-
-// replace stringify, otherwise there could be recursive id processing in other objects
-const stringifyDefault= JSON.stringify;
-
-JSON.stringify= (value, replacer, space)=>{
-    const allow = Array.isArray(replacer)
-        ? new Set(replacer.filter(v => typeof v == "string" || typeof v == "number").map(String))
-        : null;
-    return stringifyDefault(value, (key,val)=>{
-        if (allow && key !== "" && !allow.has(key)) return undefined;
-        const next = val instanceof CObjectID ? val.value+"" : val;
-        return typeof replacer=="function" ? replacer(key,next) : next;
-    }, space);
-};
-
 
 
 export class MapExt<K,V> extends Map<K,V> {

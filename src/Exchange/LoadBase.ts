@@ -11,6 +11,13 @@ export type tSymbol = string;
 export type tExchange = string;
 export type tTF = TF;
 export type tSymbolLoadInfo = { readonly symbol: tSymbol, readonly exchangeName?: tExchange, readonly tf: tTF };
+/**
+ * `right` is NOT implemented. The chunker anchors at the newest edge and steps backwards,
+ * and the dispatch loop only starts a load where the chunk list descends; passing `right: true`
+ * merely swaps the two endpoints, so the list ascends and every chunk is skipped — the call
+ * resolves to `[]` without ever invoking `funcLoad`. Left in place rather than removed because
+ * the option is part of the published type; implementing it means a mirrored forward chunker.
+ */
 export type tInfoForLoadHistory = tSymbolLoadInfo & { time1: Date, time2: Date , right?:boolean}
 
 type tFetch3 = (input: RequestInfo | URL, init?: RequestInit | undefined) => Promise<Response>

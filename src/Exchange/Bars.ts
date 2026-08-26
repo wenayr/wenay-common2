@@ -347,7 +347,9 @@ export abstract class CBarsBase extends IBars
 
 	get data() : readonly CBar[] { return this._data; }
 
-	get tickSize() : number { return this._ticksize ??= lib.MaxCommonDivisorOnArray(this.closes); }
+	// ||=, not ??=: the constructor stores 0 rather than undefined, and every mutation path
+	// resets the cache to 0 as well, so 0 — not nullish — is what "recompute" looks like here.
+	get tickSize() : number { return this._ticksize ||= lib.MaxCommonDivisorOnArray(this.closes); }
 
 	protected _Add(bars : readonly CBar[])  { this._data = this._data.concat(bars); }
 

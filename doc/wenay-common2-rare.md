@@ -82,6 +82,9 @@ class MyTimerInterval { constructor(period_ms, onTimer, onStop?); stop() }
 ```
 objectGet(obj, path:string[]) -> T                 // THROWS on missing/non-object segment   (alias: objectGetValueByPath)
 objectSet(obj, path, value) -> void                                                          (alias: objectSetValueByPath)
+  // path segments are NOT filtered: '__proto__' as an INTERMEDIATE segment writes onto
+  // Object.prototype. Nothing in this library routes wire data here — the RPC surface has its
+  // own isSafeKey-guarded resolver (doc/RPC-AUTH.md) — so do not feed it remote-controlled paths.
 objectUnset(obj, path) -> boolean                                                            (alias: objectDeleteValueByPath)
 deepEntries(obj, filter?) -> Generator<[key, value, path]>                                   (alias: iterateDeepObjectEntries)
 
@@ -390,9 +393,9 @@ RpcLimits (opt, per server/client): maxDepth 32 · maxKeys 1000 · maxArgs 64 ·
   · maxStringLen 1M · maxCallbacks 100 · maxPathLen 16 · maxBinaryLen 8MB (bytes per binary leaf)
   // Server inputs and client results/callbacks are checked at the JSON application boundary.
 // modes: func (proxy) · strict (schema-safe) · pipe (whole chain in one packet) · space (fire-and-forget)
-// legacy (oldCommonsServer.ts, @deprecated forwarders onto oldCommonsServerMini — identical wire):
-//   funcPromiseServer->promiseServer · funcForWebSocket->wsWrapper · funcScreenerClient2->createClientProxy
-//   CreatAPIFacadeServerOld->createAPIFacadeServer ; CreatAPIFacadeClientOld & funcPromiseServer2 kept as-is
+// legacy: the @deprecated forwarder file (oldCommonsServer.ts) is GONE as of 2.15.0 — it had no
+//   importers and no entrypoint ever re-exported it. Use the live names directly: promiseServer ·
+//   wsWrapper · createClientProxy · createAPIFacadeServer (in oldCommonsServerMini, identical wire).
 ```
 
 ### RPC application wire

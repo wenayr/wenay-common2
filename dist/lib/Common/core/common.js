@@ -737,6 +737,7 @@ class CObjectID {
     #owner;
     [Symbol.species] = this;
     toString = () => { return this.value + ""; };
+    toJSON = () => { return this.value + ""; };
     constructor(object, owner) { this.#object = object; this.#owner = owner; }
     static getInfo(id) {
         let obj = id;
@@ -745,18 +746,6 @@ class CObjectID {
     static getObjectByOwner(id, owner) { let data = CObjectID.getInfo(id); return data.owner == owner ? data.object : undefined; }
 }
 exports.CObjectID = CObjectID;
-const stringifyDefault = JSON.stringify;
-JSON.stringify = (value, replacer, space) => {
-    const allow = Array.isArray(replacer)
-        ? new Set(replacer.filter(v => typeof v == "string" || typeof v == "number").map(String))
-        : null;
-    return stringifyDefault(value, (key, val) => {
-        if (allow && key !== "" && !allow.has(key))
-            return undefined;
-        const next = val instanceof CObjectID ? val.value + "" : val;
-        return typeof replacer == "function" ? replacer(key, next) : next;
-    }, space);
-};
 class MapExt extends Map {
     immutArray;
     set(key, value) { this.immutArray = undefined; return super.set(key, value); }
