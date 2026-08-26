@@ -4,6 +4,10 @@ export type StoreLazyCursor = {
     selectionId?: string;
     key: string | null;
     revision: number;
+    catchUp?: {
+        key: string;
+        revision: number;
+    };
 };
 export type StoreLazyChunkV1 = {
     index: number;

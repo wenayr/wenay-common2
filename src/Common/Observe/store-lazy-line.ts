@@ -12,7 +12,9 @@
 //
 // THERE IS NO SNAPSHOT. Not of values, and not of a key list either. Progress is
 // one cursor the SUBSCRIBER holds — `{key, revision}`, meaning "I have every key
-// up to `key`, as of `revision`". The host keeps no per-subscriber state at all,
+// up to `key`, as of `revision`". A read that runs out of budget part way through
+// what the subscriber was owed carries a second claim of the same shape for the
+// part it did reconcile. The host keeps no per-subscriber state at all,
 // so a reconnect resumes the fill instead of starting it over, which is the whole
 // point on the links this line exists for.
 //
@@ -53,6 +55,15 @@ export type StoreLazyCursor = {
     selectionId?: string
     key: string | null
     revision: number
+    /**
+     * A catch-up that ran out of budget half way: every key at or before `catchUp.key` is
+     * held as of `catchUp.revision`, which is NEWER than `revision`. The read that finishes
+     * the catch-up folds the two claims back into one and drops this field.
+     *
+     * Two claims are always enough. A resumed catch-up walks the region from its start, so
+     * the boundary only ever moves forward and never splits into a third step.
+     */
+    catchUp?: {key: string, revision: number}
 }
 
 export type StoreLazyChunkV1 = {
@@ -76,7 +87,11 @@ export type StoreLazyReadV1 = {
     cursor: StoreLazyCursor
     /** Keys still awaiting their first delivery. */
     remaining: number
-    /** Every key has been delivered at least once; only live re-sends remain. */
+    /**
+     * Every key has been delivered at least once AND nothing the cursor was owed is
+     * still outstanding. A read truncated mid catch-up reports false even when the fill
+     * frontier is at the end, because the mirror does not yet match the host.
+     */
     filled: boolean
     revision: number
     /**
@@ -275,9 +290,16 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
     }
 
     // === The single ordered walk ===
-    // Keys at or before the cursor are caught up first (they are what a returning
-    // subscriber missed), then the fill continues past it. Sorted order makes both
-    // halves one pass and makes the cursor resumable without host state.
+    // There is one rule for every key: send it when its revision is newer than the floor
+    // the cursor claims for that key. The cursor IS that floor — a piecewise-constant
+    // function over the sorted key space:
+    //
+    //   key <= catchUp.key   -> catchUp.revision   (already reconciled, at the newer revision)
+    //   key <= cursor.key    -> cursor.revision    (delivered once, not yet reconciled)
+    //   key >  cursor.key    -> never delivered    (always send; this advances the frontier)
+    //
+    // Catch-up and fill are the same walk under that rule, which is what makes an
+    // interrupted read resumable from the last key it sent instead of restarting.
 
     function read(
         request: {cursor?: StoreLazyCursor | null, maxBytes?: number, maxItems?: number},
@@ -325,6 +347,7 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
         let chunkSize = 0
         let chunkKind: 'fill' | 'live' = 'live'
         let nextCursorKey = cursor.key
+        let catchUpKey: string | null = null
         let caughtUp = true
         let exhausted = false
 
@@ -350,52 +373,71 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
             spent += size
         }
 
-        // Catch-up: tombstones for keys already deleted, then live keys that moved.
-        for (const [key] of tombstones) {
-            if (cursor.key == null || key > cursor.key) continue
-            if ((keyRevision.get(key) ?? 0) <= cursor.revision) continue
+        // Catch-up work as ONE ordered list: a deleted key and a live key that moved are
+        // the same obligation, and the walk must be ordered or an interrupted read has no
+        // position to resume from. The sort is O(d log d) in the keys actually due, so it
+        // costs in proportion to the work about to be done and nothing on a caught-up line.
+        const due: string[] = []
+        if (cursor.key != null) {
+            const caught = cursor.catchUp
+            const floorFor = (key: string) => caught != null && key <= caught.key ? caught.revision : cursor.revision
+            for (const [key] of tombstones) {
+                if (key <= cursor.key && (keyRevision.get(key) ?? 0) > floorFor(key)) due.push(key)
+            }
+            const end = firstAfter(keys, cursor.key)
+            for (let i = 0; i < end; i++) {
+                if ((keyRevision.get(keys[i]) ?? 0) > floorFor(keys[i])) due.push(keys[i])
+            }
+            due.sort()
+        }
+
+        for (const key of due) {
             if (spent >= budget) { caughtUp = false; exhausted = true; break }
             send(key, 'live')
+            catchUpKey = key
         }
 
         if (!exhausted) {
-            for (const key of keys) {
-                if (spent >= budget) {
-                    exhausted = true
-                    if (cursor.key != null && key <= cursor.key) caughtUp = false
-                    break
-                }
-                if (cursor.key != null && key <= cursor.key) {
-                    if ((keyRevision.get(key) ?? 0) > cursor.revision) send(key, 'live')
-                    continue
-                }
-                send(key, 'fill')
-                nextCursorKey = key
+            for (let i = firstAfter(keys, cursor.key); i < keys.length; i++) {
+                if (spent >= budget) { exhausted = true; break }
+                send(keys[i], 'fill')
+                nextCursorKey = keys[i]
             }
         }
         flush()
 
-        const remaining = countRemaining(keys, nextCursorKey)
+        const remaining = keys.length - firstAfter(keys, nextCursorKey)
+        // An interrupted catch-up records where it stopped, unconditionally — even when
+        // that is BELOW the previous boundary because live churn pulled the walk back to
+        // an earlier key. Lowering a floor only costs a re-send, whereas refusing to lower
+        // it would leave those changes unrecorded and reopen the same non-advancing loop
+        // one region deeper.
         return {
-            // The revision only advances when the catch-up half completed; otherwise
-            // the rest of what the subscriber missed would be skipped silently.
-            cursor: {lineId, selectionId, key: nextCursorKey, revision: caughtUp ? readRevision : cursor.revision},
+            cursor: caughtUp
+                ? {lineId, selectionId, key: nextCursorKey, revision: readRevision}
+                : {
+                    lineId, selectionId, key: nextCursorKey, revision: cursor.revision,
+                    catchUp: {key: catchUpKey!, revision: readRevision},
+                },
             remaining,
-            filled: remaining == 0,
+            // Not `remaining == 0` alone: with the frontier at the end of the key space a
+            // truncated catch-up would otherwise report a converged mirror that is stale.
+            filled: remaining == 0 && caughtUp,
             revision,
         }
     }
 
-    function countRemaining(keys: readonly string[], cursorKey: string | null) {
-        if (cursorKey == null) return keys.length
+    /** Index of the first key strictly after `key` — the fill frontier as an offset. */
+    function firstAfter(keys: readonly string[], key: string | null) {
+        if (key == null) return 0
         let low = 0
         let high = keys.length
         while (low < high) {
             const mid = (low + high) >> 1
-            if (keys[mid] <= cursorKey) low = mid + 1
+            if (keys[mid] <= key) low = mid + 1
             else high = mid
         }
-        return keys.length - low
+        return low
     }
 
     function snapshot() {

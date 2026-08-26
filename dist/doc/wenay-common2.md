@@ -755,6 +755,9 @@ await fill.filled                                    // promise: every key deliv
   // A refused cursor comes back as {stale: true}; the subscriber then restarts the pass AND
   // sweeps every mirror key the fresh pass never mentioned, because the host can no longer prove
   // which keys were deleted while it was away. Resetting only the cursor would keep ghosts.
+  // A read that runs out of budget part way through what the subscriber was owed carries the
+  // part it DID reconcile as cursor.catchUp {key, revision}; the next read continues from there
+  // instead of redoing it. `filled` stays false while any of that is outstanding.
   // The host keeps no per-subscriber state, so a reconnect RESUMES the fill instead of
   // restarting it; persist the cursor through onCursor and hand it back to continue.
   // Values are read AT SEND TIME: a key rewritten beyond the cursor costs zero extra bytes and
