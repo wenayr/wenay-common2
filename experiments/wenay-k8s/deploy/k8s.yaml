@@ -1,0 +1,75 @@
+# wenay mini-node stand — plain manifests (the helm-chart/ renders the same).
+# Fill the two REPLACE_ values with the leader's DEMO_MINI_TOKEN/DEMO_MINI_SECRET
+# before applying (deploy/README.md has the one-liner that substitutes them).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wenay-mini
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: wenay-mini-secret
+  namespace: wenay-mini
+type: Opaque
+stringData:
+  # both values MUST equal the env the demo leader was started with —
+  # the token gates the node-link socket, the secret verifies client tokens
+  MINI_TOKEN: REPLACE_WITH_DEMO_MINI_TOKEN
+  MINI_SECRET: REPLACE_WITH_DEMO_MINI_SECRET
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wenay-mini-node
+  namespace: wenay-mini
+  labels:
+    app: wenay-mini-node
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: wenay-mini-node
+  template:
+    metadata:
+      labels:
+        # the k8s directory feeder selects on exactly this label
+        app: wenay-mini-node
+    spec:
+      # k8s-lifecycle.md: SIGTERM -> node.leave() -> drain fact -> 2s grace ->
+      # goodbye -> exit 0. 30s leaves generous margin over grace + hand-off.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: mini-node
+          image: wenay-mini-node:dev
+          # built straight into minikube's runtime via `minikube image build`
+          imagePullPolicy: Never
+          env:
+            - name: MINI_NODE_ID
+              valueFrom:
+                fieldRef:
+                  # pod name = directory nodeId: rows on the panel ARE pods
+                  fieldPath: metadata.name
+            - name: MINI_UPSTREAM
+              value: http://host.minikube.internal:3100
+            - name: MINI_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: wenay-mini-secret
+                  key: MINI_TOKEN
+            - name: MINI_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: wenay-mini-secret
+                  key: MINI_SECRET
+          lifecycle:
+            preStop:
+              # belt-and-braces per k8s-lifecycle.md: SIGTERM alone drains (the
+              # node handles it as PID 1); the sleep only keeps the process
+              # around while the deleting fact propagates on the discovery path
+              exec:
+                command: ["sleep", "3"]
+          # NO readiness probe ON PURPOSE (honesty over ceremony):
+          # demo/mini-scale-node.ts binds an EPHEMERAL port (listen(0)) and
+          # serves no /readyz, so there is no honest probe target. k8s-probes.ts
+          # is ready for the day the node binds a fixed port and mounts them.

@@ -101,6 +101,12 @@ to — the token arrives in HELLO once the provider answers. Without a provider,
 still passes the token to `createSocket` for socket-level needs; using it for RPC auth is redundant
 and leaky.
 
+The session ends through `hub.close()`, never by disconnecting raw sockets: close() disposes every
+facade client, kills the socket's reconnection, rejects a still-pending wave and refuses every later
+`connect`/`setToken`/`reauth` (rejected with `'RPC hub closed'`) — after it, no wave can present a
+token again. A raw-socket sweep cannot promise that: a wave landing after the sweep is adopted,
+alive and authorized, reachable by no reference the application still holds.
+
 ---
 
 ## Rule 3 — one facade per principal, not `if (role)` inside every method

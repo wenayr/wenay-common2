@@ -182,9 +182,12 @@ export declare function createStoreReplicaSet<T extends object>(deps: StoreRepli
                 oldestSeq: number | null;
                 head: number;
                 ageMs: number;
+                bytes: number;
                 historyLimit: number;
                 keepMs: number;
+                keepBytes: number;
                 cappedByCount: boolean;
+                cappedByBytes: boolean;
             };
             line: import("../..").ListenApi<[import("../events/replay-listen").ReplayEvent<[readonly StorePatch[]]>]>;
             hasKeyframe: boolean;
@@ -203,14 +206,22 @@ export declare function createStoreReplicaSet<T extends object>(deps: StoreRepli
             replay: {
                 line: {
                     on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
-                };
+                } & import("./store-replay").StoreReplayLineLocal;
                 since: (seq: number) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
                 keyframe: () => Promise<import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
                 frame?: ((seq: number, hint?: unknown) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
                 frameLine?: {
                     on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 } | undefined;
-            } | {
+                chunks?: {
+                    begin: (opts?: {
+                        budgetBytes?: number;
+                    }) => Promise<import("./store-replay").StoreReplayChunksBegin<import("./store-replay-codec").tStoreReplayWireBatchV2> | null | undefined> | import("./store-replay").StoreReplayChunksBegin<import("./store-replay-codec").tStoreReplayWireBatchV2> | null | undefined;
+                    pull: (snapshotId: string, index: number) => Promise<import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
+                    end?: (snapshotId: string) => unknown;
+                } | undefined;
+                describe: () => Record<string, any>;
+            } | ({
                 line: {
                     on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 };
@@ -220,8 +231,16 @@ export declare function createStoreReplicaSet<T extends object>(deps: StoreRepli
                 frameLine?: {
                     on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 } | undefined;
-                describe: () => Record<string, any>;
-            };
+                chunks?: {
+                    begin: (opts?: {
+                        budgetBytes?: number;
+                    }) => Promise<import("./store-replay").StoreReplayChunksBegin<import("./store-replay-codec").tStoreReplayWireBatchV2> | null | undefined> | import("./store-replay").StoreReplayChunksBegin<import("./store-replay-codec").tStoreReplayWireBatchV2> | null | undefined;
+                    pull: (snapshotId: string, index: number) => Promise<import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
+                    end?: (snapshotId: string) => unknown;
+                } | undefined;
+            } & {
+                line: import("./store-replay").StoreReplayLineLocal;
+            });
             ping: () => number;
         };
         canWrite: () => boolean;

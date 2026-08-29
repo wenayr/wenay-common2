@@ -49,4 +49,6 @@ export * as Ai from "./Common/ai/ai-index";
 export * as Artifact from "./Common/artifact/artifact-index";
 export * as Conversation from "./Common/conversation/conversation-index";
 export * as Contract from './Common/contract/contract-index'
+export * as Command from './Common/command/command-index'
+export * as Scale from './Common/scale/scale-index'
 

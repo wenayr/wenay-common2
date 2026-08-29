@@ -14,13 +14,16 @@ import {createArtifactHost} from '../src/Common/artifact/artifact-index'
 import {createConversationHost} from '../src/Common/conversation/conversation-index'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 import {createHttpFacadeServer} from '../src/server/httpFacadeServer'
+import {createHttpFacadeOpenApi} from './http-openapi'
 import {createDevModuleBridge} from './dev-module-bridge'
 import {io as ioClient} from 'socket.io-client'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createStoreFollower} from '../src/Common/Observe/store-follower'
 import {createArtifactByteCache, createArtifactMirror, sha256Hex} from '../src/Common/artifact/artifact-index'
 import type {ArtifactRecord, ArtifactStore} from '../src/Common/artifact/artifact-index'
+import {forwardCommands} from '../src/Common/command/command-host'
 import {createWorkboardHost, WorkboardHost} from './workboard-host'
+import {createMiniScaleHost} from './mini-scale-host'
 import type {WorkboardState} from './workboard-contract'
 import {createAuthLifecycleHost} from './auth-lifecycle-host'
 import {authSocketKeys} from './auth-lifecycle-contract'
@@ -677,6 +680,57 @@ createHttpFacadeServer({
     limits: httpFacadeLimits,
 })
 
+// ============== OpenAPI descriptor + Swagger UI for the facade ==============
+// The spec re-runs the SAME facade walk against a recording app, so
+// /openapi.json cannot drift from the routes registered just above.
+const httpFacadeOpenApi = createHttpFacadeOpenApi({
+    object: httpFacadeDemo,
+    basePath: '/http-facade',
+    methods: ['get', 'post'],
+    info: {
+        title: 'wenay-common2 demo HTTP facade',
+        version: (require('../package.json') as {version: string}).version,
+        description: 'Generated from the live facade object; GET and POST mirror the same functions.',
+    },
+    bearerAuth: true,
+    limits: httpFacadeLimits,
+    summaries: {
+        '/http-facade/demo/status': 'Instance role, epoch and participant count',
+        '/http-facade/demo/echo': 'Echoes the first argument back with a server timestamp',
+    },
+})
+app.get('/openapi.json', function serveOpenApiDocument(_req, res) {
+    res.json(httpFacadeOpenApi.document())
+})
+// Hand-written page instead of the package's own index.html, which hardcodes
+// the petstore URL in swagger-initializer.js.
+const swaggerUiDistDir = path.dirname(require.resolve('swagger-ui-dist/package.json'))
+app.use('/docs/assets', express.static(swaggerUiDistDir, {index: false}))
+app.get('/docs', function serveSwaggerUiPage(_req, res) {
+    res.type('html').send(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>demo HTTP facade — Swagger UI</title>
+<link rel="stylesheet" href="/docs/assets/swagger-ui.css">
+<link rel="icon" type="image/png" href="/docs/assets/favicon-32x32.png">
+</head>
+<body>
+<div id="swagger-ui"></div>
+<script src="/docs/assets/swagger-ui-bundle.js"></script>
+<script>
+window.ui = SwaggerUIBundle({
+    url: '/openapi.json',
+    dom_id: '#swagger-ui',
+    presets: [SwaggerUIBundle.presets.apis],
+    layout: 'BaseLayout',
+})
+</script>
+</body>
+</html>`)
+})
+
 // ============== optional development module bridge ==============
 // Opt in with DEMO_DEV_MODULE=1 (or a path to your own file). The watched file
 // becomes a live replaceable module and its own methods become routes, so a
@@ -740,21 +794,22 @@ function mirrorAccount(who: unknown) {
     return value
 }
 
-// Trusted entry for a connected mirror: same commands, but with the END client's
-// account — idempotency receipts key on (account, requestId) across the hop.
-// Rate limiting stays per end account, so mirror clients share the same budget.
+// Trusted entry for a connected mirror (trust mode: trusted-mirror). The wire is
+// the library CommandForwardFragment shape — (account, requestId, input) — so the
+// hop and the receipts are the SAME layer the mini-scale stand uses; this file
+// only adds the demo's per-account rate limit and the promoted-authority switch.
 function mirrorFragment() {
     function mirrorCommand(name: tWorkboardCommand) {
-        return function forwardedCommand(who: unknown, input: unknown) {
+        return function forwardedCommand(who: unknown, requestId: unknown, input: unknown) {
             const account = mirrorAccount(who)
             return limited(account, function applyForwarded(value: any) {
                 // after promote, board authority is the promoted host, not the original
                 const authority = upstreamLink?.promotedWorkboard() ?? workboard
-                return (authority.control as any)[name](account, value)
+                return (authority.forward as any)[name](account, String(requestId ?? ''), value)
             })(input)
         }
     }
-    const commands: Record<string, (who: unknown, input: unknown) => unknown> = {}
+    const commands: Record<string, (who: unknown, requestId: unknown, input: unknown) => unknown> = {}
     for (const name of workboardCommands) commands[name] = mirrorCommand(name)
     return {workboard: commands}
 }
@@ -840,17 +895,28 @@ async function connectUpstream(target: string) {
         return {epoch: handover.epoch, already: false}
     }
 
-    function forwardCommand(name: tWorkboardCommand, account: string) {
-        return function forwardToLeader(input: unknown) {
+    // The hop rides the library relay: forwardCommands guarantees the fragment
+    // shape; this upstream table only picks WHICH authority answers (leader over
+    // RPC, or the local promoted host after failover).
+    const upstreamCommands: Record<string, (account: string, requestId: string, input: any) => unknown> = {}
+    for (const name of workboardCommands) {
+        upstreamCommands[name] = function forwardOrApply(account: string, requestId: string, input: any) {
             // after promote commands are applied locally — this node is the leader
-            if (promotedHost) return (promotedHost.control as any)[name](account, input)
+            if (promotedHost) return (promotedHost.forward as any)[name](account, requestId, input)
             if (!(hub.socket as any)?.connected) throw new Error('leader offline — try again soon')
-            return leader.mirror.workboard[name](account, input)
+            return leader.mirror.workboard[name](account, requestId, input)
         }
     }
+    const forwardedWorkboard = forwardCommands({upstream: upstreamCommands as any, names: workboardCommands})
     function fragmentFor(account: string) {
+        const bound = forwardedWorkboard.fragment(account) as any
         const fragment: any = {state: follower.api.replay}
-        for (const name of workboardCommands) fragment[name] = forwardCommand(name, account)
+        for (const name of workboardCommands) {
+            fragment[name] = function forwardWorkboardCommand(input: any) {
+                // the browser wire keeps requestId INSIDE the input; the hop carries it explicitly
+                return bound[name](String(input?.requestId ?? ''), input)
+            }
+        }
         return fragment
     }
 
@@ -921,6 +987,14 @@ function instanceFragment() {
     }
 }
 
+// ============== mini horizontal scaling stand ==============
+// One leader replica line + a node directory; the UI spawns and drains REAL
+// extra processes. Everything below rides the library surface: replicated map
+// roster, directory→offers bridge, replica-set route hand-off by seq.
+// Who reads here is a directory fact the host derives from its OWN replay line
+// (active-route subscriptions), so this file adds no counters of its own.
+const miniScale = createMiniScaleHost({selfUrl: () => 'http://localhost:' + port})
+
 ioServer.on('connection', function onDemoConnection(socket) {
     const tab = socket.handshake.auth?.tab
     if (typeof tab != 'string' || !tab) {
@@ -961,6 +1035,68 @@ ioServer.on('connection', function onDemoConnection(socket) {
         console.log('[demo] mirror link connected')
         return
     }
+    // A spawned mini node connects with role=mini-node: only the trusted
+    // registration link plus the shared replica/directory lines.
+    if (socket.handshake.auth?.role == 'mini-node') {
+        if (socket.handshake.auth?.token != miniScale.token) {
+            socket.disconnect(true)
+            return
+        }
+        const [miniGone, miniGoneListen] = listen<[]>()
+        socket.on('disconnect', function closeMiniNodeLink() {
+            miniGone()
+            console.log('[demo] mini node link closed')
+        })
+        createRpcServerAuto({
+            socket,
+            socketKey: 'app',
+            object: {miniScale: miniScale.nodeLinkFragment()},
+            disconnectListen: miniGoneListen,
+            opt: demoRpcOpt,
+        })
+        console.log('[demo] mini node link connected')
+        return
+    }
+    // The mini-scale GATED write surface: anonymous serves nothing, a verified
+    // codec token serves that principal's commands. Own connection, so the
+    // ungated participant surface below stays exactly as it is.
+    if (socket.handshake.auth?.role == 'scale') {
+        const link = miniScale.scaleConnection()
+        const [scaleGone, scaleGoneListen] = listen<[]>()
+        socket.on('disconnect', function closeScaleLink() {
+            scaleGone()
+            link.close()
+        })
+        const {control} = createRpcServerAuto({
+            socket,
+            socketKey: 'scale',
+            object: link.object,
+            auth: link.auth,
+            disconnectListen: scaleGoneListen,
+            opt: demoRpcOpt,
+        })
+        link.attach(control)
+        console.log('[demo] mini-scale gated link connected')
+        return
+    }
+    // A lean mini-scale reader: ONLY the ungated read line, shape-identical to a
+    // mini node's app surface — no presence, no participant account, no peer/files
+    // resources. Its reading shows up in the readers fact through the line itself.
+    if (socket.handshake.auth?.role == 'reader') {
+        const [readerGone, readerGoneListen] = listen<[]>()
+        socket.on('disconnect', function closeMiniScaleReader() {
+            readerGone()
+        })
+        createRpcServerAuto({
+            socket,
+            socketKey: 'app',
+            object: {miniScale: miniScale.readFragment()},
+            disconnectListen: readerGoneListen,
+            opt: demoRpcOpt,
+        })
+        console.log('[demo] mini-scale lean reader connected')
+        return
+    }
     // The auth-lifecycle stand connects with role=auth: no presence, no participant
     // account — only its two GATED facades, each starting from the anonymous object.
     if (socket.handshake.auth?.role == 'auth') {
@@ -984,6 +1120,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
     const conversation = conversations.connection(account)
     const workboardConnection = upstreamLink ? null : workboard.connection(account)
     const workboardFragment = upstreamLink ? upstreamLink.fragmentFor(account) : workboardConnection!.fragment
+    const miniScaleFragment = miniScale.browserFragment(account)
     const [disconnect, disconnectListen] = listen<[]>()
     socket.on('disconnect', function closeDemoResources() {
         disconnect()
@@ -1014,6 +1151,11 @@ ioServer.on('connection', function onDemoConnection(socket) {
             artifacts: artifact.fragment,
             conversation: conversation.fragment,
             workboard: limitCommands(account, workboardFragment, ['create', 'rename', 'move', 'assign', 'remove']),
+            miniScale: {
+                ...miniScaleFragment,
+                identity: limitCommands(account, miniScaleFragment.identity, ['login', 'renew']),
+                admin: limitCommands(account, miniScaleFragment.admin, ['spawn', 'drain']),
+            },
             media: {
                 publish: media.publishOf(account),
                 // policy-gated view: THIS connection's account is what canWatch receives
@@ -1059,6 +1201,7 @@ async function startDemo() {
     await conversationReady
     if (mirrorOf) upstreamLink = await connectUpstream(mirrorOf)
     port = await listenOnAvailablePort()
+    miniScale.start()
     console.log('[demo] shared-cursor + calls + Conversation stand is up:')
     console.log(`  open each participant tab: http://localhost:${port}/`)
     console.log(`  artifact origin: ${artifactOrigin()} (sandboxed iframe only)`)
@@ -1067,6 +1210,7 @@ async function startDemo() {
     console.log(`  HTTP facade auth: Authorization: Bearer ${configuredHttpFacadeToken
         ? '<DEMO_HTTP_FACADE_TOKEN> (configured)'
         : `${httpFacadeToken} (generated for this run)`}`)
+    console.log(`  HTTP facade OpenAPI: http://localhost:${port}/openapi.json  Swagger UI: http://localhost:${port}/docs`)
     if (devModuleBridge) {
         // A failing dev module must never stop the stand from serving.
         try {
@@ -1098,6 +1242,7 @@ function closeDemoResources() {
     closeDemoResource('upstream', function closeUpstream() { upstreamLink?.close() })
     upstreamLink = null
     closeDemoResource('workboard', workboard.close)
+    closeDemoResource('mini scale', miniScale.close)
     closeDemoResource('auth lifecycle', authLifecycle.close)
     closeDemoResource('files', files.close)
     closeDemoResource('AI', ai.close)

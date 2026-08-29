@@ -1,0 +1,6 @@
+apiVersion: v2
+name: wenay-mini
+description: wenay-common2 mini-scale nodes as a Deployment (stage-5 stand, incubating)
+type: application
+version: 0.1.0
+appVersion: "2.15.0"

@@ -93,6 +93,28 @@ export type ReplayListenOptions<Z extends any[]> = {
      */
     keepMs?: number
     /**
+     * Internal journal retention target in bytes: oldest entries are evicted while
+     * the retained total exceeds it. Set it when the meaningful unit is memory —
+     * `history` counts envelopes and `keepMs` counts time, but a legal window under
+     * both can still retain many LARGE events, and only a byte bound caps that
+     * directly. All three bounds coexist; whichever bites first wins, with
+     * `history` remaining the hard count cap.
+     *
+     * The newest entry is never evicted: a single event larger than the whole
+     * budget keeps a window of exactly that event, reported honestly by
+     * `journalWindow().bytes`. Unset = nothing is measured and `bytes` reads 0 —
+     * existing lines pay nothing.
+     */
+    keepBytes?: number
+    /**
+     * Event measure for `keepBytes`: called ONCE per event at ingest and cached for
+     * the entry's lifetime. Without it a conservative default is used — the UTF-8
+     * length of the JSON of the event tuple (an unmeasurable event, e.g. circular,
+     * prices at a fixed conservative cost). Never called while `keepBytes` is
+     * unset.
+     */
+    sizeOf?: (event: ReplayEvent<Z>) => number
+    /**
      * External journal (memory outside — preferred): events with seq > specified,
      * in order. undefined = evicted (seq too old) → fallback to keyframe.
      * Takes priority over history.
@@ -138,6 +160,16 @@ type ReplayOnOptions<Z extends any[]> = {
 export type ListenOnReplay<Z extends any[] = any[]> =
     ((cb: Listener<Z>, opts?: ReplayOnOptions<Z>) => (() => void)) & ListenOnBrand<Z>
 
+// Fixed price for an event no measure can size (circular JSON, throwing sizeOf).
+// Over-counting is the safe direction for a budget: an under-count would let
+// unmeasurable events accumulate past the target unnoticed.
+const UNMEASURED_EVENT_BYTES = 1024
+const utf8Sizer = new TextEncoder()
+/** Default `keepBytes` measure: UTF-8 length of the JSON of the event tuple. */
+function estimateEventJsonBytes(ev: ReplayEvent<any>) {
+    return utf8Sizer.encode(JSON.stringify(ev.event)).byteLength
+}
+
 export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOptions<NormalizeTuple<T>> = {}) {
     return decorateReplayListen(base, options, createReplayDeliveryControl())
 }
@@ -147,13 +179,14 @@ function decorateReplayListen<T>(
 ) {
     type Z = NormalizeTuple<T>
     const {
-        current: currentOpt, frame: condense, history = 0, keepMs, getSince, onJournal, onJournalBatch,
+        current: currentOpt, frame: condense, history = 0, keepMs, keepBytes, sizeOf, getSince, onJournal, onJournalBatch,
         now = Date.now, staleMs, onStale, firstSeq = 0,
     } = options
     const ageLimitMs = keepMs != undefined && keepMs > 0 ? keepMs : 0
-    // The journal exists when either bound asks for it. `history` alone is the
-    // historical behaviour; `keepMs` alone is a time-only window.
-    const journalEnabled = history > 0 || ageLimitMs > 0
+    const byteLimit = keepBytes != undefined && keepBytes > 0 ? keepBytes : 0
+    // The journal exists when any bound asks for it. `history` alone is the
+    // historical behaviour; `keepMs`/`keepBytes` alone are time-/byte-only windows.
+    const journalEnabled = history > 0 || ageLimitMs > 0 || byteLimit > 0
     // 'last' — keyframe from last journal event: single-entity line,
     // last tick = complete state. lastEv is written in the numbering emit below.
     let lastEv: ReplayEvent<Z> | undefined
@@ -174,6 +207,24 @@ function decorateReplayListen<T>(
     let start = 0
     // Count cap bit the window before the age target could — reported, never silent.
     let cappedByCount = false
+    // Byte budget bit the window before the age target could — same honesty.
+    let cappedByBytes = false
+    // Byte budget bookkeeping. sizes[i] is the cached measure of entries[i] — a
+    // parallel array instead of a wrapper record, so the hot path allocates no
+    // per-event object. All of it stays untouched while keepBytes is unset:
+    // nothing is measured and retainedBytes reads 0.
+    let sizes: number[] = []
+    let retainedBytes = 0
+    const measure = sizeOf ?? estimateEventJsonBytes
+    // sizeOf is producer code and this runs AFTER persistence succeeded: a throw
+    // here must not become a publication error, so any failure — and any value a
+    // budget cannot subtract back (NaN, negative) — prices at the fixed cost.
+    function measureEventBytes(ev: ReplayEvent<Z>) {
+        let size: number
+        try { size = measure(ev) }
+        catch { return UNMEASURED_EVENT_BYTES }
+        return Number.isFinite(size) && size >= 0 ? size : UNMEASURED_EVENT_BYTES
+    }
     // current sync fan-out event: subscriber's liveTap learns seq without
     // envelope-protocol. save/restore → survives re-entrant emit.
     let emitting: ReplayEvent<Z> | null = null
@@ -185,6 +236,10 @@ function decorateReplayListen<T>(
 
     /** Release the event AND advance past it, so no evicted graph stays reachable. */
     function dropOldest() {
+        if (byteLimit > 0) {
+            retainedBytes -= sizes[start]
+            sizes[start] = 0
+        }
         entries[start] = undefined
         start++
     }
@@ -195,16 +250,26 @@ function decorateReplayListen<T>(
     function compactJournal() {
         if (start > 64 && start * 2 > entries.length) {
             entries = entries.slice(start)
+            if (byteLimit > 0) sizes = sizes.slice(start)
             start = 0
         }
     }
 
-    // Age eviction is lazy: applied on write and before every read, so a quiet
-    // line frees memory without owning a timer.
-    function pruneJournalByAge() {
-        if (ageLimitMs == 0 || start >= entries.length) return
-        const cutoff = now() - ageLimitMs
-        while (start < entries.length && entries[start]!.ts < cutoff) dropOldest()
+    // Age and byte eviction are lazy: applied on write and before every read, so a
+    // quiet line frees memory without owning a timer.
+    function pruneJournal() {
+        if (start >= entries.length) return
+        if (ageLimitMs > 0) {
+            const cutoff = now() - ageLimitMs
+            while (start < entries.length && entries[start]!.ts < cutoff) dropOldest()
+        }
+        // Byte target AFTER the age window, so an entry evicted here is one the age
+        // target would have kept — exactly what cappedByBytes reports. The newest
+        // entry never goes: one oversized event retains a window of itself.
+        while (byteLimit > 0 && entries.length - start > 1 && retainedBytes > byteLimit) {
+            dropOldest()
+            cappedByBytes = true
+        }
         compactJournal()
     }
 
@@ -216,7 +281,7 @@ function decorateReplayListen<T>(
         // This must stay ahead of the retention check, or a line quiet for longer
         // than keepMs would answer an up-to-date consumer with a keyframe.
         if (seq == head) return [] as ReplayEvent<Z>[]
-        pruneJournalByAge()
+        pruneJournal()
         if (start >= entries.length) return undefined
         const oldest = Math.max(firstSeq + 1, entries[start]!.seq)
         if (seq + 1 < oldest) return undefined
@@ -229,17 +294,22 @@ function decorateReplayListen<T>(
 
     /** The window actually retained right now — so a bitten cap is visible, not guessed. */
     function journalWindow() {
-        pruneJournalByAge()
+        pruneJournal()
         const retained = entries.length - start
         return {
             entries: retained,
             oldestSeq: retained > 0 ? entries[start]!.seq : null,
             head,
             ageMs: retained > 0 ? now() - entries[start]!.ts : 0,
+            /** Retained total under keepBytes (0 while unset — nothing is measured). */
+            bytes: retainedBytes,
             historyLimit: history,
             keepMs: ageLimitMs,
+            keepBytes: byteLimit,
             /** true = the count cap cut the window shorter than keepMs asked for. */
             cappedByCount,
+            /** true = the byte budget cut entries the age window would have kept. */
+            cappedByBytes,
         }
     }
 
@@ -291,7 +361,12 @@ function decorateReplayListen<T>(
         head = ev.seq
         if (journalEnabled) {
             entries.push(ev)
-            pruneJournalByAge()
+            if (byteLimit > 0) {
+                const size = measureEventBytes(ev)
+                sizes.push(size)
+                retainedBytes += size
+            }
+            pruneJournal()
             // Hard count cap last: it must win over the age target so a burst
             // cannot grow the journal without bound.
             if (history > 0) {
@@ -394,7 +469,8 @@ function decorateReplayListen<T>(
         getSince: journalSince,
         /**
          * Retention actually in force: entries, oldest retained seq, its age, the
-         * configured bounds and whether the count cap cut a `keepMs` target short.
+         * retained bytes, the configured bounds and whether the count cap or the
+         * byte budget cut a `keepMs` target short.
          * A retention window that cannot be observed cannot be trusted.
          */
         journalWindow,
@@ -493,7 +569,7 @@ export type ReplayListenUseOptions<T> = ListenOptions<T> & ReplayListenOptions<N
 /** [emit, listen]: emit numbers and journals (goes through decorator, not bypassing it). */
 export function replayListen<T>(options: ReplayListenUseOptions<T> = {}) {
     const {
-        current, frame, history, keepMs, getSince, onJournal, onJournalBatch,
+        current, frame, history, keepMs, keepBytes, sizeOf, getSince, onJournal, onJournalBatch,
         now, staleMs, onStale, firstSeq, ...listenOptions
     } = options
     let t: ((...a: NormalizeTuple<T>) => void)
@@ -504,7 +580,8 @@ export function replayListen<T>(options: ReplayListenUseOptions<T> = {}) {
         [LISTEN_DISPATCH_ERROR]: deliveryControl.capture,
     })
     const listen = decorateReplayListen<T>(base, {
-        current, frame, history, keepMs, getSince, onJournal, onJournalBatch, now, staleMs, onStale, firstSeq,
+        current, frame, history, keepMs, keepBytes, sizeOf, getSince, onJournal, onJournalBatch,
+        now, staleMs, onStale, firstSeq,
     }, deliveryControl)
     base.run()
     t = listen.emit  // IMPORTANT: through decorator — otherwise events bypass journal

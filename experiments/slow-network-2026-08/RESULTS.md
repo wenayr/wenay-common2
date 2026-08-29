@@ -77,3 +77,22 @@ keyframe measured in `doc/RECOMMENDATIONS.md` is inside the kill zone.
    production default.
 
 Raw run output (`##RESULT##` JSON) is reproducible via `npm run experiment:slow-network`.
+
+## Chunked keyframe (2026-08-28)
+
+Live stand `chunked-keyframe.ts` (100 000 keys × 30 B ≈ 4.49 MB keyframe; 524 288 B/s = the
+1 Mbit/s model time-scaled 4×, scaled ping timers 300/1000 ms, chunk budget 256 KiB; the stand's
+relay copy delivers FIFO — bench's per-chunk timers can reorder sub-ms deliveries at this rate):
+
+- Monolithic (`chunkedKeyframe: false`): 8.56 s of line occupation vs the 1.3 s heartbeat budget
+  (6.6×) — `ping timeout` observed at ~1.2 s, catch-up never completes. Both proofs shipped:
+  the observed kill and the occupation arithmetic.
+- Chunked (default ON), same store, same link: 19 chunks, largest message 240 733 B (459 ms of
+  line), monotone progress 1..19, zero disconnects, converged in ~11.0 s, mirror deep-equals the
+  source and the live tail resumes from the snapshot seq.
+- Socket killed at 10/19 chunks: ONE sync survives, a fresh `begin` restarts progress, converges
+  in ~17.2 s, and no partial snapshot is ever exposed.
+
+Conclusion: the maximum frame size is now a protocol property — the negotiated chunk budget — not
+a dataset property; the dataset that kills the monolithic catch-up converges chunked on the same
+link, with the heartbeat breathing between pulls.

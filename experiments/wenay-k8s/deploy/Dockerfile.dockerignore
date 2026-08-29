@@ -1,0 +1,24 @@
+# Per-Dockerfile ignore (BuildKit picks <Dockerfile>.dockerignore next to the
+# Dockerfile before falling back to <context>/.dockerignore). Paths are
+# relative to the build CONTEXT (the repo root). Keeps the context upload lean;
+# the image itself copies only package.json+lock, tsconfig.json, src/, demo/.
+# If a legacy non-BuildKit builder ignores this file the build still works —
+# it just uploads a fat context.
+.git
+.claude
+.idea
+node_modules
+lib
+dist
+doc
+test
+oracle
+observe
+replay
+experiments
+examples
+scripts
+noBuild
+demo/public
+**/*.tsbuildinfo
+**/*.log

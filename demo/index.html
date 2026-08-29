@@ -167,6 +167,10 @@
     .replicaContract summary { cursor: pointer; color: var(--text); font-weight: 700; }
     .replicaContract code { display: block; margin-top: 7px; padding: 9px 10px; border-radius: 8px; background: #17202a; color: #eaf1ff; overflow-wrap: anywhere; }
     .replicaContract p { margin: 6px 0 0; }
+    /* facet captions: each Lab card names the PUBLIC facade/facet it demonstrates */
+    .facetTag { display: inline-block; color: var(--muted); font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .01em; }
+    .surfaceHeader .facetTag { display: block; margin-top: 3px; }
+    .toolbar .facetTag { margin-left: auto; }
     .replicaMeshNodes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
     .replicaNode { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); }
     .replicaNode[data-role="leader"] { border-color: color-mix(in srgb, var(--success) 65%, var(--line)); box-shadow: inset 0 3px 0 var(--success); }
@@ -174,6 +178,41 @@
     .replicaNode header { display: flex; justify-content: space-between; gap: 8px; align-items: center; margin-bottom: 8px; }
     .replicaNode p { margin: 4px 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
     #replicaMeshEvents { display: grid; gap: 3px; margin-top: 12px; color: var(--muted); font-size: 11px; }
+    #miniScale { grid-column: 1 / -1; }
+    #miniScaleScene { display: block; width: 100%; margin-top: 12px; border: 1px solid var(--line); border-radius: 13px; background: radial-gradient(circle at 50% 16%, #fff 0, var(--surface-soft) 72%); }
+    .msNode { transition: transform .55s ease; }
+    .msNode rect { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1.5; }
+    .msNode[data-role="leader"] rect { fill: var(--success-soft); stroke: var(--success); stroke-width: 2; }
+    .msNode[data-state="draining"] rect { fill: var(--warning-soft); stroke: var(--warning); }
+    .msNode[data-state="stale"] rect, .msNode[data-state="dead"] rect { fill: var(--danger-soft); stroke: var(--danger); }
+    .msNode[data-route="1"] rect { stroke: var(--accent); stroke-width: 2.5; }
+    .msNode.msDead { opacity: 0; transition: opacity 1s ease .1s; }
+    .msName { font-size: 13px; font-weight: 750; fill: var(--text); }
+    .msFacts { font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; fill: var(--muted); }
+    .msBadge { font-size: 9px; font-weight: 800; letter-spacing: .08em; fill: var(--warning); }
+    .msBarTrack { fill: #e7ebf0; }
+    .msBar { fill: var(--accent); opacity: .8; transition: width .4s ease; }
+    .msBar[data-hot="1"] { fill: var(--danger); }
+    .msEdge { fill: none; stroke: var(--success); stroke-width: 2; stroke-dasharray: 5 7; animation: msFlow .8s linear infinite; opacity: .55; }
+    .msEdge[data-live="0"] { opacity: .12; animation: none; }
+    @keyframes msFlow { to { stroke-dashoffset: -24; } }
+    .msDot { transition: transform .7s cubic-bezier(.25, .9, .3, 1.15); }
+    .msDot circle { fill: #97a3b2; }
+    .msDot[data-kind="you"] circle { fill: var(--accent); }
+    .msDot[data-kind="sim"] circle { fill: var(--success); }
+    .msDot[data-lost="1"] { opacity: .35; }
+    .msDotNum { font-size: 8px; font-weight: 800; fill: #fff; text-anchor: middle; }
+    .msDotLabel { font-size: 9px; font-weight: 750; fill: var(--accent); text-anchor: middle; }
+    #miniScaleTick { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    #miniScaleIdentity { color: var(--muted); font-size: 12px; align-self: center; }
+    #miniScaleRoute { color: var(--muted); font-size: 12px; margin: 4px 0 10px; }
+    #miniScaleCounter { font-size: 15px; font-weight: 600; margin: 2px 0 4px; }
+    #miniScaleNodes { display: grid; gap: 8px; margin-top: 12px; }
+    #miniScaleReaderList { color: var(--muted); font-size: 12px; }
+    .miniScaleNode { display: flex; gap: 10px; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+    .miniScaleNode[data-state="draining"] { border-color: #d98f00; opacity: .75; }
+    .miniScaleNode[data-state="stale"] { opacity: .45; }
+    .miniScaleNode span { color: var(--muted); font-size: 12px; flex: 1; }
     #contractRuntime { grid-column: 1 / -1; }
     #contractRuntimeSummary { display: inline-flex; align-items: center; padding: 4px 9px; border-radius: 999px; background: var(--accent-soft); color: #174aa5; font-size: 11px; font-weight: 750; text-transform: uppercase; }
     #contractRuntimeSummary[data-state="active"] { background: var(--success-soft); color: var(--success); }
@@ -551,6 +590,7 @@
                         <div>
                             <h3>Auth lifecycle</h3>
                             <p>A real short-lived token: watch it expire, renew itself without breaking a live stream, and be revoked.</p>
+                            <code class="facetTag">rpc resolveAuth gate</code>
                         </div>
                         <span id="authStatus" class="statusBadge" data-state="idle">anonymous</span>
                     </div>
@@ -604,6 +644,7 @@
                         <div>
                             <h3>Peer packet mesh</h3>
                             <p id="packetMeshSummary">discovering connection offers…</p>
+                            <code class="facetTag">Peer mesh</code>
                         </div>
                     </div>
                     <div class="surfaceBody">
@@ -628,6 +669,7 @@
                         <div>
                             <h3>Self-assembling Store replica set</h3>
                             <p id="replicaMeshSummary">forming the mesh…</p>
+                            <code class="facetTag">Observe.createStoreReplicaSet</code>
                         </div>
                     </div>
                     <div class="surfaceBody">
@@ -658,11 +700,59 @@
                     </div>
                 </section>
 
+                <section id="miniScale" class="surface">
+                    <div class="surfaceHeader">
+                        <div>
+                            <h3>Mini horizontal scaling</h3>
+                            <p id="miniScaleSummary">reading the node directory…</p>
+                            <code class="facetTag">Scale.createAuthority + createClusterClient + createStoreNode</code>
+                        </div>
+                    </div>
+                    <div class="surfaceBody">
+                        <div class="toolbar">
+                            <button id="miniScaleSpawn" class="primary">Spawn mini node</button>
+                            <button id="miniScaleAutoscale" aria-pressed="false">Autoscale: off</button>
+                            <button id="miniScaleStorm">🌊 Reader storm</button>
+                            <button id="miniScaleAdd">+10 via my node</button>
+                            <button id="miniScaleRepeat" class="secondary">Repeat last requestId</button>
+                            <code class="facetTag">authority.corridor (receipts)</code>
+                        </div>
+                        <div class="toolbar">
+                            <button id="miniScaleLogin" class="primary">Login</button>
+                            <button id="miniScaleLogout" class="secondary">Logout</button>
+                            <button id="miniScaleRevoke" class="danger">Revoke my token</button>
+                            <span id="miniScaleIdentity">anonymous — login to write</span>
+                            <code class="facetTag">authority.identity + serve.connection</code>
+                        </div>
+                        <div class="toolbar">
+                            <button id="miniScaleReaders">+3 readers</button>
+                            <button id="miniScaleReadersClose" class="secondary">Close readers</button>
+                            <code class="facetTag">client.placement</code>
+                        </div>
+                        <div id="miniScaleTick">—</div>
+                        <div id="miniScaleCounter">counter 0</div>
+                        <div id="miniScaleRoute">connecting…</div>
+                        <code class="facetTag">authority.view · client.placement</code>
+                        <svg id="miniScaleScene" role="img" aria-label="Live cluster scene: every box is a real OS process, every dot is a reader placed on it"></svg>
+                        <div id="miniScaleNodes" aria-live="polite"></div>
+                        <div id="miniScaleReaderList"></div>
+                        <details class="replicaContract">
+                            <summary>What actually happens</summary>
+                            <code>Scale.createAuthority (leader) · Scale.createStoreNode (every mini process) · Scale.createClusterClient (this tab + each reader) · createTokenCodec → identity {issue, verify} (crypto stays host-side)</code>
+                            <p>Spawn starts a REAL extra Node.js process serving the same replay line. The directory is an ordinary replicated map; this tab bridges its facts into replica-set offers and moves between processes by seq, so the ticker never loses a value. Drain is data, not a command channel: the mini node watches its own directory row and exits after the grace period.</p>
+                            <p>Writes are the end-to-end trust mode: Login mints a real codec token, every node verifies it LOCALLY (shared secret) in its own gated facade, and each forwarded command carries the token to the leader, which re-verifies it — a mini node never asserts who you are. Revoke is one replicated fact: the leader cuts its sessions, every mini cuts its own on the same data, and writes die on ALL nodes instantly.</p>
+                            <p>Placement is level-2 balancing: each reader picks WHERE TO LAND once by weighted directory facts (the cluster client's own sticky placement) and stays sticky on that node; per-line routes (level 3) still move seamlessly by seq when the facts change. The readers column arrives through the same replicated directory every node and panel reads — observability IS replication.</p>
+                            <p>The scene draws only facts: a box is a live OS process (pid + port from its directory row), a dot is a reader whose route ACTUALLY points there. Kill −9 is failure injection — SIGKILL, no drain, no goodbye — so the red box and the flying dots are a real failover. Autoscale runs at the leader on the same replicated readers facts: 🌊 Reader storm makes it spawn processes under load, Close readers makes it drain them back.</p>
+                        </details>
+                    </div>
+                </section>
+
                 <section id="contractRuntime" class="surface">
                     <div class="surfaceHeader">
                         <div>
                             <h3>Versioned contract runtime</h3>
                             <p>Replace an implementation without replacing its Store, connection layer or public contract.</p>
+                            <code class="facetTag">Contract runtime</code>
                         </div>
                         <span id="contractRuntimeSummary">starting</span>
                     </div>

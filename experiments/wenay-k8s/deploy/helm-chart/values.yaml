@@ -1,0 +1,24 @@
+# Values render the SAME manifests as ../k8s.yaml; install with
+#   helm install wenay-mini experiments/wenay-k8s/deploy/helm-chart \
+#     --namespace wenay-mini --create-namespace \
+#     --set secret.miniToken=... --set secret.miniSecret=...
+image:
+  repository: wenay-mini-node
+  tag: dev
+  # image is built straight into minikube via `minikube image build`
+  pullPolicy: Never
+
+replicas: 2
+
+# where the pods find the demo leader (the host machine, from inside minikube)
+upstream: http://host.minikube.internal:3100
+
+secret:
+  # both MUST equal the DEMO_MINI_TOKEN / DEMO_MINI_SECRET the leader was
+  # started with; `required` in the template refuses an install without them
+  miniToken: ''
+  miniSecret: ''
+
+# k8s-lifecycle.md: leave-grace 2s + hand-off; 30s is generous margin
+terminationGracePeriodSeconds: 30
+preStopSleepSeconds: 3

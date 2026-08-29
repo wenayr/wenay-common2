@@ -1,8 +1,9 @@
-# Keyframe chunking — design sketch, not an approved protocol
+# Keyframe chunking — decided protocol v1
 
-Status: **design for discussion**. Nothing here is implemented, and none of it may be implemented
-without an explicit public-interface decision. Store Replay V2 is a published wire; changing how a
-keyframe crosses it changes a public contract.
+Status: **decided 2026-08-28** (plan step 5b; the five gate questions below carry explicit
+answers) and implemented additively — see "Decisions" at the end. Store Replay V2 patch shapes and
+`since`/`keyframe`/`frame` semantics are UNCHANGED; chunking is an optional pull facet a peer may
+simply not have.
 
 Read together with `doc/RECOMMENDATIONS.md` (replay scaling follow-ups, slow-network profile) and
 `experiments/slow-network-2026-08/RESULTS.md`, which is the measured evidence behind this page.
@@ -102,21 +103,43 @@ This must be additive or it is not shippable:
   is a transport failure, not an eviction, and the two must stay separately observable.
 - A producer that stops mid-set is detected by `total`, not by a timeout alone.
 
-## What this sketch does not answer
+## Decisions (the five gate questions, answered)
 
-These are the real decisions, and they belong to a design discussion, not to an implementation pass:
+1. **Buffer-then-commit, degenerated to zero new apply machinery.** The client PULLS encoded
+   partial keyframes (disjoint top-level key subsets, every chunk carrying the same `seq`/`ts`),
+   decodes each through the ordinary V2 codec, merges the subset values off-Store, and synthesizes
+   ONE standard monolithic keyframe event that enters the untouched existing apply path. Atomicity
+   is therefore the existing single-event guarantee — no shadow store, no new commit code. The
+   transient double memory (assembled snapshot + live Store) is accepted, exactly as the sketch
+   states.
+2. **Byte budget is per call.** `chunks.begin({budgetBytes?})` — the consumer knows its link; the
+   producer clamps into its own bounds and answers the effective value. Default 256 KiB, clamped
+   into [16 KiB, 4 MiB]. One top-level value larger than the budget becomes its own oversized
+   chunk (indivisible, as documented for `createStoreReplayView`).
+3. **No interleaving change.** Chunks travel as ordinary CALL responses (pull model), so live
+   envelopes keep flowing on the line and the existing queue-and-drain behavior covers assembly
+   unchanged — the same way it already covers the monolithic keyframe await. The pull rhythm is
+   precisely what lets the heartbeat breathe between messages on a slow link.
+4. **The producer pins the ENCODED chunk set, briefly.** `begin()` snapshots and splits once,
+   retains the encoded chunks under a `snapshotId` with a TTL (60 s, refreshed by every pull) and
+   an LRU cap of 4 concurrent snapshots per line. An evicted/expired attempt answers `null` to the
+   next pull; the client falls back to the monolithic keyframe (or a fresh `begin`). "Sent bytes +
+   tail from `seq`" is thereby never relied on in a weakened form, and an abandoned attempt costs
+   only its retention window.
+5. **Capability = presence of the optional `chunks` facet, no Caps bit.** The replay wire already
+   treats `frame`/`frameLine`/`describe` as optional members detected via the RPC schema; `chunks`
+   joins them: `{begin, pull, end?}`. An old server never advertises it; an old client never calls
+   it; `frame` keeps its meaning as the compacted one-shot catch-up and is NOT chunked (a compact
+   frame is small by construction — that is its job).
 
-1. Buffer-then-commit versus shadow-store apply.
-2. Whether the byte budget is negotiated per line, per consumer, or per call.
-3. Whether a chunked keyframe may interleave with live envelopes, or whether the existing
-   queue-and-drain behavior covers it unchanged.
-4. Whether the producer must pin a snapshot for the duration, or whether "sent bytes + tail from
-   seq" is sufficient in every eviction scenario.
-5. The exact capability name and its interaction with `frame`, which already exists as the
-   compacted one-shot catch-up.
+Client control: `StoreReplaySyncOpts.chunkedKeyframe` — default ON when the server offers the
+facet (`false` disables; `{budgetBytes, onProgress}` tunes). `begin()` inlines chunk 0, so a small
+store (total = 1) costs exactly one round trip — the same as the monolithic path it replaces.
+Every failure inside the chunked path (missing member, expired snapshot, decode error) falls back
+to the monolithic `keyframe()` — the new path can lose progress, never correctness.
 
-## Gate
+## Gate — passed
 
-Do not implement until 1-5 have explicit answers and the capability shape is agreed. Until then the
-shipped mitigations stand: `perMessageDeflate` plus a `pingTimeout` above the largest legal frame,
-both measured in `experiments/slow-network-2026-08`.
+Questions 1–5 carry the explicit answers above; the capability shape is the optional `chunks`
+facet. The shipped mitigations (`perMessageDeflate`, raised `pingTimeout`) remain valid
+defense-in-depth for peers without the facet. Oracle: `replay/keyframe-chunks.test.ts`.

@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wenay-mini-node
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: wenay-mini-node
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      app: wenay-mini-node
+  template:
+    metadata:
+      labels:
+        # the k8s directory feeder selects on exactly this label
+        app: wenay-mini-node
+    spec:
+      # k8s-lifecycle.md: SIGTERM -> node.leave() -> drain fact -> grace -> goodbye -> exit 0
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: mini-node
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: MINI_NODE_ID
+              valueFrom:
+                fieldRef:
+                  # pod name = directory nodeId: rows on the panel ARE pods
+                  fieldPath: metadata.name
+            - name: MINI_UPSTREAM
+              value: {{ .Values.upstream | quote }}
+            - name: MINI_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: wenay-mini-secret
+                  key: MINI_TOKEN
+            - name: MINI_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: wenay-mini-secret
+                  key: MINI_SECRET
+          lifecycle:
+            preStop:
+              # belt-and-braces per k8s-lifecycle.md: SIGTERM alone drains
+              exec:
+                command: ["sleep", "{{ .Values.preStopSleepSeconds }}"]
+          # NO readiness probe on purpose: the mini node binds an ephemeral
+          # port and serves no /readyz — no honest probe target exists yet

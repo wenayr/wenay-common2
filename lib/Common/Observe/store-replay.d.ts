@@ -6,7 +6,7 @@ import { type ReplayStorage } from '../events/replay-history';
 import { type tStoreReplayWireBatchV2 } from './store-replay-codec';
 import { type StoreReplayViewOpts, type StoreReplayViewRemote, type StoreReplayViewSyncOpts } from './store-replay-view';
 export type { StoreReplayViewCursor, StoreReplayViewDescriptorV1, StoreReplayViewOpts, StoreReplayViewRemote, StoreReplayViewSnapshotChunkV1, StoreReplayViewSnapshotOpenV1, StoreReplayViewSnapshotOpts, StoreReplayViewSnapshotReadV1, StoreReplayViewSyncOpts, } from './store-replay-view';
-export type StoreReplayBatchOpts = Pick<ReplayListenOptions<[readonly StorePatch[]]>, 'history' | 'keepMs' | 'getSince' | 'onJournal' | 'onJournalBatch' | 'now' | 'firstSeq'> & {
+export type StoreReplayBatchOpts = Pick<ReplayListenOptions<[readonly StorePatch[]]>, 'history' | 'keepMs' | 'keepBytes' | 'sizeOf' | 'getSince' | 'onJournal' | 'onJournalBatch' | 'now' | 'firstSeq'> & {
     maxItems?: number;
     maxBytes?: number;
     maxDelayMs?: number;
@@ -18,6 +18,14 @@ export type StoreReplayOpts = StoreReplayBatchOpts & {
     describe?: Record<string, any>;
     patchSource?: StoreReplayPatchSource;
 };
+export type StoreReplayChunksBegin<W = unknown> = {
+    snapshotId: string;
+    seq: number;
+    ts: number;
+    total: number;
+    budgetBytes: number;
+    chunk0: W;
+};
 type StoreReplayWireRemote<W> = {
     line: {
         on: (cb: (batch: W) => void) => any;
@@ -28,21 +36,46 @@ type StoreReplayWireRemote<W> = {
     frameLine?: {
         on: (cb: (batch: W) => void) => any;
     };
+    chunks?: {
+        begin: (opts?: {
+            budgetBytes?: number;
+        }) => Promise<StoreReplayChunksBegin<W> | null | undefined> | StoreReplayChunksBegin<W> | null | undefined;
+        pull: (snapshotId: string, index: number) => Promise<W | null | undefined> | W | null | undefined;
+        end?: (snapshotId: string) => unknown;
+    };
+};
+export type StoreReplayLineLocal = {
+    count(): number;
 };
 export type StoreReplayBatchRemote = StoreReplayWireRemote<tStoreReplayWireBatchV2>;
 export type StoreReplayRemote = StoreReplayBatchRemote & {
     describe?: () => Record<string, any> | Promise<Record<string, any>>;
 };
 export type tStoreReplayMode = 'v2';
+export type StoreReplayChunkedProgress = {
+    snapshotId: string;
+    received: number;
+    total: number;
+};
+export type StoreReplayChunkedKeyframeOpt = boolean | {
+    budgetBytes?: number;
+    onProgress?: (progress: StoreReplayChunkedProgress) => void;
+};
 export type StoreReplaySyncOpts<T extends object = any> = ReplaySubscribeOpts & {
     onBatch?: (patches: readonly StorePatch[], store: Store<T>) => void;
     validateBatch?: (patches: readonly StorePatch[], store: Store<T>) => void;
+    chunkedKeyframe?: StoreReplayChunkedKeyframeOpt;
 };
 export type StoreReplayRouteOpts<T extends object = any> = ReplayRouteSubscribeOpts & {
     onBatch?: (patches: readonly StorePatch[], store: Store<T>) => void;
     validateBatch?: (patches: readonly StorePatch[], store: Store<T>) => void;
+    chunkedKeyframe?: StoreReplayChunkedKeyframeOpt;
 };
 export declare function storeReplayMode(): tStoreReplayMode;
+export declare const STORE_REPLAY_CHUNK_BUDGET_DEFAULT: number;
+export declare const STORE_REPLAY_CHUNK_BUDGET_MIN: number;
+export declare const STORE_REPLAY_CHUNK_BUDGET_MAX: number;
+export declare const STORE_REPLAY_CHUNK_TTL_MS = 60000;
 export declare function exposeStoreReplay<T extends object>(store: Store<T>, opts?: StoreReplayOpts): {
     api: {
         get(): T;
@@ -51,18 +84,27 @@ export declare function exposeStoreReplay<T extends object>(store: Store<T>, opt
         replace(path: import("./store").StorePath, value: any): void;
         changed: any;
         changedPaths: any;
-        replay: StoreReplayWireRemote<tStoreReplayWireBatchV2> | {
+        replay: {
             line: {
                 on: (cb: (batch: tStoreReplayWireBatchV2) => void) => any;
-            };
+            } & StoreReplayLineLocal;
             since: (seq: number) => tStoreReplayWireBatchV2[] | Promise<tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
             keyframe: () => Promise<tStoreReplayWireBatchV2 | null | undefined> | tStoreReplayWireBatchV2 | null | undefined;
             frame?: ((seq: number, hint?: unknown) => tStoreReplayWireBatchV2[] | Promise<tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
             frameLine?: {
                 on: (cb: (batch: tStoreReplayWireBatchV2) => void) => any;
             } | undefined;
+            chunks?: {
+                begin: (opts?: {
+                    budgetBytes?: number;
+                }) => Promise<StoreReplayChunksBegin<tStoreReplayWireBatchV2> | null | undefined> | StoreReplayChunksBegin<tStoreReplayWireBatchV2> | null | undefined;
+                pull: (snapshotId: string, index: number) => Promise<tStoreReplayWireBatchV2 | null | undefined> | tStoreReplayWireBatchV2 | null | undefined;
+                end?: (snapshotId: string) => unknown;
+            } | undefined;
             describe: () => Record<string, any>;
-        };
+        } | (StoreReplayWireRemote<tStoreReplayWireBatchV2> & {
+            line: StoreReplayLineLocal;
+        });
     };
     replay: {
         has(key: import("../..").ListenKey): boolean;
@@ -83,9 +125,12 @@ export declare function exposeStoreReplay<T extends object>(store: Store<T>, opt
             oldestSeq: number | null;
             head: number;
             ageMs: number;
+            bytes: number;
             historyLimit: number;
             keepMs: number;
+            keepBytes: number;
             cappedByCount: boolean;
+            cappedByBytes: boolean;
         };
         line: import("../..").ListenApi<[ReplayEvent<[readonly StorePatch[]]>]>;
         hasKeyframe: boolean;
@@ -144,9 +189,12 @@ export declare function createStoreReplayView<T extends object, K extends Extrac
                 oldestSeq: number | null;
                 head: number;
                 ageMs: number;
+                bytes: number;
                 historyLimit: number;
                 keepMs: number;
+                keepBytes: number;
                 cappedByCount: boolean;
+                cappedByBytes: boolean;
             };
             line: import("../..").ListenApi<[ReplayEvent<[readonly StorePatch[]]>]>;
             hasKeyframe: boolean;

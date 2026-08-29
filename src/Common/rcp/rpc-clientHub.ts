@@ -82,9 +82,14 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
     const disconnectCbs = new Set<(reason: string) => void>()
     let activeContext: SocketContext | null = null
     let resolveFunc: ((facade: FacadeClients) => void)|null = null;
-    let promise = new Promise<FacadeClients>((resolve) => {
+    let rejectFunc: ((error: Error) => void) | null = null
+    let promise = new Promise<FacadeClients>((resolve, reject) => {
         resolveFunc = resolve;
+        rejectFunc = reject
     })
+    // Terminal state: close() ends the hub forever — a closed hub refuses every later wave.
+    let hubClosed = false
+    const HUB_CLOSED_REASON = 'RPC hub closed'
 
     function callObserver<T>(cb: (value: T) => void, value: T, errors: any[]) {
         try { cb(value) }
@@ -172,6 +177,23 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
         rethrowObserverErrors(errors)
     }
 
+    // A replaced or closed socket must STAY down. A bare disconnect() can lose the race
+    // against its own manager in real browsers (mini-scale live evidence: a disconnect
+    // issued mid-handshake let the landed open re-arm the wave — orphaned engines held
+    // line subscriptions until the page died). Kill the reconnection policy first, then
+    // the namespace socket, then whatever engine is still open or opening. Every step is
+    // optional-chained: an in-process SocketTmpl adapter has none of this machinery.
+    function stifleSocket(target: RpcHubSocket | null) {
+        if (!target) return
+        const manager = (target as any).io
+        try {
+            if (manager?.opts) manager.opts.reconnection = false
+            manager?.reconnection?.(false)
+        } catch { /* a foreign adapter's manager shape is not this hub's problem */ }
+        target.disconnect?.()
+        try { manager?.engine?.close?.() } catch { /* same: best-effort transport kill */ }
+    }
+
     function closeContext(context: SocketContext, reason: string) {
         if (context.terminal) return
         // Mark the hard boundary before Socket.IO emits its own disconnect. The native
@@ -181,8 +203,36 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
         context.attempt++
         for (const client of context.clients) client[RPC_TRANSPORT_CONTROL]?.close(reason)
         for (const client of context.clients) client.dispose?.(reason, {socketAlive: false})
-        context.socket.disconnect?.()
+        stifleSocket(context.socket)
         notifyDisconnect(context, reason)
+    }
+
+    // ===================================================================
+    // close: the hub's terminal teardown — nothing survives, nothing resurrects
+    // ===================================================================
+    // The wave RACE is the reason this verb exists (proven by the failing oracle in
+    // oracle/realsocket/hub-rotation.spec.ts): a consumer sweeping raw sockets cannot
+    // reach a wave that lands after the sweep — the hub adopted it, alive and
+    // unreachable. close() ends the CURRENT context, settles a pending wave by
+    // rejection, and latches hubClosed so any later connect/setToken/reauth is
+    // refused with a rejected promise (the rpc-client dispose discipline: refusals
+    // reject, they do not throw synchronously).
+    function close(reason = HUB_CLOSED_REASON) {
+        if (hubClosed) return false
+        hubClosed = true
+        const context = activeContext
+        activeContext = null
+        if (context) closeContext(context, reason)
+        else stifleSocket(socket)
+        if (resolveFunc) {
+            // A consumer awaiting the pending wave must settle, not hang. The guard
+            // catch keeps a never-awaited construction promise from crashing Node.
+            resolveFunc = null
+            promise.catch(function ignoreClosedHubWave() {})
+            rejectFunc?.(new Error(reason))
+        }
+        rejectFunc = null
+        return true
     }
 
     async function handshakeAndConnect(context: SocketContext, attempt: number, count: number) {
@@ -197,17 +247,21 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
         if (resolveFunc) {
             const resolve = resolveFunc
             resolveFunc = null
+            rejectFunc = null
             resolve(facade)
         }
     }
 
     function setToken(token: string | null) {
+        // A closed hub raises no wave: adopting one would resurrect exactly the wiring
+        // close() promised to end. Refused as a rejection, like a disposed rpc-client.
+        if (hubClosed) return Promise.reject(new Error(HUB_CLOSED_REASON))
         explicitToken = token
         // The wave this call raises is the next connection accepted on the new socket.
         explicitTokenWave = connectCount + 1
         if (activeContext) closeContext(activeContext, 'token rotated')
         // previous promise may have resolved — awaiters of NEW connection need fresh
-        if (!resolveFunc) promise = new Promise<FacadeClients>((resolve) => { resolveFunc = resolve; });
+        if (!resolveFunc) promise = new Promise<FacadeClients>((resolve, reject) => { resolveFunc = resolve; rejectFunc = reject });
         currentToken = token;
         const nextSocket = createSocket(token)
         socket = nextSocket
@@ -267,6 +321,8 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
     // Soft re-auth on LIVE socket (NO disconnect/rotation — that's setToken job):
     // present new token to each facade client via Pkt.HELLO; subscriptions preserved.
     function reauth(token: string | null) {
+        // A closed hub has no live socket to HELLO on — same refusal as setToken.
+        if (hubClosed) return Promise.reject(new Error(HUB_CLOSED_REASON))
         // No wave is claimed here (see PRECEDENCE): this token's own handshake is the HELLO each
         // facade client issues below on the LIVE socket. Pinning it would make every later
         // connection present it again, long after the server stopped accepting it.
@@ -305,6 +361,12 @@ export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>,
         connect: setToken,
         /** Soft re-auth: changes principal on live socket, doesn't break subscriptions (vs hard setToken). */
         reauth,
+        /** Terminal teardown: disposes every facade client, disconnects the socket AND kills its
+         *  reconnection (a bare raw-socket disconnect can be re-armed by a landing open — the
+         *  reason this verb exists), rejects a still-pending wave, and latches the hub closed:
+         *  every later connect/setToken/reauth rejects with 'RPC hub closed'. Idempotent —
+         *  repeated close() returns false. */
+        close,
         get socket() { return socket as T2; },
         onConnect: (func?: ((count: number) => void) | null) => { onConnectCb = func ?? null; },
         /** Legacy single-slot observer for transient disconnect and hard token rotation. */

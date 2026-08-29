@@ -19,6 +19,7 @@ import {openHistory, type ReplayStorage} from '../events/replay-history'
 import {mapListen} from '../events/mapListen'
 import {brandRpcReplayWire, retransmitRpcReplayWire} from '../events/replay-rpc-wire'
 import {makeOff} from '../rcp/rpc-off'
+import {rpcResultWireMetricsFast} from '../rcp/rpc-wire-size'
 import {positiveIntegerOption} from '../positive-integer-option'
 import {
     RPC_MEMBER_LOOKUP, RPC_SCHEMA_READY, RPC_TRANSPORT_LIFECYCLE,
@@ -52,7 +53,7 @@ export type {
 } from './store-replay-view'
 
 export type StoreReplayBatchOpts = Pick<ReplayListenOptions<[readonly StorePatch[]]>,
-    'history' | 'keepMs' | 'getSince' | 'onJournal' | 'onJournalBatch' | 'now' | 'firstSeq'> & {
+    'history' | 'keepMs' | 'keepBytes' | 'sizeOf' | 'getSince' | 'onJournal' | 'onJournalBatch' | 'now' | 'firstSeq'> & {
     /** Hard item ceiling per envelope (default 256). */
     maxItems?: number
     /** Conservative packed V2 RPC payload target (default 64 KiB; one indivisible patch may exceed it). */
@@ -73,12 +74,47 @@ export type StoreReplayOpts = StoreReplayBatchOpts & {
     patchSource?: StoreReplayPatchSource
 }
 
+/** One chunked-keyframe attempt: identity, the tail coordinate, and chunk 0 inlined. */
+export type StoreReplayChunksBegin<W = unknown> = {
+    snapshotId: string
+    /** The journal seq the snapshot was taken at — every chunk resumes from this one point. */
+    seq: number
+    ts: number
+    total: number
+    /** The effective budget after the producer clamped the request. */
+    budgetBytes: number
+    /** Chunk 0 rides the begin answer, so total = 1 costs exactly one round trip. */
+    chunk0: W
+}
+
 type StoreReplayWireRemote<W> = {
     line: {on: (cb: (batch: W) => void) => any}
     since: (seq: number) => Promise<W[] | null | undefined> | W[] | null | undefined
     keyframe: () => Promise<W | null | undefined> | W | null | undefined
     frame?: (seq: number, hint?: unknown) => Promise<W[] | null | undefined> | W[] | null | undefined
     frameLine?: {on: (cb: (batch: W) => void) => any}
+    /**
+     * Chunked keyframe delivery (doc/target/KEYFRAME-CHUNKING.md): a PULL facet —
+     * each chunk is an ordinary CALL response, so the heartbeat breathes between
+     * messages on a slow link. Optional by contract: presence IS the capability.
+     * `pull` answers null for an expired/evicted attempt; the client falls back
+     * to the monolithic keyframe — the path can lose progress, never correctness.
+     */
+    chunks?: {
+        begin: (opts?: {budgetBytes?: number}) => Promise<StoreReplayChunksBegin<W> | null | undefined> | StoreReplayChunksBegin<W> | null | undefined
+        pull: (snapshotId: string, index: number) => Promise<W | null | undefined> | W | null | undefined
+        end?: (snapshotId: string) => unknown
+    }
+}
+
+/**
+ * Producer-side introspection of an exposed replay line. Over the wire `line`
+ * stays subscribe-only; locally the exposed facade also carries the live
+ * subscriber count — the honest "who actually reads this line" fact (only the
+ * ACTIVE route of a replica-set client subscribes to the line).
+ */
+export type StoreReplayLineLocal = {
+    count(): number
 }
 
 export type StoreReplayBatchRemote = StoreReplayWireRemote<tStoreReplayWireBatchV2>
@@ -89,11 +125,26 @@ export type StoreReplayRemote = StoreReplayBatchRemote & {
 
 export type tStoreReplayMode = 'v2'
 
+export type StoreReplayChunkedProgress = {snapshotId: string, received: number, total: number}
+
+/**
+ * Chunked keyframe control: default ON when the server offers the `chunks`
+ * facet (a small store still costs one round trip — chunk 0 rides `begin`).
+ * `false` disables; an object tunes the per-call byte budget and observes
+ * assembly progress. Every failure inside the chunked path falls back to the
+ * monolithic keyframe.
+ */
+export type StoreReplayChunkedKeyframeOpt = boolean | {
+    budgetBytes?: number
+    onProgress?: (progress: StoreReplayChunkedProgress) => void
+}
+
 export type StoreReplaySyncOpts<T extends object = any> = ReplaySubscribeOpts & {
     /** Runs after one decoded physical envelope is applied; bounds may split a source drain and delay may merge drains. */
     onBatch?: (patches: readonly StorePatch[], store: Store<T>) => void
     /** Validate one decoded envelope before any Store mutation. */
     validateBatch?: (patches: readonly StorePatch[], store: Store<T>) => void
+    chunkedKeyframe?: StoreReplayChunkedKeyframeOpt
 }
 
 export type StoreReplayRouteOpts<T extends object = any> = ReplayRouteSubscribeOpts & {
@@ -101,6 +152,7 @@ export type StoreReplayRouteOpts<T extends object = any> = ReplayRouteSubscribeO
     onBatch?: (patches: readonly StorePatch[], store: Store<T>) => void
     /** Validate one decoded envelope before any Store mutation. */
     validateBatch?: (patches: readonly StorePatch[], store: Store<T>) => void
+    chunkedKeyframe?: StoreReplayChunkedKeyframeOpt
 }
 
 /** Resolve the coordinate space before subscribing; callers that persist seq must persist this too. */
@@ -177,11 +229,29 @@ function createBatchReplay(
         throw new RangeError(label + ': batch.maxDelayMs must be >= 0')
     }
 
+    // 48 bytes conservatively covers [version, seq, ts, [...]] with safe-integer coordinates.
+    const envelopeBytes = 48
+
+    // Default keepBytes measure: the SAME per-patch wire estimator batch admission
+    // uses below, so the journal budget speaks packed-V2 bytes instead of a
+    // JSON.stringify guess. An unmeasurable patch prices at maxBytes — the
+    // conservative fallback admission already applies.
+    function measureStoreReplayEventBytes(event: ReplayEvent<[readonly StorePatch[]]>) {
+        let bytes = envelopeBytes
+        for (const patch of event.event[0]) {
+            try { bytes += storeReplayPatchV2WireMetrics(patch).byteLength + 1 }
+            catch { bytes += maxBytes }
+        }
+        return bytes
+    }
+
     const [emitBatch, replay] = replayListen<[readonly StorePatch[]]>({
         current: currentBatch,
         frame: condenseBatchPatchTail,
         history: opts.getSince ? undefined : (opts.history ?? 1024),
         keepMs: opts.getSince ? undefined : opts.keepMs,
+        keepBytes: opts.getSince ? undefined : opts.keepBytes,
+        sizeOf: opts.sizeOf ?? measureStoreReplayEventBytes,
         getSince: opts.getSince,
         onJournal: opts.onJournal,
         onJournalBatch: opts.onJournalBatch,
@@ -189,8 +259,6 @@ function createBatchReplay(
         firstSeq: opts.firstSeq,
     })
 
-    // 48 bytes conservatively covers [version, seq, ts, [...]] with safe-integer coordinates.
-    const envelopeBytes = 48
     const exactEmptyEnvelopeBytes = storeReplayBatchV2WireMetrics([]).byteLength
     let pending: StorePatch[] = []
     const ready: {patches: StorePatch[], bytes: number}[] = []
@@ -367,7 +435,8 @@ function exposeStoreReplayWire<W>(
     replay: StoreReplayBatchLine,
     encode: (event: ReplayEvent<[readonly StorePatch[]]>) => W,
     prepareRead: () => void,
-): StoreReplayWireRemote<W> {
+    chunking?: StoreReplayWireChunking,
+): StoreReplayWireRemote<W> & {line: StoreReplayLineLocal} {
     const [, line] = mapListen(replay.line, function encodeStoreReplayLive(event) {
         return [encode(cloneStoreReplayBatchEvent(event))]
     })
@@ -392,11 +461,65 @@ function exposeStoreReplayWire<W>(
             return encode(cloneStoreReplayBatchEvent(event))
         })
     }
+    // ============== chunked keyframe: split once, retain encoded, serve by pull ==============
+    // Retention is the whole trick (KEYFRAME-CHUNKING.md decision 4): begin()
+    // snapshots and splits ONE keyframe, keeps the encoded chunk set under a
+    // TTL + LRU cap, and pull() serves indexes from it — so consistency never
+    // depends on the Store staying still, and an abandoned attempt costs only
+    // its retention window.
+    function buildChunksFacet(chunking: StoreReplayWireChunking) {
+        const now = chunking.now ?? Date.now
+        type RetainedChunkSet = {chunks: W[], expiresAt: number}
+        const chunkSets = new Map<string, RetainedChunkSet>()
+        let nextSnapshotId = 0
+        function sweepChunkSets() {
+            const at = now()
+            for (const [snapshotId, retained] of chunkSets) {
+                if (retained.expiresAt <= at) chunkSets.delete(snapshotId)
+            }
+            // Map keeps insertion order, so the oldest attempt is evicted first.
+            while (chunkSets.size > STORE_REPLAY_CHUNK_SETS_MAX) {
+                const oldest = chunkSets.keys().next().value
+                if (oldest == null) break
+                chunkSets.delete(oldest)
+            }
+        }
+        function begin(opts?: {budgetBytes?: number}) {
+            prepareRead()
+            const requested = Number(opts?.budgetBytes ?? STORE_REPLAY_CHUNK_BUDGET_DEFAULT)
+            const budgetBytes = Number.isFinite(requested)
+                ? Math.min(STORE_REPLAY_CHUNK_BUDGET_MAX, Math.max(STORE_REPLAY_CHUNK_BUDGET_MIN, Math.floor(requested)))
+                : STORE_REPLAY_CHUNK_BUDGET_DEFAULT
+            const event = replay.keyframe()
+            if (!event) return null
+            const chunks = chunking.split(event, budgetBytes).map(encode)
+            if (chunks.length == 0) return null
+            const snapshotId = 'snap-' + (++nextSnapshotId) + '-' + event.seq
+            sweepChunkSets()
+            chunkSets.set(snapshotId, {chunks, expiresAt: now() + STORE_REPLAY_CHUNK_TTL_MS})
+            return {snapshotId, seq: event.seq, ts: event.ts, total: chunks.length, budgetBytes, chunk0: chunks[0]!}
+        }
+        function pull(snapshotId: string, index: number) {
+            sweepChunkSets()
+            const retained = chunkSets.get(String(snapshotId))
+            if (!retained) return null
+            retained.expiresAt = now() + STORE_REPLAY_CHUNK_TTL_MS
+            const at = Number(index)
+            if (!Number.isInteger(at) || at < 0 || at >= retained.chunks.length) return null
+            return retained.chunks[at]!
+        }
+        function end(snapshotId: string) {
+            return chunkSets.delete(String(snapshotId))
+        }
+        return {begin, pull, end}
+    }
+
     const facade = {
         line,
         since,
         keyframe,
         frame,
+        ...(chunking ? {chunks: buildChunksFacet(chunking)} : {}),
     }
     return brandRpcReplayWire(facade, {
         head: replay.head,
@@ -406,8 +529,63 @@ function exposeStoreReplayWire<W>(
     })
 }
 
-function exposeStoreReplayBatch(replay: StoreReplayBatchLine, prepareRead: () => void) {
-    return exposeStoreReplayWire(replay, encodeStoreReplayBatchV2, prepareRead)
+export const STORE_REPLAY_CHUNK_BUDGET_DEFAULT = 256 * 1024
+export const STORE_REPLAY_CHUNK_BUDGET_MIN = 16 * 1024
+export const STORE_REPLAY_CHUNK_BUDGET_MAX = 4 * 1024 * 1024
+export const STORE_REPLAY_CHUNK_TTL_MS = 60_000
+const STORE_REPLAY_CHUNK_SETS_MAX = 4
+
+type StoreReplayWireChunking = {
+    split: (event: ReplayEvent<[readonly StorePatch[]]>, budgetBytes: number) => ReplayEvent<[readonly StorePatch[]]>[]
+    now?: () => number
+}
+
+/**
+ * Split one keyframe event into partial keyframes over DISJOINT top-level key
+ * subsets, greedily packed to the byte budget with the exact wire accounting.
+ * One top-level value is indivisible — a value larger than the budget becomes
+ * its own oversized chunk, reported by size rather than silently split. A
+ * non-map root (or a single key) stays one chunk — same result as monolithic.
+ */
+function splitStoreKeyframe(event: ReplayEvent<[readonly StorePatch[]]>, budgetBytes: number) {
+    const batch = event.event[0]
+    const root = batch?.length == 1 ? batch[0]! : null
+    const value = root && root.exists && root.path.length == 0 ? root.value : null
+    if (value == null || typeof value != 'object' || Array.isArray(value)) return [event]
+    const keys = Object.keys(value)
+    if (keys.length < 2) return [event]
+    function partOf(group: Record<string, unknown>): ReplayEvent<[readonly StorePatch[]]> {
+        return {seq: event.seq, ts: event.ts, event: [[{...root!, value: group}]]}
+    }
+    const parts: ReplayEvent<[readonly StorePatch[]]>[] = []
+    let group: Record<string, unknown> = {}
+    let groupBytes = 0
+    let groupKeys = 0
+    for (const key of keys) {
+        const entry = (value as Record<string, unknown>)[key]
+        let bytes: number
+        // Over-counting is the safe direction: an unmeasurable value fills a chunk.
+        try { bytes = rpcResultWireMetricsFast(entry).byteLength + key.length + 8 }
+        catch { bytes = budgetBytes }
+        if (groupKeys > 0 && groupBytes + bytes > budgetBytes) {
+            parts.push(partOf(group))
+            group = {}
+            groupBytes = 0
+            groupKeys = 0
+        }
+        group[key] = entry
+        groupBytes += bytes
+        groupKeys++
+    }
+    if (groupKeys > 0) parts.push(partOf(group))
+    return parts.length ? parts : [event]
+}
+
+function exposeStoreReplayBatch(replay: StoreReplayBatchLine, prepareRead: () => void, now?: () => number) {
+    return exposeStoreReplayWire(replay, encodeStoreReplayBatchV2, prepareRead, {
+        split: splitStoreKeyframe,
+        ...(now ? {now} : {}),
+    })
 }
 
 function subscribeDecodedReplayLine<W>(
@@ -474,6 +652,7 @@ function decodeStoreReplayWireRemote<W>(
     decode: (wire: W | unknown) => ReplayEvent<[StorePatch[]]>,
     lifecycleSource: any = remote,
     knowledge?: () => unknown,
+    chunked?: StoreReplayChunkedKeyframeOpt,
 ): ReplayRemote<[StorePatch[]]> {
     function decodeEvents(events: W[] | null | undefined) {
         if (events == null) return events
@@ -494,7 +673,49 @@ function decodeStoreReplayWireRemote<W>(
     async function since(seq: number) {
         return decodeEvents(await (remote.since as any)(seq, knowledge?.()))
     }
+    // ============== chunked keyframe assembly (buffer-then-commit, degenerated) ==============
+    // Chunks are partial keyframes over disjoint top-level key subsets, all at
+    // one seq. Merging them and synthesizing ONE standard keyframe event keeps
+    // the apply path untouched — atomicity is the existing single-event apply.
+    function keyframePartValue(part: ReplayEvent<[StorePatch[]]>) {
+        const batch = part.event[0]
+        const root = batch?.length == 1 ? batch[0]! : null
+        const value = root && root.exists && root.path.length == 0 ? root.value : null
+        if (value == null || typeof value != 'object' || Array.isArray(value)) {
+            throw new Error('chunked keyframe part is not a partial root snapshot')
+        }
+        return value as Record<string, unknown>
+    }
+    async function assembleChunkedKeyframe() {
+        const config = typeof chunked == 'object' && chunked ? chunked : {}
+        const chunksRemote = (remote as any).chunks
+        const begin: StoreReplayChunksBegin<W> | null | undefined = await chunksRemote.begin(
+            config.budgetBytes != undefined ? {budgetBytes: config.budgetBytes} : undefined,
+        )
+        if (begin == null || typeof begin.total != 'number' || begin.total < 1) return null
+        const first = decode(begin.chunk0)
+        config.onProgress?.({snapshotId: begin.snapshotId, received: 1, total: begin.total})
+        // total = 1: the begin answer already was the whole keyframe
+        if (begin.total == 1) return first
+        const merged = keyframePartValue(first)
+        for (let index = 1; index < begin.total; index++) {
+            const wire = await chunksRemote.pull(begin.snapshotId, index)
+            if (wire == null) return null   // expired/evicted attempt: monolithic fallback
+            Object.assign(merged, keyframePartValue(decode(wire)))
+            config.onProgress?.({snapshotId: begin.snapshotId, received: index + 1, total: begin.total})
+        }
+        void Promise.resolve(chunksRemote.end?.(begin.snapshotId)).catch(function releaseFailed() {})
+        return {seq: begin.seq, ts: begin.ts, event: [[{path: [], exists: true, value: merged}]]} as ReplayEvent<[StorePatch[]]>
+    }
     async function keyframe() {
+        if (chunked != false && rpcMemberAvailable(remote, 'chunks')) {
+            try {
+                const assembled = await assembleChunkedKeyframe()
+                if (assembled) return assembled
+            } catch {
+                // the chunked path may lose progress, never correctness — fall back
+            }
+        }
         return decodeEvent(await (remote.keyframe as any)(knowledge?.()))
     }
     const decoded: ReplayRemote<[StorePatch[]]> = {
@@ -526,7 +747,7 @@ function decodeStoreReplayWireRemote<W>(
     return decoded
 }
 
-function decodeStoreReplayRemote(remote: StoreReplayBatchRemote) {
+function decodeStoreReplayRemote(remote: StoreReplayBatchRemote, chunked?: StoreReplayChunkedKeyframeOpt) {
     function decodeStoreReplayV2(value: unknown) {
         const local = value as ReplayEvent<[StorePatch[]]>
         if (local && typeof local == 'object' && typeof local.seq == 'number' && typeof local.ts == 'number'
@@ -535,7 +756,7 @@ function decodeStoreReplayRemote(remote: StoreReplayBatchRemote) {
         }
         return decodeStoreReplayBatchV2(value)
     }
-    return decodeStoreReplayWireRemote(remote, decodeStoreReplayV2)
+    return decodeStoreReplayWireRemote(remote, decodeStoreReplayV2, remote, undefined, chunked)
 }
 
 /**
@@ -548,7 +769,7 @@ export function exposeStoreReplay<T extends object>(store: Store<T>, opts: Store
         return [[{path: [], exists: true, value: store.snapshot()}]] as [readonly StorePatch[]]
     }
     const batchReplay = createBatchReplay(currentStoreReplayBatch, opts)
-    const replayApi = exposeStoreReplayBatch(batchReplay.replay, batchReplay.flush)
+    const replayApi = exposeStoreReplayBatch(batchReplay.replay, batchReplay.flush, opts.now)
 
     const {patches: _patches, patchesBatch: _patchesBatch, changedData: _changedData, ...storeApi} = exposeStore(store, {push: true})
     const getExactPatches = (store as Store<T> & {
@@ -589,8 +810,8 @@ export function exposeStoreReplay<T extends object>(store: Store<T>, opts: Store
 export function syncStoreReplayBatch<T extends object>(
     store: Store<T>, remote: StoreReplayBatchRemote, opts: StoreReplaySyncOpts<T> = {},
 ) {
-    const {onBatch, validateBatch, ...wireOpts} = opts
-    return replaySubscribe(decodeStoreReplayRemote(remote), function applyBatch(patches) {
+    const {onBatch, validateBatch, chunkedKeyframe, ...wireOpts} = opts
+    return replaySubscribe(decodeStoreReplayRemote(remote, chunkedKeyframe), function applyBatch(patches) {
         validateBatch?.(patches, store)
         applyStorePatches(store, patches)
         onBatch?.(patches, store)
@@ -677,8 +898,8 @@ export function syncStoreReplayView<T extends object>(
 function syncStoreReplayRouteResolved<T extends object>(
     store: Store<T>, remote: StoreReplayRemote, opts: StoreReplayRouteOpts<T>,
 ) {
-    const {onBatch, validateBatch, ...routeOpts} = opts
-    const route = replayRouteSubscribe<[StorePatch[]]>(decodeStoreReplayRemote(remote), function applyRouteBatch(patches) {
+    const {onBatch, validateBatch, chunkedKeyframe, ...routeOpts} = opts
+    const route = replayRouteSubscribe<[StorePatch[]]>(decodeStoreReplayRemote(remote, chunkedKeyframe), function applyRouteBatch(patches) {
         validateBatch?.(patches, store)
         applyStorePatches(store, patches)
         onBatch?.(patches, store)
@@ -715,7 +936,7 @@ function syncStoreReplayRouteResolved<T extends object>(
         if (closed) throw new Error('syncStoreReplayRoute: closed')
         await waitForV2Schema(nextRemote)
         if (closed) throw new Error('syncStoreReplayRoute: closed')
-        return switchBatchRoute(decodeStoreReplayRemote(nextRemote), nextOpts)
+        return switchBatchRoute(decodeStoreReplayRemote(nextRemote, chunkedKeyframe), nextOpts)
     }
 
     function off() {

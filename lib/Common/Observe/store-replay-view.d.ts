@@ -121,9 +121,12 @@ export declare function createStoreReplayViewLayer(deps: StoreReplayViewLayerDep
                     oldestSeq: number | null;
                     head: number;
                     ageMs: number;
+                    bytes: number;
                     historyLimit: number;
                     keepMs: number;
+                    keepBytes: number;
                     cappedByCount: boolean;
+                    cappedByBytes: boolean;
                 };
                 line: import("../..").ListenApi<[import("../events/replay-listen").ReplayEvent<[readonly StorePatch[]]>]>;
                 hasKeyframe: boolean;

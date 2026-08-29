@@ -22,6 +22,7 @@ import {createWorkboardClient} from './workboard-client'
 import type {WorkboardRemote} from './workboard-contract'
 import {setupWorkboardDemo} from './workboard-demo'
 import {setupReplicaSetDemo} from './replica-set-demo'
+import {setupMiniScaleDemo} from './mini-scale-demo'
 import {setupContractRuntimeDemo} from './contract-runtime-demo'
 import {setupPacketMeshDemo} from './packet-mesh-demo'
 import {setupAuthLifecycleDemo} from './auth-lifecycle-demo'
@@ -89,6 +90,16 @@ async function main() {
     me = await clients.app.func.demo.account()
     const rtcConfiguration = await clients.app.func.demo.rtcConfiguration() as RTCConfiguration
     const artifactOrigin = await clients.app.func.demo.artifactOrigin() as string
+
+    // Mini horizontal scaling stand: needs the live connection, so it mounts here.
+    const miniScale = setupMiniScaleDemo({
+        element: el,
+        log,
+        app: clients.app.func,
+        tab,
+        onMainDisconnect: cb => hub.disconnectListen(cb),
+    })
+    window.addEventListener('beforeunload', miniScale.close)
 
     // ============== identity: a display name over the account label ==============
     // The name lives in the client's own World store (like cursor and color), so

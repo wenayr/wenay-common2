@@ -160,7 +160,7 @@ A transient Socket.IO disconnect on the same socket suspends transport without e
 
 Only logical Listen subscriptions are recovered. Pending or failed ordinary RPC calls and pipelines are not retried, because repeating them could duplicate side effects.
 
-`client.dispose()` is terminal for that RPC client. `Api.setToken(token)` and its `Api.connect(token)` alias are hard rotations: the old socket/client generation and its subscriptions are permanently closed, and the new facade starts without inherited subscriptions. `connect(null)` starts a new anonymous generation; it is not a transient reconnect.
+`client.dispose()` is terminal for that RPC client. `Api.setToken(token)` and its `Api.connect(token)` alias are hard rotations: the old socket/client generation and its subscriptions are permanently closed, and the new facade starts without inherited subscriptions. `connect(null)` starts a new anonymous generation; it is not a transient reconnect. `Api.close()` is terminal for the WHOLE hub: it disposes every facade client, disconnects the socket and kills its reconnection, rejects a still-pending wave, and refuses every later `connect`/`setToken`/`reauth` (rejected `'RPC hub closed'`) — tear a hub down only through it, never by disconnecting raw sockets (a wave landing after such a sweep is adopted and unreachable; canonical: doc/RPC-AUTH.md).
 
 ### 3.3 Call Modes
 Access API channel: `Api.facade.mainAPI`. Hub initializes all channels, so schema loads automatically.

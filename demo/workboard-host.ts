@@ -1,5 +1,6 @@
 import {createStore, Store} from '../src/Common/Observe/store'
 import {createReplicatedMap} from '../src/Common/Observe/replicated-map'
+import {createCommandHost, type CommandCtx} from '../src/Common/command/command-host'
 import {
     tWorkboardStatus,
     WorkboardAssignInput,
@@ -35,10 +36,6 @@ type WorkboardHostDeps = {
     store?: Store<WorkboardState>
 }
 
-type tCommand = 'create' | 'rename' | 'move' | 'assign' | 'remove'
-type tCommandResult = WorkboardItem | WorkboardRemoveResult
-type Receipt = {command: tCommand, result: tCommandResult}
-
 function requiredString(value: unknown, label: string, max: number) {
     if (typeof value != 'string') throw new Error(label + ' is required')
     const text = value.trim()
@@ -51,16 +48,11 @@ function copyItem(item: WorkboardItem) {
     return {...item}
 }
 
-function copyResult(result: tCommandResult) {
-    return {...result}
-}
-
 export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
     const now = deps.now ?? Date.now
     let nextId = 0
     const makeId = deps.makeId ?? function makeWorkboardId() { return 'work-' + (++nextId) }
     const initial: WorkboardState = {}
-    const receipts = new Map<string, Receipt>()
     let closed = false
 
     for (const seed of deps.initial ?? []) {
@@ -97,6 +89,8 @@ export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
     }
     // ============== business rules ==============
     // Commands carry intent. The replay Store is deliberately read-only on the wire.
+    // Idempotency receipts, in-flight dedupe and result cloning live in the LIBRARY
+    // command host — this file owns only the domain rules.
     function requireOpen() {
         if (closed) throw new Error('workboard host is closed')
     }
@@ -104,10 +98,6 @@ export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
     function requireStatus(value: unknown) {
         if (!workboardStatuses.includes(value as tWorkboardStatus)) throw new Error('workboard status is invalid')
         return value as tWorkboardStatus
-    }
-
-    function requireRequest(input: {requestId: string}) {
-        return requiredString(input?.requestId, 'workboard requestId', 120)
     }
 
     function requireAccount(account: string) {
@@ -122,28 +112,6 @@ export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
             throw new Error(`workboard revision conflict: expected ${input.expectedRevision}, current ${item.revision}`)
         }
         return item
-    }
-
-    function receiptKey(account: string, requestId: string) {
-        return account + '\u0000' + requestId
-    }
-
-    function previousResult(account: string, requestId: string, command: tCommand) {
-        const previous = receipts.get(receiptKey(account, requestId))
-        if (!previous) return undefined
-        if (previous.command != command) throw new Error('workboard requestId was already used for another command')
-        return copyResult(previous.result)
-    }
-
-    function remember(account: string, requestId: string, command: tCommand, result: tCommandResult) {
-        receipts.set(receiptKey(account, requestId), {command, result: copyResult(result)})
-        // Idempotency receipts are a retry guard, not history — bound them so a
-        // long-running public stand stays memory-flat (Map keeps insertion order).
-        if (receipts.size > 2000) {
-            const oldest = receipts.keys().next().value
-            if (oldest != null) receipts.delete(oldest)
-        }
-        return copyResult(result)
     }
 
     function nextUniqueId() {
@@ -166,76 +134,60 @@ export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
         return copyItem(next)
     }
 
-    function create(accountValue: string, input: WorkboardCreateInput) {
-        requireOpen()
-        const account = requireAccount(accountValue)
-        const requestId = requireRequest(input)
-        const previous = previousResult(account, requestId, 'create')
-        if (previous) return previous as WorkboardItem
-        if (deps.maxItems && Object.keys(store.state).length >= deps.maxItems) {
-            throw new Error('the demo board is full — remove finished items first')
-        }
-        const timestamp = now()
-        const id = nextUniqueId()
-        const item: WorkboardItem = {
-            id,
-            title: requiredString(input.title, 'workboard title', 120),
-            status: 'new',
-            assignee: null,
-            revision: 1,
-            createdAt: timestamp,
-            updatedAt: timestamp,
-            createdBy: account,
-            updatedBy: account,
-        }
-        replicated.control.set(item)
-        return remember(account, requestId, 'create', item) as WorkboardItem
-    }
+    const commands = createCommandHost({
+        receipts: {maxPerAccount: 512},
+        commands: {
+            create(ctx: CommandCtx, input: WorkboardCreateInput): WorkboardItem {
+                const account = requireAccount(ctx.account)
+                if (deps.maxItems && Object.keys(store.state).length >= deps.maxItems) {
+                    throw new Error('the demo board is full — remove finished items first')
+                }
+                const timestamp = now()
+                const id = nextUniqueId()
+                const item: WorkboardItem = {
+                    id,
+                    title: requiredString(input.title, 'workboard title', 120),
+                    status: 'new',
+                    assignee: null,
+                    revision: 1,
+                    createdAt: timestamp,
+                    updatedAt: timestamp,
+                    createdBy: account,
+                    updatedBy: account,
+                }
+                replicated.control.set(item)
+                return item
+            },
+            rename(ctx: CommandCtx, input: WorkboardRenameInput): WorkboardItem {
+                const account = requireAccount(ctx.account)
+                const item = requireItem(input)
+                return replaceItem(item, account, {title: requiredString(input.title, 'workboard title', 120)})
+            },
+            move(ctx: CommandCtx, input: WorkboardMoveInput): WorkboardItem {
+                const account = requireAccount(ctx.account)
+                const item = requireItem(input)
+                return replaceItem(item, account, {status: requireStatus(input.status)})
+            },
+            assign(ctx: CommandCtx, input: WorkboardAssignInput): WorkboardItem {
+                const account = requireAccount(ctx.account)
+                const assignee = input.assignee == null ? null : requiredString(input.assignee, 'workboard assignee', 80)
+                const item = requireItem(input)
+                return replaceItem(item, account, {assignee})
+            },
+            remove(ctx: CommandCtx, input: WorkboardRevisionInput): WorkboardRemoveResult {
+                requireAccount(ctx.account)
+                const item = requireItem(input)
+                replicated.control.delete(item.id)
+                return {id: item.id, revision: item.revision + 1, deleted: true}
+            },
+        },
+    })
+    type tCommand = (typeof commands.names)[number]
 
-    function rename(accountValue: string, input: WorkboardRenameInput) {
+    /** One corridor for every entry: requestId travels INSIDE the input on the wire. */
+    function run<K extends tCommand>(name: K, account: string, input: any) {
         requireOpen()
-        const account = requireAccount(accountValue)
-        const requestId = requireRequest(input)
-        const previous = previousResult(account, requestId, 'rename')
-        if (previous) return previous as WorkboardItem
-        const item = requireItem(input)
-        const result = replaceItem(item, account, {title: requiredString(input.title, 'workboard title', 120)})
-        return remember(account, requestId, 'rename', result) as WorkboardItem
-    }
-
-    function move(accountValue: string, input: WorkboardMoveInput) {
-        requireOpen()
-        const account = requireAccount(accountValue)
-        const requestId = requireRequest(input)
-        const previous = previousResult(account, requestId, 'move')
-        if (previous) return previous as WorkboardItem
-        const item = requireItem(input)
-        const result = replaceItem(item, account, {status: requireStatus(input.status)})
-        return remember(account, requestId, 'move', result) as WorkboardItem
-    }
-
-    function assign(accountValue: string, input: WorkboardAssignInput) {
-        requireOpen()
-        const account = requireAccount(accountValue)
-        const requestId = requireRequest(input)
-        const previous = previousResult(account, requestId, 'assign')
-        if (previous) return previous as WorkboardItem
-        const item = requireItem(input)
-        const assignee = input.assignee == null ? null : requiredString(input.assignee, 'workboard assignee', 80)
-        const result = replaceItem(item, account, {assignee})
-        return remember(account, requestId, 'assign', result) as WorkboardItem
-    }
-
-    function remove(accountValue: string, input: WorkboardRevisionInput) {
-        requireOpen()
-        const account = requireAccount(accountValue)
-        const requestId = requireRequest(input)
-        const previous = previousResult(account, requestId, 'remove')
-        if (previous) return previous as WorkboardRemoveResult
-        const item = requireItem(input)
-        replicated.control.delete(item.id)
-        const result: WorkboardRemoveResult = {id: item.id, revision: item.revision + 1, deleted: true}
-        return remember(account, requestId, 'remove', result) as WorkboardRemoveResult
+        return commands.execute(account, name, requiredString(input?.requestId, 'workboard requestId', 120), input)
     }
 
     // ============== connection resource ==============
@@ -245,24 +197,33 @@ export function createWorkboardHost(deps: WorkboardHostDeps = {}) {
         return {
             fragment: {
                 state: replicated.api,
-                create: (input: WorkboardCreateInput) => create(account, input),
-                rename: (input: WorkboardRenameInput) => rename(account, input),
-                move: (input: WorkboardMoveInput) => move(account, input),
-                assign: (input: WorkboardAssignInput) => assign(account, input),
-                remove: (input: WorkboardRevisionInput) => remove(account, input),
+                create: (input: WorkboardCreateInput) => run('create', account, input),
+                rename: (input: WorkboardRenameInput) => run('rename', account, input),
+                move: (input: WorkboardMoveInput) => run('move', account, input),
+                assign: (input: WorkboardAssignInput) => run('assign', account, input),
+                remove: (input: WorkboardRevisionInput) => run('remove', account, input),
             },
             close() {},
         }
     }
 
     return {
-        control: {store, create, rename, move, assign, remove},
+        control: {
+            store,
+            create: (account: string, input: WorkboardCreateInput) => run('create', account, input),
+            rename: (account: string, input: WorkboardRenameInput) => run('rename', account, input),
+            move: (account: string, input: WorkboardMoveInput) => run('move', account, input),
+            assign: (account: string, input: WorkboardAssignInput) => run('assign', account, input),
+            remove: (account: string, input: WorkboardRevisionInput) => run('remove', account, input),
+        },
+        /** Trusted hop entry (library CommandForwardFragment shape): (account, requestId, input). */
+        forward: commands.forwardFragment(),
         connection,
         close() {
             if (closed) return
             closed = true
             replicated.control.close()
-            receipts.clear()
+            commands.close()
         },
     }
 }

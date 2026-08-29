@@ -662,9 +662,22 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
             const replacement = wanted.get(id)
             if (!replacement || replacement.connect != offers.get(id)?.offer.connect) removeOffer(id)
         }
+        // A surviving offer may arrive re-priced (directoryReplicaOffers re-samples
+        // priorityOf on every sync; placement/balance changes speak ONLY through it).
+        // Dropping the new cost left routeCost on the price sampled when the offer
+        // first appeared — a balance "migration" then moved the placement label but
+        // never the line, so the old node's replay subscriber count (the replicated
+        // readers fact) could only ever grow. Adopt the price and re-choose.
+        let repriced = false
         for (const [id, offer] of wanted) {
-            if (!offers.has(id)) addOffer(offer)
+            const entry = offers.get(id)
+            if (!entry) { addOffer(offer); continue }
+            if (entry.offer.priority != offer.priority) {
+                entry.offer = {...offer, id}
+                repriced = true
+            }
         }
+        if (repriced) scheduleReconcile('offer repriced')
     }
 
     function viable(entry: OfferEntry) {

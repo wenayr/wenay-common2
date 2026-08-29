@@ -239,9 +239,14 @@ createRpcClientHub(
     //   claims no wave — its handshake is the HELLO it issues itself. A provider yielding nothing is not a
     //   downgrade: the client keeps the token already in force.
 ) -> hub
-hub:     connect(token) -> Promise<clients>  ·  reauth(token)  ·  facade  ·  promise  ·  socket  ·  onConnect/onDisconnect  ·  connectListen/disconnectListen  ·  authListen   // connect: was setToken
+hub:     connect(token) -> Promise<clients>  ·  reauth(token)  ·  close()  ·  facade  ·  promise  ·  socket  ·  onConnect/onDisconnect  ·  connectListen/disconnectListen  ·  authListen   // connect: was setToken
          // connect() resolves after the socket 'connect' event and RPC route/auth handshake; for in-proc/loopback (no 'connect') use hub.facade + await hub.promise
          // connect/setToken = HARD rotation (new socket, no inherited subscriptions); reauth = SOFT (live socket, subscriptions preserved)
+         // close() = TERMINAL teardown: disposes every facade client, disconnects the socket AND kills its
+         //   reconnection (a raw socket.disconnect() alone can be re-armed by a landing open), rejects a
+         //   still-pending wave, and latches the hub closed — every later connect/setToken/reauth rejects
+         //   with 'RPC hub closed'. Idempotent (second call returns false). Tear a hub down ONLY through
+         //   close(): sweeping raw sockets cannot reach a wave that lands after the sweep.
          // authListen(cb) -> off: additive auth observers; cb gets {key, state, reason?, expiresAt?},
          //   state 'expiring'|'expired'|'revoked' (server) | 'renewed'|'renewFailed' (local, never on the wire).
          //   'renewed' (with expiresAt when the grant declared one) and 'renewFailed' report an AUTOMATIC
@@ -288,9 +293,12 @@ control.revoke('logged out elsewhere')   // server-driven cut, same corridor as 
 // replay upgrade — ONE WORD at the declaration site, everything below follows automatically:
 // const [tick, ticks] = listen<[number]>()                                       // before
 const [tick, ticks] = replayListen<[number]>({history: 1024, current: 'last'})    // after — same facade, same key
-// history = hard cap in events; keepMs = retention target in ms (either bound alone enables the journal)
-const [tick2, ticks2] = replayListen<[number]>({history: 50_000, keepMs: 60_000, current: 'last'})
-ticks2.journalWindow()   // {entries, oldestSeq, head, ageMs, historyLimit, keepMs, cappedByCount}
+// history = hard cap in events; keepMs = retention target in ms; keepBytes = retention target in
+// bytes (any bound alone enables the journal; whichever bites first wins, history stays the hard cap)
+const [tick2, ticks2] = replayListen<[number]>({history: 50_000, keepMs: 60_000, keepBytes: 8 * 2 ** 20, current: 'last'})
+// keepBytes measures via sizeOf(ev) — once per event at ingest, cached; default = UTF-8 JSON estimate.
+// The newest event always survives, even oversized. Unset keepBytes = nothing measured, bytes reads 0.
+ticks2.journalWindow()   // {entries, oldestSeq, head, ageMs, bytes, historyLimit, keepMs, keepBytes, cappedByCount, cappedByBytes}
 // legacy subscribers unchanged (byte-for-byte). Replay consumers now also get:
 const sub = replaySubscribe(l.ticks, v => {}, {since: saved, onSeq: s => saved = s})  // catch-up + live; no uncovered loss/dups (a producer frame/keyframe may jump raw seq)
 const sub2 = replaySubscribe(c.math.func.ticks, v => {})  // replay members project on func/strict directly — no cast needed
@@ -728,7 +736,7 @@ Observe.followReplicatedMap<V, K>(remote, {onBatch?, onStatus?, onError?, staleM
   // Store Replay V2 is the only batch wire and travels through the JSON-array RPC lane.
 
 // Sequenced sync (replay line): seq-numbered patch stream — keyframe catch-up, reconnect by seq (tail, not snapshot)
-Observe.exposeStoreReplay(store, {history? = 1024, keepMs?, maxItems?, maxBytes?, maxDelayMs?, patchSource?}) -> { api /* spread into the RPC server object */, replay, batchStats, flushPending, close }
+Observe.exposeStoreReplay(store, {history? = 1024, keepMs?, keepBytes?, sizeOf?, maxItems?, maxBytes?, maxDelayMs?, patchSource?}) -> { api /* spread into the RPC server object */, replay, batchStats, flushPending, close }
   // history = hard cap in ENVELOPES, so its depth in wall-clock time follows the write rate.
   // keepMs = retention target in milliseconds: what a reconnect window is actually expressed in.
   //   Set it when the requirement is "a client returning within N seconds must cost a journal tail,
@@ -737,19 +745,35 @@ Observe.exposeStoreReplay(store, {history? = 1024, keepMs?, maxItems?, maxBytes?
   //   history still wins as the hard cap; with only keepMs set the count is unbounded and memory is
   //   rate x keepMs. replay.journalWindow() reports the window actually retained and whether the
   //   count cap cut a keepMs target short.
+  // keepBytes = retention target in BYTES: the direct cap on journal memory (a legal history/keepMs
+  //   window can still retain many LARGE envelopes). All three bounds coexist; whichever bites first
+  //   wins. Store lines measure each envelope with the packed-V2 wire estimator (no JSON.stringify);
+  //   sizeOf overrides the measure. journalWindow() reports bytes/keepBytes/cappedByBytes.
   // api.replay is the sole Store Replay V2 facade. There is no legacy single-patch route or negotiation.
   // Store-owned Replay refines safe array-slot replacements to exact index patches without changing
   // public changedPaths/listenStorePatches. Length changes and whole-array replacement stay whole-array patches.
   // maxItems/maxBytes may split one source drain; maxDelayMs>0 may merge adjacent drains.
   // Each resulting bounded V2 envelope owns one seq.
   // A patch whose value itself is undefined remains represented by the V2 patch opcode.
-Observe.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?} of api.replay*/, {since?, onSeq?, validateBatch?, onBatch?}) -> off
+Observe.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?, chunks?} of api.replay*/, {since?, onSeq?, validateBatch?, onBatch?, chunkedKeyframe?}) -> off
   // an RPC proxy waits for MAP before starting the V2 line; plain in-process remotes stay synchronous
   // validateBatch runs after decode and before mutation. onBatch runs once AFTER one physical envelope is applied;
   // an onBatch throw is terminal, does not roll Store state back, and does not advance the replay seq.
   // off.ready (catch-up done) · off.mode ('v2') · off.seq()
   // lagging/late client NEVER gets a backlog: evicted seq -> ONE fresh keyframe + live
   // freshness is an option, not consumer boilerplate: {staleMs, onStale} flags a silent line / stale keyframe (edge-triggered both ways; 🎞️ in rare docs)
+// CHUNKED KEYFRAME (doc/target/KEYFRAME-CHUNKING.md, decided v1): the max frame size becomes a
+// protocol property, not a dataset property. The wire facade serves an optional `chunks` facet —
+// {begin({budgetBytes?}) -> {snapshotId, seq, ts, total, budgetBytes, chunk0}, pull(id, i), end?} —
+// a PULL model: each chunk is an ordinary CALL response, so the heartbeat breathes between messages
+// on a slow link. Chunks are partial keyframes over DISJOINT top-level key subsets (one oversized
+// value = its own chunk, never split), all at ONE seq; the client merges and synthesizes a standard
+// keyframe event, so apply stays the existing atomic single-event path. Presence IS the capability
+// (like frame/frameLine — no Caps bit); the producer retains the encoded set 60 s / max 4 attempts,
+// an evicted pull answers null and the client FALLS BACK to the monolithic keyframe.
+// Client control: chunkedKeyframe on sync/route opts — default ON when offered, false disables,
+// {budgetBytes /* clamped 16K..4M, default 256K */, onProgress({snapshotId, received, total})} tunes.
+// Oracle: replay/keyframe-chunks.test.ts; measured stand: experiments/slow-network-2026-08.
 // Very slow link, merge semantics (top-level value is absolute, last write per key wins):
 // fill progressively instead of ever sending a keyframe.
 const lazy = Observe.exposeStoreLazyLine(store, {chunkBytes: 32 * 1024, windowBytes: 512 * 1024, tombstoneKeepMs: 600_000, lineId})
@@ -840,6 +864,96 @@ Observe.createStoreReplicaSet<T>({storeId, originId, nodeId, lineId?, store?, in
 Observe.diffKeyedState(local, authority) -> {localOnly, authorityOnly, conflicts}
   // split-brain tail after a failover rejoin: localOnly = re-apply candidates (mempool analogy),
   //   conflicts = both sides changed one record (the epoch already chose the winner; the pair is preserved)
+Observe.createNodeDirectory({now?, lineId?, replay?}) -> {api, control: {upsert, heartbeat, drain, undrain, remove, get, snapshot, flush, close}}
+  // replicated roster of service nodes (latest map keyed by nodeId) for client-side balancing:
+  //   weight > 0 = accepts placements · weight <= 0 = closed · draining = leaving ·
+  //   heartbeat age > staleMs = presumed dead — staleness is derived by READERS, never stored
+Observe.followNodeDirectory(remote, {staleMs?, now?, initial?, onStatus?, onError?}) -> {nodes(), pick(opts?), onNodes(cb), ready, status, close, follow}
+Observe.nodeDirectoryViews(state, opts?) · Observe.pickDirectoryNode(views, {exclude?, rng?})
+  // one pure derivation shared by the balancer AND the ops panel — balancing stays observable by construction
+Observe.directoryReplicaOffers({directory, connect, priorityOf?}) -> {api, refresh, close}
+  // bridge into createStoreReplicaSet offers: eligible rows = offers (connect identity stable per node,
+  //   or every roster change would bounce live sessions); higher weight = cheaper route by default.
+  //   drain/stale/gone REMOVES the offer -> the replica set leaves that node and resumes by seq — lossless.
+  //   Oracle: observe/node-directory.test.ts; living stand: `npm run demo` -> Lab -> Mini horizontal
+  //   scaling (spawn/drain REAL extra processes; the tick line survives every move and a hard kill)
+Observe.createStoreNode<T>({nodeId, storeId, originId, lineId?, initial?, weight?, heartbeatMs?, graceMs?,
+    auth?: {verify, renewBeforeMs?}, commands?, upstream, serve, selfUrl, onLeave, wrap?, socketKeys?, opt?, log?})
+  -> {start, leave(reason), view: {nodeId, status()}, close}
+  // a serving node from ONE config object: replica line + to-upstream offer, self-registration and
+  //   heartbeat in the node directory (readers fact = the line's ACTIVE subscriber count — connected
+  //   sockets would lie, every replica-set client keeps sessions to all nodes for fork-choice), an
+  //   ungated read key + an optionally gated write key (auth.verify returns {account, expiresAt?} or
+  //   throws; {revoke: true} kills the session), token-envelope command forwarding (the node asserts
+  //   nothing), session cuts on the replicated deny-list fact, and leave on the node's OWN directory
+  //   row (drain is data — no control channel). The HOST keeps env, transports, token crypto and
+  //   process exit; they arrive as adapters through deps (doc/DYNAMIC-RUNTIME.md ownership).
+  // Oracle: observe/store-node.test.ts (real RPC over an in-process loopback); living stand: the
+  //   mini nodes of the same Lab card are exactly this factory + a ~90-line process host.
+
+// The WRITE corridor to one authority (import {Command} from 'wenay-common2'):
+Command.createCommandHost({commands: {name(ctx: {account, requestId, command}, input) {...}}, limits?: {perMinute?}, receipts?: {keepMs?, maxPerAccount?}, now?})
+  -> {execute(account, name, requestId, input), fragment(account), forwardFragment(), names, stats, close}
+  // at-most-once per (account, requestId): a duplicate — including one arriving through ANOTHER node —
+  //   answers with a CLONE of the first result (the receipt); concurrent duplicates share one in-flight run;
+  //   an error commits nothing (honest retry); receipts expire by keepMs / evict past maxPerAccount;
+  //   rate limit burns budget on new executions only — receipt answers are free.
+  // fragment(account) = per-connection facade (requestId, input); forwardFragment() = TRUSTED hop entry
+  //   (account, requestId, input) — give it only to links the application authenticated (service token).
+Command.forwardCommands({upstream /* authority forwardFragment proxy */, names}) -> {fragment(account), names}
+  // a mirror node serves the SAME (requestId, input) fragment shape as the authority — clients cannot
+  //   tell nodes apart, and a retry through a DIFFERENT node still lands on the one receipt space.
+  // Conversation/AI hosts keep their own persisted receipts; new hosts start from this primitive
+  //   (the demo workboard host and its mirror hop now run on it — no behavior change, oracle-pinned).
+  // Oracle: replay/command-host.test.ts; stand: the same Lab card — "+10 via my node" writes through the
+  //   node the tab currently reads from, "Repeat last requestId" (even after drain, via another node)
+  //   answers from the receipt and the counter does not double.
+// TWO EXPLICIT TRUST MODES for a relayed corridor:
+//   trusted-mirror — forwardCommands/forwardFragment above: the relay is authenticated by the
+//     application (service token) and ASSERTS the end client's account; the authority trusts it.
+//   end-to-end (default where the secret can be shared) — the pair below: every call carries the
+//     END client's raw token, the relay copies it opaquely, ONLY the authority resolves it.
+//     A compromised relay forges nothing; the worst it can do is replay into the receipts.
+Command.verifyCommands({host /* execute+names of a command host */, accountOf: (token) => account | Promise<account>})
+  -> {fragment() /* (token, requestId, input) per name */, names}
+  // authority entry for token-carrying hops: accountOf verifies EVERY call (codec verify + deny list +
+  //   anything else); a throw rejects the call and commits nothing. Owns NO crypto and NO token format —
+  //   transport auth of the relay itself stays in RPC auth (doc/RPC-AUTH.md), this rides inside it.
+Command.forwardCommandsByToken({upstream /* authority verifyCommands proxy */, names}) -> {fragment(token), names}
+  // relay entry: fragment(token) serves the SAME client-facing (requestId, input) shape; capture the
+  //   token where the relay's own resolveAuth verified it (the per-principal facade closure).
+  // Oracle: replay/command-token.test.ts (real createTokenCodec: signature/expiry/deny, receipt space
+  //   shared between the token hop and direct execution). Stand: the same Lab card — Login mints a codec
+  //   token, EVERY node verifies it locally (shared secret), Revoke is one replicated fact: the leader
+  //   cuts its sessions, each mini cuts its own, writes die on ALL nodes instantly; re-login resumes.
+
+// The deployment triangle assembled (import {Scale} from 'wenay-common2'):
+Scale.createAuthority<T>({storeId, originId, nodeId? /* 'authority' */, lineId?, initial, selfUrl, weight? /* 1 */,
+    commands?, limits?, receipts?, identity: {issue(account) -> token, verify(presented) -> {account, expiresAt?} | throw},
+    renewBeforeMs?, heartbeatMs?, acceptNode?, meta?, log?})
+  -> {line: {control, api}, directory: {control, api}, identity: {login, renew, revoke, mint},
+      corridor: {execute, names, fragment(account), byToken()},
+      serve: {browser(account), reader(), nodeLink(), connection()},
+      view: {nodes(), readers(), isRevoked(account)}, start, close}
+  // the single point of order from ONE config object: replica line + node directory + command corridor
+  //   (end-to-end verification of EVERY relayed call) + the identity lifecycle over a replicated deny
+  //   list — login lifts the ban, renew refuses revoked, revoke cuts live sessions NOW and every node
+  //   follows the same fact. identity.issue/verify are HOST adapters — no crypto and no token format here.
+  // serve.* are audience-ready RPC blocks: browser (ungated participant surface), reader (lean line),
+  //   nodeLink (trusted node link: register behind acceptNode, heartbeat with meta merge, revocations
+  //   line, token-envelope commands), connection() = the gated per-socket block {object, auth, attach,
+  //   close} implementing RPC-AUTH rules 1/3/6/7. start() = the authority's own row + heartbeat with
+  //   {readers, ...meta()}; view.readers() is the line's ACTIVE subscriber count (sockets would lie).
+Scale.createClusterClient<T>({storeId, originId, nodeId, lineId?, initial, directory /* remote roster line */,
+    connect: (view) => session /* the host owns sockets */, placement?: {label?, staleMs?, priorityOf?, rng?},
+    leadership?, log?})
+  -> {store, status, ready, placement: {placedNodeId(), repick()}, view: {nodes(), route()}, close}
+  // one consumer from ONE config object: followNodeDirectory + sticky weighted placement + the offers
+  //   bridge + a replica set. The pick decides WHERE to land and is NOT re-rolled on roster churn —
+  //   only when the placed node loses eligibility (drain / stale / weight<=0 / gone) or on repick();
+  //   below the placement the line always moves gap-free by seq (level 2 decides, level 3 hands off).
+// Scale.createStoreNode = the third corner, the SAME factory as Observe.createStoreNode above.
+// Oracles: observe/scale-authority.test.ts + observe/scale-client.test.ts (real RPC / live authority).
 Observe.syncStoreReplayEach<T>(remote, (key, value, ctx) => {}, opts?) -> off & {store, ready, mode, seq(), isStale(), lastTs()}
   // one-call remote fold: mirror store + syncStoreReplay + store.each() — the callback fires per CHANGED
   //   top-level key; first delivery = keyframe EXPANDED per key; (key, undefined) = key deleted

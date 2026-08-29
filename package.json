@@ -92,6 +92,7 @@
     "express": "^5.2.1"
   },
   "devDependencies": {
+    "@kubernetes/client-node": "^2.0.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.2",
@@ -101,6 +102,7 @@
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
     "socket.io-msgpack-parser": "^3.0.2",
+    "swagger-ui-dist": "^5.32.14",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2",
     "ws": "^8.21.1",

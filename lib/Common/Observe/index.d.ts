@@ -9,4 +9,6 @@ export * from "./store-manager";
 export * from "./store-durable";
 export * from "./store-playback";
 export * from "./node-health";
+export * from './node-directory';
+export * from './store-node';
 export * from './replicated-map';
