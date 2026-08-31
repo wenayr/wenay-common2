@@ -20,6 +20,7 @@ import {createStoreFollower} from '../../src/Common/Observe/store-follower'
 import {createRpcClient} from '../../src/Common/rcp/rpc-client'
 import type {SocketTmpl} from '../../src/Common/rcp/rpc-protocol'
 import {createTokenCodec} from '../../src/server/auth-token'
+import {buildInputValidate, inputJsonSchema} from './template/input-schema'
 import {createServiceLeader} from './template/leader'
 import {createServiceNode} from './template/node'
 import {serviceDefinition, type CounterState} from './template/service'
@@ -58,9 +59,55 @@ function createLoopback(): [SocketTmpl, SocketTmpl] {
 
 const quiet = () => {}
 
+function throwsMessage(run: () => void, expected: string) {
+    try { run() } catch (error) { return (error as Error)?.message == expected }
+    return false
+}
+
 async function main() {
     // still the literal '{{name}}' pre-instantiation — a plain string wire key
     const name = serviceDefinition.name
+
+    // ============== the input-schema DSL: the primitive before the layers above ==============
+    {
+        const validate = buildInputValidate({
+            itemId: 'string',
+            from: 'date-string',
+            days: 'number?',
+            kind: {enum: ['standard', 'premium']},
+            tags: {array: 'string', optional: true},
+            contact: {object: {email: 'string'}, optional: true},
+        })
+        let accepted = true
+        try {
+            validate({itemId: 'kayak', from: '2026-09-01', kind: 'standard'})
+            validate({itemId: 'kayak', from: '2026-09-01', days: 3, kind: 'premium', tags: ['a'], contact: {email: 'a@b.c'}})
+        } catch { accepted = false }
+        ok(accepted, 'the DSL validator accepts schema-shaped input, optional fields present or absent')
+        ok(throwsMessage(() => validate({from: '2026-09-01', kind: 'standard'}), 'input.itemId is required')
+            && throwsMessage(() => validate({itemId: 'kayak', from: 'tomorrow', kind: 'standard'}), 'input.from must be an ISO day (YYYY-MM-DD)')
+            && throwsMessage(() => validate({itemId: 'kayak', from: '2026-09-01', days: '3', kind: 'standard'}), 'input.days must be a finite number')
+            && throwsMessage(() => validate({itemId: 'kayak', from: '2026-09-01', kind: 'luxury'}), 'input.kind must be one of: standard, premium')
+            && throwsMessage(() => validate({itemId: 'kayak', from: '2026-09-01', kind: 'standard', tags: ['a', 2]}), 'input.tags[1] must be a string')
+            && throwsMessage(() => validate({itemId: 'kayak', from: '2026-09-01', kind: 'standard', contact: {email: 7}}), 'input.contact.email must be a string')
+            && throwsMessage(() => validate({itemId: 'kayak', from: '2026-09-01', kind: 'standard', sneaky: 1}), 'input.sneaky is not a known field')
+            && throwsMessage(() => validate('kayak'), 'input must be an object'),
+            'every refusal names its exact field path and rule')
+        const json = inputJsonSchema({
+            itemId: 'string',
+            from: 'date-string',
+            days: 'number?',
+            kind: {enum: ['standard', 'premium']},
+            tags: {array: 'string', optional: true},
+        }) as any
+        ok(json.type == 'object' && json.additionalProperties == false
+            && JSON.stringify(json.required) == '["itemId","from","kind"]'
+            && json.properties.from.format == 'date'
+            && JSON.stringify(json.properties.kind.enum) == '["standard","premium"]'
+            && json.properties.tags.items.type == 'string'
+            && json.properties.days.type == 'number',
+            'inputJsonSchema mirrors the same value: required excludes optional, formats and enums carried')
+    }
 
     // ============== leader from the template factory ==============
     const leader = createServiceLeader({definition: serviceDefinition, selfUrl: () => 'mem://leader', log: quiet})
@@ -144,6 +191,17 @@ async function main() {
     try { await write.func[name].commands.add('r2', {delta: 'nope'}) } catch { refused = true }
     ok(refused && leader.view.state().counter?.value == 5,
         'validate() rejects bad input before any effect')
+
+    // schema first, domain second: the old coercing validate accepted '5';
+    // the declared schema refuses it by NAME, and validate() still guards after
+    const schemaRefusal = await write.func[name].commands.add('r2b', {delta: '5'})
+        .then(() => '', (error: any) => String(error?.message ?? error))
+    ok(schemaRefusal == 'input.delta must be a finite number' && leader.view.state().counter?.value == 5,
+        'the input SCHEMA refuses a coercible non-number with its precise field message')
+    const domainRefusal = await write.func[name].commands.add('r2c', {delta: 2000})
+        .then(() => '', (error: any) => String(error?.message ?? error))
+    ok(domainRefusal == 'delta must be within ±1000' && leader.view.state().counter?.value == 5,
+        'validate() still runs AFTER the schema for the domain rule')
     const retried = await write.func[name].commands.add('r2', {delta: 2})
     ok(retried.value == 7 && leader.view.state().counter?.value == 7,
         'the refused requestId left NO receipt — the same id retries honestly')
@@ -192,8 +250,8 @@ async function main() {
             if (text.includes('{{name}}')) leftovers++
             if (file == 'service.ts' && text.includes(`name: 'demo-rental'`)) substituted = true
         }
-        ok(names.length == 6 && leftovers == 0 && substituted,
-            'create.mjs instantiates all 6 template files with {{name}} substituted')
+        ok(names.length == 7 && leftovers == 0 && substituted,
+            'create.mjs instantiates all 7 template files with {{name}} substituted')
     } finally {
         await rm(targetDir, {recursive: true, force: true})
     }

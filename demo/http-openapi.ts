@@ -1,12 +1,15 @@
 // ============================================================
 //  demo/http-openapi.ts
 //
-//  OpenAPI 3.0.3 descriptor for a createHttpFacadeServer facade. Demo-only
+//  OpenAPI 3.1.0 descriptor for a createHttpFacadeServer facade. Demo-only
 //  incubator (may graduate to the library later): no src/ changes and no new
 //  library exports. The route list is NOT re-derived here — the real facade
 //  walk runs against a recording fake `app` whose get/post only capture
 //  (method, route) pairs, so the spec cannot drift from what the real server
-//  registers for the same object and basePath.
+//  registers for the same object and basePath. 3.1.0 is emitted
+//  unconditionally: routes with argSchemas need JSON Schema 2020-12
+//  prefixItems for real tuple bodies, and one document version for all
+//  consumers beats a conditional bump.
 // ============================================================
 
 import type {HttpFacadeServerOptions, tHttpFacadeMethod} from '../src/server/httpFacadeServer'
@@ -27,6 +30,13 @@ export type HttpFacadeOpenApiDeps = {
     limits?: RpcLimits
     /** Operation summaries keyed by captured route, e.g. '/http-facade/demo/status'. */
     summaries?: Record<string, string>
+    /**
+     * Positional-argument JSON Schemas keyed by captured route: one schema per
+     * argument, in call order. A route present here documents its POST body as
+     * a REAL fixed tuple (2020-12 prefixItems, no extra items) instead of the
+     * generic args array — the reason the document is OpenAPI 3.1.0.
+     */
+    argSchemas?: Record<string, readonly object[]>
 }
 
 // Mirrors the private normalizeBasePath of httpFacadeServer.ts only to strip the
@@ -161,6 +171,18 @@ export function createHttpFacadeOpenApi(deps: HttpFacadeOpenApiDeps) {
                 example: '["hello"]',
             }]
         } else {
+            // an argSchemas route documents the args as the exact call tuple;
+            // without one the generic bounded array stands as before
+            const tuple = deps.argSchemas?.[route]
+            const bodyArgsSchema = tuple ? {
+                type: 'array',
+                prefixItems: [...tuple],
+                minItems: tuple.length,
+                maxItems: tuple.length,
+                items: false,
+                description: 'Positional arguments as a fixed tuple; rich values use '
+                    + 'the same RPC leaf markers as results.',
+            } : argsArraySchema
             operation['requestBody'] = {
                 // express.json turns an absent body into {}, which the facade rejects
                 // for lacking "args" — so in practice the body is required.
@@ -172,12 +194,14 @@ export function createHttpFacadeOpenApi(deps: HttpFacadeOpenApiDeps) {
                                 {
                                     type: 'object',
                                     required: ['args'],
-                                    properties: {args: argsArraySchema},
+                                    properties: {args: bodyArgsSchema},
                                 },
-                                argsArraySchema,
+                                bodyArgsSchema,
                             ],
                         },
-                        example: {args: ['hello']},
+                        // a tuple route gets no canned example: swagger-ui derives an
+                        // honest one from the field schemas themselves
+                        ...(tuple ? {} : {example: {args: ['hello']}}),
                     },
                 },
             }
@@ -192,7 +216,7 @@ export function createHttpFacadeOpenApi(deps: HttpFacadeOpenApiDeps) {
     }
 
     const document: Record<string, unknown> = {
-        openapi: '3.0.3',
+        openapi: '3.1.0',
         info: deps.info,
         paths,
         components: deps.bearerAuth

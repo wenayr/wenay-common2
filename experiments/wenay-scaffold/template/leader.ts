@@ -24,6 +24,7 @@
 import type {CommandCtx} from '../../../src/Common/command/command-host'
 import {createAuthority} from '../../../src/Common/scale/scale-authority'
 import {createTokenCodec} from '../../../src/server/auth-token'
+import {buildInputValidate, type tInputSchema} from './input-schema'
 
 // ============================================================
 // the definition contract — what the domain module must export
@@ -35,8 +36,19 @@ import {createTokenCodec} from '../../../src/server/auth-token'
 export type ServiceCommandCtx<S> = CommandCtx & {state: S}
 
 export type tServiceCommand<S> = {
-    /** Throw on bad input BEFORE any effect; a throw commits nothing. */
-    validate: (input: any) => void
+    /**
+     * Declarative input shape (./input-schema): validated automatically BEFORE
+     * validate(), the source of the inferred input type (via schemaCommand) and
+     * of the JSON Schema body in the OpenAPI document. Absent = no schema step.
+     */
+    input?: tInputSchema
+    /**
+     * Cross-field/domain rules; shape rules belong in `input`. Throw on bad
+     * input BEFORE any effect; a throw commits nothing. Optional because a
+     * command whose whole stateless contract IS the schema has nothing left
+     * to check here (state-dependent guards stay at the top of apply).
+     */
+    validate?: (input: any) => void
     /** Mutate ctx.state; the returned value becomes the client's receipt. */
     apply: (ctx: ServiceCommandCtx<S>, input: any) => unknown
 }
@@ -98,15 +110,18 @@ export function createServiceLeader<
 
     // ============== definition + secrets → authority deps: the WHOLE mapping ==============
     // Validation runs before apply so a refused input never touches the store
-    // and the corridor remembers nothing for it (honest retry). ctx.state binds
-    // LATE to the authority's own replica store: commands only run after
-    // createAuthority has returned.
+    // and the corridor remembers nothing for it (honest retry). The schema step
+    // (when declared) runs FIRST — shape refusals share the same no-effect
+    // guarantee as validate() throws. ctx.state binds LATE to the authority's
+    // own replica store: commands only run after createAuthority has returned.
     function domainCommands() {
         const map = {} as tDomainCommandMap<S, Cmds>
         for (const name of Object.keys(definition.commands) as (keyof Cmds & string)[]) {
             const command = definition.commands[name]
+            const schemaValidate = command.input ? buildInputValidate(command.input) : null
             map[name] = function runDomainCommand(ctx: CommandCtx, input: any) {
-                command.validate(input)
+                schemaValidate?.(input)
+                command.validate?.(input)
                 return command.apply({...ctx, state: authority.line.control.store.state}, input)
             } as tDomainCommandMap<S, Cmds>[typeof name]
         }

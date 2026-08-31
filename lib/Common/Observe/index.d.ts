@@ -1,5 +1,6 @@
 export * from "./reactive";
 export * from "./store";
+export * from "./store-external";
 export * from "./store-replay";
 export * from "./store-lazy-line";
 export * from "./store-follower";

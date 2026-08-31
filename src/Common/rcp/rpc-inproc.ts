@@ -121,6 +121,55 @@ export function createInProcSocketPair(): [SocketTmpl, SocketTmpl] {
     return [make(A, B), make(B, A)] // [client, server]
 }
 
+// --- resource: loopback pair WITH a connection lifecycle — the testing-kit variant ---
+// Same detached in-proc wire as createInProcSocketPair, plus the two facts a transport test
+// needs to stage: a silent offline window (frames are lost, nobody is told — the gap before
+// socket.io notices) and a definitive socket death ('disconnect' on both ends, delivery over).
+// Consolidates the ad-hoc createLoopback copies of the spec suites into one canonical export.
+export function createLoopbackSocketPair(opts: {
+    /** 'micro' (default): each frame lands in its own microtask, like every spec harness.
+     *  'sync': emit delivers before returning — for step-by-step protocol assertions. */
+    delivery?: 'micro' | 'sync'
+} = {}) {
+    const sync = opts.delivery == 'sync'
+    const A: Record<string, ((d: any) => void)[]> = {}
+    const B: Record<string, ((d: any) => void)[]> = {}
+    let online = true
+    let dead = false
+    function fire(handlers: Record<string, ((d: any) => void)[]>, event: string, data: any) {
+        for (const cb of handlers[event] ?? []) cb(data)
+    }
+    const make = (mine: typeof A, theirs: typeof A): SocketTmpl => ({
+        on: (e, cb) => { (mine[e] ??= []).push(cb) },
+        emit: (e, d) => {
+            if (dead || !online) return
+            const wire = cloneInProcWire(d)
+            if (sync) { fire(theirs, e, wire); return }
+            // in-flight frames also drop when the link dies/goes offline before delivery
+            queueMicrotask(function deliverLoopbackFrame() { if (!dead && online) fire(theirs, e, wire) })
+        },
+    })
+    const client = make(A, B)
+    const server = make(B, A)
+    function kill() {
+        if (dead) return false
+        dead = true
+        fire(A, 'disconnect', undefined)
+        fire(B, 'disconnect', undefined)
+        return true
+    }
+    return {
+        client, server,
+        /** Definitive socket death: 'disconnect' fires on BOTH ends, delivery stops forever.
+         *  false = already dead. */
+        kill,
+        /** Silent loss window: false drops every frame without telling either end; true resumes.
+         *  No 'disconnect'/'connect' is emitted — that is kill()'s job. No effect after kill(). */
+        setOnline(value: boolean) { if (!dead) online = value },
+        online: () => online && !dead,
+    }
+}
+
 // --- business: real server+client over in-proc pair ---
 export function createRpcInProc<T extends object>({
     object: target,

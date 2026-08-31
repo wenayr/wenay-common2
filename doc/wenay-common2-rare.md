@@ -211,7 +211,17 @@ createRpcServerAuto(opts)                           // canonical: nested object 
   //   below. Additive: callers that ignore the return are unchanged.
 createRpcServer(opts)                               // lower-level core
 createRpcServerAutoDetect(opts)                          // + legacy/v2 protocol auto-detection (createRpcServerAutoWithProtocolDetection)
-createRpcServerInProc(...)                          // in-process fast path (no socket)
+createRpcInProc({object, socketKey?, listen?, auth?, token?, limits?, opt?, ...}) -> client
+  // in-process server+client over one detached pair (no socket.io): same wire, same limits/auth.
+  //   With auth/gate there is no 'connect' event — call client.readyStrict() before gated calls.
+createInProcSocketPair() -> [client, server]        // bare detached SocketTmpl pair (microtask delivery)
+createLoopbackSocketPair({delivery?: 'micro'|'sync'}) -> {client, server, kill(), setOnline(bool), online()}
+  // the TESTING-KIT pair: same detached in-proc wire (JSON round-trip + native binary attachments,
+  //   no identity leaks) plus a connection lifecycle — kill() fires 'disconnect' on BOTH ends and
+  //   stops delivery forever; setOnline(false) is a silent-loss window (frames drop, nobody is
+  //   told — the gap before socket.io notices), setOnline(true) resumes. Feed the server end to
+  //   createRpcServerAuto and the client end to createRpcClient/hub to test YOUR facade in-proc:
+  //   reconnect, offline and death scenarios included. Spec: src/Common/rcp/rpc-inproc.spec.ts.
 // authorization (in-band, Pkt.HELLO) — CANONICAL PAGE: doc/RPC-AUTH.md (rules + ✅/❌ pairs + limits)
 opts.auth: RpcServerAuth = { resolveAuth: (token) => RpcAuthGrant | Promise<RpcAuthGrant>, gate?: boolean }
 RpcAuthGrant = { object?: any, ack?: any, expiresAt?: number, renewBeforeMs?: number }
@@ -610,6 +620,45 @@ Contract:
 - The failure mode to avoid is treating `path.join(".")` as identity: `["a.b", "c"]` and `["a", "b", "c"]` both display as `a.b.c` but are different RPC paths.
 - Static dotted keys are also supported: `api["a.b"].c` is distinct from `api.a.b.c`. Internal route/listen/cache identity must stay lossless; dotted strings are only a debug display form.
 - If a branch is a fixed public API, keep it strict. If a branch is a personal/dynamic keyspace, wrap that branch in `noStrict` instead of trying to publish all current keys as schema.
+
+### Recipe: runtime input validation at the RPC boundary
+The typed proxy is a compile-time contract only — types erase, and a hostile client sends whatever
+it wants. `RpcLimits` bounds volume/shape; per-method VALUE validation is the application's, and the
+seam for it is `hooks.onRequest` (one place, before dispatch), not ad-hoc checks inside every method:
+
+```ts
+const validators: Record<string, (args: unknown[]) => boolean> = {
+    'board.move': (args) => MoveInputSchema.safeParse(args[0]).success,   // zod/valibot/hand-rolled
+}
+createRpcServerAuto({socket, socketKey, object, hooks: {
+    async onRequest({key, request}) {           // key: string[] = method path, request: any[] = args
+        const check = validators[key.join('.')]
+        return check ? check(request) : true    // false rejects the call before it runs
+    },
+    onInvalid({reason, key}) { log.warn('rpc invalid', key, reason) },
+}})
+```
+
+Methods with a handful of fields can keep inline guards (the demo's `requiredString` idiom); reach
+for the hook table once several methods share input shapes or an audit trail is required. Do not
+duplicate a validation both inline and in the hook.
+
+### Recipe: Store state schema evolution across deploys
+The mechanism is already in the contract — this is how to use it when the shape of `State` changes:
+- **Additive change** (new optional top-level key, new optional field): deploy the server, do
+  nothing else. Old mirrors ignore unknown fields; new clients read `undefined` until the first
+  write. Journal tails stay valid — a reconnecting client resumes by seq as usual.
+- **Breaking change** (renamed/retyped key, different value layout): bump `lineId`
+  (e.g. `'quotes:v2'`). Every persisted cursor/`since` from the old line is refused as stale, so
+  each client falls back to one fresh keyframe of the new shape — never a mixed-shape mirror. This
+  is the ONLY safe path: reusing the old lineId replays old-shape patches into new-shape readers.
+- **Client-side tolerance window**: during a rolling deploy old clients may receive a new-shape
+  keyframe. Version the shape inside the data when they must coexist
+  (`state.meta = {schema: 2}` + a `validateBatch` that rejects unknown majors loudly), instead of
+  sniffing field presence.
+- Persisted `since`/cursor values must always be stored TOGETHER with the lineId they came from —
+  `checkpoint()` (Replicated Map) and lazy-line cursors already bind them; hand-rolled persistence
+  of a naked seq is the mistake this recipe exists to prevent.
 
 ## 📦 Resource — file storage intents + AI job coordinator
 

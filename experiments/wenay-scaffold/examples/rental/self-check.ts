@@ -10,6 +10,10 @@
 //  Run: node node_modules/tsx/dist/cli.mjs experiments/wenay-scaffold/examples/rental/self-check.ts
 // ============================================================
 
+import {spawnSync} from 'node:child_process'
+import {mkdtemp, rm, writeFile} from 'node:fs/promises'
+import {tmpdir} from 'node:os'
+import path from 'node:path'
 import express from 'express'
 import {createServer} from 'http'
 import {createStoreFollower} from '../../../../src/Common/Observe/store-follower'
@@ -206,6 +210,27 @@ async function main() {
         && Array.isArray(paths['/api/rental/book'].post.security),
         '/openapi.json documents the rental routes — board public, writes behind the bearer')
 
+    // the definition's input schemas ARE the documented bodies: real field types
+    // as a [requestId, input] prefixItems tuple, not positional unknowns
+    function bodyTuple(route: string) {
+        return paths[route]?.post?.requestBody?.content?.['application/json']?.schema?.oneOf
+            ?.find((variant: any) => variant.type == 'object')?.properties?.args
+    }
+    const bookTuple = bodyTuple('/api/rental/book')
+    ok(spec.body?.openapi == '3.1.0'
+        && bookTuple?.prefixItems?.length == 2
+        && bookTuple.prefixItems[0]?.title == 'requestId'
+        && bookTuple.prefixItems[1]?.properties?.itemId?.type == 'string'
+        && bookTuple.prefixItems[1]?.properties?.from?.format == 'date'
+        && bookTuple.prefixItems[1]?.required?.join(',') == 'itemId,from,to'
+        && bookTuple.prefixItems[1]?.additionalProperties == false
+        && bookTuple.items === false,
+        'the 3.1.0 document types book args as [requestId, {itemId, from, to}] from the definition schema')
+    const cancelTuple = bodyTuple('/api/rental/cancel')
+    ok(cancelTuple?.prefixItems?.[1]?.properties?.bookingId?.type == 'string'
+        && cancelTuple.prefixItems[1]?.required?.join(',') == 'bookingId',
+        'cancel args document the real {bookingId} input the same way')
+
     // ============== cross-node receipts survive a drain ==============
     const write = createRpcClient<any>({socket: clientEnd, socketKey: 'scale', token: minted.token})
     await write.readyStrict()
@@ -222,6 +247,56 @@ async function main() {
         ['r-drain', {itemId: 'tent', from: '2026-09-01', to: '2026-09-05'}], minted.token)
     ok(replayed.status == 200 && replayed.body.value?.id == 'bk-r-drain' && bookingCount() == 3,
         'the SAME requestId at the leader answers the receipt after the node\'s death — one booking')
+
+    // ============== the SCHEMA guards the corridor before the domain sees input ==============
+    const wrongType = await httpPost('/api/rental/book',
+        ['r-schema', {itemId: 42, from: '2026-11-01', to: '2026-11-03'}], minted.token)
+    ok(wrongType.body.ok == false && wrongType.body.error?.message == 'input.itemId must be a string'
+        && bookingCount() == 3,
+        'a wrong-typed field is refused by the SCHEMA with its exact path — and commits nothing')
+    const missingField = await httpPost('/api/rental/book',
+        ['r-schema', {itemId: 'tent', from: '2026-11-01'}], minted.token)
+    ok(missingField.body.ok == false && missingField.body.error?.message == 'input.to is required'
+        && bookingCount() == 3,
+        'a missing required field is refused by name')
+    const undeclared = await httpPost('/api/rental/book',
+        ['r-schema', {itemId: 'tent', from: '2026-11-01', to: '2026-11-03', account: 'evil'}], minted.token)
+    ok(undeclared.body.ok == false && undeclared.body.error?.message == 'input.account is not a known field'
+        && bookingCount() == 3,
+        'an undeclared field is refused — additionalProperties: false is enforced, not just documented')
+    const schemaRetried = await httpPost('/api/rental/book',
+        ['r-schema', {itemId: 'tent', from: '2026-11-01', to: '2026-11-03'}], minted.token)
+    ok(schemaRetried.status == 200 && schemaRetried.body.value?.id == 'bk-r-schema' && bookingCount() == 4,
+        'schema refusals left NO receipt — the same requestId then passes to the domain and books')
+
+    // ============== third-party consumer: the emitted .d.ts carries the REAL fields ==============
+    // openapi-typescript (the standard OpenAPI->TS generator) consumes the
+    // SERVED document; the named command fields must survive into its output.
+    {
+        const served = await httpGet('/openapi.json')
+        const specDir = await mkdtemp(path.join(tmpdir(), 'rental-openapi-'))
+        try {
+            const specPath = path.join(specDir, 'openapi.json')
+            await writeFile(specPath, JSON.stringify(served.body), 'utf8')
+            // Windows: npx is a .cmd, runnable only through a shell — and the
+            // shell wants ONE command string (DEP0190 refuses args + shell)
+            const typegen = process.platform == 'win32'
+                ? spawnSync(`npx --yes openapi-typescript ${JSON.stringify(specPath)}`,
+                    {encoding: 'utf8', shell: true, timeout: 180_000})
+                : spawnSync('npx', ['--yes', 'openapi-typescript', specPath],
+                    {encoding: 'utf8', timeout: 180_000})
+            const emitted = typegen.stdout ?? ''
+            ok(typegen.status == 0
+                && /itemId: string/.test(emitted)
+                && /from: string/.test(emitted)
+                && /to: string/.test(emitted)
+                && /bookingId: string/.test(emitted)
+                && /args: \[/.test(emitted),
+                'openapi-typescript emits the named input fields as a typed args tuple')
+        } finally {
+            await rm(specDir, {recursive: true, force: true})
+        }
+    }
 
     follower.close()
     node.close()

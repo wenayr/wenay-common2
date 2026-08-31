@@ -22,8 +22,9 @@ import type {Express, NextFunction, Request, Response} from 'express'
 import path from 'path'
 import {createHttpFacadeOpenApi} from '../../../../demo/http-openapi'
 import {createHttpFacadeServer} from '../../../../src/server/httpFacadeServer'
+import {inputJsonSchema} from '../../template/input-schema'
 import type {createServiceLeader} from '../../template/leader'
-import type {RentalState, serviceDefinition} from './service'
+import {serviceDefinition, type RentalState} from './service'
 
 // Derived from the running implementation, never handwritten: the corridor
 // facet's byToken() IS the verified (token, requestId, input) fragment — the
@@ -96,16 +97,40 @@ export function createRentalRest(deps: RentalRestDeps) {
         description: 'Generated from the live facade objects; writes ride the same '
             + 'verified token corridor as the socket nodes.',
     }
+    // ============== argSchemas: the definition's input schemas, retold as tuples ==============
+    // Every corridor write is (token, requestId, input); REST clients send
+    // [requestId, input] and the bearer middleware prepends the token. The
+    // input half of each tuple is the SAME runtime schema the leader validates
+    // with — the document cannot drift from the corridor.
+    function commandArgSchemas() {
+        const map: Record<string, object[]> = {}
+        for (const [commandName, command] of Object.entries(serviceDefinition.commands)) {
+            if (!command.input) continue
+            map[`${basePath}/${serviceDefinition.name}/${commandName}`] = [
+                {
+                    type: 'string',
+                    title: 'requestId',
+                    description: 'Client-chosen identity of the attempt; a retry with the '
+                        + 'same id answers the stored receipt instead of re-running.',
+                },
+                {...inputJsonSchema(command.input), title: 'input'},
+            ]
+        }
+        return map
+    }
+
     const readSpec = createHttpFacadeOpenApi({
         object: readFacade, basePath, methods: ['get'], info, limits: restLimits,
         summaries: {'/api/rental/board': 'Public board: items + active bookings, no account details'},
     })
     const writeSpec = createHttpFacadeOpenApi({
         object: writeFacade, basePath, methods: ['post'], info, bearerAuth: true, limits: restLimits,
+        // field shapes live in the body tuple now; summaries carry only intent
         summaries: {
-            '/api/rental/book': 'args: [requestId, {itemId, from, to}] — the bearer token becomes the corridor argument',
-            '/api/rental/cancel': 'args: [requestId, {bookingId}] — only the booking owner may cancel',
+            '/api/rental/book': 'Book an item for the half-open span [from, to) — the bearer token becomes the corridor argument',
+            '/api/rental/cancel': 'Cancel a booking — only the booking owner may cancel',
         },
+        argSchemas: commandArgSchemas(),
     })
     function mergeDocuments() {
         const read = readSpec.document() as Record<string, any>

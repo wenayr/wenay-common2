@@ -181,6 +181,11 @@ createRpcServerAuto({ socket: {emit, on}, object, socketKey: string, auth?, limi
   //   Gates close on disconnect automatically. Replay lines are never throttled.
 createRpcServer(opts)        // lower-level core (same { socket, object, socketKey }) -> { control }
 noStrict(obj)                // mark a dynamic subtree (no schema; required for proxy-backed surfaces)
+createLoopbackSocketPair({delivery?}) -> {client, server, kill, setOnline, online}   // testing kit:
+  // detached in-proc pair (same wire semantics, native binary kept) + connection lifecycle —
+  //   kill() = socket death ('disconnect' both ends), setOnline(false) = silent-loss window.
+  //   Test YOUR facade without socket.io: server end -> createRpcServerAuto, client end ->
+  //   createRpcClient. Simpler one-call form: createRpcInProc({object}) -> ready client (rare docs).
 endCallback(fn)              // mark an RPC stream-callback's end   (alias: rpcEndCallback)
 flowCallback(cb, opts?)      // pace an RPC stream-callback (backpressure) -> { push, pending, closed }
   \ Sibling of endCallback: one ENDS a stream, this one PACES it. In a server method:
@@ -690,6 +695,13 @@ Observe.listenUpdate(node) -> Listen<void>                  // RPC bridge for co
 Observe.listenUpdatePaths(node) -> Listen<{paths: PropertyKey[][]}>
 opts: { drain?: "immediate"|"micro"|number|((flush)=>void), depth?, eager? }
 
+// REACTIVITY CONTRACT (pinned by store-value-semantics.spec.ts): plain objects and arrays are
+//   reactive at ANY depth — mutate them normally (store.state.a.b.c = 15, list.push, delete).
+//   Rich values (Map/Set/Date/TypedArray/DataView/class instances) are VALUES: replacing one
+//   wholesale is visible, mutating one IN PLACE (map.set, date.setTime, buf[0] = x) is invisible —
+//   the proxy wraps only plain objects/arrays; rich values stay opaque leaves with their prototype.
+//   Snapshots/patches/the wire still carry rich values with full semantics — replace, don't mutate.
+
 // path-addressed store facade over reactive()
 Observe.createStore<T extends object>(initial, opts?) -> Store<T>
 store.state                                                   // reactive data object; write normally
@@ -708,6 +720,11 @@ store.each(opts?) -> Listen<[key, value, ctx]>                 // changed TOP-LE
   //   ONE call per window with the whole dict (a dev warn points to each())
 store.count() -> number
 Observe.cloneStoreValue<T>(value) -> T                            // detached clone with the same rich/binary/cycle semantics as Store snapshots
+Observe.storeExternal(nodeOrStore) -> { subscribe(onChange) -> off, getSnapshot() -> T }
+  // the useSyncExternalStore tuple over any {on, snapshot} source (a store.node path or the Store
+  //   root) — zero React dependency; getSnapshot identity is stable between changes (recomputed
+  //   lazily on the first read after a change fact), so React 18+ consumes a Store path as
+  //   useSyncExternalStore(ext.subscribe, ext.getSnapshot) without a re-render loop
 Observe.listenStorePatches(store) -> Listen<[readonly StorePatch[]]> // public settled patch feed: one source array per Store drain
 
 // network shape: backend exposes snapshots + changed Listen; frontend mirrors selected masks locally

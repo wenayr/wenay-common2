@@ -6,8 +6,10 @@
 //  every captured (method, route) pair appears in the spec, the document has
 //  a valid basic shape, summaries land on their operations, GET documents the
 //  one JSON-array "args" query value and POST the {args: [...]} body, bearer
-//  security appears only when declared — and a live express server proves the
-//  documented statuses and envelope against actual behavior.
+//  security appears only when declared, an argSchemas route documents its POST
+//  body as a real 3.1 prefixItems tuple while other routes keep the generic
+//  args array — and a live express server proves the documented statuses,
+//  envelope, and tuple against actual behavior.
 //  Run: npx tsx replay/http-openapi.test.ts
 // ============================================================
 
@@ -84,9 +86,13 @@ async function main() {
             bearerAuth: true,
             limits: {maxArgs: 4},
             summaries: {'/api/demo/echo': 'Echo one value'},
+            argSchemas: {'/api/demo/echo': [
+                {type: 'string', title: 'value'},
+                {type: 'object', title: 'options', properties: {loud: {type: 'boolean'}}, required: ['loud']},
+            ]},
         }).document()
 
-        ok(spec.openapi == '3.0.3', 'document declares OpenAPI 3.0.3')
+        ok(spec.openapi == '3.1.0', 'document declares OpenAPI 3.1.0 (prefixItems needs 2020-12)')
         ok(spec.info?.title == 'facade under test' && spec.info?.version == '1.2.3',
             'info carries the deps title and version')
         ok(Object.keys(spec.paths ?? {}).length == 3, 'three routes, three path items')
@@ -110,15 +116,34 @@ async function main() {
             && getArgs?.schema?.type == 'string',
             'GET documents args as one optional query value holding a JSON array string')
 
-        const postBody = spec.paths['/api/demo/echo'].post.requestBody
+        const postBody = spec.paths['/api/demo/status'].post.requestBody
         const bodyVariants = postBody?.content?.['application/json']?.schema?.oneOf ?? []
         const envelope = bodyVariants.find((variant: any) => variant.type == 'object')
         ok(postBody?.required == true && envelope?.required?.includes('args')
             && envelope?.properties?.args?.type == 'array'
             && envelope?.properties?.args?.maxItems == 4,
-            'POST documents the required {args: [...]} body with the maxArgs cap')
+            'a route without argSchemas documents the required {args: [...]} body with the maxArgs cap')
         ok(bodyVariants.some((variant: any) => variant.type == 'array'),
             'POST also documents the bare-array body the server accepts')
+
+        // ============== argSchemas: the POST body becomes the real call tuple ==============
+        const echoBody = spec.paths['/api/demo/echo'].post.requestBody
+        const echoVariants = echoBody?.content?.['application/json']?.schema?.oneOf ?? []
+        const echoEnvelope = echoVariants.find((variant: any) => variant.type == 'object')
+        const echoTuple = echoEnvelope?.properties?.args
+        ok(echoTuple?.prefixItems?.length == 2
+            && echoTuple?.prefixItems?.[0]?.title == 'value'
+            && echoTuple?.prefixItems?.[1]?.properties?.loud?.type == 'boolean'
+            && echoTuple?.minItems == 2 && echoTuple?.maxItems == 2 && echoTuple?.items === false,
+            'an argSchemas route documents args as a fixed prefixItems tuple with the field schemas')
+        const echoBare = echoVariants.find((variant: any) => variant.type == 'array')
+        ok(echoBare?.prefixItems?.[1]?.required?.includes('loud')
+            && echoBody?.content?.['application/json']?.example == undefined,
+            'the bare-array variant carries the same tuple and the canned example is dropped')
+        const statusExample = spec.paths['/api/demo/status'].post.requestBody
+            ?.content?.['application/json']?.example
+        ok(statusExample?.args?.[0] == 'hello',
+            'routes without argSchemas keep the generic example')
 
         ok(spec.components?.securitySchemes?.bearerAuth?.scheme == 'bearer'
             && spec.security?.[0]?.bearerAuth != null,
@@ -157,6 +182,9 @@ async function main() {
             methods: ['get', 'post'],
             info: {title: 'live facade', version: '1.0.0'},
             limits,
+            // the tuple documents echo's REAL signature so the live leg can
+            // prove the documented body is exactly what the server accepts
+            argSchemas: {'/api/demo/echo': [{type: 'string', title: 'value'}]},
         })
         app.get('/openapi.json', function serveOpenApiDocument(_req, res) {
             res.json(openApi.document())
@@ -167,8 +195,13 @@ async function main() {
         const port = (server.address() as AddressInfo).port
         try {
             const spec = await requestJson(port, 'GET', '/openapi.json')
-            ok(spec.status == 200 && spec.json.openapi == '3.0.3',
-                'GET /openapi.json serves the generated document')
+            ok(spec.status == 200 && spec.json.openapi == '3.1.0',
+                'GET /openapi.json serves the generated 3.1.0 document')
+            const servedTuple = spec.json.paths?.['/api/demo/echo']?.post?.requestBody
+                ?.content?.['application/json']?.schema?.oneOf
+                ?.find((variant: any) => variant.type == 'object')?.properties?.args
+            ok(servedTuple?.prefixItems?.[0]?.title == 'value' && servedTuple?.items === false,
+                'the served document carries the prefixItems tuple for the argSchemas route')
             ok(JSON.stringify(Object.keys(spec.json.paths).sort())
                 == JSON.stringify(openApi.routes().map(pair => pair.route)
                     .filter((route, index, all) => all.indexOf(route) == index).sort()),
@@ -181,7 +214,7 @@ async function main() {
 
             const posted = await requestJson(port, 'POST', '/api/demo/echo', {args: ['hi']})
             ok(posted.status == 200 && posted.json.ok == true && posted.json.value?.value == 'hi',
-                'POST accepts the documented {args: [...]} body')
+                'POST accepts exactly the body the prefixItems tuple documents')
 
             const status = await requestJson(port, 'GET', '/api/demo/status')
             ok(status.status == 200 && status.json.value?.up == true

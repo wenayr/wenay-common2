@@ -14,6 +14,7 @@
 // TODO(graduation): '../../template/leader' becomes the scaffold package
 // entrypoint when the template graduates out of the incubator.
 
+import {schemaCommand} from '../../template/input-schema'
 import type {ServiceCommandCtx, tServiceDefinition} from '../../template/leader'
 
 export type RentalItem = {id: string, title: string, pricePerDay: number}
@@ -29,16 +30,6 @@ export type RentalBooking = {
 export type RentalState = {
     items: Record<string, RentalItem>
     bookings: Record<string, RentalBooking>
-}
-
-const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/
-
-function requireIsoDay(value: unknown, label: string) {
-    const day = String(value ?? '')
-    if (!ISO_DAY.test(day) || Number.isNaN(Date.parse(day))) {
-        throw new Error(`${label} must be an ISO day (YYYY-MM-DD)`)
-    }
-    return day
 }
 
 /** Half-open spans [from, to): ISO days compare correctly as strings. */
@@ -62,19 +53,15 @@ export const serviceDefinition = {
         bookings: {},
     } as RentalState,
     commands: {
-        book: {
-            // validate() is stateless by the template contract: shape rules live
-            // here; state rules (item exists, no overlap) guard apply() below
-            // BEFORE its first mutation, so a refusal still commits nothing.
-            validate(input: {itemId?: unknown, from?: unknown, to?: unknown}) {
-                if (typeof input?.itemId != 'string' || !input.itemId) {
-                    throw new Error('itemId must be a non-empty string')
-                }
-                const from = requireIsoDay(input.from, 'from')
-                const to = requireIsoDay(input.to, 'to')
-                if (from >= to) throw new Error('from must be strictly before to')
+        // the input SCHEMA owns the shape (and is the OpenAPI body + the TS
+        // type of input); validate() keeps only stateless cross-field rules;
+        // state rules (item exists, no overlap, ownership) guard apply() below
+        // BEFORE its first mutation, so a refusal still commits nothing.
+        book: schemaCommand({itemId: 'string', from: 'date-string', to: 'date-string'}, {
+            validate(input) {
+                if (input.from >= input.to) throw new Error('from must be strictly before to')
             },
-            apply(ctx: ServiceCommandCtx<RentalState>, input: {itemId: string, from: string, to: string}) {
+            apply(ctx: ServiceCommandCtx<RentalState>, input) {
                 const item = ctx.state.items[input.itemId]
                 if (!item) throw new Error(`unknown item: ${input.itemId}`)
                 for (const other of Object.values(ctx.state.bookings)) {
@@ -95,14 +82,10 @@ export const serviceDefinition = {
                 ctx.state.bookings[booking.id] = booking
                 return booking
             },
-        },
-        cancel: {
-            validate(input: {bookingId?: unknown}) {
-                if (typeof input?.bookingId != 'string' || !input.bookingId) {
-                    throw new Error('bookingId must be a non-empty string')
-                }
-            },
-            apply(ctx: ServiceCommandCtx<RentalState>, input: {bookingId: string}) {
+        }),
+        // the whole stateless contract of cancel IS the schema — no validate()
+        cancel: schemaCommand({bookingId: 'string'}, {
+            apply(ctx: ServiceCommandCtx<RentalState>, input) {
                 const booking = ctx.state.bookings[input.bookingId]
                 if (!booking) throw new Error(`unknown booking: ${input.bookingId}`)
                 // ownership comes from the verified token principal, never from input
@@ -111,7 +94,7 @@ export const serviceDefinition = {
                 booking.state = 'cancelled'
                 return {...booking}
             },
-        },
+        }),
     },
     /** Read policy: the public board — items and active spans, WHO booked stays private. */
     readerFacet(state: RentalState) {
