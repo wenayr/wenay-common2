@@ -59,8 +59,7 @@ async function main() {
             const leader = (clients.link.func as any)[serviceDefinition.name]
             return {
                 replica: leader.replica,
-                directory: leader.directory,
-                revoked: leader.revoked,
+                control: leader.control,
                 commandsByToken: leader.commandsByToken,
                 register: leader.register,
                 heartbeat: leader.heartbeat,

@@ -95,10 +95,10 @@ async function main() {
         },
     }
 
-    const dir = createNodeDirectory()
+    const dir = createNodeDirectory({staleMs: 10_000})
     const kube = createKubeSourceReal({namespace: ns, labelSelector: 'app=' + APP_LABEL, port: POD_PORT, kubeconfig: kc})
     const feeder = createK8sDirectoryFeeder({source: kube.source, directory: dir.control, heartbeatMs: 1000})
-    const views = () => nodeDirectoryViews(dir.control.snapshot(), {staleMs: 10_000})
+    const views = () => dir.view.nodes()
     const eligible = () => views().filter(row => row.eligible)
 
     try {

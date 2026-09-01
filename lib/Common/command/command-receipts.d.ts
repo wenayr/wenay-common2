@@ -1,4 +1,5 @@
-import { type ReplicatedMap, type ReplicatedMapRemote } from '../Observe/replicated-map';
+import { type Store } from '../Observe/store';
+import { type StoreReplayOpts, type StoreReplayRemote } from '../Observe/store-replay';
 export type CommandReceiptRecord = {
     account: string;
     requestId: string;
@@ -6,31 +7,29 @@ export type CommandReceiptRecord = {
     ts: number;
     result: unknown;
 };
-export declare function commandReceiptKey(account: string, requestId: string): string;
-export type CommandReceiptsDeps = {
-    initial?: Iterable<CommandReceiptRecord>;
-    lineId?: string;
-    replay?: {
-        history?: number;
-        keepMs?: number;
-        describe?: Record<string, any>;
-    };
+export type CommandReceiptsState = {
+    receipts: Record<string, CommandReceiptRecord>;
 };
-export type CommandReceiptLine = Pick<ReplicatedMap<CommandReceiptRecord>['control'], 'set' | 'delete' | 'snapshot'>;
-export type CommandReceiptsRemote = ReplicatedMapRemote<CommandReceiptRecord>;
-export declare function createCommandReceipts(deps?: CommandReceiptsDeps): {
-    api: ReplicatedMapRemote<CommandReceiptRecord, string>;
-    control: {
-        set: (value: CommandReceiptRecord) => void;
-        setMany: (values: Iterable<CommandReceiptRecord>) => void;
-        delete: (key: string) => void;
-        deleteMany: (keys: Iterable<string>) => void;
-        replaceAll: (values: Iterable<CommandReceiptRecord>) => void;
-        has: (key: string) => boolean;
-        get: (key: string) => CommandReceiptRecord | undefined;
-        snapshot: () => Partial<Record<string, CommandReceiptRecord>>;
+export declare function commandReceiptKey(account: string, requestId: string): string;
+export type CommandReceiptLine = {
+    set(record: CommandReceiptRecord): void;
+    delete(key: string): void;
+    snapshot(): Record<string, CommandReceiptRecord | undefined>;
+};
+export type CommandReceiptsDeps<S extends CommandReceiptsState = CommandReceiptsState> = {
+    store?: Store<S>;
+    initial?: Iterable<CommandReceiptRecord>;
+    replay?: Pick<StoreReplayOpts, 'history' | 'keepMs' | 'describe'>;
+};
+export type CommandReceiptsRemote = StoreReplayRemote;
+export declare function createCommandReceipts<S extends CommandReceiptsState = CommandReceiptsState>(deps?: CommandReceiptsDeps<S>): {
+    api: StoreReplayRemote | null;
+    control: CommandReceiptLine & {
+        get: (key: string) => CommandReceiptRecord;
         flush: () => void;
         close: () => void;
     };
+    store: Store<CommandReceiptsState>;
+    close: () => void;
 };
 export type CommandReceipts = ReturnType<typeof createCommandReceipts>;

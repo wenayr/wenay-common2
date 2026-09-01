@@ -46,7 +46,7 @@ function labeledRole(pod: KubePod) {
 async function feederPart() {
     console.log('feeder: pod facts -> directory verbs')
     let t = 1000
-    const dir = createNodeDirectory({now: () => t})
+    const dir = createNodeDirectory({now: () => t, staleMs: 5000})
     const kube = createFakeKubeApi([
         {name: 'pod-a', url: 'http://10.0.0.1:3100', ready: true, labels: {role: 'leader'}},
         {name: 'pod-b', url: 'http://10.0.0.2:3100', ready: true},
@@ -57,8 +57,7 @@ async function feederPart() {
         role: labeledRole,
         heartbeatMs: 20,
     })
-    const viewOpts = {staleMs: 5000, now: () => t}
-    const views = () => nodeDirectoryViews(dir.control.snapshot(), viewOpts)
+    const views = () => dir.view.nodes()
     const row = (name: string) => views().find(v => v.nodeId == name)
 
     await feeder.start()
@@ -80,11 +79,12 @@ async function feederPart() {
     kube.control.deletePod('pod-b')
     ok(row('pod-b') == undefined, 'deleted pod removes its row')
 
-    // rows were stamped at the old clock; the jump makes them stale until the
-    // periodic heartbeat (real timer, fake clock) re-stamps ts with the new now
+    // the OWNER publishes liveness: a sweep after the clock jump flips the silent
+    // rows dead, and the feeder's periodic heartbeat (real timer, fake clock) revives them
     t += 20_000
-    ok(views().every(v => v.stale), 'clock jump past staleMs marks silent rows stale')
-    await waitFor('heartbeats re-stamp the rows fresh', () => views().length == 2 && views().every(v => !v.stale))
+    dir.control.sweep()
+    ok(views().every(v => !v.alive), 'a sweep past staleMs publishes silent rows dead')
+    await waitFor('heartbeats revive the rows', () => views().length == 2 && views().every(v => v.alive))
     ok(feeder.view.counts().heartbeats > 0, 'the periodic heartbeat drove the freshness')
 
     // a watch gap loses the delete event; only the next full sync reconciles it
@@ -162,7 +162,7 @@ async function balancePart() {
     })
     await feeder.start()
 
-    const followed = followNodeDirectory(dir.api, {staleMs: 0})
+    const followed = followNodeDirectory(dir.api!)
     await followed.ready
     await tick()
     const offers = directoryReplicaOffers({

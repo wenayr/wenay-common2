@@ -2,11 +2,16 @@
 // Store node — a serving node built from one config object
 // =====================================================================
 // The factory owns what makes a node a node: the replica line with its
-// to-upstream offer, local token verification with a replicated deny list,
+// to-upstream offer, local token verification with the replicated deny list,
 // per-connection RPC serving (an ungated read surface and an optionally gated
-// write surface), self-registration + heartbeat in the node directory, and the
-// watch-own-row leave rule. Drain is DATA: the node leaves on the same
-// directory fact every client sees — no control channel exists.
+// write surface), self-registration + heartbeat in the roster, and the
+// watch-own-row leave rule. Drain is DATA: the node leaves on the same roster
+// fact every client sees — no control channel exists.
+//
+// The node follows the authority's ONE control line: its own roster row and
+// the deny list arrive together, in one subscription. When the host resolves
+// a DIFFERENT upstream link (failover, hub rotation) the node re-homes: it
+// registers there and follows THAT control line.
 //
 // The HOST keeps what only a process can own (doc/DYNAMIC-RUNTIME.md
 // boundary): env, transports (the socket server and the upstream connection),
@@ -28,9 +33,10 @@ import type {RpcOpt} from '../rcp/rpc-caps'
 import type {SocketTmpl} from '../rcp/rpc-protocol'
 import {forwardCommandsByToken, type CommandTokenFragment} from '../command/command-token'
 import type {tCommandMap} from '../command/command-host'
-import {createStoreReplicaSet, type StoreReplicaSession} from './store-replica-set'
-import {followReplicatedMap, type ReplicatedMapRemote} from './replicated-map'
-import {followNodeDirectory, type NodeDirectoryEntry} from './node-directory'
+import {createStoreReplicaSet, type StoreLineCoordinates, type StoreReplicaSession} from './store-replica-set'
+import {createStoreFollower, type StoreFollower} from './store-follower'
+import type {StoreReplayRemote} from './store-replay'
+import type {NodeDirectoryEntry, NodeDirectoryState} from './node-directory'
 
 // ============================================================
 // public contract
@@ -42,14 +48,15 @@ export type StoreNodeRevocation = {account: string, ts: number}
 /** A verified principal; expiresAt bounds the RPC grant (one clock, one exit). */
 export type StoreNodePrincipal = {account: string, expiresAt?: number}
 
+/** The sections of the authority's control line a node reads. */
+export type StoreNodeControlState = NodeDirectoryState & {revoked: Record<string, StoreNodeRevocation>}
+
 /** The already-resolved authority link; the host owns the transport under it. */
 export type StoreNodeUpstream = {
     /** The authority's replica-line fragment (replica-set session remote). */
     replica: StoreReplicaSession['remote']
-    /** The authority's node-directory line. */
-    directory: ReplicatedMapRemote<NodeDirectoryEntry>
-    /** Replicated deny list; required only when a gated write surface is served. */
-    revoked?: ReplicatedMapRemote<StoreNodeRevocation>
+    /** The authority's control line: roster + deny list (+ receipts, which a node ignores). */
+    control: StoreReplayRemote
     /** The authority's verifyCommands fragment (token-envelope entries). */
     commandsByToken?: CommandTokenFragment<tCommandMap>
     /** The node reports its OWN facts here: readers resets a dead predecessor's
@@ -62,17 +69,21 @@ export type StoreNodeUpstream = {
 }
 
 export type StoreNodeDeps<T extends Record<string, any>> = {
-    nodeId: string
-    /** Replica-line coordinates; they must match the authority's line. */
-    storeId: string
-    originId: string
-    lineId?: string
-    initial?: T
-    /** Directory placement share; default 4. */
-    weight?: number
-    heartbeatMs?: number
-    /** Grace between seeing the leave fact and saying goodbye; clients move first. */
-    graceMs?: number
+    /** Replica-line coordinates (must match the authority's line) and the state before the first keyframe. */
+    line: StoreLineCoordinates & {initial?: T}
+    /** This node's roster row: client-reachable origin (read lazily — the port binds late), share, cadence. */
+    roster: {
+        url: () => string
+        /** Placement share; default 4. */
+        weight?: number
+        heartbeatMs?: number
+        /** Grace between seeing the leave fact and saying goodbye; clients move first. */
+        graceMs?: number
+    }
+    /** Resolve the authority link; the host owns connection and link auth.
+     *  Called again on every replica reconnect — return the CURRENT link, so a
+     *  hard hub rotation or a failover hands the node the live authority. */
+    upstream: () => Promise<StoreNodeUpstream> | StoreNodeUpstream
     /**
      * Gated write surface: verify a presented token or throw to reject —
      * a throw carrying `revoke: true` kills the live session (RPC-AUTH rule 6).
@@ -84,33 +95,30 @@ export type StoreNodeDeps<T extends Record<string, any>> = {
     }
     /** Forwarded command names; an RPC proxy cannot be enumerated, so they are explicit. */
     commands?: readonly string[]
-    /** Resolve the authority link; the host owns connection and link auth.
-     *  Called again on every replica reconnect — return the CURRENT link, so a
-     *  hard hub rotation hands the node live clients instead of disposed ones. */
-    upstream: () => Promise<StoreNodeUpstream> | StoreNodeUpstream
-    /** The host's socket-server hook; the factory serves every accepted connection. */
-    serve: {onConnection(handler: (socket: SocketTmpl) => void): void}
-    /** Client-reachable origin of THIS node; read lazily (the port binds late). */
-    selfUrl: () => string
+    /** How this node serves: the host's socket-server hook plus the RPC shape around the fragments. */
+    serve: {
+        onConnection(handler: (socket: SocketTmpl) => void): void
+        /** Application RPC shape around the served fragments (e.g. f => ({miniScale: f})). */
+        wrap?: (fragment: Record<string, unknown>) => object
+        keys?: {read?: string, write?: string}
+        opt?: RpcOpt
+    }
     /** The host owns the actual shutdown/process.exit; called ONCE, after the grace. */
     onLeave: (reason: string) => void
-    /** Application RPC shape around the served fragments (e.g. f => ({miniScale: f})). */
-    wrap?: (fragment: Record<string, unknown>) => object
-    socketKeys?: {read?: string, write?: string}
-    opt?: RpcOpt
     log?: (line: string) => void
 }
 
 export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDeps<T>) {
-    const {nodeId} = deps
+    const {nodeId} = deps.line
     const log = deps.log ?? console.log
-    const weight = deps.weight ?? 4
-    const heartbeatMs = deps.heartbeatMs ?? 2000
-    const graceMs = deps.graceMs ?? 2000
+    const weight = deps.roster.weight ?? 4
+    const heartbeatMs = deps.roster.heartbeatMs ?? 2000
+    const graceMs = deps.roster.graceMs ?? 2000
     const commands = deps.commands ?? []
-    const wrap = deps.wrap ?? function serveUnwrapped(fragment: Record<string, unknown>) { return fragment }
-    const readKey = deps.socketKeys?.read ?? 'app'
-    const writeKey = deps.socketKeys?.write ?? 'scale'
+    const wrap = deps.serve.wrap ?? function serveUnwrapped(fragment: Record<string, unknown>) { return fragment }
+    const readKey = deps.serve.keys?.read ?? 'app'
+    const writeKey = deps.serve.keys?.write ?? 'scale'
+    const rpcOpt = deps.serve.opt ? {opt: deps.serve.opt} : {}
 
     // Lifecycle slots: created in start(), released by leave()/close().
     let started = false
@@ -119,13 +127,21 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
     let readersOf: (() => number) | null = null
     let upstream: StoreNodeUpstream | null = null
     let replica: ReturnType<typeof createStoreReplicaSet<T>> | null = null
-    let denyFollower: ReturnType<typeof followReplicatedMap<StoreNodeRevocation>> | null = null
-    let roster: ReturnType<typeof followNodeDirectory> | null = null
+    let control: StoreFollower<StoreNodeControlState> | null = null
+    let offControl: (() => void)[] = []
     let beat: ReturnType<typeof setInterval> | null = null
     let grace: ReturnType<typeof setTimeout> | null = null
     // set once the first registration + own-row watch are live; re-homing happens only after
     let served = false
+    let rehomes = 0
     let rehome: ((fresh: StoreNodeUpstream) => Promise<void>) | null = null
+
+    function releaseControl() {
+        for (const off of offControl) off()
+        offControl = []
+        control?.close()
+        control = null
+    }
 
     // ============================================================
     // start: catch up, serve, register, watch own row
@@ -140,10 +156,7 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
             // drop the latch, so a host's catch-and-retry is a REAL retry
             started = false
             if (beat) { clearInterval(beat); beat = null }
-            roster?.close()
-            roster = null
-            denyFollower?.close()
-            denyFollower = null
+            releaseControl()
             replica?.close()
             replica = null
             readersOf = null
@@ -162,10 +175,11 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
         if (abandoned()) return
         upstream = link
 
+        const {initial, ...coordinates} = deps.line
         const line = createStoreReplicaSet<T>({
-            storeId: deps.storeId, originId: deps.originId, nodeId,
-            lineId: deps.lineId ?? nodeId + '-line',
-            initial: deps.initial ?? {} as T,
+            ...coordinates,
+            lineId: coordinates.lineId ?? nodeId + '-line',
+            initial: initial ?? {} as T,
             leadership: {initialRole: 'follower', eligible: false},
         })
         replica = line
@@ -176,7 +190,7 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
             connect: async function connectUpstream() {
                 const fresh = await deps.upstream()
                 // a DIFFERENT link = a new authority (failover) or a rotated hub: the
-                // node re-homes — registers there and follows ITS roster and deny list
+                // node re-homes — registers there and follows ITS control line
                 if (fresh != upstream) {
                     upstream = fresh
                     if (served && rehome) await rehome(fresh)
@@ -198,17 +212,9 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
         const auth = deps.auth
         // rule-7 bookkeeping is the SHARED primitive — the authority runs the same one
         const scaleSessions = createSessionRegistry()
-        function followDenyList(from: StoreNodeUpstream) {
-            denyFollower?.close()
-            const denyList = auth && from.revoked ? followReplicatedMap<StoreNodeRevocation>(from.revoked) : null
-            denyFollower = denyList
-            denyList?.keys.on(function cutRevokedSessions(account, _value, ctx) {
-                if (!ctx.exists) return
-                scaleSessions.cut(account, 'account revoked at the authority')
-                log(`store node ${nodeId}: revocation fact applied — ${account}`)
-            })
+        function isRevoked(account: string) {
+            return control?.store.state.revoked?.[account] != undefined
         }
-        followDenyList(link)
 
         // Who READS here is not "who is connected": every replica-set client keeps
         // sessions to ALL nodes for fork-choice, but only its ACTIVE route
@@ -241,7 +247,7 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
                     node: () => nodeId,
                 }),
                 disconnectListen: goneListen,
-                ...(deps.opt ? {opt: deps.opt} : {}),
+                ...rpcOpt,
             })
             // gated write surface: THIS node verifies the token, locally
             let bound: string | null = null
@@ -254,7 +260,7 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
                     resolveAuth(presented: unknown) {
                         const principal = auth.verify(presented)
                         const account = principal.account
-                        if (denyFollower?.has(account)) {
+                        if (isRevoked(account)) {
                             throw Object.assign(new Error('account revoked at the authority'), {revoke: true})
                         }
                         if (bound != account) {
@@ -276,7 +282,7 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
                     },
                 },
                 disconnectListen: goneListen,
-                ...(deps.opt ? {opt: deps.opt} : {}),
+                ...rpcOpt,
             }) : null
             socket.on('disconnect', function nodeClientGone() {
                 gone()
@@ -284,7 +290,7 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
             })
         })
 
-        const url = deps.selfUrl()
+        const url = deps.roster.url()
         // the node's OWN facts ride the registration: a fresh process resets a
         // dead predecessor's readers count instead of inheriting its load
         function register(at: StoreNodeUpstream) {
@@ -304,43 +310,57 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
         beat = setInterval(function nodeHeartbeat() {
             // through the SLOT: connectUpstream may have re-resolved the link
             // .then, not Promise.resolve(call): an in-process link throws synchronously when its owner is gone
-            void Promise.resolve().then(function beat() { return upstream?.heartbeat(nodeId, {readers: readers()}) }).catch(function heartbeatLost() {})
+            void Promise.resolve().then(function beatNow() { return upstream?.heartbeat(nodeId, {readers: readers()}) }).catch(function heartbeatLost() {})
         }, heartbeatMs)
         ;(beat as any).unref?.()
 
-        // ============== leave on my own directory fact ==============
-        async function watchOwnRow(from: StoreNodeUpstream) {
-            roster?.close()
-            const directory = followNodeDirectory(from.directory, {staleMs: 0})
-            roster = directory
-            await directory.ready
-            if (abandoned()) return
-            // per-KEY watch with `current`: the ready snapshot seeds seenSelf
-            // (registration happened BEFORE this follow, so a removal landing as
-            // the very first change still reads as "was present, now gone"), and
-            // peers' heartbeats cost no roster re-derivation on this node
-            let seenSelf = false
-            directory.follow.onKey(nodeId, function ownRowChanged(entry, ctx) {
-                if (ctx.exists) {
-                    seenSelf = true
-                    if (entry?.draining) leave('drained by the authority')
-                } else if (seenSelf) {
-                    leave('removed from the directory')
+        // ============== the control line: own row (leave rule) + deny list (session cuts) ==============
+        async function followControl(from: StoreNodeUpstream) {
+            releaseControl()
+            const follower = createStoreFollower<StoreNodeControlState>({remote: from.control, initial: {nodes: {}, revoked: {}}})
+            control = follower
+            await follower.ready
+            if (abandoned() || control != follower) return
+            log(`store node ${nodeId}: following the control line (seq ${follower.status.state.seq})`)
+            // every account that APPEARS in the deny list loses its live sessions here —
+            // including the ones a fresh keyframe brings after a re-home
+            let known = new Set(Object.keys(follower.store.snapshot().revoked ?? {}))
+            for (const account of known) scaleSessions.cut(account, 'account revoked at the authority')
+            offControl.push(follower.store.node.at('revoked').on(function cutRevokedSessions(section) {
+                const next = new Set(Object.keys((section as Record<string, unknown>) ?? {}))
+                for (const account of next) {
+                    if (known.has(account)) continue
+                    scaleSessions.cut(account, 'account revoked at the authority')
+                    log(`store node ${nodeId}: revocation fact applied — ${account}`)
                 }
-            }, {current: true})
+                known = next
+            }))
+            // per-ROW watch with `current`: the ready snapshot seeds seenSelf
+            // (registration happened BEFORE this follow, so a removal landing as
+            // the very first change still reads as "was present, now gone")
+            let seenSelf = false
+            offControl.push(follower.store.node.at('nodes').at(nodeId).on(function ownRowChanged(value) {
+                const entry = value as NodeDirectoryEntry | undefined
+                if (entry) {
+                    seenSelf = true
+                    if (entry.draining) leave('drained by the authority')
+                } else if (seenSelf) {
+                    leave('removed from the roster')
+                }
+            }, {current: true}))
         }
-        await watchOwnRow(link)
+        await followControl(link)
         served = true
 
-        /** A new authority link: announce ourselves there and watch ITS roster and deny list. */
+        /** A new authority link: announce ourselves there and follow ITS control line. */
         rehome = async function rehomeOnto(fresh: StoreNodeUpstream) {
             if (abandoned()) return
             log(`store node ${nodeId}: re-homing onto a new authority link`)
             try { await register(fresh) } catch (error) {
                 log(`store node ${nodeId}: re-registration failed — ${String((error as any)?.message ?? error)}`)
             }
-            followDenyList(fresh)
-            await watchOwnRow(fresh)
+            await followControl(fresh)
+            rehomes++
         }
     }
 
@@ -351,8 +371,7 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
         if (torndown) return
         torndown = true
         if (beat) clearInterval(beat)
-        roster?.close()
-        denyFollower?.close()
+        releaseControl()
         replica?.close()
     }
 
@@ -377,11 +396,12 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
 
     return {
         start,
-        /** Graceful exit path — signals and directory facts both land here. */
+        /** Graceful exit path — signals and roster facts both land here. */
         leave,
         view: {
             nodeId,
-            status: () => ({started, leaving, readers: readersOf?.() ?? 0, seq: replica?.api.status.state.authoritySeq}),
+            /** rehomes counts completed moves onto a DIFFERENT upstream link (failover, hub rotation). */
+            status: () => ({started, leaving, rehomes, readers: readersOf?.() ?? 0, seq: replica?.api.status.state.authoritySeq}),
         },
         close,
     }

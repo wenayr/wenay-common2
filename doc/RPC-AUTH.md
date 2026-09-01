@@ -505,7 +505,8 @@ trusted by deliberate choice.
 
 **Succession keeps every rule.** A standby authority (`leadership.role: 'standby'`) is itself a node
 principal on the leader's link (registered as a `'standby'` row) and FOLLOWS the deny list, so a
-revoked account is refused there too — before and after promotion; the receipts line follows with it,
+revoked account is refused there too — before and after promotion; the receipts follow in the SAME
+control line (roster + deny list + receipts are sections of one store, `nodeLink().control`),
 so a duplicate requestId is answered, not re-executed, by the successor (rule 6 and the corridor's
 at-most-once are properties of the DATA, not of one process). A standby serves `reader()` only —
 `browser()`, `nodeLink()` and identity writes throw until it leads — and a demoted leader refuses

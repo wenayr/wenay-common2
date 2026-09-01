@@ -885,19 +885,25 @@ Observe.createStoreReplicaSet<T>({storeId, originId, nodeId, lineId?, store?, in
 Observe.diffKeyedState(local, authority) -> {localOnly, authorityOnly, conflicts}
   // split-brain tail after a failover rejoin: localOnly = re-apply candidates (mempool analogy),
   //   conflicts = both sides changed one record (the epoch already chose the winner; the pair is preserved)
-Observe.createNodeDirectory({now?, initial?, lineId?, replay?}) -> {api, control: {upsert, heartbeat, drain, undrain, remove, get, snapshot, flush, close}}
-  // replicated roster of service nodes (latest map keyed by nodeId) for client-side balancing:
+Observe.createNodeDirectory({store?, now?, staleMs? /* 15s, 0 = off */, sweepMs?, initial?, replay?})
+  -> {api /* the {nodes} line, standalone only */, control: {set, patch, heartbeat, drain, undrain, remove, grace, sweep, get, snapshot, flush, close}, view: {nodes()}, store, close}
+  // the roster is the `nodes` SECTION of a Store served as a Store Replay line: standalone it owns the
+  //   store and the line; with deps.store it is a facet over a wider control store (the authority's) and
+  //   the roster travels in the SAME line as the deny list and the receipts.
+  // row = {nodeId, url, role: 'leader' | 'mirror' | 'standby', weight, draining, alive, since, meta?}
   //   weight > 0 = accepts placements · weight <= 0 = closed · draining = leaving ·
-  //   heartbeat age > staleMs = presumed dead — staleness is derived by READERS, never stored
-  // role: 'leader' | 'mirror' | 'standby' — a standby is a successor-in-waiting, registered with weight 0
-  //   (discoverable by url, never placed); initial seeds the roster a promoted standby continues
-  // heartbeat meta MERGES one level at the directory: each writer refreshes the facts it owns
-  //   (readers vs labels vs pid) without erasing another writer's; upsert replaces the row wholesale
-Observe.followNodeDirectory(remote, {staleMs?, now?, initial?, onStatus?, onError?}) -> {nodes(), pick(opts?), onNodes(cb), ready, status, close, follow}
-  // staleness is HOST-clock anchored: the follower tracks the freshest host ts and advances it by
-  //   LOCALLY elapsed time, so reader-host clock skew cannot kill (or immortalize) the roster;
-  //   an explicit now keeps the direct meaning (fake clocks, one-clock stands)
-Observe.nodeDirectoryViews(state, opts?) · Observe.pickDirectoryNode(views, {exclude?, rng?})
+  //   alive = the OWNER's verdict: beats live in owner memory, a sweep every staleMs/2 flips alive
+  //   when a row was silent for staleMs, since = owner-clock ms of the last flip. A replicated write
+  //   happens when a FACT changes (alive, readers, labels...), never per beat — readers judge nothing
+  //   by their own clocks (no staleMs anywhere on the reader side). A standby is a successor-in-waiting
+  //   registered with weight 0 (discoverable by url, never placed).
+  // ONE write rule: set(row) replaces (starts alive), patch(nodeId, partial) merges (meta one level),
+  //   heartbeat(nodeId, partial?) = liveness + patch, drain/undrain = named patches, grace() re-arms every
+  //   beat (a promoted owner grants the fleet staleMs to re-home). Writes that change nothing publish nothing.
+Observe.followNodeDirectory(remote, {initial?, staleMs?, expose?}) -> {nodes(), pick(opts?), onNodes(cb), onNode(nodeId, cb, {current?}), ready, status, isStale, api, store, close}
+  // follow a roster line (a standalone directory's api or an authority's serve.browser().roster projection)
+  //   on createStoreFollower: status = the LINK's {upstream, seq, error}; api = a cascade a node may re-serve
+Observe.nodeDirectoryViews(nodesSection) · Observe.pickDirectoryNode(views, {exclude?, rng?})
   // one pure derivation shared by the balancer AND the ops panel — balancing stays observable by construction
 Observe.directoryReplicaOffers({directory, connect, priorityOf?}) -> {api, refresh, close}
   // bridge into createStoreReplicaSet offers: eligible rows = offers (connect identity stable per node,
@@ -905,12 +911,16 @@ Observe.directoryReplicaOffers({directory, connect, priorityOf?}) -> {api, refre
   //   (Observe.directoryRoutePriority — the ONE weight→priority mapping; offset it, don't re-derive).
   //   A directory change that alters no membership and no price publishes NOTHING — pure heartbeat
   //   ticks cost followers no offer re-reconciliation.
-  //   drain/stale/gone REMOVES the offer -> the replica set leaves that node and resumes by seq — lossless.
+  //   drain/dead/gone REMOVES the offer -> the replica set leaves that node and resumes by seq — lossless.
   //   Oracle: observe/node-directory.test.ts; living stand: `npm run demo` -> Lab -> Mini horizontal
   //   scaling (spawn/drain REAL extra processes; the tick line survives every move and a hard kill)
-Observe.createStoreNode<T>({nodeId, storeId, originId, lineId?, initial?, weight?, heartbeatMs?, graceMs?,   // re-homes when upstream() returns a DIFFERENT link (registers there, follows its roster + deny list)
-    auth?: {verify, renewBeforeMs?}, commands?, upstream, serve, selfUrl, onLeave, wrap?, socketKeys?, opt?, log?})
-  -> {start, leave(reason), view: {nodeId, status()}, close}
+Observe.createStoreNode<T>({line: {storeId, originId, nodeId, lineId?, initial?}, roster: {url, weight?, heartbeatMs?, graceMs?},
+    upstream: () => {replica, control, commandsByToken?, register, heartbeat, goodbye, onFail}, auth?: {verify, renewBeforeMs?}, commands?,
+    serve: {onConnection, wrap?, keys?: {read?, write?}, opt?}, onLeave, log?})
+  -> {start, leave(reason), view: {nodeId, status() /* {started, leaving, rehomes, readers, seq} */}, close}
+  // the node follows the authority's ONE control line (its own row + the deny list arrive together); when
+  //   upstream() returns a DIFFERENT link (failover, hub rotation) it re-homes: registers there and follows
+  //   THAT control line — status().rehomes counts completed moves.
   // a serving node from ONE config object: replica line + to-upstream offer, self-registration and
   //   heartbeat in the node directory (readers fact = the line's ACTIVE subscriber count — connected
   //   sockets would lie, every replica-set client keeps sessions to all nodes for fork-choice), an
@@ -973,21 +983,29 @@ Command.forwardCommandsByToken({upstream /* authority verifyCommands proxy */, n
   //   cuts its sessions, each mini cuts its own, writes die on ALL nodes instantly; re-login resumes.
 
 // The deployment triangle assembled (import {Scale} from 'wenay-common2'):
-Scale.createAuthority<T>({storeId, originId, nodeId? /* 'authority' */, lineId?, initial, selfUrl, weight? /* 1 */,
-    commands?, limits?, receipts?, identity: {issue(account) -> token, verify(presented) -> {account, expiresAt?} | throw},
-    renewBeforeMs?, heartbeatMs?, acceptNode?, meta?,
+Scale.createAuthority<T>({
+    line: {storeId, originId, nodeId? /* 'authority' */, lineId?, initial},
+    roster: {url, weight? /* 1 */, heartbeatMs?, staleMs? /* 15s */, acceptNode?, meta?},
+    identity: {issue(account) -> token, verify(presented) -> {account, expiresAt?} | throw, renewBeforeMs?},
+    corridor?: {commands?, limits?, receipts?},
     leadership?: {role?: 'leader' | 'standby', epoch?, upstream?: () => AuthorityUpstream, autoPromoteMs?, elect?, accept?}, log?})
-  -> {line: {control, api}, directory: {control, api}, identity: {login, renew, revoke, mint},
-      corridor: {execute, names, fragment(account), byToken()},
+  -> {line: {control, api}, roster: {control: {set, patch, heartbeat, drain, undrain, remove, get, snapshot}, api /* the nodes PROJECTION line */},
+      identity: {login, renew, revoke, mint}, corridor: {execute, names, fragment(account), byToken()},
       serve: {browser(account), reader(), nodeLink(linkNodeId?), connection()},
       control: {promote(reason?)}, events: {role}, view: {role(), leaderId(), epoch(), nodes(), readers(), isRevoked(account)}, start, close}
+  // inputs mirror the outputs: line = the replica coordinates (StoreLineCoordinates, declared once in
+  //   store-replica-set), roster = this process's own row + the liveness policy, corridor = the write half.
+  // ONE control line: roster + deny list + receipts are three SECTIONS of one store served as one Store
+  //   Replay line (nodeLink().control). Nodes and standbys follow it in ONE subscription; browsers get the
+  //   `nodes` section as a projection line (serve.browser().roster / roster.api) — never the deny list or
+  //   the receipts. Liveness is published here: roster.staleMs is the owner's verdict window.
   // the single point of order from ONE config object: replica line + node directory + command corridor
   //   (end-to-end verification of EVERY relayed call) + the identity lifecycle over a replicated deny
   //   list — login lifts the ban, renew refuses revoked, revoke cuts live sessions NOW and every node
   //   follows the same fact. identity.issue/verify are HOST adapters — no crypto and no token format here.
   // serve.* are audience-ready RPC blocks: browser (ungated participant surface), reader (lean line),
-  //   nodeLink (trusted node link: register behind acceptNode, heartbeat merging meta at the DIRECTORY,
-  //   revocations line, token-envelope commands), connection() = the gated per-socket block {object,
+  //   nodeLink (trusted node link: register behind acceptNode, heartbeat merging meta at the ROSTER,
+  //   the ONE control line, token-envelope commands), connection() = the gated per-socket block {object,
   //   auth, attach, close} implementing RPC-AUTH rules 1/3/6/7. start() = the authority's own row +
   //   heartbeat with {readers, ...meta()}; view.readers() is the line's ACTIVE subscriber count.
   // nodeLink identity discipline: every verb refuses the authority's own row, and nodeLink(nodeId)
@@ -998,10 +1016,13 @@ Scale.createAuthority<T>({storeId, originId, nodeId? /* 'authority' */, lineId?,
   //   non-finite counts (readers/pid) sanitize to 0. See doc/RPC-AUTH.md (Rule 7).
   // SUCCESSION (the same factory as leader or standby): leadership.role 'standby' + upstream (the CURRENT
   //   leader's nodeLink(standbyId), host-resolved, re-resolved per reconnect) follows the replica line and
-  //   the three control lines — directory, deny list, receipts — and registers a 'standby' row (weight 0).
+  //   the ONE control line — roster, deny list, receipts together — and registers a 'standby' row (weight 0).
   //   ONE leadership decision, the replica set's (fork choice / autoPromoteMs / injected elect+accept lease
-  //   seam): when it makes this process the leader, the lines are re-owned from the followed snapshots,
-  //   the command host adopts the receipts line (an OLD requestId answers its receipt, nothing re-runs),
+  //   seam): when it makes this process the leader, the followed control store CONTINUES as the owned line
+  //   (the follower's own promote — every section re-owned in the same instant; a follower whose link
+  //   already died hands over its last state by copy), the command host adopts the receipts section (an OLD
+  //   requestId answers its receipt, nothing re-runs), the fleet gets a grace of staleMs before anyone is
+  //   published dead,
   //   the dead leader's row goes, the own row flips to 'leader'. A leader that loses fork choice DEMOTES:
   //   writes refuse ("is standby ... the leader is X"), and with an upstream it follows the winner.
   //   A standby never auto-promotes before its FIRST follow (no epoch-1 twins at boot); control.promote()
@@ -1011,13 +1032,13 @@ Scale.createAuthority<T>({storeId, originId, nodeId? /* 'authority' */, lineId?,
   //   different link; browsers need the host to point them at the new url — its row is in the roster).
   //   Oracle: observe/scale-failover.test.ts (failover, roster/deny/receipt continuity, node re-home,
   //   demotion of a returning leader, first-follow guard, forced promote).
-Scale.createClusterClient<T>({storeId, originId, nodeId, lineId?, initial, directory /* remote roster line */,
-    connect: (view) => session /* the host owns sockets */, placement?: {label?, staleMs?, priorityOf?, rng?},
+Scale.createClusterClient<T>({line: {storeId, originId, nodeId, lineId?, initial}, roster /* the roster line: serve.browser().roster */,
+    connect: (view) => session /* the host owns sockets */, placement?: {label?, priorityOf?, rng?, balance?},
     leadership?, log?})
-  -> {store, status, ready, placement: {placedNodeId(), repick()}, view: {nodes(), route()}, close}
+  -> {store, status, ready, placement: {placedNodeId(), repick()}, view: {nodes(), route(), roster()}, close}
   // one consumer from ONE config object: followNodeDirectory + sticky weighted placement + the offers
   //   bridge + a replica set. The pick decides WHERE to land and is NOT re-rolled on roster churn —
-  //   only when the placed node loses eligibility (drain / stale / weight<=0 / gone) or on repick();
+  //   only when the placed node loses eligibility (drain / dead / weight<=0 / gone) or on repick();
   //   below the placement the line always moves gap-free by seq (level 2 decides, level 3 hands off).
 // Scale.createStoreNode = the third corner, the SAME factory as Observe.createStoreNode above.
 // Oracles: observe/scale-authority.test.ts + observe/scale-client.test.ts (real RPC / live authority).

@@ -1,17 +1,14 @@
-import { type NodeDirectoryEntry, type NodeDirectoryView } from '../Observe/node-directory';
-import type { ReplicatedMapRemote } from '../Observe/replicated-map';
-import { type StoreReplicaLeadership, type StoreReplicaSession } from '../Observe/store-replica-set';
+import { type NodeDirectoryView } from '../Observe/node-directory';
+import type { StoreReplayRemote } from '../Observe/store-replay';
+import { type StoreLineCoordinates, type StoreReplicaLeadership, type StoreReplicaSession } from '../Observe/store-replica-set';
 export type ScaleClusterClientDeps<T extends Record<string, any>> = {
-    storeId: string;
-    originId: string;
-    nodeId: string;
-    lineId?: string;
-    initial: T;
-    directory: ReplicatedMapRemote<NodeDirectoryEntry>;
+    line: StoreLineCoordinates & {
+        initial: T;
+    };
+    roster: StoreReplayRemote;
     connect: (view: NodeDirectoryView) => StoreReplicaSession | Promise<StoreReplicaSession>;
     placement?: {
         label?: string;
-        staleMs?: number;
         priorityOf?: (view: NodeDirectoryView) => number;
         rng?: () => number;
         balance?: {
@@ -36,6 +33,7 @@ export declare function createClusterClient<T extends Record<string, any>>(deps:
     view: {
         nodes: () => NodeDirectoryView[];
         route: () => string | null;
+        roster: () => import("../Observe").FollowerStatus;
     };
     close: () => void;
 };

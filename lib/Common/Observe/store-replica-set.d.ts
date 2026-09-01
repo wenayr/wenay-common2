@@ -117,11 +117,13 @@ export type StoreReplicaRoutePolicy = {
     pingTimeoutMs?: number;
     hysteresisMs?: number;
 };
-export type StoreReplicaSetDeps<T extends object> = {
+export type StoreLineCoordinates = {
     storeId: string;
     originId: string;
     nodeId: string;
     lineId?: string;
+};
+export type StoreReplicaSetDeps<T extends object> = StoreLineCoordinates & {
     store?: Store<T>;
     initial?: T;
     expose?: StoreReplayOpts;

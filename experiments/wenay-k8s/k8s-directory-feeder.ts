@@ -8,12 +8,12 @@
 //
 //   pod fact                          directory verb
 //   ------------------------------    ------------------------------------------
-//   appears (first sighting)          upsert {url, role, weight (0 if !ready)}
+//   appears (first sighting)          set {url, role, weight (0 if !ready)}
 //   ready=false on a known pod        heartbeat(name, {weight: 0})   -> closed
 //   ready=true  on a known pod        heartbeat(name, {weight: weightOf(pod)})
 //   deleting (deletionTimestamp)      drain(name)  -> library moves clients losslessly
 //   gone (delete event / not in sync) remove(name)
-//   still present, every heartbeatMs  heartbeat(name)  -> staleness keeps meaning "feeder dead"
+//   still present, every heartbeatMs  heartbeat(name)  -> the owner keeps the row alive; a dead feeder = dead rows
 
 import type {NodeDirectory, tNodeDirectoryRole} from '../../src/Common/Observe/node-directory'
 import type {KubeEndpointsEvent, KubeEndpointsSource, KubePod} from './kube-source'
@@ -23,7 +23,7 @@ export type NodeDirectoryControl = NodeDirectory['control']
 
 export type K8sDirectoryFeederDeps = {
     source: KubeEndpointsSource
-    directory: Pick<NodeDirectoryControl, 'upsert' | 'heartbeat' | 'drain' | 'remove'>
+    directory: Pick<NodeDirectoryControl, 'set' | 'heartbeat' | 'drain' | 'remove'>
     /** Directory role of a pod; default everyone is a mirror. */
     role?: (pod: KubePod) => tNodeDirectoryRole
     /** Placement share of a READY pod; default 4 (the demo mini-node share). */
@@ -59,7 +59,7 @@ export function createK8sDirectoryFeeder(deps: K8sDirectoryFeederDeps) {
         if (directory.heartbeat(pod.name, facts)) {
             counts.patches++
         } else {
-            directory.upsert({nodeId: pod.name, ...facts, ...(pod.deleting ? {draining: true} : {})})
+            directory.set({nodeId: pod.name, ...facts, ...(pod.deleting ? {draining: true} : {})})
             counts.upserts++
         }
         if (pod.deleting) {

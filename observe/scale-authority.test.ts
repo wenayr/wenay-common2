@@ -50,19 +50,19 @@ async function main() {
     const authority = createAuthority<TickState, {
         add: (ctx: {account: string}, input: {delta: number}) => {value: number, by: string}
     }>({
-        storeId: 'scale-line', originId: 'scale-origin',
-        initial: {tick: {id: 'tick', value: 0}},
-        selfUrl: () => 'mem://authority',
-        commands: {
+        line: {storeId: 'scale-line', originId: 'scale-origin', initial: {tick: {id: 'tick', value: 0}}},
+        roster: {
+            url: () => 'mem://authority', heartbeatMs: 50, staleMs: 0,
+            acceptNode: (id: string) => id != 'evil',
+            meta: () => ({zone: 'test'}),
+        },
+        corridor: {commands: {
             add(ctx, input) {
                 applied += input.delta
                 return {value: applied, by: ctx.account}
             },
-        },
+        }},
         identity: {issue, verify},
-        heartbeatMs: 50,
-        acceptNode: id => id != 'evil',
-        meta: () => ({zone: 'test'}),
         log: () => {},
     })
 
@@ -240,10 +240,10 @@ async function main() {
         'start registers the authority row from its config')
     ok(row?.meta?.['zone'] == 'test' && Number(row?.meta?.['readers']) >= 1,
         'the row carries {readers, ...meta()} side by side')
-    const ts0 = row?.ts ?? 0
-    await waitFor('the heartbeat refreshes the row with the merged meta', () => {
+    ok(row?.alive == true, 'the owner publishes its own row alive')
+    await waitFor('the heartbeat keeps the merged meta on the row', () => {
         const beat = authority.view.nodes().find(view => view.nodeId == 'authority')
-        return (beat?.ts ?? 0) > ts0 && beat?.meta?.['zone'] == 'test' && typeof beat?.meta?.['readers'] == 'number'
+        return beat?.alive == true && beat?.meta?.['zone'] == 'test' && typeof beat?.meta?.['readers'] == 'number'
     })
     follower.close()
     await waitFor('closing the follower drops the readers fact', () => authority.view.readers() == 0)
@@ -251,7 +251,7 @@ async function main() {
     // ============== browser fragment: identity bound to the connection's account ==============
     const browser = authority.serve.browser('dora')
     ok(browser.identity.login().token == 'tok:dora', 'browser identity is bound to the account')
-    ok(!!browser.replica && !!browser.directory, 'browser serves the line and the roster')
+    ok(!!browser.replica && !!browser.roster, 'browser serves the line and the roster')
 
     conn1.close()
     conn2.close()

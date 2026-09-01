@@ -11,7 +11,7 @@
 import {ChildProcess, spawn} from 'child_process'
 import {randomBytes} from 'crypto'
 import path from 'path'
-import {createAuthority} from '../src/Common/scale/scale-authority'
+import {createAuthority, type ScaleAuthority} from '../src/Common/scale/scale-authority'
 import {createTokenCodec} from '../src/server/auth-token'
 
 export type MiniTickState = Record<string, {id: string, value: number, ts: number}>
@@ -40,14 +40,23 @@ export function createMiniScaleHost(deps: MiniScaleHostDeps) {
     const secret = pinnedSecret ?? 'scale-' + randomBytes(16).toString('hex')
     const codec = createTokenCodec({secret, ttlMs: 2 * 60_000})
 
-    const authority = createAuthority<MiniTickState, {
-        add: (ctx: {account: string}, input: {delta?: unknown}) => {value: number, by: string}
-    }>({
-        storeId: 'mini-scale', originId: 'mini-scale-origin', nodeId: 'leader', lineId: 'mini-leader',
-        initial: {tick: {id: 'tick', value: 0, ts: Date.now()}},
-        selfUrl: deps.selfUrl,
-        limits: {perMinute: 60},
-        commands: {
+    type MiniCmds = {add: (ctx: {account: string}, input: {delta?: unknown}) => {value: number, by: string}}
+    // annotated: the commands close over `authority` itself, and the grouped corridor input
+    // would otherwise make the inference circular
+    const authority: ScaleAuthority<MiniTickState, MiniCmds> = createAuthority<MiniTickState, MiniCmds>({
+        line: {
+            storeId: 'mini-scale', originId: 'mini-scale-origin', nodeId: 'leader', lineId: 'mini-leader',
+            initial: {tick: {id: 'tick', value: 0, ts: Date.now()}},
+        },
+        roster: {
+            url: deps.selfUrl,
+            // only a process this host spawned may register as a node — unless the
+            // operator pinned the token: pinning IS the explicit statement that
+            // external processes presenting it (the k8s pods) may register too
+            acceptNode: (nodeId: string) => children.has(nodeId) || pinnedToken != null,
+            meta: hostMeta,
+        },
+        corridor: {limits: {perMinute: 60}, commands: {
             add(ctx, input) {
                 const delta = Number(input?.delta ?? 0)
                 if (!Number.isFinite(delta) || Math.abs(delta) > 1000) throw new Error('delta is out of bounds')
@@ -55,7 +64,7 @@ export function createMiniScaleHost(deps: MiniScaleHostDeps) {
                 authority.line.control.store.state.counter = {id: 'counter', value, ts: Date.now()}
                 return {value, by: ctx.account}
             },
-        },
+        }},
         // crypto stays host-side: the authority sees mint/verify, never the secret
         identity: {
             issue: account => codec.issue({sub: account}),
@@ -65,11 +74,6 @@ export function createMiniScaleHost(deps: MiniScaleHostDeps) {
                 return {account: verdict.claims.sub, expiresAt: verdict.claims.exp}
             },
         },
-        // only a process this host spawned may register as a node — unless the
-        // operator pinned the token: pinning IS the explicit statement that
-        // external processes presenting it (the k8s pods) may register too
-        acceptNode: nodeId => children.has(nodeId) || pinnedToken != null,
-        meta: hostMeta,
         log,
     })
 
@@ -113,7 +117,7 @@ export function createMiniScaleHost(deps: MiniScaleHostDeps) {
         child.stderr?.on('data', function miniNodeErr(chunk) { log(`[${nodeId}] ${String(chunk).trim()}`) })
         child.on('exit', function miniNodeGone(code) {
             children.delete(nodeId)
-            authority.directory.control.remove(nodeId)
+            authority.roster.control.remove(nodeId)
             log(`[demo] mini node ${nodeId} exited (${code ?? 'signal'})`)
         })
         children.set(nodeId, child)
@@ -123,7 +127,7 @@ export function createMiniScaleHost(deps: MiniScaleHostDeps) {
 
     function drainNode(nodeId: string) {
         if (nodeId == 'leader') throw new Error('the leader cannot be drained in this stand')
-        return {ok: authority.directory.control.drain(nodeId)}
+        return {ok: authority.roster.control.drain(nodeId)}
     }
 
     /** Failure injection: SIGKILL — no drain, no goodbye. The exit handler removes the row. */
@@ -152,10 +156,10 @@ export function createMiniScaleHost(deps: MiniScaleHostDeps) {
     function evaluateAutoscale() {
         if (!autoscaleOn || !started) return
         const rows = authority.view.nodes()
-        const minis = rows.filter(row => row.role == 'mirror' && !row.draining && !row.stale)
+        const minis = rows.filter(row => row.role == 'mirror' && !row.draining && row.alive)
         // readers on draining/stale rows are IN FLIGHT to other nodes: counting them
         // double-books every migration and the controller ends up chasing its own churn
-        const settled = rows.filter(row => !row.draining && !row.stale)
+        const settled = rows.filter(row => !row.draining && row.alive)
         const totalReaders = settled.reduce((sum, row) => sum + Number(row.meta?.readers ?? 0), 0)
         const raw = Math.max(0, totalReaders - minis.length)
         // migration double counts only ever INFLATE the sum, so the window MINIMUM
@@ -185,7 +189,7 @@ export function createMiniScaleHost(deps: MiniScaleHostDeps) {
                 return Number(a.nodeId.split('-')[1] ?? 0) - Number(b.nodeId.split('-')[1] ?? 0)
             }).at(-1)
             if (!newest) return
-            authority.directory.control.drain(newest.nodeId)
+            authority.roster.control.drain(newest.nodeId)
             autoNote = `${shape} · draining ${newest.nodeId}`
             log(`[demo] autoscale: ${load} readers fit ${targetNodes} nodes — draining ${newest.nodeId}`)
         } else {
@@ -204,7 +208,7 @@ export function createMiniScaleHost(deps: MiniScaleHostDeps) {
         loadWindow.length = 0
         autoNote = ''
         // publish the mode immediately: the button state is a replicated fact, not local UI state
-        if (started) authority.directory.control.heartbeat('leader', {meta: {readers: authority.view.readers(), ...hostMeta()}})
+        if (started) authority.roster.control.heartbeat('leader', {meta: {readers: authority.view.readers(), ...hostMeta()}})
         log(`[demo] autoscale ${on ? 'ON' : 'OFF'} (${AUTOSCALE_READERS_PER_NODE} readers per node)`)
         return {autoscale: on}
     }

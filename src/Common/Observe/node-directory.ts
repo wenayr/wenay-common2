@@ -1,20 +1,34 @@
 // =====================================================================
 // Node directory — replicated roster of service nodes for client-side balancing
 // =====================================================================
-// The directory is an ordinary latest-delivery replicated map keyed by nodeId:
-// the host (usually the leader) owns it, nodes register/heartbeat through a
-// host-authorized command path, clients follow it like any replicated map and
-// pick a node with the pure helpers below. Balancing therefore stays observable
-// by construction: the ops panel and the balancer read the SAME store facts.
+// The roster is the `nodes` section of a Store served as a Store Replay line:
+// standalone the directory owns that store and its line; embedded (deps.store)
+// it is a facet over a larger control store (the scale authority's), so the
+// roster travels in the SAME line as the deny list and the receipts. Nodes
+// register/heartbeat through a host-authorized command path, clients follow
+// the line like any store and pick a node with the pure helpers below.
+// Balancing therefore stays observable by construction: the ops panel and the
+// balancer read the SAME store facts.
+//
+// Liveness is a FACT the directory owner publishes, not a judgement every
+// reader makes: the owner (the one process with the relevant clock) keeps the
+// last beat per row in memory, sweeps every staleMs/2 and flips `alive`. A
+// replicated write happens when a fact changes — alive, readers, labels —
+// never per beat, so a fleet of N nodes costs its followers nothing in steady
+// state, and no reader ever compares a foreign clock against its own.
 //
 // Placement semantics on one line each:
 //   weight > 0            node accepts placements, proportional share
 //   weight <= 0           node is closed: new placements avoid it, existing move away
 //   draining: true        node is leaving: same as closed, but announced as intent
-//   heartbeat older than staleMs   node is presumed dead regardless of its facts
+//   alive: false          heartbeats stopped for staleMs: presumed dead regardless of its facts
 
-import {createReplicatedMap, followReplicatedMap, FollowReplicatedMapOpts, ReplicatedMapRemote, ReplicatedMapState, tReplicatedMapDelivery} from './replicated-map'
-import {createStoreReplicaOffers, StoreReplicaOffer, StoreReplicaSession} from './store-replica-set'
+import {compareDeepValues} from '../core/deep-equal'
+import {createStore, type Store} from './store'
+import {toRaw} from './reactive'
+import {exposeStoreReplay, type StoreReplayOpts, type StoreReplayRemote} from './store-replay'
+import {createStoreFollower, type StoreFollowerDeps} from './store-follower'
+import {createStoreReplicaOffers, type StoreReplicaOffer, type StoreReplicaSession} from './store-replica-set'
 
 // ============================================================
 // public contract
@@ -33,17 +47,21 @@ export type NodeDirectoryEntry = {
     weight: number
     /** true = the node is leaving; move clients away. */
     draining: boolean
-    /** Host-clock ms of the last heartbeat; readers derive staleness. */
-    ts: number
+    /** Published by the directory OWNER: false once heartbeats stopped for staleMs. */
+    alive: boolean
+    /** Owner-clock ms when `alive` last flipped (panels: "dead for 12 s"). */
+    since: number
     /** Plain JSON application facts (region, version, capacity...). */
     meta?: Record<string, unknown>
 }
 
 export type NodeDirectoryView = NodeDirectoryEntry & {
-    stale: boolean
-    /** !stale && !draining && weight > 0 — usable for serving clients. */
+    /** alive && !draining && weight > 0 — usable for serving clients. */
     eligible: boolean
 }
+
+/** The section shape the roster lives in; a control store carries it beside other sections. */
+export type NodeDirectoryState = {nodes: Record<string, NodeDirectoryEntry>}
 
 export const NODE_DIRECTORY_STALE_MS = 15_000
 
@@ -60,72 +78,161 @@ function requireEntry(entry: NodeDirectoryEntry) {
 }
 
 // ============================================================
-// host: authority over the roster
+// owner: authority over the roster
 // ============================================================
 
-export type NodeDirectoryDeps = {
+export type NodeDirectoryDeps<S extends NodeDirectoryState = NodeDirectoryState> = {
+    /** Embed: the roster becomes the `nodes` section of THIS store (the caller serves the line). */
+    store?: Store<S>
     now?: () => number
-    /** Seed rows — a promoted standby continues the roster it followed. ts is kept as given. */
+    /** Silence above which a row is published dead; default 15 s, 0 disables the sweep. */
+    staleMs?: number
+    /** Sweep cadence; default staleMs / 2. */
+    sweepMs?: number
+    /** Seed rows (standalone only) — ts-free: every seed starts alive with a fresh beat. */
     initial?: Iterable<NodeDirectoryEntry>
-    /** Stable replay identity only when the same journal is durably restored. */
-    lineId?: string
-    /** Advanced replicated-map replay pass-through (history/keepMs/describe). */
-    replay?: {history?: number, keepMs?: number, describe?: Record<string, any>}
+    /** Standalone replay pass-through (history/keepMs/describe). */
+    replay?: Pick<StoreReplayOpts, 'history' | 'keepMs' | 'describe'>
 }
 
-export function createNodeDirectory(deps: NodeDirectoryDeps = {}) {
-    const {now = Date.now} = deps
-    const map = createReplicatedMap<NodeDirectoryEntry>({
-        keyOf(entry) { return entry.nodeId },
-        delivery: 'latest' satisfies tReplicatedMapDelivery,
-        ...(deps.initial ? {initial: deps.initial} : {}),
-        ...(deps.lineId != undefined ? {lineId: deps.lineId} : {}),
-        ...(deps.replay ? {replay: deps.replay} : {}),
-    })
+/** A row as callers write it: liveness fields belong to the directory. */
+export type NodeDirectoryRow = Omit<NodeDirectoryEntry, 'alive' | 'since' | 'draining'> & {draining?: boolean}
 
-    /** Register or replace a node; ts is stamped by the directory clock. */
-    function upsert(entry: Omit<NodeDirectoryEntry, 'ts' | 'draining'> & {draining?: boolean}) {
-        map.control.set(requireEntry({draining: false, ...entry, ts: now()}))
+export function createNodeDirectory<S extends NodeDirectoryState = NodeDirectoryState>(deps: NodeDirectoryDeps<S> = {}) {
+    const {now = Date.now} = deps
+    const staleMs = deps.staleMs ?? NODE_DIRECTORY_STALE_MS
+    const owned = !deps.store
+    // the section facet only ever touches .nodes; the wider control store stays the caller's
+    const store: Store<NodeDirectoryState> = (deps.store as Store<NodeDirectoryState> | undefined) ?? createStore<NodeDirectoryState>({nodes: {}})
+    const exposed = owned ? exposeStoreReplay(store, {
+        ...deps.replay,
+        describe: {...deps.replay?.describe, nodeDirectory: {version: 2}},
+    }) : null
+
+    // beats are OWNER memory, never replicated: the line carries the verdict (alive), not the pulse
+    const lastBeat = new Map<string, number>()
+    let closed = false
+
+    /** Writes go through the reactive state... */
+    function rows() {
+        return store.state.nodes
+    }
+    /** ...reads come from the RAW rows: spreading a reactive proxy back into the store would nest it. */
+    function rawRows(): Record<string, NodeDirectoryEntry> {
+        return toRaw(store.state).nodes
+    }
+    /** Read-only row (do not mutate; write through set/patch). */
+    function get(nodeId: string) {
+        return rawRows()[requireNodeId(nodeId)] as NodeDirectoryEntry | undefined
+    }
+    function snapshot(): Record<string, NodeDirectoryEntry> {
+        return store.snapshot().nodes
     }
 
-    /** Refresh liveness (and optionally facts) of a known node; false = node is not registered.
-     *  patch.meta MERGES one level: each writer refreshes the facts it owns without erasing
-     *  facts another writer reported (readers vs labels vs pid). Remove a fact by patching it
-     *  to undefined; replace the whole bag through upsert. */
-    function heartbeat(nodeId: string, patch: Partial<Omit<NodeDirectoryEntry, 'nodeId' | 'ts'>> = {}) {
-        const current = map.control.get(requireNodeId(nodeId))
+    /** Register or REPLACE a row; it starts alive with a fresh beat. */
+    function set(row: NodeDirectoryRow) {
+        const moment = now()
+        const current = get(row.nodeId)
+        const entry: NodeDirectoryEntry = requireEntry({
+            draining: false, ...row,
+            alive: true,
+            since: current?.alive ? current.since : moment,
+        })
+        lastBeat.set(entry.nodeId, moment)
+        if (!current || !compareDeepValues(current, entry)) rows()[entry.nodeId] = entry
+    }
+
+    /** Merge facts into a known row (meta merges one level); false = not registered.
+     *  Writes only when something actually changes. */
+    function patch(nodeId: string, partial: Partial<Omit<NodeDirectoryEntry, 'nodeId' | 'alive' | 'since'>>) {
+        const current = get(nodeId)
         if (!current) return false
-        const meta = patch.meta ? {...current.meta, ...patch.meta} : current.meta
-        map.control.set(requireEntry({...current, ...patch, ...(meta ? {meta} : {}), nodeId, ts: now()}))
+        const meta = partial.meta ? {...current.meta, ...partial.meta} : current.meta
+        const next = requireEntry({...current, ...partial, ...(meta ? {meta} : {}), nodeId, alive: current.alive, since: current.since})
+        if (!compareDeepValues(current, next)) rows()[nodeId] = next
         return true
     }
 
+    /** The node is alive now (+ optional facts). false = not registered. */
+    function heartbeat(nodeId: string, partial: Parameters<typeof patch>[1] = {}) {
+        const current = get(nodeId)
+        if (!current) return false
+        lastBeat.set(nodeId, now())
+        if (!current.alive) rows()[nodeId] = {...current, alive: true, since: now()}
+        return patch(nodeId, partial)
+    }
+
     function drain(nodeId: string) {
-        return heartbeat(nodeId, {draining: true})
+        return patch(nodeId, {draining: true})
     }
 
     function undrain(nodeId: string, weight?: number) {
-        return heartbeat(nodeId, weight == undefined ? {draining: false} : {draining: false, weight})
+        return patch(nodeId, weight == undefined ? {draining: false} : {draining: false, weight})
     }
 
     function remove(nodeId: string) {
-        map.control.delete(requireNodeId(nodeId))
+        requireNodeId(nodeId)
+        lastBeat.delete(nodeId)
+        if (rawRows()[nodeId]) delete rows()[nodeId]
     }
 
+    /** Every row gets a fresh beat — a promoted owner grants the fleet staleMs to re-home. */
+    function grace() {
+        const moment = now()
+        for (const nodeId of Object.keys(rawRows())) lastBeat.set(nodeId, moment)
+    }
+
+    /** Publish the verdict for rows whose pulse stopped. */
+    function sweep() {
+        if (staleMs <= 0) return
+        const moment = now()
+        for (const nodeId of Object.keys(rawRows())) {
+            const entry = rawRows()[nodeId]
+            if (!entry || !entry.alive) continue
+            const beat = lastBeat.get(nodeId)
+            if (beat == undefined) { lastBeat.set(nodeId, moment); continue }
+            if (moment - beat > staleMs) rows()[nodeId] = {...entry, alive: false, since: moment}
+        }
+    }
+    const sweeper = staleMs > 0 ? setInterval(sweep, deps.sweepMs ?? Math.max(50, Math.floor(staleMs / 2))) : null
+    ;(sweeper as any)?.unref?.()
+
+    function flush() {
+        exposed?.flushPending()
+    }
+
+    function close() {
+        if (closed) return
+        closed = true
+        if (sweeper) clearInterval(sweeper)
+        exposed?.close()
+    }
+
+    if (deps.initial) for (const row of deps.initial) set(row)
+
     return {
-        /** Store Replay fragment — spread into the RPC object like any replicated map. */
-        api: map.api,
+        /** Store Replay line over {nodes} — standalone only; embedded rosters ride the caller's line. */
+        api: (exposed?.api.replay ?? null) as StoreReplayRemote | null,
         control: {
-            upsert,
+            set,
+            patch,
             heartbeat,
             drain,
             undrain,
             remove,
-            get: map.control.get,
-            snapshot: map.control.snapshot,
-            flush: map.control.flush,
-            close: map.control.close,
+            grace,
+            sweep,
+            get,
+            snapshot,
+            flush,
+            close,
         },
+        view: {
+            nodes: () => nodeDirectoryViews(snapshot()),
+        },
+        /** The store the roster lives in (the caller's, when embedded). */
+        store,
+        close,
     }
 }
 export type NodeDirectory = ReturnType<typeof createNodeDirectory>
@@ -134,24 +241,12 @@ export type NodeDirectory = ReturnType<typeof createNodeDirectory>
 // pure reader helpers — one derivation, shared by balancer and panels
 // ============================================================
 
-export type NodeDirectoryViewOpts = {
-    /** Heartbeat age above which a node is presumed dead; 0 disables the check. */
-    staleMs?: number
-    now?: () => number
-}
-
-export function nodeDirectoryViews(
-    state: Readonly<ReplicatedMapState<NodeDirectoryEntry>>,
-    opts: NodeDirectoryViewOpts = {},
-) {
-    const {staleMs = NODE_DIRECTORY_STALE_MS, now = Date.now} = opts
-    const moment = now()
+export function nodeDirectoryViews(state: Readonly<Record<string, NodeDirectoryEntry | undefined>>) {
     const views: NodeDirectoryView[] = []
     for (const nodeId of Object.keys(state)) {
         const entry = state[nodeId]
         if (!entry) continue
-        const stale = staleMs > 0 && moment - entry.ts > staleMs
-        views.push({...entry, stale, eligible: !stale && !entry.draining && entry.weight > 0})
+        views.push({...entry, eligible: entry.alive && !entry.draining && entry.weight > 0})
     }
     return views
 }
@@ -179,79 +274,53 @@ export function pickDirectoryNode(views: readonly NodeDirectoryView[], opts: Pic
 }
 
 // ============================================================
-// client: follow facade over the replicated map
+// client: follow facade over the roster line
 // ============================================================
 
-export type FollowNodeDirectoryOpts = NodeDirectoryViewOpts & Pick<
-    FollowReplicatedMapOpts<NodeDirectoryEntry>,
-    'initial' | 'drain' | 'onStatus' | 'onError'
->
+export type FollowNodeDirectoryOpts = Pick<StoreFollowerDeps<NodeDirectoryState>, 'initial' | 'staleMs' | 'expose'>
 
-export function followNodeDirectory(
-    remote: ReplicatedMapRemote<NodeDirectoryEntry>,
-    opts: FollowNodeDirectoryOpts = {},
-) {
-    const {staleMs, now, ...followOpts} = opts
-    const follow = followReplicatedMap<NodeDirectoryEntry>(remote, followOpts)
+/** Follow a roster line — a standalone directory's api or an authority's nodes projection. */
+export function followNodeDirectory(remote: StoreReplayRemote, opts: FollowNodeDirectoryOpts = {}) {
+    const follower = createStoreFollower<NodeDirectoryState>({
+        remote,
+        initial: opts.initial ?? {nodes: {}},
+        ...(opts.staleMs != undefined ? {staleMs: opts.staleMs} : {}),
+        ...(opts.expose ? {expose: opts.expose} : {}),
+    })
 
-    // Staleness lives in HOST-clock space. entry.ts is stamped by the DIRECTORY
-    // host, and comparing it against the reader's own clock turns ordinary
-    // cross-machine skew into a dead (or immortal) roster. So the follower
-    // anchors on the freshest host stamp it has seen and advances it by LOCALLY
-    // elapsed time only — the reader clock contributes deltas, never absolutes.
-    // An explicit opts.now keeps the direct meaning (tests, one-clock stands).
-    const localNow = Date.now
-    let anchorHostTs = 0
-    let anchorLocalAt = 0
-    function observeHostClock() {
-        const snapshot = follow.snapshot()
-        for (const nodeId of Object.keys(snapshot)) {
-            const ts = snapshot[nodeId]?.ts ?? 0
-            if (ts > anchorHostTs) {
-                anchorHostTs = ts
-                anchorLocalAt = localNow()
-            }
-        }
-    }
-    const offHostClock = follow.batches.on(observeHostClock)
-    function hostNow() {
-        if (anchorHostTs == 0) observeHostClock()
-        return anchorHostTs == 0 ? localNow() : anchorHostTs + Math.max(0, localNow() - anchorLocalAt)
-    }
-    const viewOpts = {
-        ...(staleMs != undefined ? {staleMs} : {}),
-        now: now ?? hostNow,
-    }
-
-    /** Staleness is derived at READ time; onNodes fires on data changes only. */
     function nodes() {
-        return nodeDirectoryViews(follow.snapshot(), viewOpts)
+        return nodeDirectoryViews(follower.store.snapshot().nodes ?? {})
     }
 
     function pick(pickOpts: PickDirectoryNodeOpts = {}) {
         return pickDirectoryNode(nodes(), pickOpts)
     }
 
+    /** Fires once per applied change batch with the fresh views. */
     function onNodes(cb: (views: NodeDirectoryView[]) => void) {
-        return follow.batches.on(function forwardDirectoryChange() { cb(nodes()) })
+        return follower.store.node.at('nodes').on(function forwardRosterChange() { cb(nodes()) })
     }
 
-    function close() {
-        offHostClock()
-        follow.close()
+    /** Watch ONE row; cb(entry | undefined). `current` fires immediately with the present state. */
+    function onNode(nodeId: string, cb: (entry: NodeDirectoryEntry | undefined) => void, watchOpts: {current?: boolean} = {}) {
+        return follower.store.node.at('nodes').at(nodeId).on(function forwardRowChange(value) {
+            cb(value as NodeDirectoryEntry | undefined)
+        }, watchOpts)
     }
 
     return {
         nodes,
         pick,
         onNodes,
-        ready: follow.ready,
-        status: follow.status,
-        statusChanges: follow.statusChanges,
-        isStale: follow.isStale,
-        close,
-        /** Full replicated-map surface for advanced consumers (checkpoint, onKey...). */
-        follow,
+        onNode,
+        ready: follower.ready,
+        /** Reactive link status of the roster line: {upstream, seq, error}. */
+        status: follower.status,
+        isStale: follower.isStale,
+        /** Cascade line: a node may re-serve the roster it follows. */
+        api: follower.api,
+        store: follower.store,
+        close: follower.close,
     }
 }
 export type FollowedNodeDirectory = ReturnType<typeof followNodeDirectory>
@@ -261,7 +330,7 @@ export type FollowedNodeDirectory = ReturnType<typeof followNodeDirectory>
 // ============================================================
 // Route selection, hysteresis and the seq-resume hand-off stay in
 // createStoreReplicaSet; this adapter only keeps its offer list equal to the
-// eligible directory rows. Removing an offer (drain / weight<=0 / stale / gone)
+// eligible directory rows. Removing an offer (drain / weight<=0 / dead / gone)
 // makes the replica set leave that node and resume elsewhere by seq — lossless.
 
 export type DirectoryReplicaOffersDeps = {
@@ -315,8 +384,8 @@ export function directoryReplicaOffers(deps: DirectoryReplicaOffersDeps) {
         // offerOf runs for every wanted row regardless: it refreshes the view the
         // stable connect closure reads, even when the list itself does not change
         const offers = wanted.map(offerOf)
-        // pure heartbeat ticks change no membership and no price — skip the
-        // replace, or every follower re-reconciles an identical list once per beat
+        // a fact change that alters no membership and no price (readers, labels) —
+        // skip the replace, or every follower re-reconciles an identical list
         const signature = offers.map(function priceOf(offer) { return offer.id + '@' + offer.priority }).join('|')
         if (signature == lastSignature) return
         lastSignature = signature
@@ -328,12 +397,11 @@ export function directoryReplicaOffers(deps: DirectoryReplicaOffersDeps) {
 
     return {
         api: source.api,
-        /** Re-derive offers now (e.g. after a staleness clock step in tests). */
+        /** Re-derive offers now (e.g. after a placement decision changed the prices). */
         refresh() { syncOffers(deps.directory.nodes()) },
         close() {
             offNodes()
             source.control.clear()
-            stable.clear()
         },
     }
 }

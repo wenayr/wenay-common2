@@ -1,48 +1,46 @@
 // =====================================================================
 // Scale cluster client — one consumer of a scaled line, from one config object
 // =====================================================================
-// The client corner of the deployment triangle: follow the node directory,
-// place ONCE with a sticky weighted pick (level-2 balancing, decided at the
-// edge), bridge the eligible rows into replica-set offers, and let the line
-// itself move gap-free by seq (level 3). Absorbs the composition every
-// consumer used to hand-wire: followNodeDirectory + sticky placement +
-// directoryReplicaOffers + createStoreReplicaSet.
+// The client corner of the deployment triangle: follow the roster line, place
+// ONCE with a sticky weighted pick (level-2 balancing, decided at the edge),
+// bridge the eligible rows into replica-set offers, and let the line itself
+// move gap-free by seq (level 3). Absorbs the composition every consumer used
+// to hand-wire: followNodeDirectory + sticky placement + directoryReplicaOffers
+// + createStoreReplicaSet.
 //
 // Placement semantics (proven live on the mini-scale stand): the weighted
-// random pick decides the landing node and is NOT re-rolled on directory
-// churn — only when the placed node loses eligibility (drain / stale /
-// weight<=0 / gone) or on an explicit repick(). Spawning a node never yanks
-// placed clients.
+// random pick decides the landing node and is NOT re-rolled on roster churn —
+// only when the placed node loses eligibility (drain / dead / weight<=0 /
+// gone) or on an explicit repick(). Spawning a node never yanks placed clients.
+// Liveness is a fact the authority publishes on the row (alive); this client
+// judges nothing by its own clock.
 //
 // The HOST owns the transport: deps.connect opens the actual session (socket
 // hub or in-process fragment); this factory never sees a socket.
 
 import {
     directoryReplicaOffers, directoryRoutePriority, followNodeDirectory, pickDirectoryNode,
-    type NodeDirectoryEntry, type NodeDirectoryView,
+    type NodeDirectoryView,
 } from '../Observe/node-directory'
-import type {ReplicatedMapRemote} from '../Observe/replicated-map'
-import {createStoreReplicaSet, type StoreReplicaLeadership, type StoreReplicaSession} from '../Observe/store-replica-set'
+import type {StoreReplayRemote} from '../Observe/store-replay'
+import {
+    createStoreReplicaSet, type StoreLineCoordinates, type StoreReplicaLeadership, type StoreReplicaSession,
+} from '../Observe/store-replica-set'
 
 // ============================================================
 // public contract
 // ============================================================
 
 export type ScaleClusterClientDeps<T extends Record<string, any>> = {
-    /** Replica-line coordinates; they must match the cluster's line. */
-    storeId: string
-    originId: string
-    nodeId: string
-    lineId?: string
-    initial: T
-    /** The cluster's directory line — the same remote followNodeDirectory takes. */
-    directory: ReplicatedMapRemote<NodeDirectoryEntry>
+    /** Replica-line coordinates (must match the cluster's line) and the state before the first keyframe. */
+    line: StoreLineCoordinates & {initial: T}
+    /** The roster line — an authority's serve.browser().roster or a standalone directory's api. */
+    roster: StoreReplayRemote
     /** Transport adapter: open a live session to a node; the host owns sockets. */
     connect: (view: NodeDirectoryView) => StoreReplicaSession | Promise<StoreReplicaSession>
     placement?: {
         /** Log prefix distinguishing this consumer among many (per-reader placement). */
         label?: string
-        staleMs?: number
         /** Full route-cost override; disables the sticky pick's priorities. */
         priorityOf?: (view: NodeDirectoryView) => number
         /** Injectable randomness for deterministic placement; default Math.random. */
@@ -74,9 +72,8 @@ export type ScaleClusterClientDeps<T extends Record<string, any>> = {
 export function createClusterClient<T extends Record<string, any>>(deps: ScaleClusterClientDeps<T>) {
     const log = deps.log ?? console.log
     const label = deps.placement?.label ? deps.placement.label + ' ' : ''
-    const staleMs = deps.placement?.staleMs
     const rng = deps.placement?.rng
-    const directory = followNodeDirectory(deps.directory, staleMs != undefined ? {staleMs} : {})
+    const directory = followNodeDirectory(deps.roster)
 
     // ============== placement (level 2): pick WHERE to land once, stay sticky ==============
     const balance = deps.placement?.balance
@@ -99,7 +96,7 @@ export function createClusterClient<T extends Record<string, any>>(deps: ScaleCl
     }
 
     // in balance mode the pick stays FLUID until the line first catches up: the
-    // directory may arrive in batches, and gluing to the first visible row would
+    // roster may arrive in batches, and gluing to the first visible row would
     // defeat the whole even-placement promise
     let placementSettled = !balance
     function ensurePlaced() {
@@ -118,7 +115,7 @@ export function createClusterClient<T extends Record<string, any>>(deps: ScaleCl
         return placedNodeId
     }
     // subscribed BEFORE the offers bridge, so re-derived priorities see the fresh pick
-    const offRepick = directory.onNodes(function repickOnDirectoryChange() { ensurePlaced() })
+    const offRepick = directory.onNodes(function repickOnRosterChange() { ensurePlaced() })
     ensurePlaced()
     /** The placed node wins outright; everything else keeps the DEFAULT weight
      *  order as a fallback, offset behind the placement instead of re-derived. */
@@ -132,10 +129,11 @@ export function createClusterClient<T extends Record<string, any>>(deps: ScaleCl
         connect: deps.connect,
         priorityOf: deps.placement?.priorityOf ?? priorityOf,
     })
+    const {initial, ...coordinates} = deps.line
     const client = createStoreReplicaSet<T>({
-        storeId: deps.storeId, originId: deps.originId, nodeId: deps.nodeId,
-        lineId: deps.lineId ?? deps.nodeId + '-line',
-        initial: deps.initial,
+        ...coordinates,
+        lineId: coordinates.lineId ?? coordinates.nodeId + '-line',
+        initial,
         leadership: deps.leadership ?? {initialRole: 'follower', eligible: false},
         offers: offers.api,
     })
@@ -204,6 +202,8 @@ export function createClusterClient<T extends Record<string, any>>(deps: ScaleCl
         view: {
             nodes: () => directory.nodes(),
             route: () => client.api.status.state.routeId,
+            /** Link status of the roster line itself ({upstream, seq, error}). */
+            roster: () => directory.status.state,
         },
         close,
     }

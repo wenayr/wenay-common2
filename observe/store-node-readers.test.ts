@@ -47,21 +47,18 @@ function bootNode(deps: {
 }) {
     let connect: ((socket: SocketTmpl) => void) | null = null
     const node = createStoreNode<TickState>({
-        nodeId: deps.nodeId, storeId: 'readers-line', originId: 'readers-origin',
-        graceMs: 40,
+        line: {nodeId: deps.nodeId, storeId: 'readers-line', originId: 'readers-origin'},
+        roster: {url: () => 'mem://' + deps.nodeId, graceMs: 40, heartbeatMs: 50},
         upstream: () => ({
             replica: deps.authority.api.fragment,
-            directory: deps.directory.api,
-            register: entry => deps.directory.control.upsert({...entry, role: 'mirror'}),
+            control: deps.directory.api!,
+            register: entry => deps.directory.control.set({...entry, role: 'mirror'}),
             heartbeat: (nodeId, facts) => deps.directory.control.heartbeat(nodeId, {meta: {readers: facts?.readers ?? 0}}),
             goodbye: nodeId => deps.directory.control.remove(nodeId),
             onFail: {on: () => () => {}},
         }),
-        serve: {onConnection(handler) { connect = handler }},
-        selfUrl: () => 'mem://' + deps.nodeId,
-        heartbeatMs: 50,
+        serve: {onConnection(handler) { connect = handler }, wrap: (fragment: Record<string, unknown>) => ({svc: fragment})},
         onLeave: () => {},
-        wrap: fragment => ({svc: fragment}),
         log: () => {},
     })
     return {node, connect: (socket: SocketTmpl) => connect!(socket)}
@@ -88,7 +85,7 @@ async function main() {
         initial: {tick: {id: 'tick', value: 0}},
         leadership: {initialRole: 'leader', epoch: 1},
     })
-    const directory = createNodeDirectory()
+    const directory = createNodeDirectory({staleMs: 0})
     const one = bootNode({nodeId: 'n1', authority, directory})
     const two = bootNode({nodeId: 'n2', authority, directory})
     await one.node.start()
@@ -181,12 +178,10 @@ async function main() {
         }
     }
     const balanced = createClusterClient<TickState>({
-        storeId: 'readers-line', originId: 'readers-origin', nodeId: 'balance-client',
-        initial: {},
-        directory: directory.api,
+        line: {storeId: 'readers-line', originId: 'readers-origin', nodeId: 'balance-client', initial: {}},
+        roster: directory.api!,
         connect: connectBalanced,
         placement: {
-            staleMs: 10_000,
             rng: () => 0,
             balance: {aboveShare: 0.9, belowShare: 1.2, checkMs: 50, moveChance: 1, cooldownMs: 100},
         },

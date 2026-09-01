@@ -53,8 +53,8 @@ async function main() {
 
     let url = ''
     const node = createStoreNode({
-        nodeId,
-        storeId: 'mini-scale', originId: 'mini-scale-origin', lineId: 'mini-' + nodeId + '-line',
+        line: {nodeId, storeId: 'mini-scale', originId: 'mini-scale-origin', lineId: 'mini-' + nodeId + '-line'},
+        roster: {url: () => url},
         auth: {
             verify: function verifyMiniToken(presented) {
                 const verdict = codec.verify(presented)
@@ -70,8 +70,7 @@ async function main() {
             const leader = (clients.app.func as any).miniScale
             return {
                 replica: leader.replica,
-                directory: leader.directory,
-                revoked: leader.revoked,
+                control: leader.control,
                 commandsByToken: leader.commandsByToken,
                 register: leader.register,
                 heartbeat: leader.heartbeat,
@@ -79,10 +78,11 @@ async function main() {
                 onFail: {on: (cb: () => void) => hub.disconnectListen(cb)},
             }
         },
-        serve: {onConnection(handler) { ioServer.on('connection', handler) }},
-        selfUrl: () => url,
-        wrap: fragment => ({miniScale: fragment}),
-        opt: demoRpcOpt,
+        serve: {
+            onConnection(handler) { ioServer.on('connection', handler) },
+            wrap: (fragment: Record<string, unknown>) => ({miniScale: fragment}),
+            opt: demoRpcOpt,
+        },
         // the factory has already said goodbye after the drain grace; only the process remains
         onLeave: function shutdownAfterLeave() {
             ioServer.close()

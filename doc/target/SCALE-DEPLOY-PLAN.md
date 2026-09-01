@@ -338,6 +338,17 @@ the REAL public API. Sticky placement moves from the demo into the library clien
 - 8c. Template leader.ts collapses onto Scale.createAuthority; scaffold + rental self-checks
   stay green — the "300 lines → config" payoff proven.
 
+### Step 10 — one control line, owner-published liveness, input facades — DONE 2026-09-02
+
+The breaking pass decided in [`SCALE-REFACTOR.md`](SCALE-REFACTOR.md), folded into the still
+unpublished 2.16.0: roster, deny list and receipts are SECTIONS of one control store served as one
+line (`nodeLink().control`; browsers get a `nodes` projection); liveness is the roster owner's
+published verdict (`alive`/`since`, a sweep every `staleMs/2`, no per-beat writes, no reader-side
+clocks); one write rule (`set`/`patch`/`heartbeat`); inputs mirror outputs (`line`/`roster`/
+`identity`/`corridor`/`leadership`, `StoreLineCoordinates` declared once). Renames:
+`doc/NAMING_RENAMES.md`. Oracles green: node-directory, scale-authority, scale-client(+balance),
+store-node(+readers), scale-failover, command-receipts, scaffold + k8s self-checks.
+
 ### Step 9 — authority succession + durable receipts — DONE 2026-09-02
 
 The two architectural gaps named in review: the authority was a single point of failure for writes

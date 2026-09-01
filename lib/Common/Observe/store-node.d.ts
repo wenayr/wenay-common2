@@ -2,9 +2,9 @@ import type { RpcOpt } from '../rcp/rpc-caps';
 import type { SocketTmpl } from '../rcp/rpc-protocol';
 import { type CommandTokenFragment } from '../command/command-token';
 import type { tCommandMap } from '../command/command-host';
-import { type StoreReplicaSession } from './store-replica-set';
-import { type ReplicatedMapRemote } from './replicated-map';
-import { type NodeDirectoryEntry } from './node-directory';
+import { type StoreLineCoordinates, type StoreReplicaSession } from './store-replica-set';
+import type { StoreReplayRemote } from './store-replay';
+import type { NodeDirectoryState } from './node-directory';
 export type StoreNodeRevocation = {
     account: string;
     ts: number;
@@ -13,10 +13,12 @@ export type StoreNodePrincipal = {
     account: string;
     expiresAt?: number;
 };
+export type StoreNodeControlState = NodeDirectoryState & {
+    revoked: Record<string, StoreNodeRevocation>;
+};
 export type StoreNodeUpstream = {
     replica: StoreReplicaSession['remote'];
-    directory: ReplicatedMapRemote<NodeDirectoryEntry>;
-    revoked?: ReplicatedMapRemote<StoreNodeRevocation>;
+    control: StoreReplayRemote;
     commandsByToken?: CommandTokenFragment<tCommandMap>;
     register: (entry: {
         nodeId: string;
@@ -34,31 +36,31 @@ export type StoreNodeUpstream = {
     };
 };
 export type StoreNodeDeps<T extends Record<string, any>> = {
-    nodeId: string;
-    storeId: string;
-    originId: string;
-    lineId?: string;
-    initial?: T;
-    weight?: number;
-    heartbeatMs?: number;
-    graceMs?: number;
+    line: StoreLineCoordinates & {
+        initial?: T;
+    };
+    roster: {
+        url: () => string;
+        weight?: number;
+        heartbeatMs?: number;
+        graceMs?: number;
+    };
+    upstream: () => Promise<StoreNodeUpstream> | StoreNodeUpstream;
     auth?: {
         verify: (token: unknown) => StoreNodePrincipal;
         renewBeforeMs?: number;
     };
     commands?: readonly string[];
-    upstream: () => Promise<StoreNodeUpstream> | StoreNodeUpstream;
     serve: {
         onConnection(handler: (socket: SocketTmpl) => void): void;
+        wrap?: (fragment: Record<string, unknown>) => object;
+        keys?: {
+            read?: string;
+            write?: string;
+        };
+        opt?: RpcOpt;
     };
-    selfUrl: () => string;
     onLeave: (reason: string) => void;
-    wrap?: (fragment: Record<string, unknown>) => object;
-    socketKeys?: {
-        read?: string;
-        write?: string;
-    };
-    opt?: RpcOpt;
     log?: (line: string) => void;
 };
 export declare function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDeps<T>): {
@@ -69,6 +71,7 @@ export declare function createStoreNode<T extends Record<string, any>>(deps: Sto
         status: () => {
             started: boolean;
             leaving: boolean;
+            rehomes: number;
             readers: number;
             seq: number | undefined;
         };

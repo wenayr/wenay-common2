@@ -88,7 +88,7 @@ async function main() {
 
     // ============== node from the template factory, linked in-process (7a pattern) ==============
     const link = leader.serve.nodeLinkFragment()
-    const roster = followNodeDirectory(link.directory, {staleMs: 0})
+    const roster = followNodeDirectory(link.control)
     await roster.ready
     const row = (nodeId: string) => roster.nodes().find(view => view.nodeId == nodeId)
 
@@ -107,8 +107,7 @@ async function main() {
         },
         upstream: () => ({
             replica: link.replica,
-            directory: link.directory,
-            revoked: link.revoked,
+            control: link.control,
             commandsByToken: link.commandsByToken,
             register: entry => link.register(entry),
             heartbeat: (nodeId, facts) => link.heartbeat(nodeId, facts),
@@ -121,8 +120,8 @@ async function main() {
         log: quiet,
     })
     await node.start()
-    ok(row('leader')?.role == 'leader' && row('node-1')?.role == 'mirror',
-        'the leader serves REST on a real port and the node registers in the directory')
+    await waitFor('the leader serves REST on a real port and the node registers in the roster',
+        () => row('leader')?.role == 'leader' && row('node-1')?.role == 'mirror')
 
     const minted = leader.serve.browserFragment('renter').identity.login()
     ok(minted.account == 'renter' && codec.verify(minted.token).ok == true,

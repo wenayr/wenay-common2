@@ -132,17 +132,17 @@ export function createServiceLeader<
     }
 
     const authority = createAuthority<S, tDomainCommandMap<S, Cmds>>({
-        storeId: definition.storeId,
-        originId: definition.originId,
-        // the old wiring's coordinates, pinned: the row is 'leader' at weight 1 —
-        // the leader owns the writes, readers should prefer the nodes
-        nodeId: 'leader',
-        lineId: definition.name + '-leader',
-        initial: definition.initial,
-        selfUrl: deps.selfUrl,
-        weight: 1,
-        commands: domainCommands(),
-        limits: {perMinute: 60},
+        line: {
+            storeId: definition.storeId,
+            originId: definition.originId,
+            // the old wiring's coordinates, pinned: the row is 'leader' at weight 1 —
+            // the leader owns the writes, readers should prefer the nodes
+            nodeId: 'leader',
+            lineId: definition.name + '-leader',
+            initial: definition.initial,
+        },
+        roster: {url: deps.selfUrl, weight: 1},
+        corridor: {commands: domainCommands(), limits: {perMinute: 60}},
         identity: {
             issue: function issueCodecToken(account: string) {
                 return codec.issue({sub: account})
@@ -174,7 +174,7 @@ export function createServiceLeader<
     /** Drain is DATA: the node sees its own row draining and leaves by itself. */
     function drain(nodeId: string) {
         if (nodeId == 'leader') throw new Error('the leader cannot drain itself')
-        return {ok: authority.directory.control.drain(nodeId)}
+        return {ok: authority.roster.control.drain(nodeId)}
     }
 
     return {
@@ -182,7 +182,7 @@ export function createServiceLeader<
         secrets: {nodeToken, tokenSecret},
         // the authority facets, retransmitted whole — the honest addressing system
         line: authority.line,
-        directory: authority.directory,
+        roster: authority.roster,
         identity: authority.identity,
         /** The write corridor; a REST relay serves corridor.byToken() verbatim. */
         corridor: authority.corridor,

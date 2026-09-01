@@ -99,7 +99,7 @@ async function main() {
     const leader = createServiceLeader({definition: serviceDefinition, selfUrl: () => 'mem://leader', log: quiet})
     leader.control.start()
     const link = leader.serve.nodeLinkFragment()
-    const roster = followNodeDirectory(link.directory, {staleMs: 0})
+    const roster = followNodeDirectory(link.control)
     await roster.ready
     const row = (nodeId: string) => roster.nodes().find(view => view.nodeId == nodeId)
     ok(row('leader')?.role == 'leader' && row('leader')?.url == 'mem://leader',
@@ -122,8 +122,7 @@ async function main() {
         },
         upstream: () => ({
             replica: link.replica,
-            directory: link.directory,
-            revoked: link.revoked,
+            control: link.control,
             commandsByToken: link.commandsByToken,
             register: entry => link.register(entry),
             heartbeat: (nodeId, facts) => link.heartbeat(nodeId, facts),
@@ -136,8 +135,7 @@ async function main() {
         log: quiet,
     })
     await node.start()
-    ok(row('node-1')?.role == 'mirror' && row('node-1')?.url == 'mem://node-1',
-        'the node registers itself in the directory')
+    await waitFor('the node registers itself in the roster', () => row('node-1')?.role == 'mirror' && row('node-1')?.url == 'mem://node-1')
 
     // ============== identity: a real codec token from the leader's ungated port ==============
     const minted = leader.serve.browserFragment('author').identity.login()

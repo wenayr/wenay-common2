@@ -39,14 +39,12 @@ async function main() {
     }, 60_000)
 
     const authority = createAuthority<TickState>({
-        storeId: 'balance-line', originId: 'balance-origin',
-        initial: {tick: {id: 'tick', value: 0}},
-        selfUrl: () => 'mem://authority',
+        line: {storeId: 'balance-line', originId: 'balance-origin', initial: {tick: {id: 'tick', value: 0}}},
+        roster: {url: () => 'mem://authority', heartbeatMs: 200, staleMs: 0},
         identity: {
             issue: account => 'tok:' + account,
             verify: presented => ({account: String(presented ?? '').slice(4)}),
         },
-        heartbeatMs: 200,
         log: () => {},
     })
     authority.start()
@@ -54,7 +52,7 @@ async function main() {
     // three fake mirror rows: the ORACLE owns their readers facts; the client's
     // line itself always rides the authority fragment — placement is the subject
     function upsertMirror(nodeId: string, readers: number, weight = 4) {
-        authority.directory.control.upsert({nodeId, url: 'mem://' + nodeId, role: 'mirror', weight, meta: {readers}})
+        authority.roster.control.set({nodeId, url: 'mem://' + nodeId, role: 'mirror', weight, meta: {readers}})
     }
     upsertMirror('m-busy', 6)
     upsertMirror('m-mid', 3)
@@ -66,12 +64,10 @@ async function main() {
 
     const moves: string[] = []
     const client = createClusterClient<TickState>({
-        storeId: 'balance-line', originId: 'balance-origin', nodeId: 'consumer',
-        initial: {},
-        directory: authority.directory.api,
+        line: {storeId: 'balance-line', originId: 'balance-origin', nodeId: 'consumer', initial: {}},
+        roster: authority.roster.api,
         connect,
         placement: {
-            staleMs: 0,
             rng: () => 0,
             balance: {checkMs: 40, cooldownMs: 400, moveChance: 1},
         },
@@ -115,11 +111,10 @@ async function main() {
 
     // ============== 5. balance off = the old sticky weighted pick, untouched ==============
     const sticky = createClusterClient<TickState>({
-        storeId: 'balance-line', originId: 'balance-origin', nodeId: 'consumer-sticky',
-        initial: {},
-        directory: authority.directory.api,
+        line: {storeId: 'balance-line', originId: 'balance-origin', nodeId: 'consumer-sticky', initial: {}},
+        roster: authority.roster.api,
         connect,
-        placement: {staleMs: 0, rng: () => 0.999},
+        placement: {rng: () => 0.999},
         log: () => {},
     })
     await waitFor('without balance the weighted pick still rules (roll 0.999 → last by cumulative weight)',

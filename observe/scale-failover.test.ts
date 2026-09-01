@@ -48,7 +48,7 @@ function linkTo(authority: ReturnType<typeof createAuthority<TickState, Cmds>>, 
     const [fail, onFail] = listen<[]>()
     const link = authority.serve.nodeLink(asNode)
     const upstream: AuthorityUpstream = {
-        replica: link.replica, directory: link.directory, revoked: link.revoked, receipts: link.receipts,
+        replica: link.replica, control: link.control,
         register: link.register, heartbeat: link.heartbeat, goodbye: link.goodbye,
         onFail: {on: (cb: () => void) => onFail.on(cb)},
     }
@@ -65,11 +65,9 @@ async function main() {
     }
     function authorityDeps(nodeId: string) {
         return {
-            storeId: 'fo-line', originId: 'fo-origin', nodeId,
-            initial: {tick: {id: 'tick', value: 0}} as TickState,
-            selfUrl: () => 'mem://' + nodeId,
-            commands, identity: {issue, verify},
-            heartbeatMs: 50,
+            line: {storeId: 'fo-line', originId: 'fo-origin', nodeId, initial: {tick: {id: 'tick', value: 0}} as TickState},
+            roster: {url: () => 'mem://' + nodeId, heartbeatMs: 50, staleMs: 0},
+            corridor: {commands}, identity: {issue, verify},
             log: () => {},
         }
     }
@@ -108,16 +106,16 @@ async function main() {
     const nodeLinkA = linkTo(a, 'n1')
     let nodeUpstream = nodeLinkA
     const node = createStoreNode<TickState>({
-        nodeId: 'n1', storeId: 'fo-line', originId: 'fo-origin',
+        line: {nodeId: 'n1', storeId: 'fo-line', originId: 'fo-origin'},
+        roster: {url: () => 'mem://n1', heartbeatMs: 50},
         upstream: () => nodeUpstream.upstream,
         serve: {onConnection() {}},
-        selfUrl: () => 'mem://n1',
         onLeave() {},
-        heartbeatMs: 50,
         log: () => {},
     })
     await node.start()
     await waitFor('the node is registered at A', () => a.view.nodes().some(view => view.nodeId == 'n1' && view.role == 'mirror'))
+    await waitFor('B mirrors the node row before the failover', () => b.view.nodes().some(view => view.nodeId == 'n1'))
 
     // ============== A dies ==============
     a.close()
@@ -142,11 +140,10 @@ async function main() {
 
     // ============== the node re-homes: its host now resolves B ==============
     nodeUpstream = linkTo(b, 'n1')
-    await waitFor('the node follows the new leader line', () => node.view.status().seq != undefined
-        && node.view.status().started && b.view.nodes().find(view => view.nodeId == 'n1')?.ts! > 0)
-    const beforeBeat = b.view.nodes().find(view => view.nodeId == 'n1')!.ts
-    await waitFor('the node heartbeats at B', () => (b.view.nodes().find(view => view.nodeId == 'n1')?.ts ?? 0) > beforeBeat)
-    b.directory.control.drain('n1')
+    await waitFor('the node re-homes onto B (registers there, follows ITS control line)',
+        () => node.view.status().rehomes >= 1, 8000)
+    ok(b.view.nodes().find(view => view.nodeId == 'n1')?.meta?.['pid'] == process.pid, "the node's row at B carries its pid fact")
+    b.roster.control.drain('n1')
     await waitFor('a drain issued by the NEW leader reaches the node', () => node.view.status().leaving)
 
     // ============== the old leader restarts and rejoins: it loses fork choice ==============

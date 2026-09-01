@@ -1,20 +1,18 @@
 import type { RpcServerControl } from '../rcp/rpc-server';
 import { type CommandFragment, type CommandHostDeps, type tCommandMap } from '../command/command-host';
-import { type CommandReceiptRecord, type CommandReceiptsRemote } from '../command/command-receipts';
-import { createNodeDirectory, type NodeDirectoryEntry } from '../Observe/node-directory';
-import { type ReplicatedMapRemote } from '../Observe/replicated-map';
-import { type StoreReplicaLeadership, type StoreReplicaSession } from '../Observe/store-replica-set';
-import type { StoreNodePrincipal, StoreNodeRevocation } from '../Observe/store-node';
+import { type NodeDirectory, type NodeDirectoryRow } from '../Observe/node-directory';
+import type { StoreReplayRemote } from '../Observe/store-replay';
+import { type StoreLineCoordinates, type StoreReplicaLeadership, type StoreReplicaSession } from '../Observe/store-replica-set';
+import type { StoreNodePrincipal } from '../Observe/store-node';
 export type ScaleIdentityAdapter = {
     issue: (account: string) => string;
     verify: (presented: unknown) => StoreNodePrincipal;
+    renewBeforeMs?: number;
 };
 export type tScaleAuthorityRole = 'leader' | 'standby';
 export type AuthorityUpstream = {
     replica: StoreReplicaSession['remote'];
-    directory: ReplicatedMapRemote<NodeDirectoryEntry>;
-    revoked: ReplicatedMapRemote<StoreNodeRevocation>;
-    receipts: CommandReceiptsRemote;
+    control: StoreReplayRemote;
     register: (entry: {
         nodeId: string;
         url: string;
@@ -37,21 +35,24 @@ export type ScaleAuthorityLeadership = {
     accept?: StoreReplicaLeadership['accept'];
 };
 export type ScaleAuthorityDeps<T extends Record<string, any>, Cmds extends tCommandMap = {}> = {
-    storeId: string;
-    originId: string;
-    nodeId?: string;
-    lineId?: string;
-    initial: T;
-    selfUrl: () => string;
-    weight?: number;
-    commands?: Cmds;
-    limits?: CommandHostDeps<Cmds>['limits'];
-    receipts?: Omit<NonNullable<CommandHostDeps<Cmds>['receipts']>, 'line'>;
+    line: Omit<StoreLineCoordinates, 'nodeId'> & {
+        nodeId?: string;
+        initial: T;
+    };
+    roster: {
+        url: () => string;
+        weight?: number;
+        heartbeatMs?: number;
+        staleMs?: number;
+        acceptNode?: (nodeId: string) => boolean;
+        meta?: () => Record<string, unknown>;
+    };
     identity: ScaleIdentityAdapter;
-    renewBeforeMs?: number;
-    heartbeatMs?: number;
-    acceptNode?: (nodeId: string) => boolean;
-    meta?: () => Record<string, unknown>;
+    corridor?: {
+        commands?: Cmds;
+        limits?: CommandHostDeps<Cmds>['limits'];
+        receipts?: Omit<NonNullable<CommandHostDeps<Cmds>['receipts']>, 'line'>;
+    };
     leadership?: ScaleAuthorityLeadership;
     log?: (line: string) => void;
 };
@@ -159,19 +160,18 @@ export declare function createAuthority<T extends Record<string, any>, Cmds exte
             canWrite: () => boolean;
         };
     };
-    directory: {
+    roster: {
         control: {
-            upsert: (...args: Parameters<ReturnType<typeof createNodeDirectory>['control']['upsert']>) => void;
-            heartbeat: (...args: Parameters<ReturnType<typeof createNodeDirectory>['control']['heartbeat']>) => boolean;
+            set: (row: NodeDirectoryRow) => void;
+            patch: (id: string, partial: Parameters<NodeDirectory['control']['patch']>[1]) => boolean;
+            heartbeat: (id: string, partial?: Parameters<NodeDirectory['control']['heartbeat']>[1]) => boolean;
             drain: (id: string) => boolean;
             undrain: (id: string, w?: number) => boolean;
             remove: (id: string) => void;
-            get: (id: string) => NodeDirectoryEntry | undefined;
-            snapshot: () => Partial<Record<string, NodeDirectoryEntry>>;
-            flush: () => void | undefined;
-            close: () => void | undefined;
+            get: (id: string) => import("../Observe").NodeDirectoryEntry;
+            snapshot: () => Record<string, import("../Observe").NodeDirectoryEntry>;
         };
-        readonly api: ReplicatedMapRemote<NodeDirectoryEntry, string>;
+        readonly api: StoreReplayRemote;
     };
     identity: {
         login: (account: string) => {
@@ -246,7 +246,7 @@ export declare function createAuthority<T extends Record<string, any>, Cmds exte
                 });
                 ping: () => number;
             };
-            directory: ReplicatedMapRemote<NodeDirectoryEntry, string>;
+            roster: StoreReplayRemote;
             identity: {
                 login: () => {
                     token: string;
@@ -350,9 +350,7 @@ export declare function createAuthority<T extends Record<string, any>, Cmds exte
                 });
                 ping: () => number;
             };
-            directory: ReplicatedMapRemote<NodeDirectoryEntry, string>;
-            revoked: ReplicatedMapRemote<StoreNodeRevocation, string>;
-            receipts: ReplicatedMapRemote<CommandReceiptRecord, string>;
+            control: StoreReplayRemote;
             commandsByToken: import("../command/command-token").CommandTokenFragment<Cmds>;
             register(entry: {
                 nodeId?: unknown;
@@ -396,7 +394,7 @@ export declare function createAuthority<T extends Record<string, any>, Cmds exte
                     renewBeforeMs: number;
                 };
             };
-            attach(serverControl: RpcServerControl): void;
+            attach(attached: RpcServerControl): void;
             close(): void;
         };
     };

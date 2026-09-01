@@ -16,7 +16,8 @@ import type {SocketTmpl} from '../src/Common/rcp/rpc-protocol'
 import {createCommandHost} from '../src/Common/command/command-host'
 import {verifyCommands} from '../src/Common/command/command-token'
 import {createNodeDirectory} from '../src/Common/Observe/node-directory'
-import {createReplicatedMap} from '../src/Common/Observe/replicated-map'
+import {createStore} from '../src/Common/Observe/store'
+import {exposeStoreReplay} from '../src/Common/Observe/store-replay'
 import {createStoreFollower} from '../src/Common/Observe/store-follower'
 import {createStoreReplicaSet} from '../src/Common/Observe/store-replica-set'
 import {createStoreNode, type StoreNodeRevocation} from '../src/Common/Observe/store-node'
@@ -53,11 +54,17 @@ async function main() {
         initial: {tick: {id: 'tick', value: 0}},
         leadership: {initialRole: 'leader', epoch: 1},
     })
-    const directory = createNodeDirectory()
-    const revocations = createReplicatedMap<StoreNodeRevocation>({
-        keyOf(revocation) { return revocation.account },
-        delivery: 'latest',
-    })
+    // the authority's control store by hand: roster + deny list as sections of ONE line
+    const controlStore = createStore<{nodes: Record<string, any>, revoked: Record<string, StoreNodeRevocation>}>({nodes: {}, revoked: {}})
+    const controlLine = exposeStoreReplay(controlStore)
+    const directory = createNodeDirectory({store: controlStore, staleMs: 0})
+    const revocations = {
+        control: {
+            get: (account: string) => controlStore.state.revoked[account],
+            set: (fact: StoreNodeRevocation) => { controlStore.state.revoked[fact.account] = fact },
+            close() { controlLine.close() },
+        },
+    }
     let applied = 0
     const host = createCommandHost({
         commands: {
@@ -80,25 +87,21 @@ async function main() {
     let connect: ((socket: SocketTmpl) => void) | null = null
     let leftReason: string | null = null
     const node = createStoreNode<TickState>({
-        nodeId: 'n1', storeId: 'node-line', originId: 'node-origin',
-        graceMs: 40,
+        line: {nodeId: 'n1', storeId: 'node-line', originId: 'node-origin'},
+        roster: {url: () => 'mem://n1', graceMs: 40, heartbeatMs: 50},
         auth: {verify: parseToken},
         commands: ['add'],
         upstream: () => ({
             replica: authority.api.fragment,
-            directory: directory.api,
-            revoked: revocations.api,
+            control: controlLine.api.replay,
             commandsByToken: verified.fragment(),
-            register: entry => directory.control.upsert({...entry, role: 'mirror'}),
+            register: entry => directory.control.set({...entry, role: 'mirror'}),
             heartbeat: (nodeId, facts) => directory.control.heartbeat(nodeId, {meta: {readers: facts?.readers ?? 0}}),
             goodbye: nodeId => directory.control.remove(nodeId),
             onFail: {on: () => () => {}},
         }),
-        serve: {onConnection(handler) { connect = handler }},
-        selfUrl: () => 'mem://n1',
-        heartbeatMs: 50,
+        serve: {onConnection(handler) { connect = handler }, wrap: (fragment: Record<string, unknown>) => ({svc: fragment})},
         onLeave: reason => { leftReason = reason },
-        wrap: fragment => ({svc: fragment}),
         log: () => {},
     })
     await node.start()
@@ -108,7 +111,7 @@ async function main() {
         'start registers the node in the directory from its config')
 
     authority.control.store.state.tick = {id: 'tick', value: 7}
-    await waitFor('the node line converges on the authority write', () => node.view.status().seq >= 1)
+    await waitFor('the node line converges on the authority write', () => (node.view.status().seq ?? -1) >= 1)
 
     // ============== a client over REAL RPC: read key ungated, write key gated ==============
     const {client: clientEnd, server: serverEnd} = createLoopbackSocketPair()
@@ -172,8 +175,8 @@ async function main() {
     function makeLink(onRegister?: (entry: any) => void) {
         return {
             replica: authority.api.fragment,
-            directory: directory.api,
-            register: (entry: any) => { onRegister?.(entry); directory.control.upsert({...entry, role: 'mirror'}) },
+            control: controlLine.api.replay,
+            register: (entry: any) => { onRegister?.(entry); directory.control.set({...entry, role: 'mirror'}) },
             heartbeat: (id: string, facts: any) => directory.control.heartbeat(id, {meta: {readers: facts?.readers ?? 0}}),
             goodbye: (id: string) => directory.control.remove(id),
             onFail: {on: () => () => {}},
@@ -185,16 +188,15 @@ async function main() {
     let n2Registered: any = null
     let upstreamDown = true
     const n2 = createStoreNode<TickState>({
-        nodeId: 'n2', storeId: 'node-line', originId: 'node-origin',
+        line: {nodeId: 'n2', storeId: 'node-line', originId: 'node-origin'},
         // heartbeatMs is huge on purpose: the seeding scenario below needs the
         // removal to be the FIRST post-subscribe batch, with no beat in between
-        graceMs: 40, heartbeatMs: 60_000,
+        roster: {url: () => 'mem://n2', graceMs: 40, heartbeatMs: 60_000},
         upstream: () => {
             if (upstreamDown) throw new Error('authority briefly down')
             return makeLink(function recordRegister(entry) { n2Registered = entry })
         },
         serve: {onConnection() {}},
-        selfUrl: () => 'mem://n2',
         onLeave: reason => { n2Left = reason },
         log: () => {},
     })
@@ -210,17 +212,16 @@ async function main() {
     // ============== removal as the FIRST post-subscribe batch still means leave ==============
     directory.control.remove('n2')
     await waitFor('a removal landing as the first batch still triggers leave',
-        () => n2Left == 'removed from the directory')
+        () => n2Left == 'removed from the roster')
 
     // ============== close() during start() must win ==============
     let releaseN3: ((link: any) => void) | null = null
     let n3Registered = false
     const n3 = createStoreNode<TickState>({
-        nodeId: 'n3', storeId: 'node-line', originId: 'node-origin',
-        graceMs: 40, heartbeatMs: 50,
+        line: {nodeId: 'n3', storeId: 'node-line', originId: 'node-origin'},
+        roster: {url: () => 'mem://n3', graceMs: 40, heartbeatMs: 50},
         upstream: () => new Promise(resolve => { releaseN3 = resolve }),
         serve: {onConnection() {}},
-        selfUrl: () => 'mem://n3',
         onLeave: () => {},
         log: () => {},
     })
@@ -236,8 +237,8 @@ async function main() {
     let resolves = 0
     const failCbs: (() => void)[] = []
     const n4 = createStoreNode<TickState>({
-        nodeId: 'n4', storeId: 'node-line', originId: 'node-origin',
-        graceMs: 40, heartbeatMs: 60_000,
+        line: {nodeId: 'n4', storeId: 'node-line', originId: 'node-origin'},
+        roster: {url: () => 'mem://n4', graceMs: 40, heartbeatMs: 60_000},
         upstream: () => {
             resolves++
             return {
@@ -246,7 +247,6 @@ async function main() {
             }
         },
         serve: {onConnection() {}},
-        selfUrl: () => 'mem://n4',
         onLeave: () => {},
         log: () => {},
     })

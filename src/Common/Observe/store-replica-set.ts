@@ -148,11 +148,17 @@ export type StoreReplicaRoutePolicy = {
     hysteresisMs?: number
 }
 
-export type StoreReplicaSetDeps<T extends object> = {
+/** The coordinates every participant of one line shares; declared ONCE for the whole tier. */
+export type StoreLineCoordinates = {
     storeId: string
     originId: string
+    /** Stable identity of this participant. */
     nodeId: string
+    /** This participant's own replay sequence space; default derives from nodeId. */
     lineId?: string
+}
+
+export type StoreReplicaSetDeps<T extends object> = StoreLineCoordinates & {
     store?: Store<T>
     initial?: T
     expose?: StoreReplayOpts

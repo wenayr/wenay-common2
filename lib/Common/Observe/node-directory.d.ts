@@ -1,5 +1,7 @@
-import { FollowReplicatedMapOpts, ReplicatedMapRemote, ReplicatedMapState, tReplicatedMapDelivery } from './replicated-map';
-import { StoreReplicaOffer, StoreReplicaSession } from './store-replica-set';
+import { type Store } from './store';
+import { type StoreReplayOpts, type StoreReplayRemote } from './store-replay';
+import { type StoreFollowerDeps } from './store-follower';
+import { type StoreReplicaOffer, type StoreReplicaSession } from './store-replica-set';
 export type tNodeDirectoryRole = 'leader' | 'mirror' | 'standby';
 export type NodeDirectoryEntry = {
     nodeId: string;
@@ -7,113 +9,116 @@ export type NodeDirectoryEntry = {
     role: tNodeDirectoryRole;
     weight: number;
     draining: boolean;
-    ts: number;
+    alive: boolean;
+    since: number;
     meta?: Record<string, unknown>;
 };
 export type NodeDirectoryView = NodeDirectoryEntry & {
-    stale: boolean;
     eligible: boolean;
 };
-export declare const NODE_DIRECTORY_STALE_MS = 15000;
-export type NodeDirectoryDeps = {
-    now?: () => number;
-    initial?: Iterable<NodeDirectoryEntry>;
-    lineId?: string;
-    replay?: {
-        history?: number;
-        keepMs?: number;
-        describe?: Record<string, any>;
-    };
+export type NodeDirectoryState = {
+    nodes: Record<string, NodeDirectoryEntry>;
 };
-export declare function createNodeDirectory(deps?: NodeDirectoryDeps): {
-    api: ReplicatedMapRemote<NodeDirectoryEntry, string>;
+export declare const NODE_DIRECTORY_STALE_MS = 15000;
+export type NodeDirectoryDeps<S extends NodeDirectoryState = NodeDirectoryState> = {
+    store?: Store<S>;
+    now?: () => number;
+    staleMs?: number;
+    sweepMs?: number;
+    initial?: Iterable<NodeDirectoryEntry>;
+    replay?: Pick<StoreReplayOpts, 'history' | 'keepMs' | 'describe'>;
+};
+export type NodeDirectoryRow = Omit<NodeDirectoryEntry, 'alive' | 'since' | 'draining'> & {
+    draining?: boolean;
+};
+export declare function createNodeDirectory<S extends NodeDirectoryState = NodeDirectoryState>(deps?: NodeDirectoryDeps<S>): {
+    api: StoreReplayRemote | null;
     control: {
-        upsert: (entry: Omit<NodeDirectoryEntry, 'ts' | 'draining'> & {
-            draining?: boolean;
-        }) => void;
-        heartbeat: (nodeId: string, patch?: Partial<Omit<NodeDirectoryEntry, 'nodeId' | 'ts'>>) => boolean;
+        set: (row: NodeDirectoryRow) => void;
+        patch: (nodeId: string, partial: Partial<Omit<NodeDirectoryEntry, 'nodeId' | 'alive' | 'since'>>) => boolean;
+        heartbeat: (nodeId: string, partial?: Parameters<(nodeId: string, partial: Partial<Omit<NodeDirectoryEntry, 'nodeId' | 'alive' | 'since'>>) => boolean>[1]) => boolean;
         drain: (nodeId: string) => boolean;
         undrain: (nodeId: string, weight?: number) => boolean;
         remove: (nodeId: string) => void;
-        get: (key: string) => NodeDirectoryEntry | undefined;
-        snapshot: () => Partial<Record<string, NodeDirectoryEntry>>;
+        grace: () => void;
+        sweep: () => void;
+        get: (nodeId: string) => NodeDirectoryEntry | undefined;
+        snapshot: () => Record<string, NodeDirectoryEntry>;
         flush: () => void;
         close: () => void;
     };
+    view: {
+        nodes: () => NodeDirectoryView[];
+    };
+    store: Store<NodeDirectoryState>;
+    close: () => void;
 };
 export type NodeDirectory = ReturnType<typeof createNodeDirectory>;
-export type NodeDirectoryViewOpts = {
-    staleMs?: number;
-    now?: () => number;
-};
-export declare function nodeDirectoryViews(state: Readonly<ReplicatedMapState<NodeDirectoryEntry>>, opts?: NodeDirectoryViewOpts): NodeDirectoryView[];
+export declare function nodeDirectoryViews(state: Readonly<Record<string, NodeDirectoryEntry | undefined>>): NodeDirectoryView[];
 export type PickDirectoryNodeOpts = {
     exclude?: string | readonly string[];
     rng?: () => number;
 };
 export declare function pickDirectoryNode(views: readonly NodeDirectoryView[], opts?: PickDirectoryNodeOpts): NodeDirectoryView | null;
-export type FollowNodeDirectoryOpts = NodeDirectoryViewOpts & Pick<FollowReplicatedMapOpts<NodeDirectoryEntry>, 'initial' | 'drain' | 'onStatus' | 'onError'>;
-export declare function followNodeDirectory(remote: ReplicatedMapRemote<NodeDirectoryEntry>, opts?: FollowNodeDirectoryOpts): {
+export type FollowNodeDirectoryOpts = Pick<StoreFollowerDeps<NodeDirectoryState>, 'initial' | 'staleMs' | 'expose'>;
+export declare function followNodeDirectory(remote: StoreReplayRemote, opts?: FollowNodeDirectoryOpts): {
     nodes: () => NodeDirectoryView[];
     pick: (pickOpts?: PickDirectoryNodeOpts) => NodeDirectoryView | null;
-    onNodes: (cb: (views: NodeDirectoryView[]) => void) => import("../..").ListenOff;
+    onNodes: (cb: (views: NodeDirectoryView[]) => void) => () => void;
+    onNode: (nodeId: string, cb: (entry: NodeDirectoryEntry | undefined) => void, watchOpts?: {
+        current?: boolean;
+    }) => () => void;
     ready: Promise<void>;
-    status: () => import("./replicated-map").ReplicatedMapStatus;
-    statusChanges: {
-        emit: import("../..").Listener<[import("./replicated-map").ReplicatedMapStatus]>;
-        has(key: import("../..").ListenKey): boolean;
-        off(keyOrCallback: import("../..").Listener<[import("./replicated-map").ReplicatedMapStatus]> | import("../..").ListenKey | null): void;
-        close(): void;
-        count(): number;
-        keys(): import("../..").ListenKey[];
-        isRunning(): boolean;
-        run(): void;
-        onClose(cb: () => void): import("../..").ListenOff;
-        on: import("../..").ListenOnCurrent<[import("./replicated-map").ReplicatedMapStatus]>;
-        once: (cb: import("../..").Listener<[import("./replicated-map").ReplicatedMapStatus]>, opts?: {
-            key?: import("../..").ListenKey;
-            current?: import("../..").ListenCurrent<[import("./replicated-map").ReplicatedMapStatus]> | undefined;
-        }) => import("../..").ListenOff;
-    };
+    status: Store<import("./store-follower").FollowerStatus>;
     isStale: () => boolean;
-    close: () => void;
-    follow: {
-        get: (key: string) => NodeDirectoryEntry | undefined;
-        has: (key: string) => boolean;
-        snapshot: () => Partial<Record<string, NodeDirectoryEntry>>;
-        onKey: (key: string, cb: (value: NodeDirectoryEntry | undefined, ctx: import("./replicated-map").ReplicatedMapKeyContext<string>) => void, keyOpts?: {
-            current?: boolean;
-        }) => import("../..").ListenOff;
-        batches: import("../..").ListenApi<[import("./replicated-map").ReplicatedMapChange<NodeDirectoryEntry, string>]>;
-        keys: import("../..").ListenApi<[string, NodeDirectoryEntry | undefined, import("./replicated-map").ReplicatedMapKeyContext<string>]>;
-        ready: Promise<void>;
-        status: () => import("./replicated-map").ReplicatedMapStatus;
-        statusChanges: {
-            emit: import("../..").Listener<[import("./replicated-map").ReplicatedMapStatus]>;
-            has(key: import("../..").ListenKey): boolean;
-            off(keyOrCallback: import("../..").Listener<[import("./replicated-map").ReplicatedMapStatus]> | import("../..").ListenKey | null): void;
-            close(): void;
-            count(): number;
-            keys(): import("../..").ListenKey[];
-            isRunning(): boolean;
-            run(): void;
-            onClose(cb: () => void): import("../..").ListenOff;
-            on: import("../..").ListenOnCurrent<[import("./replicated-map").ReplicatedMapStatus]>;
-            once: (cb: import("../..").Listener<[import("./replicated-map").ReplicatedMapStatus]>, opts?: {
-                key?: import("../..").ListenKey;
-                current?: import("../..").ListenCurrent<[import("./replicated-map").ReplicatedMapStatus]> | undefined;
-            }) => import("../..").ListenOff;
-        };
-        seq: () => number;
-        replayMode: () => "v2";
-        delivery: () => tReplicatedMapDelivery;
-        checkpoint: () => import("./replicated-map").ReplicatedMapCheckpoint<NodeDirectoryEntry, string>;
-        isStale: () => boolean;
-        close: () => void;
-        debug: {
-            store: import("./store").Store<Partial<Record<string, NodeDirectoryEntry>>>;
-        };
+    api: {
+        get(): NodeDirectoryState;
+        get<M extends import("./store").StoreMask<NodeDirectoryState>>(mask: M): import("./store").StorePick<NodeDirectoryState, M>;
+        set(path: import("./store").StorePath, value: any): void;
+        replace(path: import("./store").StorePath, value: any): void;
+        changed: any;
+        changedPaths: any;
+        replay: {
+            line: {
+                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
+            } & import("./store-replay").StoreReplayLineLocal;
+            since: (seq: number) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
+            keyframe: () => Promise<import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
+            frame?: ((seq: number, hint?: unknown) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
+            frameLine?: {
+                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
+            } | undefined;
+            chunks?: {
+                begin: (opts?: {
+                    budgetBytes?: number;
+                }) => Promise<import("./store-replay").StoreReplayChunksBegin<import("./store-replay-codec").tStoreReplayWireBatchV2> | null | undefined> | import("./store-replay").StoreReplayChunksBegin<import("./store-replay-codec").tStoreReplayWireBatchV2> | null | undefined;
+                pull: (snapshotId: string, index: number) => Promise<import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
+                end?: (snapshotId: string) => unknown;
+            } | undefined;
+            describe: () => Record<string, any>;
+        } | ({
+            line: {
+                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
+            };
+            since: (seq: number) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined;
+            keyframe: () => Promise<import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
+            frame?: ((seq: number, hint?: unknown) => import("./store-replay-codec").tStoreReplayWireBatchV2[] | Promise<import("./store-replay-codec").tStoreReplayWireBatchV2[] | null | undefined> | null | undefined) | undefined;
+            frameLine?: {
+                on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
+            } | undefined;
+            chunks?: {
+                begin: (opts?: {
+                    budgetBytes?: number;
+                }) => Promise<import("./store-replay").StoreReplayChunksBegin<import("./store-replay-codec").tStoreReplayWireBatchV2> | null | undefined> | import("./store-replay").StoreReplayChunksBegin<import("./store-replay-codec").tStoreReplayWireBatchV2> | null | undefined;
+                pull: (snapshotId: string, index: number) => Promise<import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined> | import("./store-replay-codec").tStoreReplayWireBatchV2 | null | undefined;
+                end?: (snapshotId: string) => unknown;
+            } | undefined;
+        } & {
+            line: import("./store-replay").StoreReplayLineLocal;
+        });
     };
+    store: Store<NodeDirectoryState>;
+    close: () => void;
 };
 export type FollowedNodeDirectory = ReturnType<typeof followNodeDirectory>;
 export type DirectoryReplicaOffersDeps = {

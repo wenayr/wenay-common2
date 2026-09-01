@@ -1,11 +1,12 @@
 // ============================================================
 //  observe/node-directory.test.ts
 //
-//  Node directory: replicated roster of service nodes. Host verbs
-//  (upsert/heartbeat/drain/undrain/remove), pure staleness/pick derivation,
-//  the follow facade over the ordinary replay wire, and the offers bridge:
-//  drain in the directory moves a replica-set client to another node with
-//  seq continuity — the mini horizontal-scaling core.
+//  Node directory: the roster as the `nodes` section of a Store line. Owner
+//  verbs (set/patch/heartbeat/drain/undrain/remove), liveness PUBLISHED by the
+//  owner (alive flips on sweep, never per beat), pure pick derivation, the
+//  follow facade over the ordinary replay wire, embedding into a wider control
+//  store, and the offers bridge: drain in the directory moves a replica-set
+//  client to another node with seq continuity — the mini horizontal-scaling core.
 //  Run: npx tsx observe/node-directory.test.ts
 // ============================================================
 
@@ -13,6 +14,7 @@ import {
     createNodeDirectory, directoryReplicaOffers, followNodeDirectory,
     nodeDirectoryViews, pickDirectoryNode,
 } from '../src/Common/Observe/node-directory'
+import {createStore, listenStorePatches} from '../src/Common/Observe/store'
 import {createStoreReplicaSet} from '../src/Common/Observe/store-replica-set'
 import {flushReactive} from '../src/Common/Observe/reactive'
 
@@ -34,106 +36,138 @@ async function waitFor(label: string, condition: () => boolean, timeoutMs = 8000
     console.log('  FAIL timeout waiting for ' + label)
 }
 
-// ============== host verbs + pure derivation (fake clock) ==============
+// ============== owner verbs + pure derivation (fake clock) ==============
 async function hostAndPickPart() {
     let t = 1000
-    const dir = createNodeDirectory({now: () => t})
-    dir.control.upsert({nodeId: 'a', url: 'u-a', role: 'leader', weight: 2})
-    dir.control.upsert({nodeId: 'b', url: 'u-b', role: 'mirror', weight: 1})
-    const viewOpts = {staleMs: 5000, now: () => t}
+    const dir = createNodeDirectory({now: () => t, staleMs: 5000})
+    dir.control.set({nodeId: 'a', url: 'u-a', role: 'leader', weight: 2})
+    dir.control.set({nodeId: 'b', url: 'u-b', role: 'mirror', weight: 1})
 
-    let views = nodeDirectoryViews(dir.control.snapshot(), viewOpts)
-    ok(views.length == 2 && views.every(v => v.eligible), 'two fresh nodes are eligible')
+    let views = dir.view.nodes()
+    ok(views.length == 2 && views.every(v => v.eligible && v.alive), 'two fresh nodes are alive and eligible')
+    ok(views.every(v => v.since == 1000), 'since stamps the owner clock when alive flipped on')
     ok(pickDirectoryNode(views, {rng: () => 0})?.nodeId == 'a', 'weighted pick: low roll lands on the heavy node')
     ok(pickDirectoryNode(views, {rng: () => 0.9})?.nodeId == 'b', 'weighted pick: high roll lands on the light node')
     ok(pickDirectoryNode(views, {exclude: 'a', rng: () => 0})?.nodeId == 'b', 'exclude removes a candidate')
 
     ok(dir.control.drain('b'), 'drain acks a known node')
-    views = nodeDirectoryViews(dir.control.snapshot(), viewOpts)
+    views = dir.view.nodes()
     ok(views.find(v => v.nodeId == 'b')?.draining == true, 'drain publishes intent')
     ok(pickDirectoryNode(views, {rng: () => 0.99})?.nodeId == 'a', 'draining node takes no new placements')
 
     ok(dir.control.undrain('b', 5), 'undrain acks')
-    views = nodeDirectoryViews(dir.control.snapshot(), viewOpts)
-    ok(views.find(v => v.nodeId == 'b')?.weight == 5, 'undrain can restore a new weight')
+    ok(dir.view.nodes().find(v => v.nodeId == 'b')?.weight == 5, 'undrain can restore a new weight')
 
-    ok(dir.control.heartbeat('a', {weight: 0}), 'weight update via heartbeat')
-    views = nodeDirectoryViews(dir.control.snapshot(), viewOpts)
-    ok(views.find(v => v.nodeId == 'a')?.eligible == false, 'weight <= 0 closes the node')
-    ok(dir.control.heartbeat('ghost') == false, 'heartbeat of an unknown node reports false')
+    ok(dir.control.patch('a', {weight: 0}), 'weight update via patch')
+    ok(dir.view.nodes().find(v => v.nodeId == 'a')?.eligible == false, 'weight <= 0 closes the node')
+    ok(dir.control.patch('ghost', {weight: 1}) == false && dir.control.heartbeat('ghost') == false,
+        'patch/heartbeat of an unknown node report false')
 
-    // meta merges one level at the DIRECTORY layer: each heartbeat writer owns its
+    // meta merges one level at the DIRECTORY layer: each writer owns its
     // facts and must not erase what another writer reported (readers vs labels)
     ok(dir.control.heartbeat('b', {meta: {readers: 7}}), 'heartbeat lands a meta fact')
-    ok(dir.control.heartbeat('b', {meta: {labels: {app: 'x'}}}), 'a second writer patches its own fact')
+    ok(dir.control.patch('b', {meta: {labels: {app: 'x'}}}), 'a second writer patches its own fact')
     const bMeta = dir.control.get('b')?.meta
     ok(bMeta?.['readers'] == 7 && json(bMeta?.['labels']) == json({app: 'x'}),
-        'heartbeat meta MERGES: one writer does not erase the other writer\'s fact')
+        'meta MERGES: one writer does not erase the other writer\'s fact')
 
+    // liveness is the OWNER's verdict: a beat writes nothing, a sweep flips alive
+    await flushReactive(dir.store.state)   // the verbs above drain first; only NEW writes count below
+    let writes = 0
+    const offWrites = listenStorePatches(dir.store).on(function countWrites(patches) { writes += patches.length })
+    dir.control.heartbeat('a')
+    dir.control.heartbeat('b', {meta: {readers: 7}})
+    await tick()
+    ok(writes == 0, 'heartbeats that change no fact publish NOTHING')
     t += 20_000
-    views = nodeDirectoryViews(dir.control.snapshot(), viewOpts)
-    ok(views.every(v => v.stale), 'silent nodes go stale by heartbeat age')
+    dir.control.sweep()
+    views = dir.view.nodes()
+    ok(views.every(v => !v.alive && v.since == t), 'silent nodes are published dead by the sweep, since = the verdict time')
     ok(pickDirectoryNode(views) == null, 'nothing eligible -> pick is null')
+    await flushReactive(dir.store.state)
+    const afterSweep = writes
+    ok(afterSweep > 0, 'the dead verdicts ARE written (' + afterSweep + ' patch(es))')
     dir.control.heartbeat('b')
-    views = nodeDirectoryViews(dir.control.snapshot(), viewOpts)
-    ok(views.find(v => v.nodeId == 'b')?.eligible == true, 'heartbeat revives a stale node')
+    ok(dir.view.nodes().find(v => v.nodeId == 'b')?.eligible == true, 'a heartbeat revives a dead node')
+    await flushReactive(dir.store.state)
+    ok(writes > afterSweep, 'the revival is written once, as a verdict')
+    offWrites()
+
+    dir.control.grace()
+    t += 4000
+    dir.control.sweep()
+    ok(dir.view.nodes().find(v => v.nodeId == 'a')?.alive == false && dir.view.nodes().find(v => v.nodeId == 'b')?.alive == true,
+        'grace re-arms every beat: a dead row stays dead, a live one keeps its full staleMs')
 
     dir.control.remove('a')
     ok(dir.control.get('a') == undefined, 'remove deletes the row')
     dir.control.close()
 }
 
+// ============== embedded: a facet over a wider control store ==============
+async function embeddedPart() {
+    const control = createStore<{nodes: Record<string, any>, revoked: Record<string, {account: string}>}>({nodes: {}, revoked: {}})
+    const dir = createNodeDirectory({store: control, staleMs: 0})
+    ok(dir.api == null, 'an embedded roster serves no line of its own — the caller owns the store\'s line')
+    dir.control.set({nodeId: 'e1', url: 'u-e1', role: 'mirror', weight: 4})
+    control.state.revoked['zed'] = {account: 'zed'}
+    ok(control.state.nodes['e1']?.url == 'u-e1' && control.state.revoked['zed'] != undefined,
+        'roster rows and other sections live side by side in ONE store')
+    ok(nodeDirectoryViews(control.snapshot().nodes)[0]?.eligible == true, 'the pure derivation reads the section directly')
+    dir.control.close()
+}
+
 // ============== follow facade over the in-process replay wire ==============
 async function followPart() {
-    const dir = createNodeDirectory()
-    dir.control.upsert({nodeId: 'a', url: 'u-a', role: 'leader', weight: 1})
-    const followed = followNodeDirectory(dir.api, {staleMs: 0})
+    const dir = createNodeDirectory({staleMs: 0})
+    dir.control.set({nodeId: 'a', url: 'u-a', role: 'leader', weight: 1})
+    const followed = followNodeDirectory(dir.api!)
     await followed.ready
     await tick()
     ok(followed.nodes().length == 1, 'follower sees the registered node')
 
     let observed: string[] = []
     const offNodes = followed.onNodes(views => { observed = views.map(v => v.nodeId + ':' + (v.eligible ? 1 : 0)) })
-    dir.control.upsert({nodeId: 'b', url: 'u-b', role: 'mirror', weight: 3})
+    dir.control.set({nodeId: 'b', url: 'u-b', role: 'mirror', weight: 3})
     await waitFor('follower observes the new node', () => observed.length == 2)
     dir.control.drain('b')
     await waitFor('follower observes the drain', () => observed.includes('b:0'))
     ok(followed.pick({rng: () => 0.99})?.nodeId == 'a', 'follower pick avoids the draining node')
+
+    let own: (string | undefined)[] = []
+    const offRow = followed.onNode('b', entry => { own.push(entry ? (entry.draining ? 'draining' : 'live') : undefined) }, {current: true})
+    ok(own[0] == 'draining', 'onNode with current fires with the present row')
+    dir.control.remove('b')
+    await waitFor('onNode sees the removal', () => own.includes(undefined))
+    offRow()
     offNodes()
     followed.close()
     dir.control.close()
 }
 
-// ============== staleness is host-clock anchored (reader-skew immune) ==============
-async function skewPart() {
-    // the host clock lives 'far in the reader's past' — a real browser-vs-server skew
-    let hostT = 1_000_000
-    const dir = createNodeDirectory({now: () => hostT})
-    dir.control.upsert({nodeId: 's1', url: 'u-s1', role: 'leader', weight: 1})
-    // no explicit now: the follower must anchor on host stamps, never read its own clock as absolute
-    const followed = followNodeDirectory(dir.api, {staleMs: 250})
+// ============== liveness crosses the wire as a fact, never as a clock ==============
+async function livenessPart() {
+    let t = 1_000_000
+    const dir = createNodeDirectory({now: () => t, staleMs: 250, sweepMs: 30})
+    dir.control.set({nodeId: 's1', url: 'u-s1', role: 'leader', weight: 1})
+    const followed = followNodeDirectory(dir.api!)
     await followed.ready
     await tick()
-    ok(followed.nodes().find(v => v.nodeId == 's1')?.eligible == true,
-        'a freshly heartbeaten row is eligible under massive reader-host clock skew')
-    // death detection still works, measured in LOCALLY elapsed time
-    await new Promise<void>(resolve => setTimeout(resolve, 400))
-    ok(followed.nodes().find(v => v.nodeId == 's1')?.stale == true,
-        'a silent node still goes stale by locally-elapsed heartbeat age')
-    // a heartbeat revives it: the anchor follows the freshest host stamp
-    hostT += 5_000
+    ok(followed.nodes().find(v => v.nodeId == 's1')?.eligible == true, 'a fresh row is eligible on the follower')
+    // the OWNER clock advances past staleMs; the reader has no clock in the picture
+    t += 300
+    await waitFor('the follower sees the owner\'s dead verdict', () => followed.nodes().find(v => v.nodeId == 's1')?.alive == false)
     dir.control.heartbeat('s1')
-    await waitFor('the skewed follower sees the revived row',
-        () => followed.nodes().find(v => v.nodeId == 's1')?.eligible == true)
+    await waitFor('the follower sees the revival', () => followed.nodes().find(v => v.nodeId == 's1')?.eligible == true)
     followed.close()
     dir.control.close()
 }
 
 // ============== offers bridge: pure heartbeats publish nothing ==============
 async function offersChurnPart() {
-    const dir = createNodeDirectory()
-    dir.control.upsert({nodeId: 'p1', url: 'u-p1', role: 'leader', weight: 2})
-    const followed = followNodeDirectory(dir.api, {staleMs: 0})
+    const dir = createNodeDirectory({staleMs: 0})
+    dir.control.set({nodeId: 'p1', url: 'u-p1', role: 'leader', weight: 2})
+    const followed = followNodeDirectory(dir.api!)
     await followed.ready
     await tick()
     const offers = directoryReplicaOffers({
@@ -143,10 +177,10 @@ async function offersChurnPart() {
     let publishes = 0
     const offPublishes = offers.api.changes.on(() => { publishes++ })
     dir.control.heartbeat('p1')
-    dir.control.heartbeat('p1')
+    dir.control.heartbeat('p1', {meta: {readers: 3}})
     for (let i = 0; i < 6; i++) await tick()
-    ok(publishes == 0, 'pure heartbeat ticks publish NO offer replacement (eligibility and price unchanged)')
-    dir.control.heartbeat('p1', {weight: 9})
+    ok(publishes == 0, 'heartbeats and reader-count facts publish NO offer replacement (eligibility and price unchanged)')
+    dir.control.patch('p1', {weight: 9})
     await waitFor('a reprice publishes a fresh offer list', () => publishes > 0)
     if (typeof offPublishes == 'function') offPublishes()
     offers.close()
@@ -173,10 +207,10 @@ async function balancePart() {
     })
     await mirror.api.ready
 
-    const dir = createNodeDirectory()
-    dir.control.upsert({nodeId: 'node-a', url: 'inproc:a', role: 'leader', weight: 1})
-    dir.control.upsert({nodeId: 'node-b', url: 'inproc:b', role: 'mirror', weight: 100})
-    const followed = followNodeDirectory(dir.api, {staleMs: 0})
+    const dir = createNodeDirectory({staleMs: 0})
+    dir.control.set({nodeId: 'node-a', url: 'inproc:a', role: 'leader', weight: 1})
+    dir.control.set({nodeId: 'node-b', url: 'inproc:b', role: 'mirror', weight: 100})
+    const followed = followNodeDirectory(dir.api!)
     await followed.ready
     await tick()
 
@@ -236,8 +270,9 @@ async function main() {
         process.exit(3)
     }, 60_000)
     await hostAndPickPart()
+    await embeddedPart()
     await followPart()
-    await skewPart()
+    await livenessPart()
     await offersChurnPart()
     await balancePart()
     clearTimeout(watchdog)

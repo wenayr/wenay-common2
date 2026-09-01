@@ -11,7 +11,7 @@
 
 import {createCommandHost} from '../src/Common/command/command-host'
 import {commandReceiptKey, createCommandReceipts} from '../src/Common/command/command-receipts'
-import {followReplicatedMap} from '../src/Common/Observe/replicated-map'
+import {createStoreFollower} from '../src/Common/Observe/store-follower'
 import type {CommandReceiptRecord} from '../src/Common/command/command-receipts'
 
 let fails = 0
@@ -48,8 +48,13 @@ async function main() {
     // ============== the FIRST authority publishes its receipts ==============
     const receiptsA = createCommandReceipts()
     const hostA = createCommandHost({now: () => t, commands, receipts: {keepMs: 60_000, line: receiptsA.control}})
-    const follower = followReplicatedMap<CommandReceiptRecord>(receiptsA.api)
-    await follower.ready
+    const followerLine = createStoreFollower<{receipts: Record<string, CommandReceiptRecord>}>({remote: receiptsA.api!, initial: {receipts: {}}})
+    await followerLine.ready
+    const follower = {
+        get: (key: string) => followerLine.store.state.receipts[key],
+        snapshot: () => followerLine.store.snapshot().receipts,
+        close: followerLine.close,
+    }
 
     const first = await hostA.execute('alice', 'add', 'r1', {delta: 5})
     ok(first.value == 5 && applied == 5, 'first execution applies')

@@ -38,7 +38,7 @@ export type ServiceNodeDeps<S extends Record<string, any>> = {
     /** The resolved leader link; the entrypoint owns the transport under it. */
     upstream: StoreNodeDeps<S>['upstream']
     /** The entrypoint's socket-server hook; the factory serves every connection. */
-    serve: StoreNodeDeps<S>['serve']
+    serve: Pick<StoreNodeDeps<S>['serve'], 'onConnection'>
     selfUrl: () => string
     /** The entrypoint owns the actual shutdown; called ONCE, after the grace. */
     onLeave: (reason: string) => void
@@ -50,20 +50,26 @@ export type ServiceNodeDeps<S extends Record<string, any>> = {
 export function createServiceNode<S extends Record<string, any>>(deps: ServiceNodeDeps<S>) {
     const {definition} = deps
     return createStoreNode<S>({
-        nodeId: deps.nodeId,
-        storeId: definition.storeId,
-        originId: definition.originId,
-        lineId: definition.name + '-' + deps.nodeId + '-line',
+        line: {
+            nodeId: deps.nodeId,
+            storeId: definition.storeId,
+            originId: definition.originId,
+            lineId: definition.name + '-' + deps.nodeId + '-line',
+        },
+        roster: {
+            url: deps.selfUrl,
+            ...(deps.heartbeatMs != undefined ? {heartbeatMs: deps.heartbeatMs} : {}),
+            ...(deps.graceMs != undefined ? {graceMs: deps.graceMs} : {}),
+        },
         auth: {verify: deps.verifyToken},
         commands: Object.keys(definition.commands),
         upstream: deps.upstream,
-        serve: deps.serve,
-        selfUrl: deps.selfUrl,
-        // the service's wire identity: every surface is served under the definition name
-        wrap: fragment => ({[definition.name]: fragment}),
+        serve: {
+            onConnection: deps.serve.onConnection,
+            // the service's wire identity: every surface is served under the definition name
+            wrap: (fragment: Record<string, unknown>) => ({[definition.name]: fragment}),
+        },
         onLeave: deps.onLeave,
-        ...(deps.heartbeatMs != undefined ? {heartbeatMs: deps.heartbeatMs} : {}),
-        ...(deps.graceMs != undefined ? {graceMs: deps.graceMs} : {}),
         ...(deps.log ? {log: deps.log} : {}),
     })
 }
@@ -106,8 +112,7 @@ async function main() {
             const leader = (clients.link.func as any)[serviceDefinition.name]
             return {
                 replica: leader.replica,
-                directory: leader.directory,
-                revoked: leader.revoked,
+                control: leader.control,
                 commandsByToken: leader.commandsByToken,
                 register: leader.register,
                 heartbeat: leader.heartbeat,

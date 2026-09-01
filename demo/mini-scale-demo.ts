@@ -183,14 +183,12 @@ export function setupMiniScaleDemo(deps: MiniScaleDemoDeps) {
     // Sticky weighted placement lives INSIDE the library client now; this file
     // only supplies the transport adapter above. The line still moves by seq.
     const client = createClusterClient<MiniTickState>({
-        storeId: 'mini-scale', originId: 'mini-scale-origin',
-        nodeId: 'browser-' + tab.slice(0, 8),
-        initial: {},
-        directory: app.miniScale.directory,
+        line: {storeId: 'mini-scale', originId: 'mini-scale-origin', nodeId: 'browser-' + tab.slice(0, 8), initial: {}},
+        roster: app.miniScale.roster,
         connect: connectNode,
         // balance: land on the emptiest node and trickle off gross overloads —
         // spawn a node and WATCH the dots flow onto it
-        placement: {staleMs: 10_000, balance: {}},
+        placement: {balance: {}},
         log,
     })
 
@@ -231,12 +229,10 @@ export function setupMiniScaleDemo(deps: MiniScaleDemoDeps) {
             }
         }
         const reader = createClusterClient<MiniTickState>({
-            storeId: 'mini-scale', originId: 'mini-scale-origin',
-            nodeId: 'browser-' + tab.slice(0, 8) + '-r' + k,
-            initial: {},
-            directory: app.miniScale.directory,
+            line: {storeId: 'mini-scale', originId: 'mini-scale-origin', nodeId: 'browser-' + tab.slice(0, 8) + '-r' + k, initial: {}},
+            roster: app.miniScale.roster,
             connect: connectReaderNode,
-            placement: {staleMs: 10_000, label: `reader #${k}`, balance: {}},
+            placement: {label: `reader #${k}`, balance: {}},
             log,
         })
         return {
@@ -354,7 +350,7 @@ export function setupMiniScaleDemo(deps: MiniScaleDemoDeps) {
                 const slot = slots.get(view.nodeId)!
                 els.root.setAttribute('transform', `translate(${slot.x - NODE_W / 2}, ${slot.y})`)
                 els.root.dataset['role'] = view.role
-                els.root.dataset['state'] = view.stale ? 'stale' : view.draining ? 'draining' : 'live'
+                els.root.dataset['state'] = !view.alive ? 'stale' : view.draining ? 'draining' : 'live'
                 els.root.dataset['route'] = view.nodeId == route ? '1' : '0'
                 els.name.textContent = (view.role == 'leader' ? '👑 ' : '') + view.nodeId
                     + (view.nodeId == route ? ' ◉' : '')
@@ -363,7 +359,7 @@ export function setupMiniScaleDemo(deps: MiniScaleDemoDeps) {
                 try { port = new URL(view.url).port } catch { port = '' }
                 els.facts.textContent = (pid ? `pid ${pid}` : 'pid ?') + (port ? ` · :${port}` : '')
                 const readersFact = Number(view.meta?.['readers'] ?? 0)
-                els.load.textContent = view.stale ? 'process lost'
+                els.load.textContent = !view.alive ? 'process lost'
                     : view.draining ? 'draining…'
                     : `readers ${readersFact}` + (view.role == 'leader' ? ` · tick ${tick}` : ` · w${view.weight}`)
                 els.bar.setAttribute('width', String(Math.round(Math.min(1, readersFact / 6) * (NODE_W - 24))))
@@ -429,7 +425,7 @@ export function setupMiniScaleDemo(deps: MiniScaleDemoDeps) {
         const dots: SceneDot[] = [{id: 'you', kind: 'you', label: 'you', nodeId: route}]
         for (const reader of simReaders) dots.push({id: 'r' + reader.k, kind: 'sim', label: String(reader.k), nodeId: reader.routeId()})
         // every live mini reads the leader's line itself — that cascade is not a browser reader
-        const cascade = views.filter(view => view.role != 'leader' && !view.stale).length
+        const cascade = views.filter(view => view.role != 'leader' && view.alive).length
         for (const view of views) {
             const known = dots.filter(dot => dot.nodeId == view.nodeId).length
             const fact = Number(view.meta?.['readers'] ?? 0)
@@ -620,7 +616,7 @@ export function setupMiniScaleDemo(deps: MiniScaleDemoDeps) {
         for (const view of views) {
             const row = document.createElement('div')
             row.className = 'miniScaleNode'
-            row.dataset['state'] = view.stale ? 'stale' : view.draining ? 'draining' : 'live'
+            row.dataset['state'] = !view.alive ? 'stale' : view.draining ? 'draining' : 'live'
             const name = document.createElement('strong')
             name.textContent = view.nodeId + (route == view.nodeId ? ' ◉ my route' : '')
             const facts = document.createElement('span')
@@ -631,7 +627,7 @@ export function setupMiniScaleDemo(deps: MiniScaleDemoDeps) {
             let port = ''
             try { port = new URL(view.url).port } catch { port = '' }
             facts.textContent = `${view.role} · weight ${view.weight} · `
-                + (view.stale ? 'stale' : view.draining ? 'draining' : 'live')
+                + (!view.alive ? 'stale' : view.draining ? 'draining' : 'live')
                 + ` · readers ${Number(view.meta?.readers ?? 0)}`
                 + (pid ? ` · pid ${pid}` : '')
                 + (port ? ` · :${port}` : '')
