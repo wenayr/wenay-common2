@@ -174,6 +174,9 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
         const link = await deps.upstream()
         if (abandoned()) return
         upstream = link
+        // the first route attempt reuses THIS link: a host whose resolver rotates the hub on every
+        // call (demo/scaffold: setToken) would otherwise dispose it before we ever registered
+        let firstLink: StoreNodeUpstream | null = link
 
         const {initial, ...coordinates} = deps.line
         const line = createStoreReplicaSet<T>({
@@ -188,7 +191,8 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
             // re-resolved per attempt: after a hard hub rotation the captured
             // link's clients are disposed — only the host knows the CURRENT link
             connect: async function connectUpstream() {
-                const fresh = await deps.upstream()
+                const fresh = firstLink ?? await deps.upstream()
+                firstLink = null
                 // a DIFFERENT link = a new authority (failover) or a rotated hub: the
                 // node re-homes — registers there and follows ITS control line
                 if (fresh != upstream) {
@@ -299,10 +303,11 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
                 ...(typeof globalThis.process?.pid == 'number' ? {pid: globalThis.process.pid} : {}),
             })
         }
-        await register(link)
+        // through the SLOT: the route may have re-resolved the link while the line caught up
+        await register(upstream ?? link)
         if (abandoned()) {
             // leave()/close() won while we registered: the row must not outlive us
-            try { await link.goodbye(nodeId) } catch {}
+            try { await (upstream ?? link).goodbye(nodeId) } catch {}
             return
         }
         log(`store node ${nodeId}: serving at ${url}`)
@@ -349,7 +354,7 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
                 }
             }, {current: true}))
         }
-        await followControl(link)
+        await followControl(upstream ?? link)
         served = true
 
         /** A new authority link: announce ourselves there and follow ITS control line. */

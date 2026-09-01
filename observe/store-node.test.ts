@@ -257,6 +257,34 @@ async function main() {
         () => resolves > resolvedAtStart)
     n4.close()
 
+    // ============== a resolver that ROTATES the link on every call (hub.setToken) ==============
+    // The real hosts dispose the previous link's clients whenever they resolve a fresh one.
+    // start() must register and follow through the CURRENT link, and must not resolve twice
+    // for its own first route — the stand caught exactly this ("RPC client disposed" at register).
+    let live: any = null
+    let rotations = 0
+    const n5 = createStoreNode<TickState>({
+        line: {nodeId: 'n5', storeId: 'node-line', originId: 'node-origin'},
+        roster: {url: () => 'mem://n5', graceMs: 40, heartbeatMs: 60_000},
+        upstream: () => {
+            rotations++
+            const previous = live
+            const fresh: any = {...makeLink(), disposed: false}
+            const base = fresh.register
+            fresh.register = (entry: any) => { if (fresh.disposed) throw new Error('RPC client disposed'); return base(entry) }
+            if (previous) previous.disposed = true
+            live = fresh
+            return fresh
+        },
+        serve: {onConnection() {}},
+        onLeave: () => {},
+        log: () => {},
+    })
+    await n5.start()
+    ok(directory.control.get('n5')?.url == 'mem://n5', 'a rotating resolver still lands the registration (start resolves the link ONCE)')
+    ok(rotations == 1, 'the first route attempt reused the link start() resolved (' + rotations + ' resolve(s))')
+    n5.close()
+
     follower.close()
     node.close()
     host.close()
