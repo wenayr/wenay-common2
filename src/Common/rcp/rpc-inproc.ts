@@ -137,16 +137,24 @@ export function createLoopbackSocketPair(opts: {
     let online = true
     let dead = false
     function fire(handlers: Record<string, ((d: any) => void)[]>, event: string, data: any) {
-        for (const cb of handlers[event] ?? []) cb(data)
+        // snapshot: a handler registered during dispatch does not join this delivery
+        for (const cb of [...(handlers[event] ?? [])]) cb(data)
     }
     const make = (mine: typeof A, theirs: typeof A): SocketTmpl => ({
         on: (e, cb) => { (mine[e] ??= []).push(cb) },
         emit: (e, d) => {
             if (dead || !online) return
             const wire = cloneInProcWire(d)
-            if (sync) { fire(theirs, e, wire); return }
+            // the receiver set is decided at EMIT time (parity with
+            // createInProcSocketPair and the real wire): a handler registered
+            // after emit never sees an already-in-flight frame
+            const receivers = [...(theirs[e] ?? [])]
+            if (sync) { for (const cb of receivers) cb(wire); return }
             // in-flight frames also drop when the link dies/goes offline before delivery
-            queueMicrotask(function deliverLoopbackFrame() { if (!dead && online) fire(theirs, e, wire) })
+            queueMicrotask(function deliverLoopbackFrame() {
+                if (dead || !online) return
+                for (const cb of receivers) cb(wire)
+            })
         },
     })
     const client = make(A, B)

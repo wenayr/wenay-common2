@@ -1,6 +1,6 @@
 import { FollowReplicatedMapOpts, ReplicatedMapRemote, ReplicatedMapState, tReplicatedMapDelivery } from './replicated-map';
 import { StoreReplicaOffer, StoreReplicaSession } from './store-replica-set';
-export type tNodeDirectoryRole = 'leader' | 'mirror';
+export type tNodeDirectoryRole = 'leader' | 'mirror' | 'standby';
 export type NodeDirectoryEntry = {
     nodeId: string;
     url: string;
@@ -17,6 +17,7 @@ export type NodeDirectoryView = NodeDirectoryEntry & {
 export declare const NODE_DIRECTORY_STALE_MS = 15000;
 export type NodeDirectoryDeps = {
     now?: () => number;
+    initial?: Iterable<NodeDirectoryEntry>;
     lineId?: string;
     replay?: {
         history?: number;
@@ -120,6 +121,7 @@ export type DirectoryReplicaOffersDeps = {
     connect: (node: NodeDirectoryView) => StoreReplicaSession | Promise<StoreReplicaSession>;
     priorityOf?: (node: NodeDirectoryView) => number;
 };
+export declare function directoryRoutePriority(view: Pick<NodeDirectoryView, 'weight'>): number;
 export declare function directoryReplicaOffers(deps: DirectoryReplicaOffersDeps): {
     api: {
         list: () => StoreReplicaOffer[];

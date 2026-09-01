@@ -16,8 +16,11 @@ const nodeId = process.env.MINI_NODE_ID?.trim() ?? ''
 const upstream = process.env.MINI_UPSTREAM?.trim() ?? ''
 const token = process.env.MINI_TOKEN ?? ''
 const secret = process.env.MINI_SECRET ?? ''
-if (!nodeId || !upstream || !secret) {
-    console.error('mini node needs MINI_NODE_ID, MINI_UPSTREAM and MINI_SECRET')
+// The token is guarded too: an empty one is refused by the leader BEFORE the
+// handshake, so socket.io would loop connect/disconnect forever and start()
+// would never resolve — fail fast here instead.
+if (!nodeId || !upstream || !token || !secret) {
+    console.error('mini node needs MINI_NODE_ID, MINI_UPSTREAM, MINI_TOKEN and MINI_SECRET')
     process.exit(1)
 }
 
@@ -40,7 +43,8 @@ async function main() {
     const hub = createRpcClientHub(
         () => ioClient(upstream, {
             transports: ['websocket'],
-            auth: {tab: 'mini-' + nodeId, role: 'mini-node', token},
+            // node: the id this link is BOUND to at the leader (nodeLink(nodeId)) — foreign rows refused
+            auth: {tab: 'mini-' + nodeId, role: 'mini-node', node: nodeId, token},
         }),
         r => ({app: r<any>('app')}) as const,
         {opt: demoRpcOpt},
@@ -69,8 +73,7 @@ async function main() {
                 directory: leader.directory,
                 revoked: leader.revoked,
                 commandsByToken: leader.commandsByToken,
-                // pid rides the registration: the panel shows every node as the OS process it is
-                register: (entry: {nodeId: string, url: string, weight: number}) => leader.register({...entry, pid: process.pid}),
+                register: leader.register,
                 heartbeat: leader.heartbeat,
                 goodbye: leader.goodbye,
                 onFail: {on: (cb: () => void) => hub.disconnectListen(cb)},

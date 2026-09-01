@@ -38,6 +38,10 @@ export type RpcTokenProvider = (request: RpcAuthRenewRequest) => string | null |
 export type RpcHubAuthEvent = RpcAuthEvent & {key: string}
 
 export function createRpcClientHub<T extends Record<string, RpcDescriptor<any>>, T2 extends RpcHubSocket>(
+    /** Must return a socket with a DEDICATED manager (socket.io: pass forceNew/multiplex:false).
+     *  Rotation stifles the discarded socket's manager (reconnection off, engine killed) so a
+     *  replaced socket stays down; on socket.io's origin-cached manager that policy would also
+     *  silently disable auto-reconnect for unrelated later io() sockets on the same origin. */
     createSocket: (token: string | null) => T2,
     schemaBuilder: (helper: typeof rpc) => T,
     hubOpts?: {

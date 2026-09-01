@@ -115,6 +115,92 @@ async function main() {
         'the LRU cap evicts the oldest of five concurrent attempts')
     ok(await remote.chunks.pull(attempts[4].snapshotId, 1) != null, 'the newest attempt still serves')
 
+    // LRU means USE refreshes position: a slow client mid-assembly must not be
+    // evicted by a newer begin while idle attempts sit in the cap
+    const active = await remote.chunks.begin({budgetBytes: 1})
+    const idle = [] as any[]
+    for (let i = 0; i < 3; i++) idle.push(await remote.chunks.begin({budgetBytes: 1}))
+    ok(await remote.chunks.pull(active.snapshotId, 1) != null, 'the active attempt serves before the cap bites')
+    await remote.chunks.begin({budgetBytes: 1})   // fifth attempt: the sweep must evict an IDLE one
+    ok(await remote.chunks.pull(active.snapshotId, 2) != null,
+        'an actively pulled attempt survives the cap sweep (LRU by use, not insertion order)')
+    ok(await remote.chunks.pull(idle[0].snapshotId, 1) == null,
+        'the least recently used idle attempt was evicted instead')
+
+    // ============== prototype-named keys survive the chunked path ==============
+    // The store deliberately supports an own '__proto__' top-level key
+    // (defineOwnValue); the monolithic keyframe preserves it, so the chunked
+    // path must too — in ANY chunk, not just chunk 0.
+    const protoState = JSON.parse(
+        '{"key-a":{"id":"key-a","payload":"' + 'a'.repeat(12_000) + '"},'
+        + '"key-b":{"id":"key-b","payload":"' + 'b'.repeat(12_000) + '"},'
+        + '"__proto__":{"id":"proto","payload":"' + 'p'.repeat(12_000) + '"},'
+        + '"key-z":{"id":"key-z","payload":"' + 'z'.repeat(12_000) + '"}}',
+    )
+    const protoStore = createStore<BigState>(protoState)
+    ok(Object.prototype.hasOwnProperty.call(protoStore.snapshot(), '__proto__'),
+        'the source store really holds an own __proto__ key (trigger is real)')
+    const protoExposed = exposeStoreReplay(protoStore, {history: 8})
+    const protoBegin = await (protoExposed.api.replay as any).chunks.begin({budgetBytes: 1})
+    const protoParts = [protoBegin.chunk0]
+    for (let index = 1; index < protoBegin.total; index++) {
+        protoParts.push(await (protoExposed.api.replay as any).chunks.pull(protoBegin.snapshotId, index))
+    }
+    const protoCovered = protoParts.some(
+        wire => Object.prototype.hasOwnProperty.call(partValue(wire), '__proto__'))
+    ok(protoBegin.total > 1 && protoCovered, 'the split carries the __proto__ key as an OWN data key')
+    const protoMirror = createStore<BigState>({})
+    const offProto = syncStoreReplayBatch(protoMirror, protoExposed.api.replay, {chunkedKeyframe: {budgetBytes: 1}})
+    await settle()
+    ok(JSON.stringify(protoMirror.snapshot()) == JSON.stringify(protoStore.snapshot()),
+        'chunked catch-up equals monolithic for a store with a __proto__ key')
+    offProto()
+    protoExposed.close()
+
+    // ============== the assembler must not mutate the server-retained chunk 0 ==============
+    // Over an in-process fragment the wire passes values by REFERENCE: merging
+    // later chunks into the decoded chunk 0 would bloat the retained set and
+    // alias client state to server-retained objects.
+    let capturedChunk0: unknown = null
+    let chunk0KeysAtBegin = 0
+    const capturing = {
+        ...remote,
+        chunks: {
+            begin: async (opts?: unknown) => {
+                const b = await remote.chunks.begin(opts)
+                capturedChunk0 = b?.chunk0 ?? null
+                chunk0KeysAtBegin = b ? Object.keys(partValue(b.chunk0)).length : 0
+                return b
+            },
+            pull: (id: string, index: number) => remote.chunks.pull(id, index),
+            end: (id: string) => remote.chunks.end(id),
+        },
+    }
+    const aliasMirror = createStore<BigState>({})
+    const offAlias = syncStoreReplayBatch(aliasMirror, capturing, {chunkedKeyframe: {budgetBytes: 1}})
+    await settle()
+    ok(capturedChunk0 != null && Object.keys(partValue(capturedChunk0)).length == chunk0KeysAtBegin,
+        'assembly leaves the retained chunk 0 untouched (no in-place merge over the in-process wire)')
+    ok(JSON.stringify(aliasMirror.snapshot()) == JSON.stringify(store.snapshot()),
+        'the non-mutating assembler still converges byte for byte')
+    offAlias()
+
+    // ============== producer opt-out: a keyframe override stays authoritative ==============
+    const gated = exposeStoreReplay(store, {history: 8, chunks: false})
+    ok(!(gated.api.replay as any).chunks, 'chunks: false exposes a wire WITHOUT the facet')
+    let overrideCalls = 0
+    const wrapped = {
+        ...(gated.api.replay as any),
+        keyframe: (...args: unknown[]) => { overrideCalls++; return (gated.api.replay as any).keyframe(...args) },
+    }
+    const wrappedMirror = createStore<BigState>({})
+    const offWrapped = syncStoreReplayBatch(wrappedMirror, wrapped, {})
+    await settle()
+    ok(overrideCalls == 1 && JSON.stringify(wrappedMirror.snapshot()) == JSON.stringify(store.snapshot()),
+        'a spread facade overriding keyframe is honored when the producer opts out of chunking')
+    offWrapped()
+    gated.close()
+
     // ============== fallback and compatibility ==============
     // expired attempt mid-assembly: the client falls back to the monolithic keyframe
     let monolithicCalls = 0

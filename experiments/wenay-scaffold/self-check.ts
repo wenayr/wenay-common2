@@ -18,6 +18,7 @@ import path from 'node:path'
 import {followNodeDirectory} from '../../src/Common/Observe/node-directory'
 import {createStoreFollower} from '../../src/Common/Observe/store-follower'
 import {createRpcClient} from '../../src/Common/rcp/rpc-client'
+import {createLoopbackSocketPair} from '../../src/Common/rcp/rpc-inproc'
 import type {SocketTmpl} from '../../src/Common/rcp/rpc-protocol'
 import {createTokenCodec} from '../../src/server/auth-token'
 import {buildInputValidate, inputJsonSchema} from './template/input-schema'
@@ -40,21 +41,6 @@ async function waitFor(message: string, check: () => boolean, timeoutMs = 5000) 
         await new Promise(resolve => setTimeout(resolve, 20))
     }
     ok(false, message + ' (timed out)')
-}
-
-// loopback transport (observe/store-node.test.ts): emit on one end delivers to
-// the other through a JSON clone, so payloads break exactly as on a real socket
-function createLoopback(): [SocketTmpl, SocketTmpl] {
-    const A: Record<string, ((d: any) => void)[]> = {}
-    const B: Record<string, ((d: any) => void)[]> = {}
-    const make = (mine: typeof A, theirs: typeof A): SocketTmpl => ({
-        on: (e, cb) => { (mine[e] ??= []).push(cb) },
-        emit: (e, d) => {
-            const wire = d === undefined ? undefined : JSON.parse(JSON.stringify(d))
-            for (const cb of (theirs[e] ?? [])) queueMicrotask(() => cb(wire))
-        },
-    })
-    return [make(A, B), make(B, A)]
 }
 
 const quiet = () => {}
@@ -159,7 +145,7 @@ async function main() {
         'login mints a codec token the node secret verifies')
 
     // ============== a client over REAL RPC to the node ==============
-    const [clientEnd, serverEnd] = createLoopback()
+    const {client: clientEnd, server: serverEnd} = createLoopbackSocketPair()
     connect!(serverEnd)
     const read = createRpcClient<any>({socket: clientEnd, socketKey: 'app'})
     await read.readyStrict()

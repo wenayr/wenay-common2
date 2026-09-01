@@ -488,6 +488,29 @@ for (const control of sessions.values()) control.revoke('password changed')
 `RpcServerControl = ReturnType<typeof createRpcServer>['control']` — derived from the factory, so a
 registry like the one above stays typed without a handwritten interface.
 
+For the multi-session shape (one account, many live connections) the library ships the registry as a
+primitive — `createSessionRegistry()` in `src/Common/rcp/rpc-session-registry.ts` with
+`track/untrack/cut(account, reason)`. The scale authority and the store node both run this ONE
+implementation; the discipline it owns (an emptied `Set` must leave the map, or a long-lived host
+grows one entry per departed account forever) has already cost a leak when it was hand-copied.
+
+**Node links are principals too.** `authority.serve.nodeLink(linkNodeId?)` refuses the authority's
+own row on every verb, and when the host passes the node's id, refuses every foreign row — a bound
+link cannot overwrite or delist a peer. The hosts in this repo (demo, scaffold) bind every link to
+the `node` id the handshake claims and refuse a link that claims none. Honest limit: the node token
+is one per fleet, so the claim itself is trusted — binding stops a node from touching rows other
+than the one it named, not a process holding the fleet token from naming a peer. Per-node tokens
+are the next tightening and belong to the host. Serve the UNBOUND link only where nodes are mutually
+trusted by deliberate choice.
+
+**Succession keeps every rule.** A standby authority (`leadership.role: 'standby'`) is itself a node
+principal on the leader's link (registered as a `'standby'` row) and FOLLOWS the deny list, so a
+revoked account is refused there too — before and after promotion; the receipts line follows with it,
+so a duplicate requestId is answered, not re-executed, by the successor (rule 6 and the corridor's
+at-most-once are properties of the DATA, not of one process). A standby serves `reader()` only —
+`browser()`, `nodeLink()` and identity writes throw until it leads — and a demoted leader refuses
+writes the same way; hosts rewire on `events.role`. Oracle: `observe/scale-failover.test.ts`.
+
 ❌ **Wrong** — asking the client to revoke itself:
 
 ```ts

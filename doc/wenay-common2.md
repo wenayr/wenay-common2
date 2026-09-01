@@ -790,6 +790,10 @@ Observe.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?, chunks?
 // an evicted pull answers null and the client FALLS BACK to the monolithic keyframe.
 // Client control: chunkedKeyframe on sync/route opts — default ON when offered, false disables,
 // {budgetBytes /* clamped 16K..4M, default 256K */, onProgress({snapshotId, received, total})} tunes.
+// Producer control: exposeStoreReplay {chunks: false} withholds the facet — the opt-out for facades
+// that OVERRIDE keyframe (validation/metering), since clients probe chunks BEFORE keyframe.
+// The split and the client merge are prototype-safe (an own '__proto__' data key survives), and the
+// assembler merges into an OWNED object — it never mutates the producer-retained chunk 0 in place.
 // Oracle: replay/keyframe-chunks.test.ts; measured stand: experiments/slow-network-2026-08.
 // Very slow link, merge semantics (top-level value is absolute, last write per key wins):
 // fill progressively instead of ever sending a keyframe.
@@ -881,20 +885,30 @@ Observe.createStoreReplicaSet<T>({storeId, originId, nodeId, lineId?, store?, in
 Observe.diffKeyedState(local, authority) -> {localOnly, authorityOnly, conflicts}
   // split-brain tail after a failover rejoin: localOnly = re-apply candidates (mempool analogy),
   //   conflicts = both sides changed one record (the epoch already chose the winner; the pair is preserved)
-Observe.createNodeDirectory({now?, lineId?, replay?}) -> {api, control: {upsert, heartbeat, drain, undrain, remove, get, snapshot, flush, close}}
+Observe.createNodeDirectory({now?, initial?, lineId?, replay?}) -> {api, control: {upsert, heartbeat, drain, undrain, remove, get, snapshot, flush, close}}
   // replicated roster of service nodes (latest map keyed by nodeId) for client-side balancing:
   //   weight > 0 = accepts placements · weight <= 0 = closed · draining = leaving ·
   //   heartbeat age > staleMs = presumed dead — staleness is derived by READERS, never stored
+  // role: 'leader' | 'mirror' | 'standby' — a standby is a successor-in-waiting, registered with weight 0
+  //   (discoverable by url, never placed); initial seeds the roster a promoted standby continues
+  // heartbeat meta MERGES one level at the directory: each writer refreshes the facts it owns
+  //   (readers vs labels vs pid) without erasing another writer's; upsert replaces the row wholesale
 Observe.followNodeDirectory(remote, {staleMs?, now?, initial?, onStatus?, onError?}) -> {nodes(), pick(opts?), onNodes(cb), ready, status, close, follow}
+  // staleness is HOST-clock anchored: the follower tracks the freshest host ts and advances it by
+  //   LOCALLY elapsed time, so reader-host clock skew cannot kill (or immortalize) the roster;
+  //   an explicit now keeps the direct meaning (fake clocks, one-clock stands)
 Observe.nodeDirectoryViews(state, opts?) · Observe.pickDirectoryNode(views, {exclude?, rng?})
   // one pure derivation shared by the balancer AND the ops panel — balancing stays observable by construction
 Observe.directoryReplicaOffers({directory, connect, priorityOf?}) -> {api, refresh, close}
   // bridge into createStoreReplicaSet offers: eligible rows = offers (connect identity stable per node,
-  //   or every roster change would bounce live sessions); higher weight = cheaper route by default.
+  //   or every roster change would bounce live sessions); higher weight = cheaper route by default
+  //   (Observe.directoryRoutePriority — the ONE weight→priority mapping; offset it, don't re-derive).
+  //   A directory change that alters no membership and no price publishes NOTHING — pure heartbeat
+  //   ticks cost followers no offer re-reconciliation.
   //   drain/stale/gone REMOVES the offer -> the replica set leaves that node and resumes by seq — lossless.
   //   Oracle: observe/node-directory.test.ts; living stand: `npm run demo` -> Lab -> Mini horizontal
   //   scaling (spawn/drain REAL extra processes; the tick line survives every move and a hard kill)
-Observe.createStoreNode<T>({nodeId, storeId, originId, lineId?, initial?, weight?, heartbeatMs?, graceMs?,
+Observe.createStoreNode<T>({nodeId, storeId, originId, lineId?, initial?, weight?, heartbeatMs?, graceMs?,   // re-homes when upstream() returns a DIFFERENT link (registers there, follows its roster + deny list)
     auth?: {verify, renewBeforeMs?}, commands?, upstream, serve, selfUrl, onLeave, wrap?, socketKeys?, opt?, log?})
   -> {start, leave(reason), view: {nodeId, status()}, close}
   // a serving node from ONE config object: replica line + to-upstream offer, self-registration and
@@ -905,18 +919,32 @@ Observe.createStoreNode<T>({nodeId, storeId, originId, lineId?, initial?, weight
   //   nothing), session cuts on the replicated deny-list fact, and leave on the node's OWN directory
   //   row (drain is data — no control channel). The HOST keeps env, transports, token crypto and
   //   process exit; they arrive as adapters through deps (doc/DYNAMIC-RUNTIME.md ownership).
+  // lifecycle discipline: a FAILED start() throws and stays retryable (nothing latched); leave()/close()
+  //   during start wins (no register, no heartbeat armed, a raced registration is goodbyed); register
+  //   carries the node's OWN {readers, pid} facts; deps.upstream is re-resolved on every replica
+  //   reconnect — return the CURRENT link, and a hard hub rotation cannot strand the node.
   // Oracle: observe/store-node.test.ts (real RPC over an in-process loopback); living stand: the
   //   mini nodes of the same Lab card are exactly this factory + a ~90-line process host.
 
 // The WRITE corridor to one authority (import {Command} from 'wenay-common2'):
-Command.createCommandHost({commands: {name(ctx: {account, requestId, command}, input) {...}}, limits?: {perMinute?}, receipts?: {keepMs?, maxPerAccount?}, now?})
-  -> {execute(account, name, requestId, input), fragment(account), forwardFragment(), names, stats, close}
+Command.createCommandHost({commands: {name(ctx: {account, requestId, command}, input) {...}}, limits?: {perMinute?}, receipts?: {keepMs?, maxPerAccount?, maxTotal? /* 8192 */, line?}, now?})
+  -> {execute(account, name, requestId, input), fragment(account), forwardFragment(), names, stats, adopt(line | null), close}
   // at-most-once per (account, requestId): a duplicate — including one arriving through ANOTHER node —
   //   answers with a CLONE of the first result (the receipt); concurrent duplicates share one in-flight run;
   //   an error commits nothing (honest retry); receipts expire by keepMs / evict past maxPerAccount;
-  //   rate limit burns budget on new executions only — receipt answers are free.
+  //   rate limit burns budget on new executions only — receipt answers are free. The limiter is a
+  //   genuinely ROLLING minute (createRateWindow under the hood): a boundary burst cannot double it.
+  //   Memory-flat by construction: maxTotal bounds receipts across ALL accounts, and fully-expired
+  //   departed accounts are drained (receipts, budget window and all) as other work flows.
   // fragment(account) = per-connection facade (requestId, input); forwardFragment() = TRUSTED hop entry
   //   (account, requestId, input) — give it only to links the application authenticated (service token).
+Command.createCommandReceipts({initial?, lineId?, replay?}) -> {api, control: {set, delete, snapshot, ...}}   // + commandReceiptKey(account, requestId)
+  // the receipt space as a replicated LINE: with receipts.line the host publishes every COMMITTED receipt
+  //   (and every drop — bounds hold on the line too) and rebuilds its index from the line; adopt(line)
+  //   swaps the memory at runtime (a promoted authority adopts the line it seeded from the followed
+  //   snapshot), adopt(null) detaches. Pending receipts are never published: a command in flight when
+  //   its authority dies may execute again on the successor — the stated at-most-once boundary.
+  //   Oracle: replay/command-receipts.test.ts.
 Command.forwardCommands({upstream /* authority forwardFragment proxy */, names}) -> {fragment(account), names}
   // a mirror node serves the SAME (requestId, input) fragment shape as the authority — clients cannot
   //   tell nodes apart, and a retry through a DIFFERENT node still lands on the one receipt space.
@@ -947,20 +975,42 @@ Command.forwardCommandsByToken({upstream /* authority verifyCommands proxy */, n
 // The deployment triangle assembled (import {Scale} from 'wenay-common2'):
 Scale.createAuthority<T>({storeId, originId, nodeId? /* 'authority' */, lineId?, initial, selfUrl, weight? /* 1 */,
     commands?, limits?, receipts?, identity: {issue(account) -> token, verify(presented) -> {account, expiresAt?} | throw},
-    renewBeforeMs?, heartbeatMs?, acceptNode?, meta?, log?})
+    renewBeforeMs?, heartbeatMs?, acceptNode?, meta?,
+    leadership?: {role?: 'leader' | 'standby', epoch?, upstream?: () => AuthorityUpstream, autoPromoteMs?, elect?, accept?}, log?})
   -> {line: {control, api}, directory: {control, api}, identity: {login, renew, revoke, mint},
       corridor: {execute, names, fragment(account), byToken()},
-      serve: {browser(account), reader(), nodeLink(), connection()},
-      view: {nodes(), readers(), isRevoked(account)}, start, close}
+      serve: {browser(account), reader(), nodeLink(linkNodeId?), connection()},
+      control: {promote(reason?)}, events: {role}, view: {role(), leaderId(), epoch(), nodes(), readers(), isRevoked(account)}, start, close}
   // the single point of order from ONE config object: replica line + node directory + command corridor
   //   (end-to-end verification of EVERY relayed call) + the identity lifecycle over a replicated deny
   //   list — login lifts the ban, renew refuses revoked, revoke cuts live sessions NOW and every node
   //   follows the same fact. identity.issue/verify are HOST adapters — no crypto and no token format here.
   // serve.* are audience-ready RPC blocks: browser (ungated participant surface), reader (lean line),
-  //   nodeLink (trusted node link: register behind acceptNode, heartbeat with meta merge, revocations
-  //   line, token-envelope commands), connection() = the gated per-socket block {object, auth, attach,
-  //   close} implementing RPC-AUTH rules 1/3/6/7. start() = the authority's own row + heartbeat with
-  //   {readers, ...meta()}; view.readers() is the line's ACTIVE subscriber count (sockets would lie).
+  //   nodeLink (trusted node link: register behind acceptNode, heartbeat merging meta at the DIRECTORY,
+  //   revocations line, token-envelope commands), connection() = the gated per-socket block {object,
+  //   auth, attach, close} implementing RPC-AUTH rules 1/3/6/7. start() = the authority's own row +
+  //   heartbeat with {readers, ...meta()}; view.readers() is the line's ACTIVE subscriber count.
+  // nodeLink identity discipline: every verb refuses the authority's own row, and nodeLink(nodeId)
+  //   BINDS the link to the node id the host authenticated (the hosts here bind to the handshake's
+  //   `node` claim) — foreign rows are refused, so a bound link cannot overwrite or delist a peer;
+  //   with a fleet-wide node token the claim itself is still trusted. register accepts the node's OWN facts {pid?, readers?}
+  //   (createStoreNode sends both), so a crash-restart resets stale load instead of inheriting it;
+  //   non-finite counts (readers/pid) sanitize to 0. See doc/RPC-AUTH.md (Rule 7).
+  // SUCCESSION (the same factory as leader or standby): leadership.role 'standby' + upstream (the CURRENT
+  //   leader's nodeLink(standbyId), host-resolved, re-resolved per reconnect) follows the replica line and
+  //   the three control lines — directory, deny list, receipts — and registers a 'standby' row (weight 0).
+  //   ONE leadership decision, the replica set's (fork choice / autoPromoteMs / injected elect+accept lease
+  //   seam): when it makes this process the leader, the lines are re-owned from the followed snapshots,
+  //   the command host adopts the receipts line (an OLD requestId answers its receipt, nothing re-runs),
+  //   the dead leader's row goes, the own row flips to 'leader'. A leader that loses fork choice DEMOTES:
+  //   writes refuse ("is standby ... the leader is X"), and with an upstream it follows the winner.
+  //   A standby never auto-promotes before its FIRST follow (no epoch-1 twins at boot); control.promote()
+  //   is the operator's forced take-over. events.role fires on transitions (view.role() is the birth
+  //   role) — the HOST rewires sockets on it: a standby serves reader() only (browser/nodeLink throw).
+  //   Not owned here: transport rotation to the new leader (nodes re-home when deps.upstream() returns a
+  //   different link; browsers need the host to point them at the new url — its row is in the roster).
+  //   Oracle: observe/scale-failover.test.ts (failover, roster/deny/receipt continuity, node re-home,
+  //   demotion of a returning leader, first-follow guard, forced promote).
 Scale.createClusterClient<T>({storeId, originId, nodeId, lineId?, initial, directory /* remote roster line */,
     connect: (view) => session /* the host owns sockets */, placement?: {label?, staleMs?, priorityOf?, rng?},
     leadership?, log?})

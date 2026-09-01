@@ -11,6 +11,7 @@
 // ============================================================
 
 import {createRpcClient} from '../src/Common/rcp/rpc-client'
+import {createLoopbackSocketPair} from '../src/Common/rcp/rpc-inproc'
 import type {SocketTmpl} from '../src/Common/rcp/rpc-protocol'
 import {createNodeDirectory, type NodeDirectoryView} from '../src/Common/Observe/node-directory'
 import {createStore} from '../src/Common/Observe/store'
@@ -36,31 +37,6 @@ async function waitFor(message: string, check: () => boolean, timeoutMs = 4000) 
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
-
-// loopback transport with a socket-death switch: emit crosses through a JSON
-// clone like a real wire, kill() fires 'disconnect' on both ends and stops
-// delivery — the same fact a socket.io server session sees
-type LoopEnd = SocketTmpl & {kill: () => void}
-function createLoopback(): [LoopEnd, LoopEnd] {
-    const A: Record<string, ((d: any) => void)[]> = {}
-    const B: Record<string, ((d: any) => void)[]> = {}
-    let dead = false
-    const make = (mine: typeof A, theirs: typeof A): LoopEnd => ({
-        on: (e, cb) => { (mine[e] ??= []).push(cb) },
-        emit: (e, d) => {
-            if (dead) return
-            const wire = d === undefined ? undefined : JSON.parse(JSON.stringify(d))
-            for (const cb of (theirs[e] ?? [])) queueMicrotask(() => { if (!dead) cb(wire) })
-        },
-        kill: () => {
-            if (dead) return
-            dead = true
-            for (const cb of (A['disconnect'] ?? [])) cb(undefined)
-            for (const cb of (B['disconnect'] ?? [])) cb(undefined)
-        },
-    })
-    return [make(A, B), make(B, A)]
-}
 
 type TickState = Record<string, {id: string, value: number}>
 
@@ -92,11 +68,11 @@ function bootNode(deps: {
 }
 
 async function openReader(serve: (socket: SocketTmpl) => void) {
-    const [clientEnd, serverEnd] = createLoopback()
+    const {client: clientEnd, server: serverEnd, kill} = createLoopbackSocketPair()
     serve(serverEnd)
     const client = createRpcClient<any>({socket: clientEnd, socketKey: 'app'})
     await client.readyStrict()
-    return {client, remote: (client.func.svc.replica as any).replay, kill: () => clientEnd.kill()}
+    return {client, remote: (client.func.svc.replica as any).replay, kill}
 }
 
 const readersOf = (node: StoreNodeInstance) => node.view.status().readers
@@ -194,14 +170,14 @@ async function main() {
     const sessionKills: (() => void)[] = []
     async function connectBalanced(view: NodeDirectoryView) {
         const serve = view.nodeId == 'n1' ? one.connect : two.connect
-        const [clientEnd, serverEnd] = createLoopback()
+        const {client: clientEnd, server: serverEnd, kill} = createLoopbackSocketPair()
         serve(serverEnd)
         const client = createRpcClient<any>({socket: clientEnd, socketKey: 'app'})
         await client.readyStrict()
-        sessionKills.push(() => clientEnd.kill())
+        sessionKills.push(kill)
         return {
             remote: (client.func.svc.replica as any),
-            close() { clientEnd.kill() },
+            close() { kill() },
         }
     }
     const balanced = createClusterClient<TickState>({

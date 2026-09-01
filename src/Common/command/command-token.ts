@@ -19,6 +19,7 @@
 // rides inside already-authenticated calls and never replaces it.
 
 import type {CommandFragment, CommandHost, tCommandMap} from './command-host'
+import {bindCommandNames} from './command-fragment'
 
 /** Per-call envelope: the same fragment shape with the raw token prepended. */
 export type CommandTokenFragment<Cmds extends tCommandMap> = {
@@ -40,13 +41,11 @@ export type VerifyCommandsDeps<Cmds extends tCommandMap> = {
 export function verifyCommands<Cmds extends tCommandMap>(deps: VerifyCommandsDeps<Cmds>) {
     const {host, accountOf} = deps
     function fragment() {
-        const verified = {} as CommandTokenFragment<Cmds>
-        for (const name of host.names) {
-            verified[name] = async function verifiedCommand(token: unknown, requestId: string, input: any) {
-                return host.execute(await accountOf(token), name, requestId, input)
-            } as CommandTokenFragment<Cmds>[typeof name]
-        }
-        return verified
+        return bindCommandNames<CommandTokenFragment<Cmds>>(host.names, function bindVerifiedCommand(name) {
+            return async function verifiedCommand(token: unknown, requestId: string, input: any) {
+                return host.execute(await accountOf(token), name as keyof Cmds & string, requestId, input)
+            }
+        })
     }
     return {fragment, names: host.names}
 }
@@ -66,13 +65,11 @@ export type ForwardCommandsByTokenDeps<Cmds extends tCommandMap> = {
 /** A relay's per-principal fragment: shape-identical to the authority's, identity never asserted. */
 export function forwardCommandsByToken<Cmds extends tCommandMap>(deps: ForwardCommandsByTokenDeps<Cmds>) {
     function fragment(token: unknown) {
-        const bound = {} as CommandFragment<Cmds>
-        for (const name of deps.names) {
-            bound[name] = function forwardedWithToken(requestId: string, input: any) {
-                return Promise.resolve(deps.upstream[name](token, requestId, input))
-            } as CommandFragment<Cmds>[typeof name]
-        }
-        return bound
+        return bindCommandNames<CommandFragment<Cmds>>(deps.names, function bindRelayedCommand(name) {
+            return function forwardedWithToken(requestId: string, input: any) {
+                return Promise.resolve(deps.upstream[name as keyof Cmds & string](token, requestId, input))
+            }
+        })
     }
     return {fragment, names: deps.names}
 }

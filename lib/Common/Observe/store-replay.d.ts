@@ -17,6 +17,7 @@ export type StoreReplayPatchSource = {
 export type StoreReplayOpts = StoreReplayBatchOpts & {
     describe?: Record<string, any>;
     patchSource?: StoreReplayPatchSource;
+    chunks?: boolean;
 };
 export type StoreReplayChunksBegin<W = unknown> = {
     snapshotId: string;

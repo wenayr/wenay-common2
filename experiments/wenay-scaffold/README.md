@@ -16,7 +16,7 @@ arrives already wired from the library.
 | `template/service.ts` | **the author — the ONLY file to edit** | `serviceDefinition`: wire `name`, `storeId`/`originId`, typed `initial` store state, `commands` (`validate(input)` throwing on bad input, `apply(ctx, input)` mutating `ctx.state` and returning the receipt), `readerFacet(state)` read projection |
 | `template/leader.ts` | template | `createServiceLeader(deps)` — a thin mapping of the definition onto the public `Scale.createAuthority` (plan step 8c); also exports the definition contract (`tServiceDefinition`, validated by `satisfies`) |
 | `template/node.ts` | template | `createServiceNode(deps)` around the public `Observe.createStoreNode`, plus the node PROCESS entrypoint (env → transports → factory → signals) |
-| `template/config.ts` | template | env parsing helpers (`SERVICE_NODE_ID`, `SERVICE_UPSTREAM`, `SERVICE_NODE_TOKEN`, `SERVICE_TOKEN_SECRET`, `SERVICE_PORT`) |
+| `template/config.ts` | template | env parsing helpers (`SERVICE_NODE_ID`, `SERVICE_UPSTREAM`, `SERVICE_NODE_TOKEN`, `SERVICE_TOKEN_SECRET`, `SERVICE_PORT`) and the browser CORS policy (`corsOrigins`: pinned stand origins by default, `SERVICE_CORS_ORIGINS` comma-list extends, `SERVICE_ALLOW_ANY_ORIGIN=1` is the dev escape hatch) |
 | `template/package.json`, `template/tsconfig.json` | template | minimal project files, dependency on `wenay-common2` |
 
 `service.ts` sees no sockets, no env, no crypto, no process: a command receives

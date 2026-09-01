@@ -11,6 +11,7 @@
 // ============================================================
 
 import {createRpcClient} from '../src/Common/rcp/rpc-client'
+import {createLoopbackSocketPair} from '../src/Common/rcp/rpc-inproc'
 import type {SocketTmpl} from '../src/Common/rcp/rpc-protocol'
 import {createCommandHost} from '../src/Common/command/command-host'
 import {verifyCommands} from '../src/Common/command/command-token'
@@ -33,21 +34,6 @@ async function waitFor(message: string, check: () => boolean, timeoutMs = 4000) 
         await new Promise(resolve => setTimeout(resolve, 20))
     }
     ok(false, message + ' (timed out)')
-}
-
-// loopback transport: emit on one end delivers to the other through a JSON
-// clone, so payloads break exactly as they would on a real socket
-function createLoopback(): [SocketTmpl, SocketTmpl] {
-    const A: Record<string, ((d: any) => void)[]> = {}
-    const B: Record<string, ((d: any) => void)[]> = {}
-    const make = (mine: typeof A, theirs: typeof A): SocketTmpl => ({
-        on: (e, cb) => { (mine[e] ??= []).push(cb) },
-        emit: (e, d) => {
-            const wire = d === undefined ? undefined : JSON.parse(JSON.stringify(d))
-            for (const cb of (theirs[e] ?? [])) queueMicrotask(() => cb(wire))
-        },
-    })
-    return [make(A, B), make(B, A)]
 }
 
 // the ORACLE's token scheme: crypto is deliberately the host's job, so the
@@ -125,7 +111,7 @@ async function main() {
     await waitFor('the node line converges on the authority write', () => node.view.status().seq >= 1)
 
     // ============== a client over REAL RPC: read key ungated, write key gated ==============
-    const [clientEnd, serverEnd] = createLoopback()
+    const {client: clientEnd, server: serverEnd} = createLoopbackSocketPair()
     connect!(serverEnd)
     const read = createRpcClient<any>({socket: clientEnd, socketKey: 'app'})
     await read.readyStrict()
@@ -147,7 +133,7 @@ async function main() {
     ok(direct.value == 5 && applied == 5, 'the node hop and the authority share ONE receipt space')
 
     // ============== a bad token is refused by the gate ==============
-    const [badEnd, badServer] = createLoopback()
+    const {client: badEnd, server: badServer} = createLoopbackSocketPair()
     connect!(badServer)
     const bad = createRpcClient<any>({socket: badEnd, socketKey: 'scale', token: 'garbage'})
     const badCode = await bad.func.svc.whoami().catch((error: any) => error?.code ?? String(error))
@@ -181,6 +167,95 @@ async function main() {
     directory.control.drain('n1')
     await waitFor('drain fact makes the node leave through onLeave', () => leftReason == 'drained by the authority')
     await waitFor('goodbye removed the node row', () => directory.control.get('n1') == undefined)
+
+    // a reusable fake authority link for the lifecycle scenarios below
+    function makeLink(onRegister?: (entry: any) => void) {
+        return {
+            replica: authority.api.fragment,
+            directory: directory.api,
+            register: (entry: any) => { onRegister?.(entry); directory.control.upsert({...entry, role: 'mirror'}) },
+            heartbeat: (id: string, facts: any) => directory.control.heartbeat(id, {meta: {readers: facts?.readers ?? 0}}),
+            goodbye: (id: string) => directory.control.remove(id),
+            onFail: {on: () => () => {}},
+        }
+    }
+
+    // ============== a failed start() must stay retryable ==============
+    let n2Left: string | null = null
+    let n2Registered: any = null
+    let upstreamDown = true
+    const n2 = createStoreNode<TickState>({
+        nodeId: 'n2', storeId: 'node-line', originId: 'node-origin',
+        // heartbeatMs is huge on purpose: the seeding scenario below needs the
+        // removal to be the FIRST post-subscribe batch, with no beat in between
+        graceMs: 40, heartbeatMs: 60_000,
+        upstream: () => {
+            if (upstreamDown) throw new Error('authority briefly down')
+            return makeLink(function recordRegister(entry) { n2Registered = entry })
+        },
+        serve: {onConnection() {}},
+        selfUrl: () => 'mem://n2',
+        onLeave: reason => { n2Left = reason },
+        log: () => {},
+    })
+    const failedStart = await n2.start().then(() => null, error => String(error))
+    ok(failedStart != null && failedStart.includes('authority briefly down'), 'a failed start throws to the host')
+    ok(n2.view.status().started == false, 'a failed start does not latch started')
+    upstreamDown = false
+    await n2.start()
+    ok(directory.control.get('n2')?.url == 'mem://n2', 'the retried start registers and serves')
+    ok(n2Registered?.readers == 0 && n2Registered?.pid == process.pid,
+        'register carries the node\'s OWN readers and pid facts (a restart resets stale load)')
+
+    // ============== removal as the FIRST post-subscribe batch still means leave ==============
+    directory.control.remove('n2')
+    await waitFor('a removal landing as the first batch still triggers leave',
+        () => n2Left == 'removed from the directory')
+
+    // ============== close() during start() must win ==============
+    let releaseN3: ((link: any) => void) | null = null
+    let n3Registered = false
+    const n3 = createStoreNode<TickState>({
+        nodeId: 'n3', storeId: 'node-line', originId: 'node-origin',
+        graceMs: 40, heartbeatMs: 50,
+        upstream: () => new Promise(resolve => { releaseN3 = resolve }),
+        serve: {onConnection() {}},
+        selfUrl: () => 'mem://n3',
+        onLeave: () => {},
+        log: () => {},
+    })
+    const n3Start = n3.start()
+    n3.close()
+    releaseN3!(makeLink(function markRegistered() { n3Registered = true }))
+    await n3Start
+    await new Promise(resolve => setTimeout(resolve, 50))
+    ok(!n3Registered && directory.control.get('n3') == undefined,
+        'a node closed during start never registers or arms its heartbeat')
+
+    // ============== the upstream link is re-resolved on reconnect ==============
+    let resolves = 0
+    const failCbs: (() => void)[] = []
+    const n4 = createStoreNode<TickState>({
+        nodeId: 'n4', storeId: 'node-line', originId: 'node-origin',
+        graceMs: 40, heartbeatMs: 60_000,
+        upstream: () => {
+            resolves++
+            return {
+                ...makeLink(),
+                onFail: {on: (cb: () => void) => { failCbs.push(cb); return () => {} }},
+            }
+        },
+        serve: {onConnection() {}},
+        selfUrl: () => 'mem://n4',
+        onLeave: () => {},
+        log: () => {},
+    })
+    await n4.start()
+    const resolvedAtStart = resolves
+    for (const cb of [...failCbs]) cb()
+    await waitFor('a route failure re-resolves the upstream link (a hub rotation survives)',
+        () => resolves > resolvedAtStart)
+    n4.close()
 
     follower.close()
     node.close()

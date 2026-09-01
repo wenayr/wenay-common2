@@ -20,7 +20,9 @@ import {createStoreReplicaOffers, StoreReplicaOffer, StoreReplicaSession} from '
 // public contract
 // ============================================================
 
-export type tNodeDirectoryRole = 'leader' | 'mirror'
+/** leader = the point of order · mirror = a serving node · standby = a successor-in-waiting
+ *  (discoverable by url, registered with weight 0 so it is never placed). */
+export type tNodeDirectoryRole = 'leader' | 'mirror' | 'standby'
 
 export type NodeDirectoryEntry = {
     nodeId: string
@@ -63,6 +65,8 @@ function requireEntry(entry: NodeDirectoryEntry) {
 
 export type NodeDirectoryDeps = {
     now?: () => number
+    /** Seed rows — a promoted standby continues the roster it followed. ts is kept as given. */
+    initial?: Iterable<NodeDirectoryEntry>
     /** Stable replay identity only when the same journal is durably restored. */
     lineId?: string
     /** Advanced replicated-map replay pass-through (history/keepMs/describe). */
@@ -74,6 +78,7 @@ export function createNodeDirectory(deps: NodeDirectoryDeps = {}) {
     const map = createReplicatedMap<NodeDirectoryEntry>({
         keyOf(entry) { return entry.nodeId },
         delivery: 'latest' satisfies tReplicatedMapDelivery,
+        ...(deps.initial ? {initial: deps.initial} : {}),
         ...(deps.lineId != undefined ? {lineId: deps.lineId} : {}),
         ...(deps.replay ? {replay: deps.replay} : {}),
     })
@@ -83,11 +88,15 @@ export function createNodeDirectory(deps: NodeDirectoryDeps = {}) {
         map.control.set(requireEntry({draining: false, ...entry, ts: now()}))
     }
 
-    /** Refresh liveness (and optionally facts) of a known node; false = node is not registered. */
+    /** Refresh liveness (and optionally facts) of a known node; false = node is not registered.
+     *  patch.meta MERGES one level: each writer refreshes the facts it owns without erasing
+     *  facts another writer reported (readers vs labels vs pid). Remove a fact by patching it
+     *  to undefined; replace the whole bag through upsert. */
     function heartbeat(nodeId: string, patch: Partial<Omit<NodeDirectoryEntry, 'nodeId' | 'ts'>> = {}) {
         const current = map.control.get(requireNodeId(nodeId))
         if (!current) return false
-        map.control.set(requireEntry({...current, ...patch, nodeId, ts: now()}))
+        const meta = patch.meta ? {...current.meta, ...patch.meta} : current.meta
+        map.control.set(requireEntry({...current, ...patch, ...(meta ? {meta} : {}), nodeId, ts: now()}))
         return true
     }
 
@@ -183,11 +192,36 @@ export function followNodeDirectory(
     opts: FollowNodeDirectoryOpts = {},
 ) {
     const {staleMs, now, ...followOpts} = opts
+    const follow = followReplicatedMap<NodeDirectoryEntry>(remote, followOpts)
+
+    // Staleness lives in HOST-clock space. entry.ts is stamped by the DIRECTORY
+    // host, and comparing it against the reader's own clock turns ordinary
+    // cross-machine skew into a dead (or immortal) roster. So the follower
+    // anchors on the freshest host stamp it has seen and advances it by LOCALLY
+    // elapsed time only — the reader clock contributes deltas, never absolutes.
+    // An explicit opts.now keeps the direct meaning (tests, one-clock stands).
+    const localNow = Date.now
+    let anchorHostTs = 0
+    let anchorLocalAt = 0
+    function observeHostClock() {
+        const snapshot = follow.snapshot()
+        for (const nodeId of Object.keys(snapshot)) {
+            const ts = snapshot[nodeId]?.ts ?? 0
+            if (ts > anchorHostTs) {
+                anchorHostTs = ts
+                anchorLocalAt = localNow()
+            }
+        }
+    }
+    const offHostClock = follow.batches.on(observeHostClock)
+    function hostNow() {
+        if (anchorHostTs == 0) observeHostClock()
+        return anchorHostTs == 0 ? localNow() : anchorHostTs + Math.max(0, localNow() - anchorLocalAt)
+    }
     const viewOpts = {
         ...(staleMs != undefined ? {staleMs} : {}),
-        ...(now ? {now} : {}),
+        now: now ?? hostNow,
     }
-    const follow = followReplicatedMap<NodeDirectoryEntry>(remote, followOpts)
 
     /** Staleness is derived at READ time; onNodes fires on data changes only. */
     function nodes() {
@@ -202,6 +236,11 @@ export function followNodeDirectory(
         return follow.batches.on(function forwardDirectoryChange() { cb(nodes()) })
     }
 
+    function close() {
+        offHostClock()
+        follow.close()
+    }
+
     return {
         nodes,
         pick,
@@ -210,7 +249,7 @@ export function followNodeDirectory(
         status: follow.status,
         statusChanges: follow.statusChanges,
         isStale: follow.isStale,
-        close: follow.close,
+        close,
         /** Full replicated-map surface for advanced consumers (checkpoint, onKey...). */
         follow,
     }
@@ -235,6 +274,13 @@ export type DirectoryReplicaOffersDeps = {
     priorityOf?: (node: NodeDirectoryView) => number
 }
 
+/** Default route price for a directory row: higher weight = cheaper. The ONE
+ *  weight→priority mapping — consumers layering their own ordering (e.g. the
+ *  cluster client's sticky placement) offset THIS instead of re-deriving it. */
+export function directoryRoutePriority(view: Pick<NodeDirectoryView, 'weight'>) {
+    return Math.round(1000 / Math.max(view.weight, 1e-3))
+}
+
 export function directoryReplicaOffers(deps: DirectoryReplicaOffersDeps) {
     const source = createStoreReplicaOffers()
     // connect identity must stay stable per nodeId, or every directory change would
@@ -254,17 +300,27 @@ export function directoryReplicaOffers(deps: DirectoryReplicaOffersDeps) {
         entry.view = view
         return {
             id: view.nodeId,
-            priority: deps.priorityOf?.(view) ?? Math.round(1000 / Math.max(view.weight, 1e-3)),
+            priority: deps.priorityOf?.(view) ?? directoryRoutePriority(view),
             connect: entry.connect,
         }
     }
 
+    let lastSignature = ''
     function syncOffers(views: readonly NodeDirectoryView[]) {
         const wanted = views.filter(function usable(view) { return view.eligible })
+        const wantedIds = new Set(wanted.map(function idOf(view) { return view.nodeId }))
         for (const nodeId of [...stable.keys()]) {
-            if (!wanted.some(function still(view) { return view.nodeId == nodeId })) stable.delete(nodeId)
+            if (!wantedIds.has(nodeId)) stable.delete(nodeId)
         }
-        source.control.replace(wanted.map(offerOf))
+        // offerOf runs for every wanted row regardless: it refreshes the view the
+        // stable connect closure reads, even when the list itself does not change
+        const offers = wanted.map(offerOf)
+        // pure heartbeat ticks change no membership and no price — skip the
+        // replace, or every follower re-reconciles an identical list once per beat
+        const signature = offers.map(function priceOf(offer) { return offer.id + '@' + offer.priority }).join('|')
+        if (signature == lastSignature) return
+        lastSignature = signature
+        source.control.replace(offers)
     }
 
     const offNodes = deps.directory.onNodes(syncOffers)

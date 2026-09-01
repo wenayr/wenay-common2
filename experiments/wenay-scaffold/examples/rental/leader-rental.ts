@@ -21,7 +21,7 @@ import {Server as SocketIOServer} from 'socket.io'
 import {listen} from '../../../../src/Common/events/Listen'
 import {createRpcServerAuto} from '../../../../src/Common/rcp/rpc-server-auto'
 import {createTokenCodec} from '../../../../src/server/auth-token'
-import {leaderEnv, portEnv} from '../../template/config'
+import {corsOrigins, leaderEnv, portEnv} from '../../template/config'
 import {createServiceLeader} from '../../template/leader'
 import {createRentalRest} from './rest'
 import {serviceDefinition} from './service'
@@ -35,8 +35,11 @@ async function main() {
     const name = serviceDefinition.name
     const app = express()
     const httpServer = createServer(app)
-    // node processes and future browser stands arrive from other origins
-    const ioServer = new SocketIOServer(httpServer, {cors: {origin: true, methods: ['GET', 'POST']}})
+    // node processes have no Origin and pass regardless; browser stands get CORS
+    // pinned to the stand's own origin (config.corsOrigins carries the env override)
+    const ioServer = new SocketIOServer(httpServer, {
+        cors: {origin: corsOrigins(process.env, ['http://localhost:' + port]), methods: ['GET', 'POST']},
+    })
 
     let url = ''
     const leader = createServiceLeader({
@@ -54,7 +57,10 @@ async function main() {
 
         // the node link: only for connections that presented the node token
         if (auth?.role == 'service-node') {
-            if (auth?.token != leader.secrets.nodeToken) {
+            // bound to the claimed node id: the fleet token is shared, so binding is what
+            // keeps one node from registering, beating or delisting a peer's row
+            const nodeId = String(auth?.node ?? '')
+            if (!nodeId || auth?.token != leader.secrets.nodeToken) {
                 socket.disconnect(true)
                 return
             }
@@ -62,7 +68,7 @@ async function main() {
             createRpcServerAuto({
                 socket,
                 socketKey: 'node-link',
-                object: {[name]: leader.serve.nodeLinkFragment()},
+                object: {[name]: leader.serve.nodeLinkFragment(nodeId)},
                 disconnectListen: goneListen,
             })
             console.log(`[${name}] node link connected`)

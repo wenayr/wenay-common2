@@ -101,14 +101,15 @@ export function createKubeSourceReal(deps: KubeSourceRealDeps) {
 
     function onWatchEvent(phase: string, apiObj: unknown) {
         if (closed) return
-        // a delivered event proves the link is healthy: reset the backoff ladder
-        backoffMs = minMs
         if (phase == 'ERROR') {
-            // e.g. 410 Gone — the RV is too old; drop the stream and force a relist
+            // e.g. 410 Gone — the RV is too old; drop the stream and force a relist.
+            // The ladder keeps climbing: an ERROR storm must not relist at minMs
             resourceVersion = ''
             abort?.abort()
             return
         }
+        // a delivered NON-error event proves the link is healthy: reset the backoff ladder
+        backoffMs = minMs
         const pod = apiObj as V1Pod
         const rv = pod.metadata?.resourceVersion
         if (rv) resourceVersion = rv

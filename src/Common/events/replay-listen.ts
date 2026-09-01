@@ -21,6 +21,7 @@ import {
     createListen, LISTEN_DISPATCH_ERROR, registerListenOn,
     Listener, ListenApi, ListenCurrent, ListenCurrentProvider, ListenOnBrand, ListenOptions, NormalizeTuple,
 } from './Listen'
+import {jsonUtf8ByteLength} from '../wire-size'
 
 type key = string | symbol
 type cbClose = () => void
@@ -164,10 +165,13 @@ export type ListenOnReplay<Z extends any[] = any[]> =
 // Over-counting is the safe direction for a budget: an under-count would let
 // unmeasurable events accumulate past the target unnoticed.
 const UNMEASURED_EVENT_BYTES = 1024
-const utf8Sizer = new TextEncoder()
-/** Default `keepBytes` measure: UTF-8 length of the JSON of the event tuple. */
+/** Default `keepBytes` measure: UTF-8 length of the JSON of the event tuple.
+ *  wire-size counts bytes on Node's allocation-free fast path (encoding a
+ *  throwaway Uint8Array per journaled event is exactly the waste a byte budget
+ *  exists to avoid) and prices unserializable values at Infinity, which the
+ *  isFinite guard below maps to the fixed cost. */
 function estimateEventJsonBytes(ev: ReplayEvent<any>) {
-    return utf8Sizer.encode(JSON.stringify(ev.event)).byteLength
+    return jsonUtf8ByteLength(ev.event)
 }
 
 export function withReplayListen<T>(base: ListenApi<T>, options: ReplayListenOptions<NormalizeTuple<T>> = {}) {

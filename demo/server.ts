@@ -1,7 +1,7 @@
 // Demo stand server: the Peer SDK, application RPC facade and static page hosting.
 // Run: npm run demo  ->  open the two printed URLs in two tabs.
 import express, {type NextFunction, type Request, type Response} from 'express'
-import {randomUUID} from 'crypto'
+import {randomUUID, timingSafeEqual} from 'crypto'
 import {createServer} from 'http'
 import path from 'path'
 import {Server as SocketIOServer} from 'socket.io'
@@ -995,6 +995,17 @@ function instanceFragment() {
 // (active-route subscriptions), so this file adds no counters of its own.
 const miniScale = createMiniScaleHost({selfUrl: () => 'http://localhost:' + port})
 
+// A `!=` over the trust token leaks WHERE a guess diverges through compare time.
+// timingSafeEqual needs equal-length buffers (it throws otherwise); our own
+// token's length is not a secret, so the early return leaks nothing new.
+function trustedTokenMatch(presented: unknown, expected: string) {
+    if (typeof presented != 'string') return false
+    const given = Buffer.from(presented)
+    const wanted = Buffer.from(expected)
+    if (given.length != wanted.length) return false
+    return timingSafeEqual(given, wanted)
+}
+
 ioServer.on('connection', function onDemoConnection(socket) {
     const tab = socket.handshake.auth?.tab
     if (typeof tab != 'string' || !tab) {
@@ -1008,7 +1019,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
         // Mirrors are served by the LEADER — original or promoted: after failover
         // this node accepts returning nodes as their new leader (higher epoch).
         const canServeMirrors = !mirrorOf || Boolean(upstreamLink?.isPromoted())
-        if (!canServeMirrors || (expectedToken && socket.handshake.auth?.token != expectedToken)) {
+        if (!canServeMirrors || (expectedToken && !trustedTokenMatch(socket.handshake.auth?.token, expectedToken))) {
             socket.disconnect(true)
             return
         }
@@ -1038,7 +1049,10 @@ ioServer.on('connection', function onDemoConnection(socket) {
     // A spawned mini node connects with role=mini-node: only the trusted
     // registration link plus the shared replica/directory lines.
     if (socket.handshake.auth?.role == 'mini-node') {
-        if (socket.handshake.auth?.token != miniScale.token) {
+        // the link is BOUND to the id the node claims: with the fleet token shared, binding
+        // is what keeps one node from touching a peer's row (RPC-AUTH, node links)
+        const miniNodeId = String(socket.handshake.auth?.node ?? '')
+        if (!miniNodeId || !trustedTokenMatch(socket.handshake.auth?.token, miniScale.token)) {
             socket.disconnect(true)
             return
         }
@@ -1050,7 +1064,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
         createRpcServerAuto({
             socket,
             socketKey: 'app',
-            object: {miniScale: miniScale.nodeLinkFragment()},
+            object: {miniScale: miniScale.nodeLinkFragment(miniNodeId)},
             disconnectListen: miniGoneListen,
             opt: demoRpcOpt,
         })

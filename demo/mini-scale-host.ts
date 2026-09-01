@@ -9,6 +9,7 @@
 // not a control channel — the child watches the same directory facts every
 // browser sees and leaves on its own fact.
 import {ChildProcess, spawn} from 'child_process'
+import {randomBytes} from 'crypto'
 import path from 'path'
 import {createAuthority} from '../src/Common/scale/scale-authority'
 import {createTokenCodec} from '../src/server/auth-token'
@@ -31,10 +32,12 @@ export function createMiniScaleHost(deps: MiniScaleHostDeps) {
     // leader; both unset = exactly the old behavior, random per run.
     const pinnedToken = process.env.DEMO_MINI_TOKEN?.trim() || null
     const pinnedSecret = process.env.DEMO_MINI_SECRET?.trim() || null
-    // per-run trust for mini-node links; passed to children through env only
-    const token = pinnedToken ?? 'mini-' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
+    // per-run trust for mini-node links; passed to children through env only.
+    // CSPRNG, not Math.random: the token gates registration and the secret
+    // signs every session token — neither may be predictable.
+    const token = pinnedToken ?? 'mini-' + randomBytes(12).toString('hex')
     // per-run shared secret of the scale corridor: every node verifies client tokens itself
-    const secret = pinnedSecret ?? 'scale-' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
+    const secret = pinnedSecret ?? 'scale-' + randomBytes(16).toString('hex')
     const codec = createTokenCodec({secret, ttlMs: 2 * 60_000})
 
     const authority = createAuthority<MiniTickState, {

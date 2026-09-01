@@ -9,7 +9,10 @@ type tFunc = {
 };
 
 /** @deprecated use {@link createRateWindow} */
-export function funcTimeW() {
+// the default reads THROUGH the global at call time (late binding): callers and
+// specs may monkey-patch Date.now after construction, and an injected clock
+// must stay the exception, not a behavior change for existing instances
+export function funcTimeW(now: () => number = () => Date.now()) {
     type tt1 = [tTime, tWeight];
     type ttt = { [key: tType]: tt1[] };
     const dStatic: ttt = {};
@@ -25,7 +28,7 @@ export function funcTimeW() {
             if (!dStatic[item.type]) {
                 dStatic[item.type] = [];
             }
-            dStatic[item.type].push([item.timeStamp ?? Date.now(), item.weight]);
+            dStatic[item.type].push([item.timeStamp ?? now(), item.weight]);
             sortByTime(dStatic[item.type]);
         },
 
@@ -34,7 +37,7 @@ export function funcTimeW() {
             if (!arr || arr.length === 0) return;
             sortByTime(arr);
 
-            const timeStamp = Date.now();
+            const timeStamp = now();
             // nothing to clean:
             if (arr[0][0] > timeStamp - ms) return;
 
@@ -54,7 +57,7 @@ export function funcTimeW() {
             if (!arr || arr.length === 0) return 0;
             sortByTime(arr);
 
-            const timeStamp = Date.now();
+            const timeStamp = now();
             let sum = 0;
             let i = arr.length - 1;
 
@@ -100,7 +103,7 @@ export function funcTimeW() {
         },
 
         // Same thing, but with intermediate timeNow
-        byWeightTimeNow(type: tType, timeNow = Date.now(), weight = 50000) {
+        byWeightTimeNow(type: tType, timeNow = now(), weight = 50000) {
             const arr = dStatic[type];
             if (!arr || arr.length === 0) return 0;
             sortByTime(arr);
@@ -144,13 +147,15 @@ export const FuncTimeWait = funcTimeW()
 //   prune     = cleanByTime  (drop entries older than the window)
 //   sumWeight = weight        (sum of weight over the window)
 //   readyAt   = byWeight      (timestamp when accumulated weight crosses the limit)
-export function createRateWindow() {
-    const w = funcTimeW()
+export function createRateWindow(deps: {now?: () => number} = {}) {
+    const w = funcTimeW(deps.now)
     return {
         ...w,
         prune: w.cleanByTime,
         sumWeight: w.weight,
         readyAt: w.byWeight,
+        /** Forget one key entirely — the eviction hook for hosts dropping departed accounts. */
+        drop(type: tType) { delete w.dStatic[type] },
     }
 }
 

@@ -13,7 +13,7 @@
 
 import {createRpcClient} from '../src/Common/rcp/rpc-client'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
-import type {SocketTmpl} from '../src/Common/rcp/rpc-protocol'
+import {createLoopbackSocketPair} from '../src/Common/rcp/rpc-inproc'
 import {createStoreFollower} from '../src/Common/Observe/store-follower'
 import {createAuthority} from '../src/Common/scale/scale-authority'
 
@@ -30,21 +30,6 @@ async function waitFor(message: string, check: () => boolean, timeoutMs = 4000) 
         await new Promise(resolve => setTimeout(resolve, 20))
     }
     ok(false, message + ' (timed out)')
-}
-
-// loopback transport: emit on one end delivers to the other through a JSON
-// clone, so payloads break exactly as they would on a real socket
-function createLoopback(): [SocketTmpl, SocketTmpl] {
-    const A: Record<string, ((d: any) => void)[]> = {}
-    const B: Record<string, ((d: any) => void)[]> = {}
-    const make = (mine: typeof A, theirs: typeof A): SocketTmpl => ({
-        on: (e, cb) => { (mine[e] ??= []).push(cb) },
-        emit: (e, d) => {
-            const wire = d === undefined ? undefined : JSON.parse(JSON.stringify(d))
-            for (const cb of (theirs[e] ?? [])) queueMicrotask(() => cb(wire))
-        },
-    })
-    return [make(A, B), make(B, A)]
 }
 
 // the ORACLE's token scheme: crypto is deliberately the host's job, so the
@@ -119,7 +104,7 @@ async function main() {
     ok(afterLift.value == 10 && applied == 10, 'after login the corridor executes again')
 
     // ============== connection(): the gated per-socket block over REAL RPC ==============
-    const [l1Client, l1Server] = createLoopback()
+    const {client: l1Client, server: l1Server} = createLoopbackSocketPair()
     const conn1 = authority.serve.connection()
     const gated1 = createRpcServerAuto({socket: l1Server, socketKey: 'scale', object: conn1.object, auth: conn1.auth})
     conn1.attach(gated1.control)
@@ -130,7 +115,7 @@ async function main() {
     const anonCode = await anon.func.whoami().catch((error: any) => error?.code ?? String(error))
     ok(anonCode == 'E_UNAUTHORIZED', 'anonymous is refused by the gate (empty surface + gate, rule 1)')
 
-    const [l2Client, l2Server] = createLoopback()
+    const {client: l2Client, server: l2Server} = createLoopbackSocketPair()
     const conn2 = authority.serve.connection()
     const gated2 = createRpcServerAuto({socket: l2Server, socketKey: 'scale', object: conn2.object, auth: conn2.auth})
     conn2.attach(gated2.control)
@@ -153,7 +138,7 @@ async function main() {
     const afterCut = await carol.func.whoami().catch((error: any) => error?.code ?? String(error))
     ok(afterCut == 'E_UNAUTHORIZED', 'after the cut the gate is closed again')
 
-    const [l3Client, l3Server] = createLoopback()
+    const {client: l3Client, server: l3Server} = createLoopbackSocketPair()
     const conn3 = authority.serve.connection()
     const gated3 = createRpcServerAuto({socket: l3Server, socketKey: 'scale', object: conn3.object, auth: conn3.auth})
     conn3.attach(gated3.control)
@@ -179,10 +164,65 @@ async function main() {
     await nodeClient.func.link.heartbeat('n1', {readers: -7})
     ok(authority.view.nodes().find(view => view.nodeId == 'n1')?.meta?.['readers'] == 0,
         'heartbeat sanitizes the reported readers fact')
+    // a node that reconnects re-registers: the row must not lose its last
+    // reported facts, or the balancer sees a loaded node as empty for a beat
+    await nodeClient.func.link.heartbeat('n1', {readers: 3})
+    await nodeClient.func.link.register({nodeId: 'n1', url: 'mem://n1-re', weight: 4, pid: 124})
+    const reRegistered = authority.view.nodes().find(view => view.nodeId == 'n1')
+    ok(reRegistered?.meta?.['readers'] == 3 && reRegistered?.meta?.['pid'] == 124,
+        're-register merges meta — the readers fact SURVIVES until the next heartbeat')
     const hopReceipt = await nodeClient.func.link.commandsByToken.add('tok:bob', 'r2', {delta: 999})
     ok(hopReceipt.value == 10 && applied == 13, 'the node-link token hop shares the ONE receipt space over RPC')
     await nodeClient.func.link.goodbye('n1')
     ok(!authority.view.nodes().some(view => view.nodeId == 'n1'), 'goodbye removes the row')
+
+    // ============== node link: identity discipline + fact hygiene ==============
+    // direct calls here on purpose: in-process fragments are a first-party mode,
+    // and a JSON wire would launder Infinity into null before the sanitizer
+    const link = authority.serve.nodeLink()
+    link.register({nodeId: 'n2', url: 'mem://n2', weight: 4, pid: 200})
+    link.heartbeat('n2', {readers: Infinity})
+    ok(authority.view.nodes().find(view => view.nodeId == 'n2')?.meta?.['readers'] == 0,
+        'a non-finite readers fact is sanitized to 0 (Infinity never poisons the balancer)')
+    link.register({nodeId: 'n2', url: 'mem://n2', weight: 4, pid: Infinity})
+    ok(authority.view.nodes().find(view => view.nodeId == 'n2')?.meta?.['pid'] == 200,
+        'a non-finite pid is dropped; the registered pid survives the merge')
+    // crash-restart: a fresh process reports its OWN readers count at register —
+    // the row must not inherit the dead process's load
+    link.heartbeat('n2', {readers: 5})
+    link.register({nodeId: 'n2', url: 'mem://n2', weight: 4, pid: 201, readers: 0})
+    const reborn = authority.view.nodes().find(view => view.nodeId == 'n2')
+    ok(reborn?.meta?.['readers'] == 0 && reborn?.meta?.['pid'] == 201,
+        'register carrying a readers fact RESETS the inherited count (crash-restart)')
+
+    const grab = (() => {
+        try { link.register({nodeId: 'authority', url: 'mem://evil', weight: 9}); return null }
+        catch (error) { return error }
+    })()
+    ok(grab != null && !authority.view.nodes().some(view => view.nodeId == 'authority' && view.url == 'mem://evil'),
+        'a node cannot register over the authority row')
+    ok((() => {
+        try { link.heartbeat('authority', {readers: 9}); return false }
+        catch { return true }
+    })(), 'a node cannot heartbeat the authority row')
+    ok((() => {
+        try { link.goodbye('authority'); return false }
+        catch { return true }
+    })(), 'a node cannot goodbye the authority row')
+
+    // a host that authenticated the node can BIND the link to that identity
+    const boundLink = authority.serve.nodeLink('n2')
+    ok((() => {
+        try { boundLink.register({nodeId: 'n3', url: 'mem://n3', weight: 1}); return false }
+        catch { return true }
+    })() && !authority.view.nodes().some(view => view.nodeId == 'n3'),
+        'a bound link cannot register a foreign nodeId')
+    ok((() => {
+        try { boundLink.heartbeat('n3', {readers: 1}); return false }
+        catch { return true }
+    })(), 'a bound link cannot heartbeat a foreign row')
+    boundLink.goodbye('n2')
+    ok(!authority.view.nodes().some(view => view.nodeId == 'n2'), 'the bound link still owns its own row')
 
     // ============== readers: only an ACTIVE line subscription counts ==============
     ok(authority.view.readers() == 0, 'readers is honest: no line subscribers yet')

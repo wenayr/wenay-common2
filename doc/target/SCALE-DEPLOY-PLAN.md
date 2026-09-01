@@ -338,6 +338,20 @@ the REAL public API. Sticky placement moves from the demo into the library clien
 - 8c. Template leader.ts collapses onto Scale.createAuthority; scaffold + rental self-checks
   stay green — the "300 lines → config" payoff proven.
 
+### Step 9 — authority succession + durable receipts — DONE 2026-09-02
+
+The two architectural gaps named in review: the authority was a single point of failure for writes
+AND for the control lines, and receipts lived only in its memory. Landed: `Command.createCommandReceipts`
+(receipts as a replicated line; the host publishes commits/drops and `adopt()`s a line), an internal
+line-succession primitive (`scale-succession.ts`: follow → promote from the followed snapshot → demote),
+and `createAuthority({leadership})` — one factory runs as leader or standby, the replica set's fork choice
+/ autoPromote / lease seam is the ONE leadership decision, the three control lines follow it. Nodes
+re-home when their host resolves a different upstream link. Oracle `observe/scale-failover.test.ts`
+(fails 6/28 without the seeded hand-over). Stated boundaries: a command in flight when the leader dies
+may execute again on the successor (no receipt exists anywhere yet); transport rotation to the new
+leader is host work (the standby's url is a roster row; the demo stand stays single-leader for now);
+the K8s Lease still plugs into `leadership.elect/accept` (6c) — nothing here pre-empts it.
+
 ### Step 7 — template + OpenAPI (stage 6) — DONE 2026-08-28 (incubated)
 
 All three slices landed the same day, each proven by its oracle plus a live pass: 7a scaffold

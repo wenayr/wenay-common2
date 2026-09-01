@@ -137,7 +137,9 @@ enable(flag=true) / disable()                       // enable(true) also install
   // imports never mutate console; first browser/attached-inspector install is a no-op; no uninstall by design
 installProxyTracking()                              // call once at startup (browser fallback). isProxy(v)->boolean   (alias: isProxyInit)
 createIdPool() -> { next() -> number, release(id) }                                       // reuses released ids
-createRateWindow() -> { add(item), prune(type, ms?), sumWeight(type), readyAt(...), ...legacy }   // alias: funcTimeW
+createRateWindow({now?} = {}) -> { add(item), prune(type, ms?), sumWeight(type), readyAt(...), drop(type), ...legacy }   // alias: funcTimeW
+  // now = injectable clock (testable hosts fake time; createCommandHost passes its own); drop(type)
+  //   forgets one key wholesale — the eviction hook for hosts that sweep departed accounts
 rateWindow                                          // shared default createRateWindow() instance   (= FuncTimeWait)
 SetAutoStepForElement(el, { minStep?, maxStep? })   // browser input
 copyToClipboard(text) -> Promise<void>  ·  GetEnumKeys(E)  ·  isDate(v)

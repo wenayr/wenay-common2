@@ -5,7 +5,7 @@ type tFunc = {
     type: tType;
     weight: number;
 };
-export declare function funcTimeW(): {
+export declare function funcTimeW(now?: () => number): {
     dStatic: {
         [key: string]: [number, number][];
     };
@@ -27,7 +27,9 @@ export declare const FuncTimeWait: {
     byWeight(type: tType, weight?: number): number;
     byWeightTimeNow(type: tType, timeNow?: number, weight?: number): number;
 };
-export declare function createRateWindow(): {
+export declare function createRateWindow(deps?: {
+    now?: () => number;
+}): {
     dStatic: {
         [key: string]: [number, number][];
     };
@@ -40,6 +42,7 @@ export declare function createRateWindow(): {
     prune: (type: tType, ms?: number) => void;
     sumWeight: (type: tType, ms?: number) => number;
     readyAt: (type: tType, weight?: number) => number;
+    drop(type: tType): void;
 };
 export declare const rateWindow: {
     dStatic: {
@@ -54,5 +57,6 @@ export declare const rateWindow: {
     prune: (type: tType, ms?: number) => void;
     sumWeight: (type: tType, ms?: number) => number;
     readyAt: (type: tType, weight?: number) => number;
+    drop(type: tType): void;
 };
 export {};

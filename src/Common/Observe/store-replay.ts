@@ -72,6 +72,10 @@ export type StoreReplayOpts = StoreReplayBatchOpts & {
     describe?: Record<string, any>
     /** Override the settled Store patch feed while retaining the same replay/journal/wire surfaces. */
     patchSource?: StoreReplayPatchSource
+    /** false: do not attach the chunked-keyframe facet. The producer opt-out for
+     *  facades that OVERRIDE keyframe (validation/metering) — clients probe the
+     *  facet before keyframe, so only its absence keeps the override authoritative. */
+    chunks?: boolean
 }
 
 /** One chunked-keyframe attempt: identity, the tail coordinate, and chunk 0 inlined. */
@@ -236,7 +240,14 @@ function createBatchReplay(
     // uses below, so the journal budget speaks packed-V2 bytes instead of a
     // JSON.stringify guess. An unmeasurable patch prices at maxBytes — the
     // conservative fallback admission already applies.
+    // Admission has ALREADY wire-measured every live batch on the push path;
+    // drainReady announces that number here so the journal ingest (synchronous
+    // inside emit) does not pay a second full walk per event on the hot write
+    // path. -1 = nothing announced: keyframes, compact frames and restored
+    // history still pay the walk.
+    let announcedBatchBytes = -1
     function measureStoreReplayEventBytes(event: ReplayEvent<[readonly StorePatch[]]>) {
+        if (announcedBatchBytes >= 0) return announcedBatchBytes
         let bytes = envelopeBytes
         for (const patch of event.event[0]) {
             try { bytes += storeReplayPatchV2WireMetrics(patch).byteLength + 1 }
@@ -332,7 +343,8 @@ function createBatchReplay(
         try {
             while (delivered < ready.length) {
                 const batch = ready[delivered]
-                emitBatch(batch.patches)
+                announcedBatchBytes = batch.bytes
+                try { emitBatch(batch.patches) } finally { announcedBatchBytes = -1 }
                 delivered++
                 emittedBatches++
                 emittedPatches += batch.patches.length
@@ -477,7 +489,8 @@ function exposeStoreReplayWire<W>(
             for (const [snapshotId, retained] of chunkSets) {
                 if (retained.expiresAt <= at) chunkSets.delete(snapshotId)
             }
-            // Map keeps insertion order, so the oldest attempt is evicted first.
+            // Map keeps insertion order and pull() re-inserts on use, so the
+            // least recently USED attempt is evicted first (true LRU).
             while (chunkSets.size > STORE_REPLAY_CHUNK_SETS_MAX) {
                 const oldest = chunkSets.keys().next().value
                 if (oldest == null) break
@@ -501,8 +514,14 @@ function exposeStoreReplayWire<W>(
         }
         function pull(snapshotId: string, index: number) {
             sweepChunkSets()
-            const retained = chunkSets.get(String(snapshotId))
+            const key = String(snapshotId)
+            const retained = chunkSets.get(key)
             if (!retained) return null
+            // LRU refresh is a RE-INSERT, not just a TTL bump: the cap sweep
+            // walks insertion order, and a slow client mid-assembly must not be
+            // the one evicted while idle attempts sit in the cap.
+            chunkSets.delete(key)
+            chunkSets.set(key, retained)
             retained.expiresAt = now() + STORE_REPLAY_CHUNK_TTL_MS
             const at = Number(index)
             if (!Number.isInteger(at) || at < 0 || at >= retained.chunks.length) return null
@@ -558,7 +577,10 @@ function splitStoreKeyframe(event: ReplayEvent<[readonly StorePatch[]]>, budgetB
         return {seq: event.seq, ts: event.ts, event: [[{...root!, value: group}]]}
     }
     const parts: ReplayEvent<[readonly StorePatch[]]>[] = []
-    let group: Record<string, unknown> = {}
+    // null-prototype groups: the store supports an own '__proto__' data key
+    // (defineOwnValue), and plain assignment on a {} group would hit the
+    // prototype setter and silently drop that entry from the chunked keyframe
+    let group: Record<string, unknown> = Object.create(null)
     let groupBytes = 0
     let groupKeys = 0
     for (const key of keys) {
@@ -569,7 +591,7 @@ function splitStoreKeyframe(event: ReplayEvent<[readonly StorePatch[]]>, budgetB
         catch { bytes = budgetBytes }
         if (groupKeys > 0 && groupBytes + bytes > budgetBytes) {
             parts.push(partOf(group))
-            group = {}
+            group = Object.create(null)
             groupBytes = 0
             groupKeys = 0
         }
@@ -581,8 +603,8 @@ function splitStoreKeyframe(event: ReplayEvent<[readonly StorePatch[]]>, budgetB
     return parts.length ? parts : [event]
 }
 
-function exposeStoreReplayBatch(replay: StoreReplayBatchLine, prepareRead: () => void, now?: () => number) {
-    return exposeStoreReplayWire(replay, encodeStoreReplayBatchV2, prepareRead, {
+function exposeStoreReplayBatch(replay: StoreReplayBatchLine, prepareRead: () => void, now?: () => number, chunks?: boolean) {
+    return exposeStoreReplayWire(replay, encodeStoreReplayBatchV2, prepareRead, chunks == false ? undefined : {
         split: splitStoreKeyframe,
         ...(now ? {now} : {}),
     })
@@ -697,7 +719,11 @@ function decodeStoreReplayWireRemote<W>(
         config.onProgress?.({snapshotId: begin.snapshotId, received: 1, total: begin.total})
         // total = 1: the begin answer already was the whole keyframe
         if (begin.total == 1) return first
-        const merged = keyframePartValue(first)
+        // merge into a FRESH null-prototype object, never into the decoded
+        // chunk 0: over an in-process fragment that value IS the group the
+        // server retains (mutating it would bloat the retained set), and a
+        // null prototype keeps an own '__proto__' data key a data key
+        const merged: Record<string, unknown> = Object.assign(Object.create(null), keyframePartValue(first))
         for (let index = 1; index < begin.total; index++) {
             const wire = await chunksRemote.pull(begin.snapshotId, index)
             if (wire == null) return null   // expired/evicted attempt: monolithic fallback
@@ -769,7 +795,7 @@ export function exposeStoreReplay<T extends object>(store: Store<T>, opts: Store
         return [[{path: [], exists: true, value: store.snapshot()}]] as [readonly StorePatch[]]
     }
     const batchReplay = createBatchReplay(currentStoreReplayBatch, opts)
-    const replayApi = exposeStoreReplayBatch(batchReplay.replay, batchReplay.flush, opts.now)
+    const replayApi = exposeStoreReplayBatch(batchReplay.replay, batchReplay.flush, opts.now, opts.chunks)
 
     const {patches: _patches, patchesBatch: _patchesBatch, changedData: _changedData, ...storeApi} = exposeStore(store, {push: true})
     const getExactPatches = (store as Store<T> & {

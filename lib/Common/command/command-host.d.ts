@@ -1,3 +1,4 @@
+import { type CommandReceiptLine } from './command-receipts';
 export type CommandCtx = {
     account: string;
     requestId: string;
@@ -18,11 +19,14 @@ export type CommandHostDeps<Cmds extends tCommandMap> = {
     receipts?: {
         keepMs?: number;
         maxPerAccount?: number;
+        maxTotal?: number;
+        line?: CommandReceiptLine;
     };
     now?: () => number;
 };
 export declare const COMMAND_RECEIPT_KEEP_MS: number;
 export declare const COMMAND_RECEIPTS_PER_ACCOUNT = 1024;
+export declare const COMMAND_RECEIPTS_TOTAL = 8192;
 export declare function createCommandHost<Cmds extends tCommandMap>(deps: CommandHostDeps<Cmds>): {
     execute: <K extends keyof Cmds & string>(account: string, command: K, requestId: string, input: Parameters<Cmds[K]>[1]) => Promise<Awaited<ReturnType<Cmds[K]>>>;
     fragment: (account: string) => CommandFragment<Cmds>;
@@ -34,6 +38,7 @@ export declare function createCommandHost<Cmds extends tCommandMap>(deps: Comman
         executions: number;
         duplicates: number;
     };
+    adopt: (next: CommandReceiptLine | null) => void;
     close(): void;
 };
 export type CommandHost<Cmds extends tCommandMap = tCommandMap> = ReturnType<typeof createCommandHost<Cmds>>;

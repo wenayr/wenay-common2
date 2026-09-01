@@ -21,6 +21,7 @@
 // entrypoints ('wenay-common2', 'wenay-common2/server/auth') when this
 // template graduates out of the incubator into its own package.
 
+import {randomBytes} from 'crypto'
 import type {CommandCtx} from '../../../src/Common/command/command-host'
 import {createAuthority} from '../../../src/Common/scale/scale-authority'
 import {createTokenCodec} from '../../../src/server/auth-token'
@@ -93,8 +94,10 @@ export type ServiceLeaderDeps<
     log?: (line: string) => void
 }
 
+// these keys gate the write corridor (HMAC signing secret, node-link trust):
+// they must come from the CSPRNG, never from the predictable Math.random()
 function randomKey(prefix: string) {
-    return prefix + '-' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
+    return prefix + '-' + randomBytes(32).toString('base64url')
 }
 
 export function createServiceLeader<

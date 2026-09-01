@@ -22,6 +22,8 @@ export type StoreNodeUpstream = {
         nodeId: string;
         url: string;
         weight: number;
+        pid?: number;
+        readers?: number;
     }) => unknown;
     heartbeat: (nodeId: string, facts?: {
         readers?: number;

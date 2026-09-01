@@ -21,7 +21,7 @@ import {Server as SocketIOServer} from 'socket.io'
 import {io as ioClient} from 'socket.io-client'
 import {createRpcClientHub} from '../../../../src/Common/rcp/rpc-clientHub'
 import {createTokenCodec} from '../../../../src/server/auth-token'
-import {nodeEnv} from '../../template/config'
+import {corsOrigins, nodeEnv} from '../../template/config'
 import {createServiceNode} from '../../template/node'
 import {serviceDefinition} from './service'
 
@@ -29,8 +29,12 @@ async function main() {
     const env = nodeEnv(process.env)
     const app = express()
     const httpServer = createServer(app)
-    // browser clients arrive from the leader origin; this node is a second origin
-    const ioServer = new SocketIOServer(httpServer, {cors: {origin: true, methods: ['GET', 'POST']}})
+    // browser clients arrive from the leader origin; this node is a second origin.
+    // CORS is pinned to it (config.corsOrigins) so arbitrary websites cannot read
+    // the ungated surface through a visitor's browser; Node clients have no Origin
+    const ioServer = new SocketIOServer(httpServer, {
+        cors: {origin: corsOrigins(process.env, [env.upstream]), methods: ['GET', 'POST']},
+    })
     const hub = createRpcClientHub(
         () => ioClient(env.upstream, {
             transports: ['websocket'],
@@ -58,8 +62,7 @@ async function main() {
                 directory: leader.directory,
                 revoked: leader.revoked,
                 commandsByToken: leader.commandsByToken,
-                // pid rides the registration: every node is visible as the OS process it is
-                register: (entry: {nodeId: string, url: string, weight: number}) => leader.register({...entry, pid: process.pid}),
+                register: leader.register,
                 heartbeat: leader.heartbeat,
                 goodbye: leader.goodbye,
                 onFail: {on: (cb: () => void) => hub.disconnectListen(cb)},

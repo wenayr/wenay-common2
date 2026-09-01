@@ -25,6 +25,26 @@ export function portEnv(env: tEnv, name: string) {
     return port
 }
 
+// the cors option matches literal Origin headers, so entries must be bare
+// origins — a URL with a path (e.g. an upstream with a route) would never match
+function toOrigin(raw: string) {
+    try { return new URL(raw).origin } catch { return raw }
+}
+
+/**
+ * Browser CORS origins for the Socket.IO surfaces. CORS only constrains what a
+ * browser page may read: Node clients (the node link, the self-checks) send no
+ * Origin header and pass regardless. Default: only the stand's own known
+ * origins. SERVICE_CORS_ORIGINS extends the list (comma-separated);
+ * SERVICE_ALLOW_ANY_ORIGIN=1 is the development escape hatch that restores the
+ * reflect-any-origin behavior — off unless asked for explicitly.
+ */
+export function corsOrigins(env: tEnv, known: string[]) {
+    if (optionalEnv(env, 'SERVICE_ALLOW_ANY_ORIGIN') == '1') return true
+    const extra = optionalEnv(env, 'SERVICE_CORS_ORIGINS')?.split(',').map(s => s.trim()).filter(Boolean) ?? []
+    return [...new Set([...known, ...extra].map(toOrigin))]
+}
+
 /** A node process: identity, where the leader is, and the two corridor secrets. */
 export function nodeEnv(env: tEnv) {
     return {

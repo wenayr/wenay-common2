@@ -18,7 +18,7 @@
 // hub or in-process fragment); this factory never sees a socket.
 
 import {
-    directoryReplicaOffers, followNodeDirectory, pickDirectoryNode,
+    directoryReplicaOffers, directoryRoutePriority, followNodeDirectory, pickDirectoryNode,
     type NodeDirectoryEntry, type NodeDirectoryView,
 } from '../Observe/node-directory'
 import type {ReplicatedMapRemote} from '../Observe/replicated-map'
@@ -120,9 +120,10 @@ export function createClusterClient<T extends Record<string, any>>(deps: ScaleCl
     // subscribed BEFORE the offers bridge, so re-derived priorities see the fresh pick
     const offRepick = directory.onNodes(function repickOnDirectoryChange() { ensurePlaced() })
     ensurePlaced()
-    /** The placed node wins outright; everything else keeps the weight order as a fallback. */
+    /** The placed node wins outright; everything else keeps the DEFAULT weight
+     *  order as a fallback, offset behind the placement instead of re-derived. */
     function priorityOf(view: NodeDirectoryView) {
-        return view.nodeId == placedNodeId ? 1 : 1000 + Math.round(1000 / Math.max(view.weight, 1e-3))
+        return view.nodeId == placedNodeId ? 1 : 1000 + directoryRoutePriority(view)
     }
 
     // ============== offers + line: selection, hysteresis and seq hand-off stay below ==============

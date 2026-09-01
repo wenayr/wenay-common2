@@ -133,13 +133,54 @@ async function testStoreExternal() {
     store.state.items['b'] = {n: 2}
     await wait()
     assert.equal(notified, 1, 'no notifications after unsubscribe')
+    // no listener = no change facts: the cache legitimately stays until the
+    // next subscribe (which invalidates — the render→subscribe gap contract)
+    assert.equal(ext.getSnapshot(), s1, 'after unsubscribe the cached identity stays')
+    const resubscribed = ext.subscribe(function onResubscribe() {})
     assert.deepEqual(ext.getSnapshot(), {a: {n: 1}, b: {n: 2}},
-        'getSnapshot after unsubscribe recomputes (cache was invalidated)')
+        're-subscribing invalidates: the post-subscribe read sees what happened unsubscribed')
+    resubscribed()
+}
+
+async function testEmitTimeReceivers() {
+    // parity with createInProcSocketPair and the real wire: the receiver set of
+    // a frame is decided at EMIT time — a handler registered afterwards must
+    // never see an already-in-flight frame
+    const pair = createLoopbackSocketPair()
+    const late: any[] = []
+    pair.client.emit('evt', 1)
+    pair.server.on('evt', function lateHandler(d: any) { late.push(d) })
+    await wait()
+    assert.deepEqual(late, [], 'a handler registered after emit does not receive the in-flight frame')
+    pair.client.emit('evt', 2)
+    await wait()
+    assert.deepEqual(late, [2], 'it receives only frames emitted after registration')
+
+    // same rule during dispatch: a handler added by a handler does not join that delivery
+    const seen: string[] = []
+    pair.server.on('evt2', function firstHandler() {
+        seen.push('first')
+        pair.server.on('evt2', function addedDuringDispatch() { seen.push('added') })
+    })
+    pair.client.emit('evt2', null)
+    await wait()
+    assert.deepEqual(seen, ['first'], 'a handler added during dispatch does not join that same delivery')
+
+    // sync mode obeys the same snapshot rule
+    const syncPair = createLoopbackSocketPair({delivery: 'sync'})
+    const syncSeen: string[] = []
+    syncPair.server.on('evt', function syncFirst() {
+        syncSeen.push('first')
+        syncPair.server.on('evt', function syncAdded() { syncSeen.push('added') })
+    })
+    syncPair.client.emit('evt', null)
+    assert.deepEqual(syncSeen, ['first'], 'sync delivery also snapshots receivers at emit')
 }
 
 async function run() {
     await testEndToEnd()
     await testOfflineWindow()
+    await testEmitTimeReceivers()
     await testKill()
     testSyncDelivery()
     await testWireDetachment()

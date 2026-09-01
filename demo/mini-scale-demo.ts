@@ -79,12 +79,28 @@ export function setupMiniScaleDemo(deps: MiniScaleDemoDeps) {
         {opt: demoRpcOpt, token: scaleToken},
     )
     watchAuth('leader', scaleHub)
-    let leaderScale: any = null
-    void scaleHub.promise.then(function leaderScaleReady(clients) { leaderScale = clients.scale.func })
+    // The hub reassigns facade members on every wave (setToken), so the write
+    // surface is resolved at CALL time off the stable facade — a one-shot capture
+    // of wave 1 would keep a disposed client forever after logout rotates the hub
+    // (and a retained .promise chain would fire unhandledrejection on close).
+    let leaderLinkUp = false
+    scaleHub.connectListen(function leaderLinkConnected() { leaderLinkUp = true })
+    scaleHub.disconnectListen(function leaderLinkDropped() { leaderLinkUp = false })
+    /** The leader's gated write surface as of NOW; null while no wave is live. */
+    function leaderScale(): any {
+        return leaderLinkUp ? scaleHub.facade.scale.func : null
+    }
 
     // ============== per-node sessions: reads ungated, writes gated, same socket ==============
-    const nodeHubs = new Map<string, ReturnType<typeof createRpcClientHub>>()
-    const nodeScale = new Map<string, any>()
+    // One record per mini-node session: the hub plus its link-up latch. The gated
+    // write surface is resolved off hub.facade at CALL time (mirror of leaderScale),
+    // so a token rotation can never leave a disposed capture behind.
+    const nodeLinks = new Map<string, {hub: ReturnType<typeof createRpcClientHub>, up: boolean}>()
+    /** The gated write surface of nodeId as of NOW; null while its link is down. */
+    function nodeScale(nodeId: string): any {
+        const link = nodeLinks.get(nodeId)
+        return link?.up ? link.hub.facade.scale.func : null
+    }
     async function connectNode(node: NodeDirectoryView) {
         if (node.role == 'leader') {
             return {
@@ -98,18 +114,20 @@ export function setupMiniScaleDemo(deps: MiniScaleDemoDeps) {
             r => ({app: r<any>('app'), scale: r<any>('scale')}) as const,
             {opt: demoRpcOpt, token: scaleToken},
         )
-        nodeHubs.set(node.nodeId, nodeHub)
+        const link = {hub: nodeHub, up: false}
+        nodeLinks.set(node.nodeId, link)
+        nodeHub.connectListen(function nodeLinkConnected() { link.up = true })
+        nodeHub.disconnectListen(function nodeLinkDropped() { link.up = false })
         const offAuth = watchAuth(node.nodeId, nodeHub)
         const clients = await nodeHub.promise
         await clients.app.readyStrict()
-        nodeScale.set(node.nodeId, clients.scale.func)
         return {
             remote: (clients.app.func as any).miniScale.replica,
             onFail: {on: (cb: () => void) => nodeHub.disconnectListen(cb)},
             close() {
                 offAuth()
-                nodeHubs.delete(node.nodeId)
-                nodeScale.delete(node.nodeId)
+                // a route flap may already have replaced this entry — never delete a successor's
+                if (nodeLinks.get(node.nodeId) == link) nodeLinks.delete(node.nodeId)
                 // the hub's own verb: kills current AND in-flight waves, refuses resurrection
                 nodeHub.close('node session closed')
             },
@@ -120,10 +138,10 @@ export function setupMiniScaleDemo(deps: MiniScaleDemoDeps) {
     function writeSurface() {
         const route = client.status.state.routeId
         if (route && route != 'leader') {
-            const scale = nodeScale.get(route)
+            const scale = nodeScale(route)
             if (scale) return {via: route, surface: scale}
         }
-        return {via: 'leader', surface: leaderScale}
+        return {via: 'leader', surface: leaderScale()}
     }
     let lastRequest: {requestId: string, via: string} | null = null
     async function addTen(repeat: boolean) {
@@ -152,9 +170,10 @@ export function setupMiniScaleDemo(deps: MiniScaleDemoDeps) {
             return await surface.commands.add(requestId, {delta: 10})
         } catch (error) {
             const text = String((error as any)?.message ?? error)
-            if (via != 'leader' && leaderScale && text.includes('Not a function')) {
+            const leader = leaderScale()
+            if (via != 'leader' && leader && text.includes('Not a function')) {
                 log(`mini-scale: ${via}'s gated surface is not ready (mid-churn) — retrying the SAME requestId via the leader`)
-                return await leaderScale.commands.add(requestId, {delta: 10})
+                return await leader.commands.add(requestId, {delta: 10})
             }
             throw error
         }
@@ -429,10 +448,13 @@ export function setupMiniScaleDemo(deps: MiniScaleDemoDeps) {
             const minted = await app.miniScale.identity.login()
             session = minted
             // soft re-auth on every LIVE connection: subscriptions survive, HELLO carries the token
-            const presented = [scaleHub, ...nodeHubs.values()].map(hub => hub.reauth(minted.token))
+            const nodeHubList = [...nodeLinks.values()].map(link => link.hub)
+            const presented = [scaleHub, ...nodeHubList].map(hub => hub.reauth(minted.token))
             await Promise.allSettled(presented)
-            log(`mini-scale: logged in as ${minted.account} — token presented to the leader and ${nodeHubs.size} mini node(s)`)
-            for (const [nodeId, scale] of nodeScale) {
+            log(`mini-scale: logged in as ${minted.account} — token presented to the leader and ${nodeLinks.size} mini node(s)`)
+            for (const nodeId of nodeLinks.keys()) {
+                const scale = nodeScale(nodeId)
+                if (!scale) continue
                 void Promise.resolve(scale.whoami()).then(
                     (who: string) => log(`mini-scale: ${nodeId} verified the token locally — ${who}`),
                     () => {},
@@ -451,16 +473,17 @@ export function setupMiniScaleDemo(deps: MiniScaleDemoDeps) {
         // hard rotation: a NEW wave with an explicit null token on every connection;
         // the replica line simply resumes by seq on the fresh sockets
         void scaleHub.setToken(null)
-        for (const hub of nodeHubs.values()) void hub.setToken(null)
+        for (const link of nodeLinks.values()) void link.hub.setToken(null)
         log('mini-scale: logged out — all connections rotated to anonymous')
     })
 
     revokeButton.addEventListener('click', async function revokeMiniScale() {
-        if (!leaderScale) { log('mini-scale: the leader write surface is still connecting'); return }
+        const leader = leaderScale()
+        if (!leader) { log('mini-scale: the leader write surface is still connecting'); return }
         revokeButton.disabled = true
         try {
             // revocation is ONE call on the LEADER; every node reacts to the replicated fact
-            const result = await leaderScale.revoke()
+            const result = await leader.revoke()
             session = null
             log(`mini-scale: revoked ${result.account} at the leader — watch every node cut the session`)
         } catch (error) {
@@ -645,9 +668,8 @@ export function setupMiniScaleDemo(deps: MiniScaleDemoDeps) {
         closeSimReaders()
         client.close()
         scaleHub.close('mini-scale card closed')
-        for (const nodeHub of nodeHubs.values()) nodeHub.close('mini-scale card closed')
-        nodeHubs.clear()
-        nodeScale.clear()
+        for (const link of nodeLinks.values()) link.hub.close('mini-scale card closed')
+        nodeLinks.clear()
     }
     return {close}
 }
