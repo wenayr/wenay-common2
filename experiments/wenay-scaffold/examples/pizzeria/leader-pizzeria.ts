@@ -1,0 +1,24 @@
+// =====================================================================
+// pizzeria leader — the PROCESS entrypoint: the unchanged template process
+// =====================================================================
+// Everything a leader DOES (sockets per audience, the node link, REST +
+// OpenAPI + Swagger + the role panel, signals) is template/leader.ts's
+// runLeaderProcess; this file only names the definition and prints the demo
+// logins the stand seeds. Compare examples/rental/leader-rental.ts, which
+// still duplicates the process by hand — the reason the process was exported.
+
+import {runLeaderProcess} from '../../template/leader'
+import {DEMO_LOGINS, serviceDefinition} from './service'
+
+runLeaderProcess({
+    definition: serviceDefinition,
+    mount({url}) {
+        // a product mounts its own pages here; the stand prints the seeded logins instead
+        setTimeout(function printLogins() {
+            console.log(`[pizzeria] panel ${url()}/panel — demo logins: ` + Object.entries(DEMO_LOGINS).map(([who, pass]) => `${who}/${pass}`).join(', '))
+        }, 0)
+    },
+}).catch(function fatal(error) {
+    console.error(error)
+    process.exit(2)
+})

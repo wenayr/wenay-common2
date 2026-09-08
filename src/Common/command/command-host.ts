@@ -46,8 +46,10 @@ export type CommandForwardFragment<Cmds extends tCommandMap> = {
 
 export type CommandHostDeps<Cmds extends tCommandMap> = {
     commands: Cmds
-    /** New executions per account per rolling minute; receipt answers are free. Absent = unlimited. */
-    limits?: {perMinute?: number}
+    /** New executions per account per rolling minute; receipt answers are free. Absent = unlimited.
+     *  budgetOf(account) overrides the default for one account (Infinity or 0 = unlimited) —
+     *  the host's own principal (webhooks, effect outcomes) must not share a visitor's budget. */
+    limits?: {perMinute?: number, budgetOf?: (account: string) => number}
     /** How long / how many receipts keep answering duplicates. Errors are never remembered.
      *  maxTotal bounds the WHOLE host across accounts, so a long-running public stand stays
      *  memory-flat no matter how many one-visit accounts pass through. */
@@ -81,11 +83,12 @@ export function createCommandHost<Cmds extends tCommandMap>(deps: CommandHostDep
     const maxPerAccount = deps.receipts?.maxPerAccount ?? COMMAND_RECEIPTS_PER_ACCOUNT
     const maxTotal = deps.receipts?.maxTotal ?? COMMAND_RECEIPTS_TOTAL
     const perMinute = deps.limits?.perMinute ?? 0
+    const budgetOf = deps.limits?.budgetOf
     // the project's sliding-window limiter with the host's clock: genuinely
     // rolling, so a burst at the window boundary cannot double the limit
-    const rate = perMinute > 0 ? createRateWindow({now}) : null
+    const rate = perMinute > 0 || budgetOf ? createRateWindow({now}) : null
 
-    type Receipt = {command: string, ts: number, result?: unknown, pending?: Promise<unknown>}
+    type Receipt = {command: string, ts: number, result?: unknown, pending?: Promise<unknown>, lineKey?: string}
     // Both Maps preserve insertion order. Inner: receipts oldest-first. Outer:
     // accountReceipts re-inserts on every use, so the FIRST account is always
     // the longest-idle one — draining and global eviction both start there.
@@ -111,13 +114,13 @@ export function createCommandHost<Cmds extends tCommandMap>(deps: CommandHostDep
         receipts.delete(requestId)
         totalReceipts--
         // a pending receipt was never published — only committed ones leave the line
-        if (line && !receipt.pending) line.delete(commandReceiptKey(account, requestId))
+        if (line && !receipt.pending) line.delete(receipt.lineKey ?? commandReceiptKey(account, requestId))
     }
 
     function dropAccount(account: string, receipts: Map<string, Receipt>) {
         if (line) {
             for (const [requestId, receipt] of receipts) {
-                if (!receipt.pending) line.delete(commandReceiptKey(account, requestId))
+                if (!receipt.pending) line.delete(receipt.lineKey ?? commandReceiptKey(account, requestId))
             }
         }
         totalReceipts -= receipts.size
@@ -176,7 +179,9 @@ export function createCommandHost<Cmds extends tCommandMap>(deps: CommandHostDep
 
     function spendBudget(account: string) {
         if (!rate) return
-        if (rate.sumWeight(account, 60_000) >= perMinute) {
+        const budget = budgetOf?.(account) ?? perMinute
+        if (!Number.isFinite(budget) || budget <= 0) return
+        if (rate.sumWeight(account, 60_000) >= budget) {
             throw new Error('command rate limit exceeded — retry later')
         }
         rate.add({type: account, weight: 1})
@@ -219,48 +224,65 @@ export function createCommandHost<Cmds extends tCommandMap>(deps: CommandHostDep
         }
         executions++
         const receipt: Receipt = {command, ts: now()}
-        const pending = (async function runCommandOnce() {
+        let resolvePending!: (value: unknown) => void
+        let rejectPending!: (error: unknown) => void
+        const pending = new Promise<unknown>(function reserveCommand(resolve, reject) {
+            resolvePending = resolve
+            rejectPending = reject
+        })
+        receipt.pending = pending
+        receipts.set(requestId, receipt)
+        totalReceipts++
+        function ownsReceipt() {
+            return !closed && accounts.get(account) == receipts && receipts.get(requestId) == receipt
+        }
+        // Reserve before entering user code: a synchronous reentrant duplicate shares this promise.
+        async function runCommandOnce() {
             const result = await run({account, requestId, command}, input)
             receipt.result = clone(result)
             receipt.pending = undefined
             receipt.ts = now()
             // the commit IS the publication: a successor answering from the line
             // holds exactly what this host would have answered
-            if (line && receipts.get(requestId) == receipt) {
+            if (line && ownsReceipt()) {
                 line.set({account, requestId, command, ts: receipt.ts, result: clone(receipt.result)})
             }
             return result
-        })()
-        receipt.pending = pending
-        receipts.set(requestId, receipt)
-        totalReceipts++
-        sweep(account, receipts)
-        compact()
+        }
+        void runCommandOnce().then(resolvePending, rejectPending)
+        if (ownsReceipt()) {
+            sweep(account, receipts)
+            compact()
+        }
         try {
             return await pending as Awaited<ReturnType<Cmds[K]>>
         } catch (error) {
             // an error commits nothing: the SAME requestId may honestly retry
-            if (receipts.get(requestId) == receipt) dropReceipt(account, receipts, requestId)
+            if (ownsReceipt()) dropReceipt(account, receipts, requestId)
             throw error
         }
     }
 
     /** Make `next` the receipt memory: the index is rebuilt from its snapshot (bounds
      *  enforced on the line too) and every later commit/drop is published there. null
-     *  detaches — the in-memory index keeps answering, nothing is published. Called by
+     *  clears the index and detaches publication. Old in-flight work cannot alter the new index. Called by
      *  an authority on promotion with the line it seeded from the followed snapshot. */
     function adopt(next: CommandReceiptLine | null) {
         line = null
         accounts.clear()
         totalReceipts = 0
         if (!next) return
-        const records = Object.values(next.snapshot()).filter(Boolean) as NonNullable<ReturnType<CommandReceiptLine['snapshot']>[string]>[]
+        const records = Object.entries(next.snapshot()).filter(
+            (entry): entry is [string, NonNullable<typeof entry[1]>] => entry[1] != undefined,
+        )
         // oldest first, so per-account and account recency orders match a live history
-        records.sort(function byCommitTime(a, b) { return a.ts - b.ts })
-        for (const record of records) {
+        records.sort(function byCommitTime(a, b) { return a[1].ts - b[1].ts })
+        for (const [lineKey, record] of records) {
             const receipts = accountReceipts(record.account)
-            receipts.set(record.requestId, {command: record.command, ts: record.ts, result: record.result})
-            totalReceipts++
+            const previous = receipts.get(record.requestId)
+            if (previous?.lineKey != undefined) next.delete(previous.lineKey)
+            else totalReceipts++
+            receipts.set(record.requestId, {command: record.command, ts: record.ts, result: record.result, lineKey})
         }
         line = next
         for (const [account, receipts] of [...accounts]) sweep(account, receipts)

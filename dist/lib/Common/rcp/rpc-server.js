@@ -111,6 +111,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
     let listenNodes = [];
     let strictSchema = {};
     let currentTarget = target;
+    let principalEpoch = 0;
     function buildDispatch(t) {
         const m = [], cx = [], paths = [], rm = {}, lp = [], ln = [];
         const resolved = transformTree(t);
@@ -497,6 +498,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
     function applyPrincipal(object) {
         const previous = listenNodes;
         buildDispatch(object);
+        principalEpoch++;
         const keep = new Set(listenNodes);
         hooks?.onPrincipalChange?.({ keep, drop: new Set(previous.filter(node => !keep.has(node))) });
     }
@@ -510,11 +512,16 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
     function applyGrant(r, helloId) {
         if (detached)
             return false;
+        if (r?.ack?.ok === false) {
+            sendCapsChallenge();
+            sendRaw(mapReply(r.ack, helloId));
+            return true;
+        }
         clearAuthTimers();
         if (r && r.object !== undefined)
             applyPrincipal(r.object);
         authAck = withGrantDeadline(r && r.ack !== undefined ? r.ack : { ok: true }, r?.expiresAt);
-        authed = authAck?.ok !== false ? true : !auth?.gate;
+        authed = true;
         if (r && r.expiresAt != undefined)
             armAuthTimers(r.expiresAt, r.renewBeforeMs);
         sendMap(helloId);
@@ -801,10 +808,18 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
                 return;
             }
             if (hooks?.onRequest) {
+                const epoch = principalEpoch;
                 const keyArr = typeof ref == "number"
                     ? methodPaths[ref] ?? []
                     : ref;
                 const allowed = await hooks.onRequest({ key: keyArr, request: rawArgsOrSteps, fnName: keyArr[keyArr.length - 1] ?? "", fn: fn });
+                if (detached)
+                    return;
+                if (principalEpoch != epoch || !authed) {
+                    if (wait)
+                        sendError(channel, reqId, new myThrow_1.MyError('Unauthorized', 'E_UNAUTHORIZED'));
+                    return;
+                }
                 if (allowed == false) {
                     if (wait)
                         sendError(channel, reqId, new Error("Rejected by hook"));
@@ -870,6 +885,9 @@ function createRpcServer({ socket, object: target, socketKey: key, debug = false
     if (debug) {
         const origOn = socket.on.bind(socket);
         function debugPacket(value) {
+            if (Array.isArray(value) && value[0] == rpc_protocol_1.Pkt.HELLO) {
+                value = [value[0], '[redacted]', ...value.slice(2)];
+            }
             if (value instanceof ArrayBuffer)
                 return `[binary ${value.byteLength} bytes]`;
             if (ArrayBuffer.isView(value))

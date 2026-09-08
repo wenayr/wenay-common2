@@ -3,6 +3,11 @@
 Status: canonical architecture plus an internal, non-exported first vertical slice. This document
 does not add a public package API or authorize execution of arbitrary downloaded code.
 
+Copyable product probe: `examples/hosting` uses the public Contract runtime with bundled trusted
+child HTTP applications. It demonstrates stable gateway URLs, health-checked updates, lease drain
+and rollback. It introduces no new artifact loader, sandbox, network control API or cloud provisioner.
+Process creation and HTTP routing remain host adapters; binding replacement stays in Contract.
+
 Read this together with [`CONTRACT-RUNTIME.md`](CONTRACT-RUNTIME.md),
 [`ARTIFACT-RUNTIME.md`](ARTIFACT-RUNTIME.md), and, before exposing a control surface over RPC,
 [`RPC-AUTH.md`](RPC-AUTH.md). A ready prompt for a separate implementation task lives in
@@ -190,6 +195,11 @@ temporary, while host and active-generation contributions may remain available f
 | `ActiveGeneration` | One active version | runtime session, subscriptions, resource leases, output gate, optional generation MCP contribution | Retire after pointer and catalog-alias swap |
 | `RetiredGeneration` | Drain window | only already leased work and cleanup handles | Close after zero leases or forced-drain deadline |
 | `CallScope` / `StreamScope` | One call or stream | binding lease, abort signal, correlation/idempotency context | Release exactly once |
+
+Contract runtime enforces one retirement deadline across leases and the session's own drain hook.
+Shutdown also closes retired generations and opened candidates waiting on policy; an asynchronous
+continuation cannot activate after shutdown. The loader still owns cancellation of a pending open
+or policy callback. These boundaries are pinned in `observe/contract-runtime-lifecycle.test.ts`.
 
 Testers, statistics collectors, generators, temporary MCP tools, and shadow sinks must not leak
 into the active module facade. Each candidate owns a disposable stack. A failed step closes the

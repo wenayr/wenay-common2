@@ -1,0 +1,24 @@
+import {startSupportHost} from './host'
+import {connectSupport} from './client'
+
+async function main() {
+    const host = await startSupportHost()
+    const client = await connectSupport({url: host.url, token: () => host.source.token('alice')})
+    try {
+        const run = await client.control.create({requestId: 'first-ticket', kind: 'ticket', input: {ticket: 'Please help me with an incorrect invoice.'}})
+        const deadline = Date.now() + 5000
+        while (client.store.state.runs[run.id]?.state != 'completed') {
+            const state = client.store.state.runs[run.id]?.state
+            if (state == 'failed' || state == 'cancelled' || Date.now() > deadline) throw new Error('demo did not complete: ' + state)
+            await new Promise(function wait(resolve) { setTimeout(resolve, 50) })
+        }
+        console.log(JSON.stringify(client.store.state.runs[run.id].result, null, 2))
+    } finally {
+        client.close()
+        await host.close()
+    }
+}
+main().catch(function fatal(error) {
+    console.error(error)
+    process.exitCode = 1
+})

@@ -1,0 +1,94 @@
+// =====================================================================
+// apartments leader — the template process plus the host's external effects
+// =====================================================================
+// The unchanged runLeaderProcess around the definition, with the two things
+// only a HOST can own mounted beside it, both from template/payments.ts and
+// template/effects.ts:
+//   - the payment webhook: the provider's signed events become system
+//     commands whose requestId is the provider's event id;
+//   - the effects runner: pending payment intents are charged through the
+//     provider PORT and the outcome is reported as a system command.
+// The stand runs the fake bank; PAYMENT_PROVIDER=stripe with STRIPE_SECRET_KEY
+// and STRIPE_WEBHOOK_SECRET switches to the Stripe-shaped adapter — nothing
+// else changes, which is the point of the port.
+
+import {randomBytes} from 'node:crypto'
+import type express from 'express'
+import {createEffectRunner} from '../../template/effects'
+import {runLeaderProcess, type ServiceLeader} from '../../template/leader'
+import {createFakeBank, createStripeProvider, mountPaymentWebhook, type PaymentProvider, type PaymentWebhookCodec} from '../../template/payments'
+import {DEMO_LOGINS, serviceDefinition} from './service'
+
+export type ApartmentsHostDeps = {
+    app: express.Express
+    leader: ServiceLeader<typeof serviceDefinition>
+    provider: PaymentProvider
+    webhook: PaymentWebhookCodec
+    log?: (line: string) => void
+}
+
+/** The host wiring of the example: the webhook route and the effects runner. */
+export function mountApartments(deps: ApartmentsHostDeps) {
+    const {app, leader, provider} = deps
+    const log = deps.log ?? (() => {})
+    const system = leader.corridor.system
+
+    // ============== the payment webhook: raw body → signature → one system command per event ==============
+    const webhook = mountPaymentWebhook({
+        app, path: '/webhooks/payments', codec: deps.webhook, log,
+        onSettlement: settlement => system.paymentSettled(settlement.eventId, {
+            paymentId: settlement.paymentId, status: settlement.status,
+            ...(settlement.ref ? {ref: settlement.ref} : {}), ...(settlement.error ? {error: settlement.error} : {}),
+        }),
+    })
+
+    // ============== the effects runner: pending payment intents → provider → outcome fact ==============
+    const runner = createEffectRunner({
+        store: leader.line.control.store,
+        keys: ['payments'],
+        select: state => Object.values(state.payments).filter(payment => payment.state == 'pending'),
+        id: payment => payment.id,
+        perform: payment => provider.charge({paymentId: payment.id, amount: payment.amount, currency: payment.currency, description: 'booking ' + payment.bookingId}),
+        report: (payment, outcome) => outcome.ok
+            ? system.paymentSubmitted(payment.id + ':submitted', {paymentId: payment.id, ref: (outcome.result as {ref: string}).ref})
+            : system.paymentSettled(payment.id + ':failed', {paymentId: payment.id, status: 'failed', error: outcome.error}),
+        retry: {delayMs: 200, max: 3},
+        log,
+    })
+
+    return {webhook, runner, close: runner.close}
+}
+
+// ============================================================
+// the leader PROCESS
+// ============================================================
+
+if (require.main == module) {
+    let url = () => ''
+    const env = process.env
+    const useStripe = env['PAYMENT_PROVIDER'] == 'stripe'
+    const stripe = useStripe
+        ? createStripeProvider({secretKey: env['STRIPE_SECRET_KEY'] ?? '', webhookSecret: env['STRIPE_WEBHOOK_SECRET'] ?? ''})
+        : null
+    const bank = stripe ? null : createFakeBank({
+        webhookUrl: () => url() + '/webhooks/payments',
+        secret: env['BANK_WEBHOOK_SECRET'] ?? randomBytes(16).toString('hex'),
+        log: line => console.log('[bank] ' + line),
+    })
+    const payments = stripe ?? bank!
+    runLeaderProcess({
+        definition: serviceDefinition,
+        mount(host) {
+            url = host.url
+            mountApartments({app: host.app, leader: host.leader, provider: payments.provider, webhook: payments.webhook, log: line => console.log('[effects] ' + line)})
+            setTimeout(function printLogins() {
+                console.log(`[apartments] payments via ${stripe ? 'stripe' : 'the fake bank'}; webhook ${host.url()}/webhooks/payments`)
+                console.log(`[apartments] panel ${host.url()}/panel — demo logins: ` + Object.entries(DEMO_LOGINS).map(([who, pass]) => `${who}/${pass}`).join(', '))
+                console.log(`[apartments] a lock joins with: SERVICE_URL=${host.url()} LOCK_ACCOUNT=lock-1 LOCK_PASSWORD=${DEMO_LOGINS['lock-1']} npm run device`)
+            }, 0)
+        },
+    }).catch(function fatal(error) {
+        console.error(error)
+        process.exit(2)
+    })
+}

@@ -159,14 +159,14 @@ export function setupReplicaSetDemo(deps: ReplicaSetDemoDeps) {
         const status = node.replica.api.status.state
         const card = document.createElement('article')
         card.className = 'replicaNode'
-        card.dataset.role = status.role
-        card.dataset.node = node.id
+        card.dataset['role'] = status.role
+        card.dataset['node'] = node.id
         const heading = document.createElement('header')
         const label = document.createElement('strong')
         label.textContent = node.label
         const role = document.createElement('span')
         role.className = 'statusBadge'
-        role.dataset.state = status.role == 'leader' ? 'live' : status.role
+        role.dataset['state'] = status.role == 'leader' ? 'live' : status.role
         role.textContent = status.role
         heading.append(label, role)
         const authority = document.createElement('p')

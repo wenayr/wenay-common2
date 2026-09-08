@@ -14,6 +14,8 @@
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
+import {throws} from 'node:assert/strict'
+import {createDurableStoreReplay} from '../src/Common/Observe/store-durable'
 import {applyStorePatch, applyStorePatches, createStore, StorePatch} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {replayListen, ReplayEvent} from '../src/Common/events/replay-index'
@@ -112,6 +114,49 @@ async function main() {
         ok(got2[0] == 30, 'hole in the archive → fresh start from the latest keyframe (reset down allowed)')
         ok(json(got2) == json([30, 31, 32, 33, 34, 35]), 'consistent tail after the keyframe, no state hole')
         line2.arch.close()
+    }
+
+    console.log('\n[history] incomplete archives fail before delivering partial state')
+    {
+        const storage = createMemoryReplayStorage<[readonly StorePatch[]]>({maxEvents: 1})
+        const durable = createDurableStoreReplay({storage, initial: {a: 0, b: 0}, everyEvents: 64})
+        durable.store.node.a.set(1)
+        flushReactive(durable.store.state)
+        await new Promise<void>(function waitFirstDrain(resolve) { setImmediate(resolve) })
+        durable.store.node.b.set(2)
+        flushReactive(durable.store.state)
+        await new Promise<void>(function waitSecondDrain(resolve) { setImmediate(resolve) })
+        ok(durable.replay.head() == 2, 'separate drains produced two durable events')
+        durable.close()
+        throws(function restoreEvictedDurableStore() {
+            createDurableStoreReplay({storage})
+        }, /archive gap.*expected seq 1.*received seq 2/i)
+        ok(true, 'durable restore rejects retention shorter than the keyframe cadence')
+
+        const archive = createMemoryReplayStorage<[number]>()
+        archive.putKeyframe({seq: 0, ts: 0, event: [0]})
+        archive.putEvents([
+            {seq: 1, ts: 1, event: [1]},
+            {seq: 3, ts: 3, event: [3]},
+        ])
+        const history = openHistory(archive)
+        throws(function seekAcrossMissingDelta() { history.at() }, /archive gap.*expected seq 2.*received seq 3/i)
+        ok(lastValue(history.at({seq: 1})) == 1, 'a valid prefix remains seekable before the gap')
+        const delivered: number[] = []
+        throws(function subscribeAcrossMissingDelta() {
+            history.subscribe(function collectHistory(value) { delivered.push(value) }, {since: 0})
+        }, /archive gap/i)
+        ok(delivered.length == 0, 'subscription validates the whole archive tail before any delivery')
+
+        archive.putKeyframe({seq: 3, ts: 3, event: [3]})
+        history.subscribe(function collectRecoveredHistory(value) { delivered.push(value) }, {since: 0})
+        ok(json(delivered) == json([3]), 'a newer complete keyframe recovers an internal archive gap')
+
+        const onlyKeyframe = createMemoryReplayStorage<[number]>()
+        onlyKeyframe.putKeyframe({seq: 3, ts: 3, event: [3]})
+        const restored: number[] = []
+        openHistory(onlyKeyframe).subscribe(function collectKeyframe(value) { restored.push(value) }, {since: 1})
+        ok(json(restored) == json([3]), 'an empty event tail still resets a reader behind the archived keyframe')
     }
 
     console.log('\n[history] bounded memory ring wrap + bulk/keyframe lookup')

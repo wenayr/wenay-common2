@@ -297,7 +297,7 @@ export declare function createConversationHost(deps?: ConversationHostDeps): {
     };
     connection: (account: string) => {
         fragment: {
-            state: {
+            state: ({
                 line: {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 } & import("../Observe").StoreReplayLineLocal;
@@ -334,7 +334,7 @@ export declare function createConversationHost(deps?: ConversationHostDeps): {
                 } | undefined;
             } & {
                 line: import("../Observe").StoreReplayLineLocal;
-            });
+            })) & import("../Observe").StoreReplayState<ConversationStore>;
             events: import("../events/replay-wire").ReplayExpose<[tConversationEvent]>;
             createConversation: (input: ConversationCreateInput) => Promise<{
                 conversation: Conversation;

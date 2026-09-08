@@ -77,7 +77,9 @@ function checkScalar(kind: tFieldKind, value: unknown, path: string) {
     } else if (kind == 'boolean') {
         if (typeof value != 'boolean') throw new Error(path + ' must be a boolean')
     } else {
-        if (typeof value != 'string' || !ISO_DAY.test(value) || Number.isNaN(Date.parse(value))) {
+        const timestamp = typeof value == 'string' && ISO_DAY.test(value) ? Date.parse(value) : NaN
+        // Date.parse normalizes impossible days into the following month.
+        if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString().slice(0, 10) != value) {
             throw new Error(path + ' must be an ISO day (YYYY-MM-DD)')
         }
     }
@@ -179,6 +181,10 @@ export function schemaCommand<const Sch extends tInputSchema, Ctx, R>(
         /** Cross-field/domain rules only; the schema already owns the shape. */
         validate?: (input: InferInput<Sch>) => void
         apply: (ctx: Ctx, input: InferInput<Sch>) => R
+        /** Roles that may call the command (the leader's contract enforces it twice). */
+        allow?: readonly string[]
+        /** This command's own budget per account per rolling minute (the system principal is exempt). */
+        limit?: {perMinute: number}
     },
 ) {
     return {input, ...command}

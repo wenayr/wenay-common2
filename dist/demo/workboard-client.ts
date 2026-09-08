@@ -7,6 +7,7 @@ import {
     WorkboardAssignInput,
     WorkboardCreateInput,
     WorkboardMoveInput,
+    WorkboardItem,
     WorkboardRemote,
     WorkboardRenameInput,
     WorkboardRevisionInput,
@@ -66,7 +67,7 @@ export function createWorkboardClient(deps: WorkboardClientDeps) {
         if (initialized) changed()
     }
 
-    const stateSync = followReplicatedMap(deps.remote.state, {
+    const stateSync = followReplicatedMap<WorkboardItem>(deps.remote.state, {
         initial: deps.initial,
         drain: deps.drain,
         onStatus: applyReplicatedMapStatus,
@@ -131,13 +132,16 @@ export function createWorkboardClient(deps: WorkboardClientDeps) {
 
     function items(statusFilter?: tWorkboardStatus) {
         return Object.values(stateSync.snapshot())
+            .filter(item => item != undefined)
             .filter(item => !statusFilter || item.status == statusFilter)
             .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
     }
 
     function counts() {
         const result: Record<tWorkboardStatus, number> = {new: 0, active: 0, done: 0}
-        for (const item of Object.values(stateSync.snapshot())) result[item.status]++
+        for (const item of Object.values(stateSync.snapshot())) {
+            if (item != undefined) result[item.status]++
+        }
         return result
     }
 

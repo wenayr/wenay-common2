@@ -2,39 +2,19 @@
 
 [![CI](https://github.com/wenayr/wenay-common2/actions/workflows/ci.yml/badge.svg)](https://github.com/wenayr/wenay-common2/actions/workflows/ci.yml)
 
-## Quick start
+## Start here
 
-```ts
-// server (node + socket.io): one facade object, one authoritative store
-import {createRpcServerAuto, listen, Observe} from 'wenay-common2'
-const board = Observe.createStore<Record<string, {title: string, done?: boolean}>>({})
-const exposed = Observe.exposeStoreReplay(board)
-io.on('connection', socket => {
-    const [disconnect, disconnectListen] = listen()
-    socket.on('disconnect', () => disconnect())
-    createRpcServerAuto({socket, socketKey: 'rpc', disconnectListen,
-        object: {hello: async (name: string) => 'hi, ' + name, board: exposed.api}})
-})
-board.state['w1'] = {title: 'ship it'}           // every write becomes a numbered patch
-
-// client (browser or node): typed proxy + live mirror of the same store
-import {io} from 'socket.io-client'
-import {createRpcClientHub, Observe} from 'wenay-common2'
-const hub = createRpcClientHub(() => io('https://example.com'), r => ({api: r('rpc')}))
-const {api} = await hub.setToken(null)
-await api.readyStrict()
-console.log(await api.func.hello('world'))       // 'hi, world'
-const mirror = Observe.createStore<Record<string, any>>({})
-Observe.syncStoreReplay(mirror, api.func.board.replay)   // keyframe + deltas + reconnect catch-up
-```
-
-Where it goes next: [`demo/`](demo/) is the full runnable stand (`npm run demo`), and every oracle in
-[`replay/`](replay/) · [`observe/`](observe/) · [`oracle/`](oracle/) is a worked example of one subsystem.
+- [Typed Store and local-to-cluster journey](doc/STORE-CONSUMER-GUIDE.md)
+- [Runnable demo](demo/) and worked examples in [replay](replay/), [observe](observe/), [oracle](oracle/)
+- [Comprehensive audit and next priorities](doc/COMPREHENSIVE-AUDIT.md)
+- [Library usefulness and project construction for developers and AI](doc/LIBRARY-ASSESSMENT.md)
+- [Authority ownership, partitions and resource fencing](doc/SCALE-SAFETY.md)
 
 ## Documentation
 
 - Brief API cheat sheet: [`doc/wenay-common2.md`](doc/wenay-common2.md)
 - Extended API cheat sheet: [`doc/wenay-common2-rare.md`](doc/wenay-common2-rare.md)
+- Store ownership, type flow and local-to-cluster journey: [`doc/STORE-CONSUMER-GUIDE.md`](doc/STORE-CONSUMER-GUIDE.md)
 - Runtime protocols: [`AI`](doc/AI-RUN-PROTOCOL.md) · [`Artifact`](doc/ARTIFACT-RUNTIME.md) ·
   [`Conversation`](doc/CONVERSATION-RUNTIME.md) · [`Contract`](doc/CONTRACT-RUNTIME.md) ·
   [`Dynamic modules`](doc/DYNAMIC-RUNTIME.md)
@@ -54,6 +34,8 @@ Where it goes next: [`demo/`](demo/) is the full runnable stand (`npm run demo`)
 - Project rules for AI/code maintenance: [`CLAUDE.md`](CLAUDE.md)
 
 ## Living examples (shipped in the npm package)
+
+- [Copyable example projects by level](examples/README.md): [rental](examples/rental/README.md) (one service, typed client, HTTP/Swagger, serving nodes), [pizzeria](examples/pizzeria/README.md) (roles, per-audience view lines, login, the role panel), [apartments](examples/apartments/README.md) (payment intents, signed webhooks, a lock device, a durable leader) — each verified outside the repository.
 
 - [`demo/`](demo/) — runnable from a repository checkout (`npm run demo`): participant-based video rooms and
   private/group calls with speaker and grid views, an authoritative Store/replay operations board, a self-assembling replica network,

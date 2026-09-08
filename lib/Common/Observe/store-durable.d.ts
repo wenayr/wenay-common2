@@ -1,25 +1,49 @@
 import { StoreDrain, StorePatch } from './store';
-import { StoreReplayOpts } from './store-replay';
+import { exposeStoreReplay, StoreReplayOpts } from './store-replay';
 import { ReplayStorage } from '../events/replay-history';
 import { ReplayEvent } from '../events/replay-listen';
-export type DurableStoreReplayDeps<T extends object> = {
+export type DurableStoreDeps<T extends object> = {
     storage: ReplayStorage<[readonly StorePatch[]]>;
     initial?: T;
     everyEvents?: number;
     everyMs?: number;
     drain?: StoreDrain;
+    onJournal?: StoreReplayOpts['onJournal'];
+};
+export type DurableStoreLine = {
+    replay: ReturnType<typeof exposeStoreReplay<object>>['replay'];
+    flushPending?: () => void;
+};
+export declare function openDurableStore<T extends object>(deps: DurableStoreDeps<T>): {
+    store: import("./store").Store<T>;
+    restored: {
+        seq: number;
+        fromArchive: boolean;
+    };
+    expose: Pick<StoreReplayOpts, "firstSeq" | "getSince" | "onJournal" | "onJournalBatch">;
+    attach: (line: DurableStoreLine) => {
+        stats: () => {
+            events: number;
+            keyframes: number;
+        };
+        retry: () => void;
+        flush(): void;
+        close(): void;
+    };
+};
+export type DurableStore<T extends object> = ReturnType<typeof openDurableStore<T>>;
+export type DurableStoreReplayDeps<T extends object> = Omit<DurableStoreDeps<T>, 'onJournal'> & {
     expose?: Pick<StoreReplayOpts, 'describe' | 'onJournal' | 'now' | 'maxItems' | 'maxBytes' | 'maxDelayMs'>;
 };
 export declare function createDurableStoreReplay<T extends object>(deps: DurableStoreReplayDeps<T>): {
     store: import("./store").Store<T>;
     api: {
-        get(): T;
-        get<M extends import("./store").StoreMask<T>>(mask: M): import("./store").StorePick<T, M>;
+        get: import("./store").StoreGetter<T>;
         set(path: import("./store").StorePath, value: any): void;
         replace(path: import("./store").StorePath, value: any): void;
         changed: any;
         changedPaths: any;
-        replay: {
+        replay: ({
             line: {
                 on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
             } & import("./store-replay").StoreReplayLineLocal;
@@ -56,7 +80,7 @@ export declare function createDurableStoreReplay<T extends object>(deps: Durable
             } | undefined;
         } & {
             line: import("./store-replay").StoreReplayLineLocal;
-        });
+        })) & import("./store-replay").StoreReplayState<T>;
     };
     replay: {
         has(key: import("../..").ListenKey): boolean;

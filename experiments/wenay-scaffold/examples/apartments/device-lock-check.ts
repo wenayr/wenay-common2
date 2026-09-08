@@ -1,0 +1,171 @@
+import assert from 'node:assert/strict'
+import {spawn} from 'node:child_process'
+import path from 'node:path'
+import {createStore} from '../../../../src/Common/Observe/store'
+import {runLeaderProcess} from '../../template/leader'
+import {serviceDefinition, DEMO_LOGINS} from './service'
+import {runLockDevice, type LockDeviceClient} from './device-lock'
+
+async function until(label: string, predicate: () => boolean) {
+    const deadline = Date.now() + 6000
+    while (!predicate()) {
+        assert(Date.now() < deadline, 'timeout: ' + label)
+        await new Promise(function wait(resolve) { setTimeout(resolve, 5) })
+    }
+}
+
+function fixtureClient(deps: {ready?: Promise<void>, heartbeat?: () => Promise<void>, rejectReports?: boolean} = {}) {
+    const store = createStore<ReturnType<typeof serviceDefinition.views.myLock.project>>({lock: {id: 'lock-1', apartmentId: 'loft-1'}, commands: {},
+        codes: {'1234': {bookingId: 'valid', from: '2030-01-01', to: '2030-01-02'}}})
+    let reports = 0
+    let beats = 0
+    let events = 0
+    const client = {
+        views: {myLock: {store, ready: deps.ready ?? Promise.resolve(), seq: () => 0, close() {}}},
+        commands: {
+            async lockReport(_requestId, input) {
+                reports++
+                if (deps.rejectReports) throw new Error('acknowledgement lost')
+                return {id: input.commandId, state: input.ok ? 'done' as const : 'failed' as const}
+            },
+            async lockHeartbeat() {
+                beats++
+                await deps.heartbeat?.()
+                return {id: 'lock-1', online: true}
+            },
+            async lockEvent() {
+                events++
+                return {id: 'lock-1', events}
+            },
+        },
+        view: {endpoint: () => null}, close() {},
+    } satisfies LockDeviceClient
+    return {client, store, stats: () => ({reports, beats, events})}
+}
+
+async function fixtureHost() {
+    const initial = structuredClone(serviceDefinition.initial)
+    const day = 86_400_000
+    const today = new Date().toISOString().slice(0, 10)
+    const tomorrow = new Date(Date.now() + day).toISOString().slice(0, 10)
+    initial.bookings.expired = {id: 'expired', apartmentId: 'loft-1', guest: 'bob', from: '2000-01-01', to: '2000-01-02',
+        nights: 1, total: 120, state: 'paid', paymentId: 'old-payment', code: '0000', codeArmed: true, ts: 0}
+    initial.bookings.valid = {...initial.bookings.expired, id: 'valid', from: today, to: tomorrow, code: '1234', ts: Date.now()}
+    initial.locks['lock-1'].commands = {
+        expired: {id: 'expired', kind: 'unlock', bookingId: 'expired', requestedBy: 'bob', state: 'pending', ts: 0},
+        cleanup: {id: 'cleanup', kind: 'clearCode', code: '0000', requestedBy: 'anna', state: 'pending', ts: 0},
+    }
+    const host = await runLeaderProcess({definition: {...serviceDefinition, initial},
+        env: {SERVICE_PORT: '0', SERVICE_DATA_DIR: '', SERVICE_REST: '0', SERVICE_UPSTREAM: ''}})
+    process.send?.({url: host.url})
+}
+
+async function realDevice() {
+    const child = spawn(process.execPath, ['--import', 'tsx', path.join(__dirname, 'device-lock-check.ts'), '--fixture'], {
+        stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true,
+    })
+    let stderr = ''
+    child.stderr!.on('data', function capture(chunk) { stderr += String(chunk) })
+    const exited = new Promise<void>(function childExit(resolve) {
+        child.once('exit', function exit() { resolve() })
+        child.once('error', function spawnFailed() { resolve() })
+    })
+    let closeDevice = function notStarted() {}
+    try {
+        const url = await new Promise<string>(function waitHost(resolve, reject) {
+            const timeout = setTimeout(function timedOut() {
+                reject(new Error('fixture host timeout: ' + stderr))
+                child.kill('SIGKILL')
+            }, 10000)
+            child.once('message', function ready(message) {
+                clearTimeout(timeout)
+                resolve((message as {url: string}).url)
+            })
+            child.once('error', function failed(error) {
+                clearTimeout(timeout)
+                reject(error)
+            })
+            child.once('exit', function stopped() {
+                clearTimeout(timeout)
+                reject(new Error('fixture host exited: ' + stderr))
+            })
+        })
+        let clock = Date.now()
+        const device = runLockDevice({url, account: 'lock-1', password: DEMO_LOGINS['lock-1'], heartbeatMs: 60000, now: () => clock})
+        closeDevice = device.close
+        await device.ready
+        await until('cleanup consumed over real RPC', () => device.view.executed().includes('cleanup'))
+        assert(!device.view.state().commands.expired, 'restored expired unlock is absent from actual device snapshot')
+        assert(!device.view.executed().includes('expired'))
+        assert.equal(await device.control.enterCode('0000'), false)
+        assert.equal(await device.control.enterCode('1234'), true)
+        clock = Date.parse(new Date(clock + 86_400_000).toISOString().slice(0, 10))
+        assert.equal(await device.control.enterCode('1234'), false, 'local checkout check needs no midnight patch')
+        device.close()
+        assert.equal(await device.control.enterCode('1234'), false)
+    } finally {
+        closeDevice()
+        if (child.pid && child.exitCode == null && child.signalCode == null) child.kill('SIGKILL')
+        await exited
+    }
+}
+
+async function main() {
+    await realDevice()
+    let clock = Date.parse('2030-01-01T12:00:00Z')
+    const source = fixtureClient({rejectReports: true})
+    const device = runLockDevice({url: '', account: 'lock-1', password: '', client: source.client, now: () => clock,
+        executeMs: 25, reportAttempts: 2, reportDelayMs: 5, heartbeatMs: 60000})
+    try {
+        await device.ready
+        source.store.state.commands.before = {id: 'before', kind: 'unlock', state: 'pending', requestedBy: 'bob', ts: clock - 60001}
+        source.store.state.commands.during = {id: 'during', kind: 'unlock', state: 'pending', requestedBy: 'bob', ts: clock, expiresAt: clock + 10}
+        await until('motor delay started', () => device.view.pending().timers > 0)
+        clock += 20
+        await until('expired actions settled', () => device.view.outcomes().during?.state == 'expired' && device.view.pending().operations == 0)
+        assert.deepEqual(device.view.executed(), [], 'expired before or during motor delay never actuates')
+        source.store.state.commands.once = {id: 'once', kind: 'clearCode', state: 'pending', requestedBy: 'anna', ts: clock}
+        await until('report exhausted after one local effect', () => device.view.outcomes().once?.attempts == 2 && device.view.pending().operations == 0)
+        const attempts = source.stats().reports
+        source.store.state.commands.once.detail = 'server still says pending'
+        await new Promise(function wait(resolve) { setTimeout(resolve, 60) })
+        assert.deepEqual(device.view.executed(), ['once'])
+        assert.equal(source.stats().reports, attempts, 'unknown ack does not re-run motor or reset report attempts')
+        assert.equal(device.view.outcomes().once.reported, false)
+        source.store.state.commands.closing = {id: 'closing', kind: 'clearCode', state: 'pending', requestedBy: 'anna', ts: clock}
+        await until('pending motor timer', () => device.view.pending().timers > 0)
+        device.close()
+        await until('close settles pending delay operations', () => device.view.pending().operations == 0)
+        assert.equal(device.view.pending().timers, 0)
+    } finally { device.close() }
+
+    let resolveReady!: () => void
+    const pending = fixtureClient({ready: new Promise<void>(function preparing(resolve) { resolveReady = resolve })})
+    const closing = runLockDevice({url: '', account: 'lock-1', password: '', client: pending.client, heartbeatMs: 5})
+    closing.close()
+    await assert.rejects(closing.ready, /closed/)
+    resolveReady()
+    await new Promise(function wait(resolve) { setTimeout(resolve, 20) })
+    assert.equal(pending.stats().beats, 0)
+    assert.equal(closing.view.pending().heartbeat, false)
+    let releaseHeartbeat!: () => void
+    const firstBeat = fixtureClient({heartbeat: () => new Promise<void>(function blocked(resolve) { releaseHeartbeat = resolve })})
+    const duringBeat = runLockDevice({url: '', account: 'lock-1', password: '', client: firstBeat.client, heartbeatMs: 5})
+    await until('initial heartbeat is pending', () => firstBeat.stats().beats == 1)
+    duringBeat.close()
+    await assert.rejects(duringBeat.ready, /closed/)
+    releaseHeartbeat()
+    await new Promise(function wait(resolve) { setTimeout(resolve, 20) })
+    assert.equal(firstBeat.stats().beats, 1, 'late heartbeat completion cannot create an interval after close')
+    assert.equal(duringBeat.view.pending().heartbeat, false)
+    console.log('PASS lock device: real restored snapshot, local checkout, expired motor work, ambiguous reports, close settles delays and readiness')
+}
+
+if (process.argv.includes('--fixture')) fixtureHost().catch(function failed(error) {
+    console.error(error)
+    process.exit(1)
+})
+else main().catch(function failed(error) {
+    console.error(error)
+    process.exitCode = 1
+})

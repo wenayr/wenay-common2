@@ -1,0 +1,314 @@
+// =====================================================================
+// payments — the provider port, the webhook boundary, one real-shaped adapter
+// =====================================================================
+// TEMPLATE-OWNED. A small SaaS hooks a payment provider in three places, and
+// this file owns all three so the domain module never sees a provider:
+//   1. the PORT the domain needs: charge(request) under an idempotency key
+//      (the payment id); the settlement comes later, out of band;
+//   2. the WEBHOOK boundary: raw body → signature → parsed settlements →
+//      one system command per provider event (the event id is the requestId,
+//      so a redelivery answers the stored receipt) — mountPaymentWebhook;
+//   3. adapters: createFakeBank (the dev provider: charges settle by a signed
+//      webhook a moment later, amounts above a limit are declined) and
+//      createStripeProvider (Stripe's PaymentIntents + signed events, proven
+//      OFFLINE through an injected fetch and a self-signed event — no key is
+//      ever touched here; a product supplies its own).
+// "Tracking" is what falls out: every verified event reaches the domain as a
+// command and therefore the state, the archive and every panel.
+
+import {createHmac, randomUUID, timingSafeEqual} from 'node:crypto'
+import express from 'express'
+import type {Express} from 'express'
+
+// ============================================================
+// the port
+// ============================================================
+
+export type tChargeRequest = {
+    /** The domain's payment id: the provider's idempotency key, the settlement's correlation. */
+    paymentId: string
+    /** Major units (12.50 = 12.50 EUR); adapters convert to the provider's minor units. */
+    amount: number
+    currency: string
+    description?: string
+    /** Provider-specific hints a product may need (a payment method id, a customer id). */
+    hints?: Record<string, string>
+}
+
+/** What the domain needs from ANY payment provider. */
+export type PaymentProvider = {
+    /** At-least-once, idempotent by paymentId: a repeat must be the same charge. */
+    charge: (request: tChargeRequest) => Promise<{ref: string}>
+}
+
+/** A provider-neutral settlement: what the webhook boundary hands the domain. */
+export type tSettlement = {
+    /** The provider's event id — the requestId of the system command (redelivery = receipt). */
+    eventId: string
+    paymentId: string
+    ref: string
+    status: 'confirmed' | 'failed'
+    error?: string
+}
+
+/** The webhook half of an adapter: verify the raw body, parse it into settlements (null = not for us). */
+export type PaymentWebhookCodec = {
+    verify: (rawBody: string, headers: (name: string) => string | undefined) => boolean
+    parse: (rawBody: string) => tSettlement[] | null
+}
+
+// ============================================================
+// the webhook boundary
+// ============================================================
+
+export type PaymentWebhookDeps = {
+    app: Express
+    /** The route the provider posts to (e.g. '/webhooks/payments'). */
+    path: string
+    codec: PaymentWebhookCodec
+    /** One system command per settlement; must be idempotent by eventId (it is, through the receipts). */
+    onSettlement: (settlement: tSettlement) => Promise<unknown>
+    log?: (line: string) => void
+}
+
+/** Mount the provider's webhook: 401 on a bad signature, 400 when malformed, 200 once every settlement landed. */
+export function mountPaymentWebhook(deps: PaymentWebhookDeps) {
+    const log = deps.log ?? (() => {})
+    const stats = {received: 0, refused: 0, malformed: 0, ignored: 0, settled: 0, failed: 0}
+    deps.app.post(deps.path, express.raw({type: '*/*', limit: '64kb'}), async function onProviderEvent(req, res) {
+        stats.received++
+        const raw = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : ''
+        if (!deps.codec.verify(raw, name => req.get(name))) {
+            stats.refused++
+            log(`webhook ${deps.path}: bad signature refused`)
+            res.status(401).json({ok: false, error: {message: 'bad signature'}})
+            return
+        }
+        let settlements: tSettlement[] | null
+        try { settlements = deps.codec.parse(raw) } catch { settlements = null }
+        if (settlements == null) {
+            // a verified event of a kind the domain does not track: acknowledged, not an error
+            stats.ignored++
+            res.json({ok: true, value: {ignored: true}})
+            return
+        }
+        try {
+            const receipts = []
+            for (const settlement of settlements) receipts.push(await deps.onSettlement(settlement))
+            stats.settled += settlements.length
+            res.json({ok: true, value: receipts.length == 1 ? receipts[0] : receipts})
+        } catch (error) {
+            // a 5xx makes the provider retry: the settlement is not lost
+            stats.failed++
+            res.status(500).json({ok: false, error: {message: (error as Error)?.message ?? String(error)}})
+        }
+    })
+    return {path: deps.path, stats: () => ({...stats})}
+}
+
+// ============================================================
+// signing helpers
+// ============================================================
+
+function hmacHex(secret: string, payload: string) {
+    return createHmac('sha256', secret).update(payload).digest('hex')
+}
+function sameHex(expected: string, given: string) {
+    const a = Buffer.from(expected)
+    const b = Buffer.from(given)
+    return a.length == b.length && timingSafeEqual(a, b)
+}
+
+// ============================================================
+// adapter 1: the fake bank (development)
+// ============================================================
+
+export const FAKE_BANK_SIGNATURE_HEADER = 'x-bank-signature'
+
+export function signSettlement(secret: string, rawBody: string) {
+    return 'sha256=' + hmacHex(secret, rawBody)
+}
+
+/** The fake bank's webhook codec: HMAC over the raw body, the body IS one settlement. */
+export function fakeBankWebhook(secret: string): PaymentWebhookCodec {
+    return {
+        verify(rawBody, headers) {
+            const signature = headers(FAKE_BANK_SIGNATURE_HEADER)
+            return signature != undefined && sameHex(signSettlement(secret, rawBody), signature)
+        },
+        parse(rawBody) {
+            const event = JSON.parse(rawBody) as Partial<tSettlement>
+            if (typeof event.eventId != 'string' || typeof event.paymentId != 'string' || (event.status != 'confirmed' && event.status != 'failed')) {
+                throw new Error('malformed settlement')
+            }
+            return [{eventId: event.eventId, paymentId: event.paymentId, ref: String(event.ref ?? ''), status: event.status, ...(event.error ? {error: event.error} : {})}]
+        },
+    }
+}
+
+export type FakeBankDeps = {
+    /** Where settlements are POSTed; read lazily (the port binds late). */
+    webhookUrl: () => string
+    secret: string
+    /** Settlement latency (default 150ms). */
+    delayMs?: number
+    /** Amounts strictly above this are declined (default 900). */
+    declineAbove?: number
+    log?: (line: string) => void
+}
+
+/** A provider that behaves like a real one: charge() answers at once, the settlement arrives signed, later, with retries. */
+export function createFakeBank(deps: FakeBankDeps) {
+    const delayMs = deps.delayMs ?? 150
+    const declineAbove = deps.declineAbove ?? 900
+    const log = deps.log ?? (() => {})
+    const charges = new Map<string, {ref: string, settled: boolean}>()
+    const timers = new Set<ReturnType<typeof setTimeout>>()
+    const stats = {charges: 0, repeats: 0, settlements: 0, deliveryFailures: 0}
+    let closed = false
+
+    async function deliver(settlement: tSettlement) {
+        const rawBody = JSON.stringify(settlement)
+        for (let attempt = 1; attempt <= 5 && !closed; attempt++) {
+            try {
+                const answer = await fetch(deps.webhookUrl(), {
+                    method: 'POST',
+                    headers: {'content-type': 'application/json', [FAKE_BANK_SIGNATURE_HEADER]: signSettlement(deps.secret, rawBody)},
+                    body: rawBody,
+                })
+                if (answer.ok) { stats.settlements++; return }
+                log(`bank: webhook answered ${answer.status} (attempt ${attempt})`)
+            } catch (error) {
+                log(`bank: webhook unreachable (attempt ${attempt}): ${(error as Error)?.message ?? error}`)
+            }
+            stats.deliveryFailures++
+            await new Promise(resolve => setTimeout(resolve, delayMs * attempt))
+        }
+    }
+
+    const provider: PaymentProvider = {
+        async charge(request) {
+            if (closed) throw new Error('bank closed')
+            const known = charges.get(request.paymentId)
+            if (known) { stats.repeats++; return {ref: known.ref} }
+            const ref = 'ch_' + randomUUID().slice(0, 8)
+            charges.set(request.paymentId, {ref, settled: false})
+            stats.charges++
+            const settlement: tSettlement = request.amount > declineAbove
+                ? {eventId: 'evt_' + randomUUID().slice(0, 8), paymentId: request.paymentId, ref, status: 'failed', error: 'declined: amount above the card limit'}
+                : {eventId: 'evt_' + randomUUID().slice(0, 8), paymentId: request.paymentId, ref, status: 'confirmed'}
+            const timer = setTimeout(function settle() {
+                timers.delete(timer)
+                charges.get(request.paymentId)!.settled = true
+                void deliver(settlement)
+            }, delayMs)
+            timers.add(timer)
+            return {ref}
+        },
+    }
+
+    return {
+        provider,
+        webhook: fakeBankWebhook(deps.secret),
+        stats: () => ({...stats}),
+        close() {
+            closed = true
+            for (const timer of timers) clearTimeout(timer)
+            timers.clear()
+        },
+    }
+}
+export type FakeBank = ReturnType<typeof createFakeBank>
+
+// ============================================================
+// adapter 2: Stripe-shaped (PaymentIntents + signed events), offline-provable
+// ============================================================
+
+export type StripeProviderDeps = {
+    /** sk_live_… / sk_test_… — the product's, never stored here. */
+    secretKey: string
+    /** whsec_… of the endpoint the events are signed for. */
+    webhookSecret: string
+    /** Injected for the offline proof; the real fetch by default. */
+    fetch?: typeof fetch
+    apiBase?: string
+    /** Signature tolerance in seconds (Stripe's own default is 300). */
+    toleranceSec?: number
+    now?: () => number
+}
+
+/** Stripe's `Stripe-Signature` scheme: `t=<unix>,v1=<hex>` over `${t}.${rawBody}` with the endpoint secret. */
+export function verifyStripeSignature(header: string | undefined, rawBody: string, webhookSecret: string, opts: {toleranceSec?: number, now?: () => number} = {}) {
+    if (!header) return false
+    const parts = Object.fromEntries(header.split(',').map(part => part.trim().split('=') as [string, string]))
+    const timestamp = Number(parts['t'])
+    const given = parts['v1']
+    if (!Number.isFinite(timestamp) || !given) return false
+    const ageSec = Math.abs((opts.now?.() ?? Date.now()) / 1000 - timestamp)
+    if (ageSec > (opts.toleranceSec ?? 300)) return false
+    return sameHex(hmacHex(webhookSecret, `${timestamp}.${rawBody}`), given)
+}
+
+/** Sign a body the way Stripe does — for tests and stands, never for production traffic. */
+export function signStripeEvent(rawBody: string, webhookSecret: string, timestampSec = Math.floor(Date.now() / 1000)) {
+    return `t=${timestampSec},v1=${hmacHex(webhookSecret, `${timestampSec}.${rawBody}`)}`
+}
+
+type tStripeEvent = {id: string, type: string, data: {object: {id: string, metadata?: Record<string, string>, last_payment_error?: {message?: string}}}}
+
+/** Stripe's webhook codec: the two PaymentIntent outcomes the domain tracks; every other event type is acknowledged and ignored. */
+export function stripeWebhook(webhookSecret: string, opts: {toleranceSec?: number, now?: () => number} = {}): PaymentWebhookCodec {
+    return {
+        verify: (rawBody, headers) => verifyStripeSignature(headers('stripe-signature'), rawBody, webhookSecret, opts),
+        parse(rawBody) {
+            const event = JSON.parse(rawBody) as tStripeEvent
+            const intent = event?.data?.object
+            const paymentId = intent?.metadata?.['paymentId']
+            if (typeof event?.id != 'string' || !intent?.id || !paymentId) return null
+            if (event.type == 'payment_intent.succeeded') return [{eventId: event.id, paymentId, ref: intent.id, status: 'confirmed'}]
+            if (event.type == 'payment_intent.payment_failed') {
+                return [{eventId: event.id, paymentId, ref: intent.id, status: 'failed', error: intent.last_payment_error?.message ?? 'payment failed'}]
+            }
+            return null
+        },
+    }
+}
+
+/** Minor units: Stripe wants integers (cents); zero-decimal currencies stay as they are. */
+const ZERO_DECIMAL = new Set(['jpy', 'krw', 'vnd', 'clp', 'pyg', 'xaf', 'xof', 'bif', 'djf', 'gnf', 'kmf', 'mga', 'rwf', 'ugx', 'xpf'])
+export function toMinorUnits(amount: number, currency: string) {
+    return ZERO_DECIMAL.has(currency.toLowerCase()) ? Math.round(amount) : Math.round(amount * 100)
+}
+
+export function createStripeProvider(deps: StripeProviderDeps) {
+    const doFetch = deps.fetch ?? fetch
+    const apiBase = deps.apiBase ?? 'https://api.stripe.com'
+    const provider: PaymentProvider = {
+        async charge(request) {
+            const body = new URLSearchParams({
+                amount: String(toMinorUnits(request.amount, request.currency)),
+                currency: request.currency.toLowerCase(),
+                confirm: 'true',
+                'metadata[paymentId]': request.paymentId,
+                ...(request.description ? {description: request.description} : {}),
+                ...(request.hints?.['paymentMethod'] ? {payment_method: request.hints['paymentMethod']} : {}),
+                ...(request.hints?.['customer'] ? {customer: request.hints['customer']} : {}),
+            })
+            const answer = await doFetch(apiBase + '/v1/payment_intents', {
+                method: 'POST',
+                headers: {
+                    authorization: 'Bearer ' + deps.secretKey,
+                    'content-type': 'application/x-www-form-urlencoded',
+                    // the SAME key on every retry of the same payment: Stripe answers the same intent
+                    'idempotency-key': request.paymentId,
+                },
+                body: body.toString(),
+            })
+            const json = await answer.json() as {id?: string, error?: {message?: string}}
+            if (!answer.ok || !json.id) throw new Error('stripe: ' + (json.error?.message ?? `HTTP ${answer.status}`))
+            return {ref: json.id}
+        },
+    }
+    return {provider, webhook: stripeWebhook(deps.webhookSecret, {toleranceSec: deps.toleranceSec, now: deps.now})}
+}
+export type StripeProvider = ReturnType<typeof createStripeProvider>

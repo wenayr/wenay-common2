@@ -4,6 +4,12 @@
 Store. It keeps a logical slot stable while implementations appear, fail, reconnect or are replaced.
 It does not download, compile, unpack or execute package bytes.
 
+The copyable `examples/hosting` demonstrates a local process host with stable site URLs, health
+checks, leased HTTP requests, prepared release replacement and rollback. The process and gateway
+adapters stay in the example; Contract owns binding lifetimes. Failure monitoring starts before
+`acceptSession`: a candidate that fails during asynchronous readiness cannot replace a healthy
+binding. Closing the runtime immediately detaches pending candidate failure listeners.
+
 ## Responsibility boundary
 
 An application-specific loader owns delivery: it may use static imports, dynamic `import()`, a
@@ -132,7 +138,17 @@ content at the same coordinate is rejected as a conflict, and an older coordinat
 
 The current binding stays live while a candidate opens and `acceptSession` runs. Only then does the
 runtime publish a new binding generation. Existing leases keep the retired session alive until they
-release, or until `drainTimeoutMs`; new acquisitions immediately use the new binding.
+release, or until `drainTimeoutMs`; new acquisitions immediately use the new binding. One deadline
+starts at retirement and covers both outstanding leases and the session's asynchronous `drain`.
+The drain hook runs once after leases release or expire; at the deadline `close` runs even when
+that hook remains pending. A later drain completion or lease release cannot close the session twice.
+
+`close()` is terminal: it closes active, retired and already-opened candidate sessions, and queued
+or resumed control operations reject with `contract runtime closed`. A pending `open` that returns
+after shutdown has its session closed without activation. Closing from a binding observer follows
+the same ownership rules. Shutdown invokes retired sessions' drain hooks but does not wait for them.
+Policy and loader promises themselves remain application-owned: the runtime cannot interrupt a
+hung same-process callback, and serialized control work still waits for that callback to settle.
 
 An open failure temporarily suppresses that offer and tries the next compatible candidate. An active
 session may signal `onFail`, which retires it and triggers the same fallback path. `revokeOffer`
@@ -155,6 +171,7 @@ full decision trail, including rejected candidates and reasons.
 - Use `apply(demands)` for a projected component set; use increasing generations for intentional
   changes and increasing authority epochs after coordinator failover.
 
-Oracles: `observe/contract-runtime.test.ts` and `oracle/realsocket/contract-runtime.spec.ts`. The
+Oracles: `observe/contract-runtime.test.ts`, `observe/contract-runtime-lifecycle.test.ts`, and
+`oracle/realsocket/contract-runtime.spec.ts`. The
 real-wire oracle replaces two RPC implementations while a separate Store/replay mirror continues
 advancing. The interactive path is `npm run demo` → **Lab** → **Versioned contract runtime**.

@@ -19,15 +19,16 @@ import {setupCallUi} from './call-ui'
 import {createMediaDemo} from './media-demo'
 import {setupVideoRooms} from './video-rooms-demo'
 import {createWorkboardClient} from './workboard-client'
-import type {WorkboardRemote} from './workboard-contract'
 import {setupWorkboardDemo} from './workboard-demo'
 import {setupReplicaSetDemo} from './replica-set-demo'
 import {setupMiniScaleDemo} from './mini-scale-demo'
+import type {createDemoParticipantFacade} from './server'
 import {setupContractRuntimeDemo} from './contract-runtime-demo'
 import {setupPacketMeshDemo} from './packet-mesh-demo'
 import {setupAuthLifecycleDemo} from './auth-lifecycle-demo'
 import {createProtocolDemo} from './protocol-demo'
 import {demoRpcOpt} from './protocol-schema'
+import {createBrowserRtc} from './browser-rtc'
 
 type World = {
     cursor: {x: number, y: number}
@@ -64,6 +65,8 @@ function cleanName(value: unknown) {
 type PeerClient = ReturnType<typeof createPeerClient<World>>
 type PeerView = ReturnType<PeerClient['peer']>
 
+type DemoApp = ReturnType<typeof createDemoParticipantFacade>
+
 async function main() {
     const shell = setupAppShell({root: document})
     const protocol = createProtocolDemo({element: el, log})
@@ -82,14 +85,14 @@ async function main() {
         () => protocol.attach(io({
             auth: {tab},
         })),
-        r => ({app: r<any>('app')}) as const,
+        r => ({app: r<DemoApp>('app')}) as const,
         {opt: demoRpcOpt},
     )
     const clients = await hub.setToken(null)
     await clients.app.readyStrict()
     me = await clients.app.func.demo.account()
-    const rtcConfiguration = await clients.app.func.demo.rtcConfiguration() as RTCConfiguration
-    const artifactOrigin = await clients.app.func.demo.artifactOrigin() as string
+    const rtcConfiguration = await clients.app.func.demo.rtcConfiguration()
+    const artifactOrigin = await clients.app.func.demo.artifactOrigin()
 
     // Mini horizontal scaling stand: needs the live connection, so it mounts here.
     const miniScale = setupMiniScaleDemo({
@@ -171,7 +174,9 @@ async function main() {
         promoteBtn.addEventListener('click', async function promoteThisNode() {
             promoteBtn.disabled = true
             try {
-                const result = await clients.app.func.demo.instance.promote()
+                const promote = clients.app.func.demo.instance.promote
+                if (typeof promote != 'function') throw new Error('this node cannot be promoted')
+                const result = await promote()
                 log(`failover: this node is now the leader (epoch ${result.epoch})`)
             } catch (error) {
                 log('promote failed: ' + error)
@@ -197,7 +202,7 @@ async function main() {
     protocol.reportServerTime(serverTime)
     log('rpc connected; serverTime() = ' + serverTime)
     const workboard = createWorkboardClient({
-        remote: clients.app.func.workboard as unknown as WorkboardRemote,
+        remote: clients.app.func.workboard,
         drain: 'micro',
         transport: {
             connected: () => Boolean(hub.socket?.connected),
@@ -215,7 +220,7 @@ async function main() {
     })
     await workboard.ready
     protocol.reportStore(
-        clients.app.func.workboard.state as unknown as WorkboardRemote['state'],
+        clients.app.func.workboard.state,
         workboard.status().replayMode,
     )
     log(`authoritative Workboard Store mirror ready (${workboard.status().replayMode})`)
@@ -236,7 +241,7 @@ async function main() {
     log('multi-channel Conversation view ready')
 
     // debug tap: every signaling envelope this account receives (webrtc AND call types)
-    ;(clients.app.func.peer.signal.signals as any).on((env: any) => {
+    clients.app.func.peer.signal.signals.on(function logSignal(env) {
         log(`sig<- ${env.type} ${env.from}->${env.to}` +
             (env.sdp ? ` sdp.len=${String(env.sdp).length}` : '') +
             (env.candidate ? ` cand=${JSON.stringify(env.candidate).slice(0, 70)}` : ''))
@@ -252,7 +257,7 @@ async function main() {
             av: {camOn: false, micOn: false, screenOn: false},
         },
         // The deployment supplies STUN/TURN here; peer/route logic stays transport-agnostic.
-        rtc: () => new RTCPeerConnection(rtcConfiguration),
+        rtc: () => createBrowserRtc({connection: new RTCPeerConnection(rtcConfiguration)}),
         drain: 'micro',
     })
     // Own name edits publish through the store; every consumer re-renders.
@@ -337,7 +342,7 @@ async function main() {
     }
     // subscribe FIRST, then list() — the changes feed is a plain edge Listen
     const [emitPresenceEdge, presenceEdges] = listen<[{account: string, online: boolean}]>()
-    ;(clients.app.func.peer.presence.changes as any).on((ch: any) => {
+    clients.app.func.peer.presence.changes.on(function presenceChanged(ch) {
         if (ch.online) onlineSet.add(ch.account); else onlineSet.delete(ch.account)
         if (ch.account != me) log(`presence: ${participantName(ch.account)} ${ch.online ? 'online' : 'offline'}`)
         emitPresenceEdge({account: ch.account, online: !!ch.online})

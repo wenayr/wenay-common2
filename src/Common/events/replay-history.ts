@@ -207,7 +207,16 @@ export type HistorySubscribeOpts = {
  * (two-stage handover: archive → journal line → live).
  */
 export function openHistory<Z extends any[]>(storage: ReplayStorage<Z>, live?: {on: ListenOnReplay<Z>}) {
-    /** Envelopes restoring state at location at: [keyframe, …deltas]. undefined = archive empty. */
+    function archiveGap(tail: ReplayEvent<Z>[], from: number) {
+        let expected = from + 1
+        for (const ev of tail) {
+            if (ev.seq != expected) return new Error(`openHistory: archive gap: expected seq ${expected}, received seq ${ev.seq}`)
+            expected++
+        }
+    }
+
+    /** Envelopes restoring state at location at: [keyframe, …deltas]. undefined = no keyframe.
+     *  Throws when retained deltas have a gap after the keyframe. */
     function at(where: {seq?: number, ts?: number} = {}) {
         const kf = storage.getKeyframe(where)
         if (!kf) return undefined
@@ -217,6 +226,8 @@ export function openHistory<Z extends any[]>(storage: ReplayStorage<Z>, live?: {
             const cut = tail.findIndex(ev => ev.ts > where.ts!)
             if (cut >= 0) tail = tail.slice(0, cut)
         }
+        const gap = archiveGap(tail, kf.seq)
+        if (gap) throw gap
         return [kf, ...tail]
     }
 
@@ -239,7 +250,13 @@ export function openHistory<Z extends any[]>(storage: ReplayStorage<Z>, live?: {
         // === archive part: clean tail from since or keyframe + deltas ===
         if (since != null) {
             const tail = storage.getEvents(since, Infinity)
-            if (tail.length && tail[0].seq != since + 1) deliverFromKeyframe(at({}))
+            // Validate before delivery: a partial prefix cannot be undone by every consumer.
+            const gap = archiveGap(tail, since)
+            if (gap || (!tail.length && (storage.getKeyframe()?.seq ?? since) > since)) {
+                const recovered = at({})
+                if (!recovered && gap) throw gap
+                deliverFromKeyframe(recovered)
+            }
             else for (const ev of tail) deliver(ev)
         } else {
             deliverFromKeyframe(at(ts != null ? {ts} : {}))

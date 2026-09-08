@@ -121,9 +121,16 @@ export type StoreReplayLineLocal = {
     count(): number
 }
 
-export type StoreReplayBatchRemote = StoreReplayWireRemote<tStoreReplayWireBatchV2>
+declare const STORE_REPLAY_STATE: unique symbol
 
-export type StoreReplayRemote = StoreReplayBatchRemote & {
+/** Compile-time source identity only; no marker is installed on the wire facade. */
+export type StoreReplayState<T extends object = any> = {
+    readonly [STORE_REPLAY_STATE]?: T
+}
+
+export type StoreReplayBatchRemote<T extends object = any> = StoreReplayWireRemote<tStoreReplayWireBatchV2> & StoreReplayState<T>
+
+export type StoreReplayRemote<T extends object = any> = StoreReplayBatchRemote<T> & {
     describe?: () => Record<string, any> | Promise<Record<string, any>>
 }
 
@@ -820,7 +827,7 @@ export function exposeStoreReplay<T extends object>(store: Store<T>, opts: Store
     retransmitRpcReplayWire(replayApi, replayFacade)
     return {
         /** Wire facade: pass to RPC server (object: api). Compatible with regular exposeStore. */
-        api: {...storeApi, replay: replayFacade},
+        api: {...storeApi, replay: replayFacade as typeof replayFacade & StoreReplayState<T>},
         /** Local replay-line — in-proc consumers, introspection (head/getSince). */
         replay: batchReplay.replay,
         batchStats: batchReplay.stats,
@@ -834,7 +841,7 @@ export function exposeStoreReplay<T extends object>(store: Store<T>, opts: Store
  * Client side: mirror over line. keyframe/tail/live use one patch mechanism.
  */
 export function syncStoreReplayBatch<T extends object>(
-    store: Store<T>, remote: StoreReplayBatchRemote, opts: StoreReplaySyncOpts<T> = {},
+    store: Store<T>, remote: StoreReplayBatchRemote<NoInfer<T>>, opts: StoreReplaySyncOpts<T> = {},
 ) {
     const {onBatch, validateBatch, chunkedKeyframe, ...wireOpts} = opts
     return replaySubscribe(decodeStoreReplayRemote(remote, chunkedKeyframe), function applyBatch(patches) {
@@ -844,12 +851,12 @@ export function syncStoreReplayBatch<T extends object>(
     }, wireOpts)
 }
 
-function syncStoreReplayResolved<T extends object>(store: Store<T>, remote: StoreReplayRemote, opts: StoreReplaySyncOpts<T>) {
+function syncStoreReplayResolved<T extends object>(store: Store<T>, remote: StoreReplayRemote<T>, opts: StoreReplaySyncOpts<T>) {
     return Object.assign(syncStoreReplayBatch(store, remote, opts), {mode: 'v2' as const})
 }
 
 function deferStoreReplaySync<T extends object>(
-    store: Store<T>, remote: StoreReplayRemote, opts: StoreReplaySyncOpts<T>, schemaReady: () => Promise<void>,
+    store: Store<T>, remote: StoreReplayRemote<T>, opts: StoreReplaySyncOpts<T>, schemaReady: () => Promise<void>,
 ) {
     let sub: (ReturnType<typeof replaySubscribe<any>> & {mode: tStoreReplayMode}) | undefined
     let closed = false
@@ -889,7 +896,7 @@ function deferStoreReplaySync<T extends object>(
     return result
 }
 
-export function syncStoreReplay<T extends object>(store: Store<T>, remote: StoreReplayRemote, opts: StoreReplaySyncOpts<T> = {}) {
+export function syncStoreReplay<T extends object>(store: Store<T>, remote: StoreReplayRemote<NoInfer<T>>, opts: StoreReplaySyncOpts<T> = {}) {
     const schemaReady = getRpcMemberState(remote, 'line') == undefined
         ? getRpcSchemaReady(remote)
         : undefined
@@ -922,7 +929,7 @@ export function syncStoreReplayView<T extends object>(
 }
 
 function syncStoreReplayRouteResolved<T extends object>(
-    store: Store<T>, remote: StoreReplayRemote, opts: StoreReplayRouteOpts<T>,
+    store: Store<T>, remote: StoreReplayRemote<T>, opts: StoreReplayRouteOpts<T>,
 ) {
     const {onBatch, validateBatch, chunkedKeyframe, ...routeOpts} = opts
     const route = replayRouteSubscribe<[StorePatch[]]>(decodeStoreReplayRemote(remote, chunkedKeyframe), function applyRouteBatch(patches) {
@@ -935,7 +942,7 @@ function syncStoreReplayRouteResolved<T extends object>(
     let generation = 0
     const schemaWaitCancels = new Set<() => void>()
 
-    async function waitForV2Schema(nextRemote: StoreReplayRemote) {
+    async function waitForV2Schema(nextRemote: StoreReplayRemote<T>) {
         if (getRpcMemberState(nextRemote, 'line') != undefined) return
         const schemaReady = getRpcSchemaReady(nextRemote)
         if (!schemaReady) return
@@ -958,7 +965,7 @@ function syncStoreReplayRouteResolved<T extends object>(
         }
     }
 
-    async function switchRoute(nextRemote: StoreReplayRemote, nextOpts: Parameters<typeof route.switch>[1] = {}) {
+    async function switchRoute(nextRemote: StoreReplayRemote<T>, nextOpts: Parameters<typeof route.switch>[1] = {}) {
         if (closed) throw new Error('syncStoreReplayRoute: closed')
         await waitForV2Schema(nextRemote)
         if (closed) throw new Error('syncStoreReplayRoute: closed')
@@ -985,7 +992,7 @@ function syncStoreReplayRouteResolved<T extends object>(
 }
 
 function deferStoreReplayRoute<T extends object>(
-    store: Store<T>, remote: StoreReplayRemote, opts: StoreReplayRouteOpts<T>, schemaReady: () => Promise<void>,
+    store: Store<T>, remote: StoreReplayRemote<T>, opts: StoreReplayRouteOpts<T>, schemaReady: () => Promise<void>,
 ) {
     let route: ReturnType<typeof syncStoreReplayRouteResolved<T>> | undefined
     let closed = false
@@ -1013,7 +1020,7 @@ function deferStoreReplayRoute<T extends object>(
     })
     let switchChain: Promise<unknown> = ready.catch(function initialRouteFailed() {})
 
-    function switchRoute(nextRemote: StoreReplayRemote, nextOpts: ReplayRouteSwitchOpts = {}) {
+    function switchRoute(nextRemote: StoreReplayRemote<T>, nextOpts: ReplayRouteSwitchOpts = {}) {
         async function runSwitch() {
             await ready
             if (closed || schemaFailed || !route) throw new Error('syncStoreReplayRoute: closed')
@@ -1046,7 +1053,7 @@ function deferStoreReplayRoute<T extends object>(
  * route from the last delivered seq, then close the old one. Use for relay <-> direct
  * promotion/re-interposition when the authority/replay line stays semantically the same.
  */
-export function syncStoreReplayRoute<T extends object>(store: Store<T>, remote: StoreReplayRemote, opts: StoreReplayRouteOpts<T> = {}) {
+export function syncStoreReplayRoute<T extends object>(store: Store<T>, remote: StoreReplayRemote<NoInfer<T>>, opts: StoreReplayRouteOpts<T> = {}) {
     const schemaReady = getRpcMemberState(remote, 'line') == undefined
         ? getRpcSchemaReady(remote)
         : undefined
@@ -1064,7 +1071,7 @@ export function syncStoreReplayRoute<T extends object>(store: Store<T>, remote: 
  * for direct reads (off.store.state.BTCUSDT) and ready/seq/isStale/lastTs of wire.
  */
 export function syncStoreReplayEach<T extends object>(
-    remote: StoreReplayRemote,
+    remote: StoreReplayRemote<T>,
     cb: (key: string, value: T[keyof T] | undefined, ctx: StoreEachCtx) => void,
     opts: StoreReplaySyncOpts<T> & {drain?: StoreDrain, initial?: T} = {},
 ) {

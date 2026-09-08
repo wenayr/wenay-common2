@@ -1,0 +1,92 @@
+import {type Resource} from '../../../../src'
+
+const MAX_FILE_BYTES = 64 * 1024
+
+// === Byte storage owned by this process; HTTP supplies the verified account ===
+export function createDocumentStorage(deps: {maxFiles?: number, maxBytes?: number} = {}) {
+    const maxFiles = deps.maxFiles ?? 64
+    const maxBytes = deps.maxBytes ?? 4 * 1024 * 1024
+    if (!Number.isSafeInteger(maxFiles) || maxFiles < 1) throw new Error('maxFiles must be a positive integer')
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('maxBytes must be a positive integer')
+    const entries = new Map<string, {owner: string, size: number, bytes?: Uint8Array, sealed: boolean}>()
+    let reservedBytes = 0
+    let closed = false
+
+    function requireOpen() {
+        if (closed) throw new Error('document storage closed')
+    }
+
+    function requireEntry(account: string, fileId: string) {
+        requireOpen()
+        const entry = entries.get(fileId)
+        if (!entry || entry.owner != account) throw new Error('document forbidden or missing')
+        return entry
+    }
+
+    function bytePath(fileId: string) { return '/bytes/' + encodeURIComponent(fileId) }
+
+    const port = {
+        beginUpload({file}: {file: Resource.FileResource}) {
+            requireOpen()
+            if (!file.id || !file.owner) throw new Error('file identity is required')
+            if (!Number.isSafeInteger(file.size) || file.size < 0 || file.size > MAX_FILE_BYTES) {
+                throw new Error('plain text files must be at most 64 KiB')
+            }
+            if (file.mime && !/^text\/plain(?:\s*;\s*charset=utf-8)?$/i.test(file.mime.trim())) {
+                throw new Error('only UTF-8 plain text is supported')
+            }
+            if (entries.has(file.id)) throw new Error('file identity already exists')
+            if (entries.size >= maxFiles || reservedBytes + file.size > maxBytes) throw new Error('document storage is full')
+            // Encode before allocation so an invalid id cannot leave a reserved slot.
+            const path = bytePath(file.id)
+            entries.set(file.id, {owner: file.owner, size: file.size, sealed: false})
+            reservedBytes += file.size
+            return {path, method: 'PUT' as const}
+        },
+        confirmUpload({file}: {file: Resource.FileResource}) {
+            const entry = requireEntry(file.owner, file.id)
+            try {
+                if (file.size != entry.size || !entry.bytes || entry.bytes.byteLength != entry.size) {
+                    throw new Error('uploaded byte size does not match the declared size')
+                }
+                new TextDecoder('utf-8', {fatal: true}).decode(entry.bytes)
+                entry.sealed = true
+            } catch (error) {
+                // FileJob marks confirmation failure terminal, so release its byte reservation.
+                if (!entry.sealed) { entries.delete(file.id); reservedBytes -= entry.size }
+                throw error
+            }
+        },
+        download({file}: {file: Resource.FileResource}) {
+            const entry = requireEntry(file.owner, file.id)
+            if (!entry.sealed) throw new Error('document upload is not confirmed')
+            return {path: bytePath(file.id)}
+        },
+    } satisfies Resource.FileStoragePort
+
+    function put(account: string, fileId: string, bytes: Uint8Array) {
+        const entry = requireEntry(account, fileId)
+        if (entry.sealed) throw new Error('confirmed document cannot be overwritten')
+        if (!(bytes instanceof Uint8Array) || bytes.byteLength > entry.size) throw new Error('upload exceeds declared byte size')
+        entry.bytes = Uint8Array.from(bytes)
+    }
+
+    function read(account: string, fileId: string) {
+        const entry = requireEntry(account, fileId)
+        if (!entry.sealed || !entry.bytes) throw new Error('document upload is not confirmed')
+        return Uint8Array.from(entry.bytes)
+    }
+
+    function close() {
+        if (closed) return
+        closed = true
+        entries.clear()
+        reservedBytes = 0
+    }
+
+    return {port, control: {put}, source: {read}, view: {
+        stats: () => ({files: entries.size, reservedBytes}),
+    }, close}
+}
+
+export type DocumentStorage = ReturnType<typeof createDocumentStorage>

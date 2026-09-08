@@ -23,6 +23,7 @@ export declare function createRpcClientHub<T extends Record<string, RpcDescripto
     setToken: (token: string | null) => Promise<{ [K in keyof { [K in keyof T]: T[K] extends RpcDescriptor<infer U extends object> ? import("./rpc-client").RpcClientReturn<DeepSocketListenSmart<U>> : never; }]: { [K in keyof T]: T[K] extends RpcDescriptor<infer U extends object> ? import("./rpc-client").RpcClientReturn<DeepSocketListenSmart<U>> : never; }[K]; }>;
     connect: (token: string | null) => Promise<{ [K in keyof { [K in keyof T]: T[K] extends RpcDescriptor<infer U extends object> ? import("./rpc-client").RpcClientReturn<DeepSocketListenSmart<U>> : never; }]: { [K in keyof T]: T[K] extends RpcDescriptor<infer U extends object> ? import("./rpc-client").RpcClientReturn<DeepSocketListenSmart<U>> : never; }[K]; }>;
     reauth: (token: string | null) => Promise<any[]>;
+    close: (reason?: string) => boolean;
     readonly socket: T2;
     onConnect: (func?: ((count: number) => void) | null) => void;
     onDisconnect: (func?: ((reason: string) => void) | null) => void;

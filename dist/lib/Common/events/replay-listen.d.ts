@@ -18,6 +18,8 @@ export type ReplayListenOptions<Z extends any[]> = {
     frame?: (tail: ReplayEvent<Z>[], hint?: unknown) => ReplayEvent<Z>[];
     history?: number;
     keepMs?: number;
+    keepBytes?: number;
+    sizeOf?: (event: ReplayEvent<Z>) => number;
     getSince?: (seq: number) => ReplayEvent<Z>[] | undefined;
     onJournal?: (ev: ReplayEvent<Z>) => void;
     onJournalBatch?: (events: readonly ReplayEvent<Z>[]) => void;
@@ -54,9 +56,12 @@ export declare function withReplayListen<T>(base: ListenApi<T>, options?: Replay
         oldestSeq: number | null;
         head: number;
         ageMs: number;
+        bytes: number;
         historyLimit: number;
         keepMs: number;
+        keepBytes: number;
         cappedByCount: boolean;
+        cappedByBytes: boolean;
     };
     line: ListenApi<[ReplayEvent<NormalizeTuple<T>>]>;
     hasKeyframe: boolean;
@@ -90,9 +95,12 @@ export declare function replayListen<T>(options?: ReplayListenUseOptions<T>): re
         oldestSeq: number | null;
         head: number;
         ageMs: number;
+        bytes: number;
         historyLimit: number;
         keepMs: number;
+        keepBytes: number;
         cappedByCount: boolean;
+        cappedByBytes: boolean;
     };
     line: ListenApi<[ReplayEvent<NormalizeTuple<T>>]>;
     hasKeyframe: boolean;

@@ -46,9 +46,11 @@ import {bindCommandNames} from '../command/command-fragment'
 import {createCommandReceipts} from '../command/command-receipts'
 import {verifyCommands} from '../command/command-token'
 import {createNodeDirectory, nodeDirectoryViews, type NodeDirectory, type NodeDirectoryRow} from '../Observe/node-directory'
+import {openDurableStore, type DurableStoreDeps} from '../Observe/store-durable'
 import type {StoreReplayRemote} from '../Observe/store-replay'
 import {createStoreReplicaSet, type StoreLineCoordinates, type StoreReplicaLeadership, type StoreReplicaSession} from '../Observe/store-replica-set'
-import type {StoreNodePrincipal} from '../Observe/store-node'
+import type {StoreNodePrincipal, StoreNodeSession} from '../Observe/store-node'
+import type {Store} from '../Observe/store'
 import {createControlLine, emptyControlState, projectStoreSection, type ScaleControlState} from './scale-control'
 
 // ============================================================
@@ -63,6 +65,34 @@ export type ScaleIdentityAdapter = {
     verify: (presented: unknown) => StoreNodePrincipal
     /** 'expiring' lead time of the RPC grants served here; default 15s. */
     renewBeforeMs?: number
+}
+
+/** What the authority's gated connection serves a verified principal by default. */
+export type AuthorityPrincipalDefaults<T extends Record<string, any>, Cmds extends tCommandMap> = {
+    whoami: () => string
+    commands: CommandFragment<Cmds>
+    revoke: () => {revoked: true, account: string, sessionsCut: number}
+    /** The authority's own replica store — the source of any projection. */
+    store: Store<T>
+}
+
+/** What serve.connection() serves without a shaper: the defaults minus the store. */
+export type AuthorityPrincipalFacade<T extends Record<string, any>, Cmds extends tCommandMap> = Omit<AuthorityPrincipalDefaults<T, Cmds>, 'store'>
+
+/** The audience seam of serve.connection(): shape the served fragment per principal; the result type flows to the wire types. */
+export type AuthorityPrincipalShaper<T extends Record<string, any>, Cmds extends tCommandMap, F extends Record<string, unknown> = Record<string, unknown>> =
+    (principal: StoreNodePrincipal, defaults: AuthorityPrincipalDefaults<T, Cmds>, session: StoreNodeSession) => F
+
+/** The gated per-socket block serve.connection() returns (RPC-AUTH rules 1/3/6/7); F = the facade a verified principal is served. */
+export type AuthorityConnection<F extends Record<string, unknown>> = {
+    /** Anonymous surface: nothing before a verified HELLO. */
+    object: {}
+    auth: {
+        gate: true
+        resolveAuth: (presented: unknown) => {object: F, ack: {ok: boolean, who: string, node: string}, expiresAt?: number, renewBeforeMs: number}
+    }
+    attach: (attached: RpcServerControl) => void
+    close: () => void
 }
 
 export type tScaleAuthorityRole = 'leader' | 'standby'
@@ -94,9 +124,15 @@ export type ScaleAuthorityLeadership = {
     accept?: StoreReplicaLeadership['accept']
 }
 
+/** The storage seam of the replica line: the persistence PORT (memory, fs, the host's DB adapter)
+ *  plus the keyframe cadence. A restart restores the state, continues the seq space and serves
+ *  reconnecting followers from the journal — no forced keyframe reset. */
+export type ScaleDurableLine = Pick<DurableStoreDeps<object>, 'storage' | 'everyEvents' | 'everyMs'>
+
 export type ScaleAuthorityDeps<T extends Record<string, any>, Cmds extends tCommandMap = {}> = {
-    /** Replica-line coordinates (nodes and clients must match them) and the initial state. nodeId default 'authority'. */
-    line: Omit<StoreLineCoordinates, 'nodeId'> & {nodeId?: string, initial: T}
+    /** Replica-line coordinates (nodes and clients must match them) and the initial state. nodeId default 'authority'.
+     *  `durable` puts the line on the storage port: `initial` then only seeds an EMPTY archive. */
+    line: Omit<StoreLineCoordinates, 'nodeId'> & {nodeId?: string, initial: T, durable?: ScaleDurableLine}
     /** The authority's OWN roster row and the roster's liveness policy. */
     roster: {
         /** Client-reachable origin of THIS authority; read lazily (the port binds late). */
@@ -112,6 +148,12 @@ export type ScaleAuthorityDeps<T extends Record<string, any>, Cmds extends tComm
         meta?: () => Record<string, unknown>
     }
     identity: ScaleIdentityAdapter
+    /**
+     * The CONTROL line on the storage port (its own archive: receipts + deny list survive a solo
+     * restart; the roster is wiped on restore — rows are liveness facts of a dead lifetime).
+     * Applies to a born leader; a promoted standby keeps the state it followed.
+     */
+    control?: {durable?: ScaleDurableLine}
     /** The write half: commands behind (account, requestId) receipts. */
     corridor?: {
         commands?: Cmds
@@ -143,16 +185,20 @@ export function createAuthority<T extends Record<string, any>, Cmds extends tCom
     const identity = deps.identity
     const leadership = deps.leadership ?? {}
     const bornLeader = (leadership.role ?? 'leader') == 'leader'
+    let closed = false
 
     // ============== ONE leadership decision: the replica set's ==============
     // A standby must never promote before it has followed once: two processes
     // booting side by side would otherwise both wake up as epoch-1 leaders.
     let followedOnce = bornLeader
     let forcePromote = false
+    // the storage seam: the replica set exposes the line over the RESTORED store with the
+    // durable line options; the archiver binds after the line exists (journal listener first)
+    const durable = deps.line.durable ? openDurableStore<T>({...deps.line.durable, initial: deps.line.initial}) : null
     const replica = createStoreReplicaSet<T>({
         storeId: deps.line.storeId, originId: deps.line.originId, nodeId,
         lineId: deps.line.lineId ?? nodeId + '-line',
-        initial: deps.line.initial,
+        ...(durable ? {store: durable.store, expose: durable.expose} : {initial: deps.line.initial}),
         leadership: {
             initialRole: bornLeader ? 'leader' : 'follower',
             epoch: leadership.epoch ?? (bornLeader ? 1 : 0),
@@ -165,8 +211,9 @@ export function createAuthority<T extends Record<string, any>, Cmds extends tCom
             },
         },
     })
+    const archive = durable ? durable.attach(replica.api) : null
     function leading() {
-        return replica.api.status.state.role == 'leader'
+        return !closed && replica.control.canWrite()
     }
     function requireLeading(verb: string) {
         if (!leading()) {
@@ -175,12 +222,24 @@ export function createAuthority<T extends Record<string, any>, Cmds extends tCom
     }
 
     // ============== ONE control line: roster + deny list + receipts, owned or followed ==============
+    // control.durable: the line is restored from its archive; the roster section is a set of
+    // liveness facts of the previous lifetime, so it is emptied — nodes and standbys re-register
+    const controlDurable = deps.control?.durable && bornLeader
+        ? openDurableStore<ScaleControlState>({...deps.control.durable, initial: emptyControlState()})
+        : null
+    if (controlDurable) controlDurable.store.state.nodes = {}
+    let controlArchive: ReturnType<NonNullable<typeof controlDurable>['attach']> | null = null
     const control = createControlLine<ScaleControlState>({
         initial: emptyControlState(),
         own: bornLeader,
         describe: {scaleControl: {version: 1, authority: nodeId}},
         label: `authority ${nodeId} control line`,
         log,
+        ...(controlDurable ? {
+            store: controlDurable.store,
+            expose: controlDurable.expose,
+            onOwned(exposed) { controlArchive = controlDurable.attach(exposed) },
+        } : {}),
     })
     // owner-side facets over the control store; rebuilt on every promotion, dropped on demotion
     let roster: NodeDirectory | null = null
@@ -198,6 +257,7 @@ export function createAuthority<T extends Record<string, any>, Cmds extends tCom
         rosterLine = null
     }
     function requireRoster(verb: string) {
+        requireLeading(verb)
         if (!roster) throw new Error(`authority ${nodeId} is standby: ${verb} refused — it owns no roster`)
         return roster
     }
@@ -297,6 +357,7 @@ export function createAuthority<T extends Record<string, any>, Cmds extends tCom
     let offUpstreamFail: (() => void) | null = null
     /** Follow the control line from this link and announce ourselves as its standby. */
     async function attachUpstream(link: AuthorityUpstream) {
+        if (closed) return
         upstreamLink = link
         offUpstreamFail?.()
         offUpstreamFail = link.onFail.on(function upstreamLinkFailed() {
@@ -305,6 +366,7 @@ export function createAuthority<T extends Record<string, any>, Cmds extends tCom
         })
         if (leading()) return
         await control.follow(link.control)
+        if (closed || upstreamLink != link) return
         followedOnce = true
         if (started && !leading()) await announceStandby(link)
     }
@@ -390,7 +452,7 @@ export function createAuthority<T extends Record<string, any>, Cmds extends tCom
     }
     /** Call once the transport is bound: publishes the row (leader or standby) and starts the heartbeat. */
     function start() {
-        if (started) return
+        if (closed || started) return
         started = true
         if (leading()) publishOwnRow()
         else if (upstreamLink) void announceStandby(upstreamLink)
@@ -435,6 +497,8 @@ export function createAuthority<T extends Record<string, any>, Cmds extends tCom
         const owned = requireRoster('serve node link')
         const controlApi = control.api('serve node link')
         function requireNodeRow(raw: unknown, verb: string) {
+            requireLeading('node link ' + verb)
+            if (owned != roster) throw new Error('node link expired: authority ownership changed')
             const id = String(raw ?? '')
             if (!id) throw new Error('node link ' + verb + ' needs a nodeId')
             if (id == nodeId) throw new Error('node link refused: ' + id + ' is the authority row')
@@ -488,23 +552,34 @@ export function createAuthority<T extends Record<string, any>, Cmds extends tCom
         }
     }
 
-    /** Ready-made blocks for ONE gated write connection (RPC-AUTH rules 1/3/6/7). */
-    function connection() {
+    /** Ready-made blocks for ONE gated write connection (RPC-AUTH rules 1/3/6/7).
+     *  `shape.principal` is the audience seam: the host shapes what a verified principal is
+     *  served (prune commands by role with `null`, add projection lines) from the defaults;
+     *  the corridor still re-verifies every command, so shaping is visibility, not trust. */
+    function connectionWith<F extends Record<string, unknown>>(shaper: AuthorityPrincipalShaper<T, Cmds, F> | null): AuthorityConnection<F> {
         let serverControl: RpcServerControl | null = null
         let bound: {account: string, control: RpcServerControl} | null = null
+        const [gone, goneListen] = listen<[]>()
+        const session: StoreNodeSession = {nodeId, onGone: (cb: () => void) => goneListen.on(cb)}
         function rebind(account: string) {
             if (!serverControl || bound?.account == account) return
             if (bound) sessions.untrack(bound.account, bound.control)
             bound = {account, control: serverControl}
             sessions.track(account, serverControl)
         }
-        function principalFor(principal: StoreNodePrincipal) {
-            return {
+        function principalFor(principal: StoreNodePrincipal): F {
+            const defaults: AuthorityPrincipalDefaults<T, Cmds> = {
                 whoami: () => principal.account + ' @ ' + nodeId,
                 commands: fragment(principal.account),
                 /** Logout-everywhere: the deny fact reaches every node's sessions. */
                 revoke: () => revokeAccount(principal.account),
+                store: replica.control.store,
             }
+            if (!shaper) {
+                const {store: _store, ...served} = defaults
+                return served as unknown as F
+            }
+            return shaper(principal, defaults, session)
         }
         function resolveAuth(presented: unknown) {
             const principal = requireLiveClaims(presented)
@@ -524,23 +599,43 @@ export function createAuthority<T extends Record<string, any>, Cmds extends tCom
                 if (bound) sessions.untrack(bound.account, bound.control)
                 bound = null
                 serverControl = null
+                gone()
+                goneListen.close()
             },
         }
+    }
+
+    // Overloads, not a defaulted generic: `ReturnType<typeof serve.connection>` must stay the default
+    // facade for consumers that derive their wire types from it (a defaulted type parameter resolves
+    // to its CONSTRAINT under ReturnType), while a shaper's facade type flows through when given.
+    function connection<F extends Record<string, unknown>>(shape: {principal: AuthorityPrincipalShaper<T, Cmds, F>}): AuthorityConnection<F>
+    function connection(shape?: {principal?: undefined}): AuthorityConnection<AuthorityPrincipalFacade<T, Cmds>>
+    function connection(shape: {principal?: AuthorityPrincipalShaper<T, Cmds, any>} = {}) {
+        return connectionWith(shape.principal ?? null)
     }
 
     /** Operator failover: take the line over NOW (the first-follow guard is bypassed on purpose). */
     async function promote(reason = 'manual') {
         forcePromote = true
-        try { return await replica.control.promote(reason) } finally { forcePromote = false }
+        try {
+            const elected = await replica.control.promote(reason)
+            // The awaited command must expose the owned control facets immediately.
+            syncRole()
+            return elected
+        } finally { forcePromote = false }
     }
 
     function close() {
+        if (closed) return
+        closed = true
         if (beat) clearInterval(beat)
         offRole()
         offUpstreamFail?.()
         commandHost.close()
         dropOwnerFacets()
+        controlArchive?.close()
         control.close()
+        archive?.close()
         replica.close()
         roleChanges.close()
     }
@@ -570,7 +665,12 @@ export function createAuthority<T extends Record<string, any>, Cmds extends tCom
                 return rosterLine.api
             },
         },
-        identity: {login, renew, revoke: revokeAccount, mint},
+        identity: {
+            login, renew, revoke: revokeAccount, mint,
+            /** Verify a presented token against the adapter AND the deny list (throws; `revoke: true` on a revoked account).
+             *  The per-call check of any host relay that is not the RPC gate — a REST bearer, a webhook, a device link. */
+            principal: requireLiveClaims,
+        },
         /** The write corridor: local execution, per-account fragments, the token hop. */
         corridor: {
             execute,
@@ -590,6 +690,12 @@ export function createAuthority<T extends Record<string, any>, Cmds extends tCom
             nodes: () => nodeDirectoryViews(control.store().snapshot().nodes),
             readers,
             isRevoked,
+            /** What the boot found on the storage port ({seq, fromArchive, control?}); null without a durable seam. */
+            restored: () => durable || controlDurable
+                ? {seq: durable?.restored.seq ?? 0, fromArchive: durable?.restored.fromArchive ?? false, ...(controlDurable ? {control: controlDurable.restored} : {})}
+                : null,
+            /** Archiver counters {events, keyframes} since this boot; null without line.durable. */
+            archive: () => archive?.stats() ?? null,
         },
         start,
         close,

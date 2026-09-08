@@ -12,6 +12,7 @@ import {positiveIntegerOption} from '../positive-integer-option'
 import {normalizeStoreSelectionKeys, storeSelectionId} from './store-selection'
 import {STORE_REPLAY_PATCH_SOURCE, STORE_REPLAY_VIEW_PATCH_SOURCE} from './observe-private'
 import {toRaw} from './reactive'
+import {deferImmediate} from '../core/defer-immediate'
 import {
     type tStoreReplayWireBatchV2,
     decodeStoreReplayBatchV2,
@@ -182,8 +183,7 @@ export function createStoreReplayViewLayer(deps: StoreReplayViewLayerDeps) {
 
     function storeReplayViewSnapshotTask() {
         return new Promise<void>(function yieldSnapshotChunk(resolve) {
-            if (typeof setImmediate == 'function') setImmediate(resolve)
-            else setTimeout(resolve, 0)
+            deferImmediate(resolve)
         })
     }
 

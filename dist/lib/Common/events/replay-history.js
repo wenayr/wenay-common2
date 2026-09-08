@@ -132,6 +132,14 @@ function archiveReplay(replay, opts) {
     };
 }
 function openHistory(storage, live) {
+    function archiveGap(tail, from) {
+        let expected = from + 1;
+        for (const ev of tail) {
+            if (ev.seq != expected)
+                return new Error(`openHistory: archive gap: expected seq ${expected}, received seq ${ev.seq}`);
+            expected++;
+        }
+    }
     function at(where = {}) {
         const kf = storage.getKeyframe(where);
         if (!kf)
@@ -142,6 +150,9 @@ function openHistory(storage, live) {
             if (cut >= 0)
                 tail = tail.slice(0, cut);
         }
+        const gap = archiveGap(tail, kf.seq);
+        if (gap)
+            throw gap;
         return [kf, ...tail];
     }
     function subscribe(cb, opts = {}) {
@@ -163,8 +174,13 @@ function openHistory(storage, live) {
         }
         if (since != null) {
             const tail = storage.getEvents(since, Infinity);
-            if (tail.length && tail[0].seq != since + 1)
-                deliverFromKeyframe(at({}));
+            const gap = archiveGap(tail, since);
+            if (gap || (!tail.length && (storage.getKeyframe()?.seq ?? since) > since)) {
+                const recovered = at({});
+                if (!recovered && gap)
+                    throw gap;
+                deliverFromKeyframe(recovered);
+            }
             else
                 for (const ev of tail)
                     deliver(ev);

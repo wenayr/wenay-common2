@@ -127,6 +127,7 @@ export function createFileJobHost(deps: FileJobHostDeps) {
     const store = createStore<FileJobStore>({files: {}, jobs: {}}, drain !== undefined ? {drain} : {})
     const views = new Set<FileJobView>()
     const cancelled = new Set<string>()
+    const confirmations = new Map<string, Promise<FileResource>>()
     let closed = false
 
     // === Business policy ===
@@ -215,6 +216,7 @@ export function createFileJobHost(deps: FileJobHostDeps) {
     }
 
     async function startUpload(account: string, request: FileUploadRequest) {
+        if (closed) throw new Error('file upload: host closed')
         if (!request || typeof request.name != 'string' || !request.name.trim()) throw new Error('file upload: name is required')
         if (!Number.isFinite(request.size) || request.size < 0) throw new Error('file upload: size must be a non-negative number')
         const createdAt = now()
@@ -230,23 +232,38 @@ export function createFileJobHost(deps: FileJobHostDeps) {
     }
 
     async function confirmUpload(account: string, fileId: string) {
+        if (closed) throw new Error('file confirm: host closed')
         const file = requireFile(account, fileId, 'confirm')
+        const inFlight = confirmations.get(fileId)
+        if (inFlight) return copyFile(await inFlight)
         if (file.state != 'uploading') throw new Error('file confirm: expected uploading resource')
-        try {
-            await storage.confirmUpload?.({file: copyFile(file)})
-            file.state = 'uploaded'
-            delete file.error
-        } catch (error) {
-            file.state = 'failed'
-            file.error = errorText(error)
-            throw error
-        } finally {
-            touch(file)
-        }
-        return copyFile(file)
-    }
 
+        async function verifyStorage() {
+            if (closed) throw new Error('file confirm: host closed')
+            try {
+                await storage.confirmUpload?.({file: copyFile(file)})
+                if (closed) throw new Error('file confirm: host closed')
+                file.state = 'uploaded'
+                delete file.error
+            } catch (error) {
+                if (closed) throw error
+                file.state = 'failed'
+                file.error = errorText(error)
+                throw error
+            } finally {
+                if (!closed) touch(file)
+            }
+            return copyFile(file)
+        }
+
+        // Publish admission before invoking storage, including a reentrant adapter.
+        const confirmation = Promise.resolve().then(verifyStorage)
+        confirmations.set(fileId, confirmation)
+        try { return copyFile(await confirmation) }
+        finally { confirmations.delete(fileId) }
+    }
     function reportJob(jobId: string, next: FileJobReport) {
+        if (closed) return
         const job = store.state.jobs[jobId]
         if (!job || job.state == 'cancelled' || job.state == 'failed' || job.state == 'ready') return
         if (next.progress != null) {
@@ -287,6 +304,7 @@ export function createFileJobHost(deps: FileJobHostDeps) {
     }
 
     function startJob(account: string, fileId: string, input: unknown) {
+        if (closed) throw new Error('file process: host closed')
         const file = requireFile(account, fileId, 'process')
         if (file.state != 'uploaded') throw new Error('file process: expected uploaded resource')
         const createdAt = now()
@@ -300,6 +318,7 @@ export function createFileJobHost(deps: FileJobHostDeps) {
     }
 
     function cancelJob(account: string, jobId: string) {
+        if (closed) throw new Error('file job cancel: host closed')
         const job = store.state.jobs[jobId]
         const file = job && store.state.files[job.fileId]
         if (!job || !file || !writable(account, file)) throw new Error('file job cancel: forbidden or missing')
@@ -312,6 +331,7 @@ export function createFileJobHost(deps: FileJobHostDeps) {
     }
 
     async function download(account: string, fileId: string) {
+        if (closed) throw new Error('file download: host closed')
         const file = requireFile(account, fileId, 'download')
         if (file.state != 'uploaded') throw new Error('file download: expected uploaded resource')
         if (!storage.download) throw new Error('file download: storage does not expose downloads')
@@ -350,6 +370,7 @@ export function createFileJobHost(deps: FileJobHostDeps) {
             offStore()
             for (const view of Array.from(views)) view.close()
             cancelled.clear()
+            confirmations.clear()
         },
     }
 }

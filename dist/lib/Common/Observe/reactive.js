@@ -6,9 +6,11 @@ exports.toRaw = toRaw;
 exports.onUpdate = onUpdate;
 exports.onUpdatePaths = onUpdatePaths;
 exports.flushReactive = flushReactive;
+exports.flushReactiveNow = flushReactiveNow;
 exports.listenUpdate = listenUpdate;
 exports.listenUpdatePaths = listenUpdatePaths;
 const Listen_1 = require("../events/Listen");
+const defer_immediate_1 = require("../core/defer-immediate");
 const observe_private_1 = require("./observe-private");
 const NODE = Symbol('reactive.node');
 const isObj = (v) => v != null && typeof v == 'object';
@@ -20,7 +22,6 @@ const isReactiveObj = (v) => {
     const p = Object.getPrototypeOf(v);
     return p == Object.prototype || p == null;
 };
-const hasSetImmediate = typeof setImmediate == 'function';
 function scheduler(drain) {
     if (drain == 'micro')
         return f => queueMicrotask(f);
@@ -28,7 +29,7 @@ function scheduler(drain) {
         return f => { setTimeout(f, drain); };
     if (typeof drain == 'function')
         return f => drain(f);
-    return hasSetImmediate ? f => { setImmediate(f); } : f => { setTimeout(f, 0); };
+    return defer_immediate_1.deferImmediate;
 }
 function reactive(root, opts = {}) {
     const { drain = 'immediate', depth = Infinity, eager = false } = opts;
@@ -46,7 +47,12 @@ function reactive(root, opts = {}) {
             if (eng.scheduled)
                 return;
             eng.scheduled = true;
-            fire(function flush() {
+            fire(eng.flush);
+        },
+        flush() {
+            {
+                if (!eng.scheduled)
+                    return;
                 eng.scheduled = false;
                 const batch = [...eng.dirty];
                 eng.dirty.clear();
@@ -96,7 +102,7 @@ function reactive(root, opts = {}) {
                 }
                 if (err !== undefined)
                     setTimeout(() => { throw err; }, 0);
-            });
+            }
         },
     };
     if (hasMutationHook) {
@@ -118,7 +124,13 @@ function makeNode(target, parent, path, level, eng) {
         target, parent, path, active: true, level,
         subs: new Set(), pathSubs: new Set(), kids: new Map(), proxy: null, eng,
     };
-    const proxyTarget = (Array.isArray(target) ? [] : {});
+    const proxyTarget = (Array.isArray(target) ? new Array(target.length) : {});
+    function syncArrayLength() {
+        if (!Array.isArray(proxyTarget) || !Array.isArray(node.target))
+            return;
+        const descriptor = Reflect.getOwnPropertyDescriptor(node.target, 'length');
+        Reflect.defineProperty(proxyTarget, 'length', descriptor);
+    }
     node.proxy = new Proxy(proxyTarget, {
         get(_, k) {
             if (k == NODE)
@@ -144,9 +156,9 @@ function makeNode(target, parent, path, level, eng) {
             const old = node.target[k];
             if (had && Object.is(old, v))
                 return true;
+            let accepted = true;
             if (had) {
-                if (!Reflect.set(node.target, k, v, node.target))
-                    return false;
+                accepted = Reflect.set(node.target, k, v, node.target);
             }
             else {
                 if (!Reflect.defineProperty(node.target, k, {
@@ -157,30 +169,40 @@ function makeNode(target, parent, path, level, eng) {
                 }))
                     return false;
             }
-            if (Array.isArray(proxyTarget) && k == "length")
-                proxyTarget.length = v;
+            const next = node.target[k];
+            if (!accepted && Object.is(old, next))
+                return false;
+            if (Array.isArray(node.target) && k == 'length') {
+                syncArrayLength();
+                if (next < old)
+                    detachTruncatedChildren(node);
+            }
             const kid = node.kids.get(k);
             if (kid)
-                rebind(kid, v);
+                rebind(kid, next);
             node.eng.onMutation?.(dirtyPathFor(node, k));
             if (eng.live > 0)
                 bubble(node, k, Array.isArray(old) || Array.isArray(v));
-            return true;
+            return accepted;
         },
         defineProperty(_, k, d) {
             const had = Object.prototype.hasOwnProperty.call(node.target, k);
             const old = node.target[k];
             const desc = 'value' in d ? { ...d, value: toRaw(d.value) } : d;
             const ok = Reflect.defineProperty(node.target, k, desc);
-            if (!ok)
+            const v = node.target[k];
+            if (!ok && Object.is(old, v))
                 return false;
-            if (desc.configurable === false) {
+            if (Array.isArray(node.target) && k == 'length')
+                syncArrayLength();
+            else if (desc.configurable === false) {
                 const mirror = Reflect.defineProperty(proxyTarget, k, desc);
                 if (!mirror)
                     return false;
             }
-            const v = node.target[k];
             if (!had || !Object.is(old, v)) {
+                if (Array.isArray(node.target) && k == 'length' && v < old)
+                    detachTruncatedChildren(node);
                 const kid = node.kids.get(k);
                 if (kid) {
                     if (isReactiveObj(v))
@@ -195,7 +217,7 @@ function makeNode(target, parent, path, level, eng) {
                 if (eng.live > 0)
                     bubble(node, k, Array.isArray(old) || Array.isArray(v));
             }
-            return true;
+            return ok;
         },
         deleteProperty(_, k) {
             if (!Object.prototype.hasOwnProperty.call(node.target, k))
@@ -225,8 +247,10 @@ function makeNode(target, parent, path, level, eng) {
             return keys;
         },
         getOwnPropertyDescriptor(_, k) {
-            if (Array.isArray(proxyTarget) && k == "length")
+            if (Array.isArray(proxyTarget) && k == "length") {
+                syncArrayLength();
                 return Reflect.getOwnPropertyDescriptor(proxyTarget, k);
+            }
             const pd = Reflect.getOwnPropertyDescriptor(proxyTarget, k);
             if (pd && pd.configurable === false)
                 return pd;
@@ -347,6 +371,15 @@ function detachTree(node) {
         detachTree(kid);
     node.kids.clear();
 }
+function detachTruncatedChildren(node) {
+    for (const [key, child] of node.kids) {
+        if (Object.prototype.hasOwnProperty.call(node.target, key))
+            continue;
+        node.kids.delete(key);
+        markChanged(child);
+        detachTree(child);
+    }
+}
 function prewalk(node) {
     if (node.level >= node.eng.depth)
         return;
@@ -410,6 +443,13 @@ function flushReactive(p) {
     if (!eng.scheduled && eng.dirty.size == 0 && eng.dirtyPaths.length == 0)
         return Promise.resolve();
     return new Promise(resolve => { eng.waiters.add(resolve); });
+}
+function flushReactiveNow(p) {
+    const node = p && p[NODE];
+    if (!node)
+        throw new Error('flushReactiveNow: not a reactive object');
+    if (node.eng.scheduled)
+        node.eng.flush();
 }
 function listenUpdate(p) {
     const listen = (0, Listen_1.createListen)((emit) => onUpdate(p, () => emit()), {

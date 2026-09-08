@@ -48,8 +48,12 @@ type StoreReplayWireRemote<W> = {
 export type StoreReplayLineLocal = {
     count(): number;
 };
-export type StoreReplayBatchRemote = StoreReplayWireRemote<tStoreReplayWireBatchV2>;
-export type StoreReplayRemote = StoreReplayBatchRemote & {
+declare const STORE_REPLAY_STATE: unique symbol;
+export type StoreReplayState<T extends object = any> = {
+    readonly [STORE_REPLAY_STATE]?: T;
+};
+export type StoreReplayBatchRemote<T extends object = any> = StoreReplayWireRemote<tStoreReplayWireBatchV2> & StoreReplayState<T>;
+export type StoreReplayRemote<T extends object = any> = StoreReplayBatchRemote<T> & {
     describe?: () => Record<string, any> | Promise<Record<string, any>>;
 };
 export type tStoreReplayMode = 'v2';
@@ -79,13 +83,12 @@ export declare const STORE_REPLAY_CHUNK_BUDGET_MAX: number;
 export declare const STORE_REPLAY_CHUNK_TTL_MS = 60000;
 export declare function exposeStoreReplay<T extends object>(store: Store<T>, opts?: StoreReplayOpts): {
     api: {
-        get(): T;
-        get<M extends import("./store").StoreMask<T>>(mask: M): import("./store").StorePick<T, M>;
+        get: import("./store").StoreGetter<T>;
         set(path: import("./store").StorePath, value: any): void;
         replace(path: import("./store").StorePath, value: any): void;
         changed: any;
         changedPaths: any;
-        replay: {
+        replay: ({
             line: {
                 on: (cb: (batch: tStoreReplayWireBatchV2) => void) => any;
             } & StoreReplayLineLocal;
@@ -105,7 +108,7 @@ export declare function exposeStoreReplay<T extends object>(store: Store<T>, opt
             describe: () => Record<string, any>;
         } | (StoreReplayWireRemote<tStoreReplayWireBatchV2> & {
             line: StoreReplayLineLocal;
-        });
+        })) & StoreReplayState<T>;
     };
     replay: {
         has(key: import("../..").ListenKey): boolean;
@@ -154,13 +157,13 @@ export declare function exposeStoreReplay<T extends object>(store: Store<T>, opt
     flushPending: () => void;
     close: () => void;
 };
-export declare function syncStoreReplayBatch<T extends object>(store: Store<T>, remote: StoreReplayBatchRemote, opts?: StoreReplaySyncOpts<T>): (() => void) & {
+export declare function syncStoreReplayBatch<T extends object>(store: Store<T>, remote: StoreReplayBatchRemote<NoInfer<T>>, opts?: StoreReplaySyncOpts<T>): (() => void) & {
     ready: Promise<void>;
     seq: () => number;
     isStale: () => boolean;
     lastTs: () => number;
 };
-export declare function syncStoreReplay<T extends object>(store: Store<T>, remote: StoreReplayRemote, opts?: StoreReplaySyncOpts<T>): (() => void) & {
+export declare function syncStoreReplay<T extends object>(store: Store<T>, remote: StoreReplayRemote<NoInfer<T>>, opts?: StoreReplaySyncOpts<T>): (() => void) & {
     ready: Promise<void>;
     seq: () => number;
     isStale: () => boolean;
@@ -250,15 +253,15 @@ export declare function syncStoreReplayView<T extends object>(store: Store<T>, r
         seq: number;
     } | null;
 };
-export declare function syncStoreReplayRoute<T extends object>(store: Store<T>, remote: StoreReplayRemote, opts?: StoreReplayRouteOpts<T>): (() => void) & {
+export declare function syncStoreReplayRoute<T extends object>(store: Store<T>, remote: StoreReplayRemote<NoInfer<T>>, opts?: StoreReplayRouteOpts<T>): (() => void) & {
     ready: Promise<void>;
-    switch: (nextRemote: StoreReplayRemote, nextOpts?: Parameters<(nextRemote: ReplayRemote<[StorePatch[]]>, nextOpts?: ReplayRouteSwitchOpts) => Promise<void>>[1]) => Promise<void>;
+    switch: (nextRemote: StoreReplayRemote<NoInfer<T>>, nextOpts?: Parameters<(nextRemote: ReplayRemote<[StorePatch[]]>, nextOpts?: ReplayRouteSwitchOpts) => Promise<void>>[1]) => Promise<void>;
     seq: () => number;
     label: () => string | undefined;
     active: () => boolean;
     mode: 'v2';
 };
-export declare function syncStoreReplayEach<T extends object>(remote: StoreReplayRemote, cb: (key: string, value: T[keyof T] | undefined, ctx: StoreEachCtx) => void, opts?: StoreReplaySyncOpts<T> & {
+export declare function syncStoreReplayEach<T extends object>(remote: StoreReplayRemote<T>, cb: (key: string, value: T[keyof T] | undefined, ctx: StoreEachCtx) => void, opts?: StoreReplaySyncOpts<T> & {
     drain?: StoreDrain;
     initial?: T;
 }): ((() => void) & {

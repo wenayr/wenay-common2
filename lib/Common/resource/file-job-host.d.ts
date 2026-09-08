@@ -78,7 +78,7 @@ export type FileJobHostDeps = {
 export declare function createFileJobHost(deps: FileJobHostDeps): {
     connection: (account: string) => {
         fragment: {
-            state: {
+            state: ({
                 line: {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 } & import("../Observe").StoreReplayLineLocal;
@@ -115,7 +115,7 @@ export declare function createFileJobHost(deps: FileJobHostDeps): {
                 } | undefined;
             } & {
                 line: import("../Observe").StoreReplayLineLocal;
-            });
+            })) & import("../Observe").StoreReplayState<FileJobStore>;
             startUpload: (request: FileUploadRequest) => Promise<{
                 file: {
                     id: string;

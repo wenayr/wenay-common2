@@ -31,7 +31,7 @@ export type FollowerStatus = {
 
 export type StoreFollowerDeps<T extends object> = {
     /** Replay wire of the leader — RPC projection of exposeStoreReplay(...).api.replay. */
-    remote: StoreReplayRemote
+    remote: StoreReplayRemote<T>
     /** State before the first keyframe (usually {}). */
     initial?: T
     /** Cascade journal options for OWN subscribers (history/getSince/...). */

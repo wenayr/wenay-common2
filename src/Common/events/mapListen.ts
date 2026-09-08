@@ -6,20 +6,32 @@ export function mapListen<TSource extends any[], TTarget extends any[]>(
     options?: {closeOn?: ListenApi<any>},
 ) {
     let unsubscribeFromSource: (() => void) | null = null
+    let sourceGeneration = 0
+
+    function disconnectSource() {
+        sourceGeneration++
+        const off = unsubscribeFromSource
+        unsubscribeFromSource = null
+        off?.()
+    }
 
     const [emit, targetListen] = listen<TTarget>({
-        event: (type, count) => {
+        event: function mappedSubscriptionChanged(type, count, api) {
             if (type == "add" && count == 1) {
+                const generation = ++sourceGeneration
+                api.onClose(disconnectSource)
                 const sourceCallback: Listener<NormalizeTuple<TSource>> = (...args) => {
+                    if (generation != sourceGeneration) return
                     const result = transform(...args)
                     if (result !== null) emit(...(result as NormalizeTuple<TTarget>))
                 }
-                unsubscribeFromSource = sourceListen.on(sourceCallback)
+                const off = sourceListen.on(sourceCallback)
+                if (generation != sourceGeneration || api.count() == 0) off()
+                else unsubscribeFromSource = off
             }
 
             if (type == "remove" && count == 0 && unsubscribeFromSource) {
-                unsubscribeFromSource()
-                unsubscribeFromSource = null
+                disconnectSource()
             }
         },
         closeOn: options?.closeOn,

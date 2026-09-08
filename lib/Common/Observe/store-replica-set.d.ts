@@ -19,30 +19,30 @@ export type StoreReplicaDescriptor = {
     headSeq: number;
     proof?: unknown;
 };
-export type StoreReplicaRemote = {
+export type StoreReplicaRemote<T extends object = any> = {
     descriptor: () => StoreReplicaDescriptor | Promise<StoreReplicaDescriptor>;
     changed?: {
         on: (cb: (descriptor?: StoreReplicaDescriptor) => void) => any;
     };
-    replay: StoreReplayRemote;
+    replay: StoreReplayRemote<T>;
     ping?: () => unknown | Promise<unknown>;
 };
-export type StoreReplicaSession = {
-    remote: StoreReplicaRemote;
+export type StoreReplicaSession<T extends object = any> = {
+    remote: StoreReplicaRemote<T>;
     close: () => void;
     onFail?: {
         on: (cb: (reason?: unknown) => void) => any;
     };
 };
-export type StoreReplicaOffer = {
+export type StoreReplicaOffer<T extends object = any> = {
     id: string;
-    connect: () => StoreReplicaSession | Promise<StoreReplicaSession>;
+    connect: () => StoreReplicaSession<T> | Promise<StoreReplicaSession<T>>;
     priority?: number;
 };
-export type StoreReplicaOfferSource = {
-    list: () => readonly StoreReplicaOffer[];
+export type StoreReplicaOfferSource<T extends object = any> = {
+    list: () => readonly StoreReplicaOffer<T>[];
     changes: {
-        on: (cb: (offers: readonly StoreReplicaOffer[]) => void) => any;
+        on: (cb: (offers: readonly StoreReplicaOffer<T>[]) => void) => any;
     };
 };
 export type StoreReplicaRouteStatus = {
@@ -127,30 +127,30 @@ export type StoreReplicaSetDeps<T extends object> = StoreLineCoordinates & {
     store?: Store<T>;
     initial?: T;
     expose?: StoreReplayOpts;
-    offers?: StoreReplicaOfferSource;
+    offers?: StoreReplicaOfferSource<NoInfer<T>>;
     leadership?: StoreReplicaLeadership;
     route?: StoreReplicaRoutePolicy;
     now?: () => number;
 };
-export declare function createStoreReplicaOffers(initial?: readonly StoreReplicaOffer[]): {
+export declare function createStoreReplicaOffers<T extends object = any>(initial?: readonly StoreReplicaOffer<T>[]): {
     control: {
-        upsert: (offer: StoreReplicaOffer) => () => void;
+        upsert: (offer: StoreReplicaOffer<T>) => () => void;
         remove(id: string): boolean;
-        replace: (next: readonly StoreReplicaOffer[]) => void;
+        replace: (next: readonly StoreReplicaOffer<T>[]) => void;
         clear(): void;
     };
     api: {
-        list: () => StoreReplicaOffer[];
-        changes: import("../..").ListenApi<[readonly StoreReplicaOffer[]]>;
+        list: () => StoreReplicaOffer<T>[];
+        changes: import("../..").ListenApi<[readonly StoreReplicaOffer<T>[]]>;
     };
 };
-export type StoreReplicaOffers = ReturnType<typeof createStoreReplicaOffers>;
+export type StoreReplicaOffers<T extends object = any> = ReturnType<typeof createStoreReplicaOffers<T>>;
 export declare function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDeps<T>): {
     control: {
         store: Store<T>;
-        addOffer: (offerValue: StoreReplicaOffer) => () => void;
+        addOffer: (offerValue: StoreReplicaOffer<T>) => () => void;
         removeOffer: (id: string) => boolean;
-        setOffers: (next: readonly StoreReplicaOffer[]) => void;
+        setOffers: (next: readonly StoreReplicaOffer<T>[]) => void;
         probe: () => Promise<void>;
         reconcile: (reason?: string) => Promise<void>;
         promote: (reason?: string) => Promise<StoreReplicaDescriptor | null>;
@@ -205,7 +205,7 @@ export declare function createStoreReplicaSet<T extends object>(deps: StoreRepli
         fragment: {
             descriptor: () => StoreReplicaDescriptor;
             changed: import("../..").ListenApi<[StoreReplicaDescriptor]>;
-            replay: {
+            replay: ({
                 line: {
                     on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 } & import("./store-replay").StoreReplayLineLocal;
@@ -242,7 +242,7 @@ export declare function createStoreReplicaSet<T extends object>(deps: StoreRepli
                 } | undefined;
             } & {
                 line: import("./store-replay").StoreReplayLineLocal;
-            });
+            })) & import("./store-replay").StoreReplayState<T>;
             ping: () => number;
         };
         canWrite: () => boolean;

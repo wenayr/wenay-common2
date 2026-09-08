@@ -1,0 +1,101 @@
+import assert from 'node:assert/strict'
+import {createServiceLeader} from '../../template/leader'
+import {serviceDefinition} from './service'
+
+async function checkHostIsolation() {
+    const initial = structuredClone(serviceDefinition.initial)
+    // A second host is a fixture; public signup deliberately creates guests.
+    initial.accounts.vera = {...initial.accounts.anna, account: 'vera', name: 'Vera'}
+    const leader = createServiceLeader({definition: {...serviceDefinition, initial}, selfUrl: () => 'http://localhost', log: () => {}})
+    try {
+        for (const host of ['anna', 'vera']) {
+            await leader.corridor.execute(host, 'addApartment', 'own-apartment', {
+                id: host + '-loft', title: host + ' loft', pricePerNight: 90,
+                lockId: host + '-lock', devicePassword: host + '-lock-pass',
+            })
+        }
+        const anna = leader.access.principalOf({account: 'anna'})
+        const vera = leader.access.principalOf({account: 'vera'})
+        const annaBoard = leader.access.snapshot('hostBoard', anna) as ReturnType<typeof serviceDefinition.views.hostBoard.project>
+        const veraBoard = leader.access.snapshot('hostBoard', vera) as ReturnType<typeof serviceDefinition.views.hostBoard.project>
+        assert.deepEqual(Object.keys(annaBoard.apartments).sort(), ['anna-loft', 'loft-1'])
+        assert.deepEqual(Object.keys(veraBoard.apartments), ['vera-loft'])
+        function assertLock(value: object, id: string) {
+            assert('lock' in value && value.lock != null && typeof value.lock == 'object')
+            assert('id' in value.lock)
+            assert.equal(value.lock.id, id)
+        }
+        assertLock(annaBoard.apartments['anna-loft'], 'anna-lock')
+        assertLock(veraBoard.apartments['vera-loft'], 'vera-lock')
+        for (const host of ['anna', 'vera']) {
+            const device = leader.access.principalOf({account: host + '-lock'})
+            assert.deepEqual(device.roles, ['device'])
+            assert.deepEqual(leader.access.snapshot('myLock', device), {
+                lock: {id: host + '-lock', apartmentId: host + '-loft'}, commands: {}, codes: {},
+            }, 'each dynamically created device sees only its own lock')
+            assert.throws(function readHostBoardAsDevice() {
+                leader.access.snapshot('hostBoard', device)
+            }, /forbidden/)
+        }
+        assert.throws(function readDeviceViewAsHost() {
+            leader.access.snapshot('myLock', vera)
+        }, /forbidden/)
+    } finally { leader.control.close() }
+}
+
+async function main() {
+    await checkHostIsolation()
+    const leader = createServiceLeader({definition: serviceDefinition, selfUrl: () => 'http://localhost', log: () => {}})
+    try {
+        await leader.serve.signup('signup-collision', {account: 'carl', name: 'Carl', password: 'carl-pass'})
+        await leader.corridor.execute('anna', 'addApartment', 'second-apartment', {
+            id: 'loft-2', title: 'Second loft', pricePerNight: 90, lockId: 'lock-2', devicePassword: 'lock-2-pass',
+        })
+        const from = new Date().toISOString().slice(0, 10)
+        const to = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
+        const bobInput = {apartmentId: 'loft-1', from, to}
+        const bob = await leader.corridor.execute('bob', 'book', 'shared-request', bobInput)
+        const carl = await leader.corridor.execute('carl', 'book', 'shared-request', {apartmentId: 'loft-2', from, to})
+        assert.notEqual(bob.id, carl.id, 'different guests must not share a booking')
+        assert.notEqual(bob.paymentId, carl.paymentId, 'different guests must not share a payment intent')
+        assert.equal(leader.view.state().bookings[bob.id].guest, 'bob')
+        assert.equal(leader.view.state().bookings[carl.id].guest, 'carl')
+        assert.equal((await leader.corridor.execute('bob', 'book', 'shared-request', bobInput)).id, bob.id)
+        assert.equal(Object.keys(leader.view.state().payments).length, 2)
+        await leader.corridor.system.paymentSettled('settle-bob', {paymentId: bob.paymentId, status: 'confirmed'})
+        await leader.corridor.system.paymentSettled('settle-carl', {paymentId: carl.paymentId, status: 'confirmed'})
+        const first = await leader.corridor.execute('bob', 'unlock', 'shared-unlock', {bookingId: bob.id})
+        const second = await leader.corridor.execute('carl', 'unlock', 'shared-unlock', {bookingId: carl.id})
+        assert.notEqual(first.commandId, second.commandId, 'unlock intents retain the requesting account scope')
+        assert.equal((await leader.corridor.execute('bob', 'unlock', 'shared-unlock', {bookingId: bob.id})).commandId, first.commandId)
+        assert.match(bob.id, /^bk-[a-f0-9]{64}$/)
+        assert.match(bob.paymentId, /^pay-[a-f0-9]{64}$/)
+        assert.match(first.commandId, /^unlock-[a-f0-9]{64}$/)
+        const saved = leader.line.control.store.snapshot()
+        const restored = createServiceLeader({definition: {...serviceDefinition, initial: saved}, selfUrl: () => 'http://localhost', log: () => {}})
+        const laterInput = {
+            apartmentId: 'loft-1',
+            from: new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10),
+            to: new Date(Date.now() + 6 * 86_400_000).toISOString().slice(0, 10),
+        }
+        try {
+            await assert.rejects(restored.corridor.execute('bob', 'book', 'shared-request', laterInput), /already used/)
+            await assert.rejects(restored.corridor.execute('bob', 'unlock', 'shared-unlock', {bookingId: bob.id}), /already used/)
+            assert.deepEqual(restored.line.control.store.snapshot(), saved, 'surviving bookings and lock intents cannot be overwritten after receipt eviction')
+        } finally { restored.control.close() }
+        const paymentOnly = structuredClone(saved)
+        delete paymentOnly.bookings[bob.id]
+        const retainedPayment = createServiceLeader({definition: {...serviceDefinition, initial: paymentOnly}, selfUrl: () => 'http://localhost', log: () => {}})
+        try {
+            await assert.rejects(retainedPayment.corridor.execute('bob', 'book', 'shared-request', laterInput), /already used/)
+            assert.deepEqual(retainedPayment.line.control.store.snapshot(), paymentOnly, 'a retained payment intent independently guards its identifier')
+        } finally { retainedPayment.control.close() }
+        console.log('PASS apartments account-scoped bookings, payments, lock intents, receipt retries and independent host/device projections')
+    } finally { leader.control.close() }
+}
+
+main().catch(function fatal(error) {
+    console.error(error)
+    process.exitCode = 1
+})
+

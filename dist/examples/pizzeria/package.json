@@ -1,0 +1,26 @@
+{
+    "name": "wenay-pizzeria-example",
+    "private": true,
+    "version": "0.1.0",
+    "scripts": {
+        "start": "node run.mjs",
+        "check": "tsx account-id-check.ts && tsx check.ts",
+        "typecheck": "tsc --noEmit"
+    },
+    "engines": {
+        "node": ">=20.0.0"
+    },
+    "dependencies": {
+        "express": "^5.2.1",
+        "socket.io": "^4.8.3",
+        "socket.io-client": "^4.8.3",
+        "swagger-ui-dist": "^5.32.14",
+        "wenay-common2": "^2.16.0"
+    },
+    "devDependencies": {
+        "@types/express": "^5.0.6",
+        "@types/node": "^26.1.2",
+        "tsx": "^4.23.1",
+        "typescript": "^7.0.2"
+    }
+}

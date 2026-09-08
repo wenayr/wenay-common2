@@ -56,7 +56,7 @@ export type StoreNodeApi<T> = {
     on(cb: (value: T, ctx: StoreCtx<T>) => void, opts?: StoreSubOpts): () => void;
     once(cb: (value: T, ctx: StoreCtx<T>) => void, opts?: StoreSubOpts): () => void;
     update<M extends StoreMask<T>>(mask: M, opts?: StoreSubOpts): StoreSelection<T, M>;
-    at<K extends PropertyKey>(key: K): StoreNode<any>;
+    at<K extends PropertyKey>(key: K): StoreNode<K extends keyof NonNullable<T> ? NonNullable<T>[K] : any>;
     count(): number;
 };
 export type StoreSelection<T, M> = {
@@ -101,9 +101,14 @@ type RemoteStore<T extends object> = {
     patchesBatch?: any;
     changedData?: any;
 };
+declare const STORE_GET_STATE: unique symbol;
+export type StoreGetter<T extends object> = {
+    (): T;
+    <M extends StoreMask<T>>(mask: M): StorePick<T, M>;
+    readonly [STORE_GET_STATE]?: T;
+};
 export type StoreRemoteApi<T extends object> = {
-    get(): T;
-    get<M extends StoreMask<T>>(mask: M): StorePick<T, M>;
+    get: StoreGetter<T>;
     set(path: StorePath, value: any): void;
     replace(path: StorePath, value: any): void;
     changed: any;

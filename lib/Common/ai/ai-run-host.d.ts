@@ -182,7 +182,7 @@ export declare function createAiRunHost(deps: AiRunHostDeps): {
                 inputSchema?: unknown;
                 acceptsResources?: boolean;
             }[];
-            state: {
+            state: ({
                 line: {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 } & import("../Observe").StoreReplayLineLocal;
@@ -219,7 +219,7 @@ export declare function createAiRunHost(deps: AiRunHostDeps): {
                 } | undefined;
             } & {
                 line: import("../Observe").StoreReplayLineLocal;
-            });
+            })) & import("../Observe").StoreReplayState<AiRunStore>;
             events: import("../events/replay-wire").ReplayExpose<[AiRunEvent]>;
             createRun: (request: AiRunRequest) => AiRun;
             cancelRun: (runId: string, reason?: string) => AiRun;

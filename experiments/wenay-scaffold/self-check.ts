@@ -12,9 +12,11 @@
 //  Run: node node_modules/tsx/dist/cli.mjs experiments/wenay-scaffold/self-check.ts
 // ============================================================
 
+import {spawn} from 'node:child_process'
 import {mkdtemp, readFile, readdir, rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import path from 'node:path'
+import {io as ioClient} from 'socket.io-client'
 import {followNodeDirectory} from '../../src/Common/Observe/node-directory'
 import {createStoreFollower} from '../../src/Common/Observe/store-follower'
 import {createRpcClient} from '../../src/Common/rcp/rpc-client'
@@ -22,7 +24,9 @@ import {createLoopbackSocketPair} from '../../src/Common/rcp/rpc-inproc'
 import type {SocketTmpl} from '../../src/Common/rcp/rpc-protocol'
 import {createTokenCodec} from '../../src/server/auth-token'
 import {buildInputValidate, inputJsonSchema} from './template/input-schema'
-import {createServiceLeader} from './template/leader'
+import {createStripeProvider, fakeBankWebhook, signSettlement, signStripeEvent, stripeWebhook, toMinorUnits, verifyStripeSignature} from './template/payments'
+import {createServiceLeader, SYSTEM_ACCOUNT} from './template/leader'
+import {createMemoryReplayStorage} from '../../src/Common/events/replay-history'
 import {createServiceNode} from './template/node'
 import {serviceDefinition, type CounterState} from './template/service'
 
@@ -93,6 +97,102 @@ async function main() {
             && json.properties.tags.items.type == 'string'
             && json.properties.days.type == 'number',
             'inputJsonSchema mirrors the same value: required excludes optional, formats and enums carried')
+    }
+
+    // ============== the payments primitives: codecs and the Stripe-shaped adapter, offline ==============
+    {
+        const bank = fakeBankWebhook('bank-secret')
+        const body = JSON.stringify({eventId: 'evt_1', paymentId: 'pay_1', ref: 'ch_1', status: 'confirmed'})
+        const headers = (signature: string | undefined) => (name: string) => name == 'x-bank-signature' ? signature : undefined
+        ok(bank.verify(body, headers(signSettlement('bank-secret', body))) && !bank.verify(body, headers(signSettlement('other', body))) && !bank.verify(body, headers(undefined)),
+            'the fake bank codec verifies its HMAC and refuses another secret or no header')
+        ok(bank.parse(body)?.[0]?.status == 'confirmed' && throwsMessage(() => bank.parse(JSON.stringify({eventId: 'x'})), 'malformed settlement'),
+            'the fake bank codec parses one settlement and refuses a malformed body')
+
+        const stripe = stripeWebhook('whsec_test', {now: () => 1_700_000_000_000})
+        const event = JSON.stringify({id: 'evt_s1', type: 'payment_intent.succeeded', data: {object: {id: 'pi_1', metadata: {paymentId: 'pay_9'}}}})
+        const signed = signStripeEvent(event, 'whsec_test', 1_700_000_000)
+        const stripeHeaders = (signature: string | undefined) => (name: string) => name == 'stripe-signature' ? signature : undefined
+        ok(stripe.verify(event, stripeHeaders(signed)) && !stripe.verify(event, stripeHeaders(signStripeEvent(event, 'whsec_other', 1_700_000_000))),
+            'the Stripe codec verifies t=…,v1=… over `${t}.${body}` and refuses a foreign secret')
+        ok(!verifyStripeSignature(signStripeEvent(event, 'whsec_test', 1_700_000_000 - 301), event, 'whsec_test', {now: () => 1_700_000_000_000})
+            && verifyStripeSignature(signStripeEvent(event, 'whsec_test', 1_700_000_000 - 299), event, 'whsec_test', {now: () => 1_700_000_000_000}),
+            'a signature older than the tolerance is refused, a fresh one accepted')
+        const failed = JSON.stringify({id: 'evt_s2', type: 'payment_intent.payment_failed', data: {object: {id: 'pi_2', metadata: {paymentId: 'pay_8'}, last_payment_error: {message: 'card declined'}}}})
+        const other = JSON.stringify({id: 'evt_s3', type: 'charge.refunded', data: {object: {id: 'ch_3', metadata: {paymentId: 'pay_7'}}}})
+        ok(stripe.parse(event)?.[0]?.status == 'confirmed' && stripe.parse(event)?.[0]?.ref == 'pi_1' && stripe.parse(event)?.[0]?.eventId == 'evt_s1'
+            && stripe.parse(failed)?.[0]?.status == 'failed' && stripe.parse(failed)?.[0]?.error == 'card declined' && stripe.parse(other) == null,
+            'the Stripe codec maps the two PaymentIntent outcomes and ignores other event types')
+
+        const calls: {url: string, init: RequestInit}[] = []
+        const fakeFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+            calls.push({url: String(url), init: init ?? {}})
+            const params = new URLSearchParams(String(init?.body))
+            if (params.get('amount') == '999999') return new Response(JSON.stringify({error: {message: 'insufficient funds'}}), {status: 402})
+            return new Response(JSON.stringify({id: 'pi_' + params.get('metadata[paymentId]')}), {status: 200})
+        }) as typeof fetch
+        const {provider} = createStripeProvider({secretKey: 'sk_test_x', webhookSecret: 'whsec_test', fetch: fakeFetch})
+        const charged = await provider.charge({paymentId: 'pay_42', amount: 12.5, currency: 'EUR', description: 'booking bk-1', hints: {paymentMethod: 'pm_1'}})
+        const sent = new URLSearchParams(String(calls[0]?.init.body))
+        const sentHeaders = calls[0]?.init.headers as Record<string, string>
+        ok(charged.ref == 'pi_pay_42' && calls[0]?.url == 'https://api.stripe.com/v1/payment_intents'
+            && sent.get('amount') == '1250' && sent.get('currency') == 'eur' && sent.get('confirm') == 'true' && sent.get('metadata[paymentId]') == 'pay_42' && sent.get('payment_method') == 'pm_1'
+            && sentHeaders['idempotency-key'] == 'pay_42' && sentHeaders['authorization'] == 'Bearer sk_test_x',
+            'the Stripe adapter posts a confirmed PaymentIntent in minor units under the payment id as Idempotency-Key')
+        ok(toMinorUnits(12.5, 'EUR') == 1250 && toMinorUnits(1200, 'JPY') == 1200, 'minor units respect zero-decimal currencies')
+        const declined = await provider.charge({paymentId: 'pay_43', amount: 9999.99, currency: 'EUR'}).then(() => 'charged', (error: Error) => error.message)
+        ok(declined == 'stripe: insufficient funds', `a provider error surfaces with its message (${declined})`)
+    }
+
+    // ============== limits are data: per command, per account, and the host's own principal is exempt ==============
+    {
+        const limited = {
+            ...serviceDefinition,
+            limits: {perMinute: 3},
+            commands: {
+                ...serviceDefinition.commands,
+                add: {...serviceDefinition.commands.add, limit: {perMinute: 2}},
+            },
+        }
+        const host = createServiceLeader({definition: limited, selfUrl: () => 'mem://limits', log: quiet})
+        host.control.start()
+        const call = (account: string, id: string) => host.corridor.execute(account, 'add', id, {delta: 1}).then(() => 'ok', (error: Error) => error.message)
+        ok(await call('u', 'a') == 'ok' && await call('u', 'b') == 'ok' && /rate limit: add allows 2/.test(await call('u', 'c')),
+            'a command-level limit refuses the third call of one account within the minute')
+        ok(await call('v', 'a') == 'ok', 'the command window is per account')
+        let systemOk = true
+        for (let i = 0; i < 70 && systemOk; i++) systemOk = await call(SYSTEM_ACCOUNT, 's' + i) == 'ok'
+        ok(systemOk, 'the system principal is exempt from both the corridor budget and the command limit (70 calls)')
+        host.control.close()
+    }
+
+    // ============== the archive's schema version: migrate once, refuse a silent mismatch ==============
+    {
+        const storage = createMemoryReplayStorage()
+        const v1 = createServiceLeader({definition: serviceDefinition, selfUrl: () => 'mem://v1', durable: {storage, everyEvents: 1}, log: quiet})
+        v1.control.start()
+        await v1.corridor.execute('author', 'add', 'm1', {delta: 5})
+        ok((v1.view.state() as any).$version == 1 && v1.view.state().counter?.value == 5, 'a fresh durable leader stamps schema version 1 into the state')
+        v1.control.close()
+        const v2 = createServiceLeader({
+            definition: {
+                ...serviceDefinition,
+                version: 2,
+                migrate: (state: any) => ({counter: {id: 'counter', value: state.counter.value * 100, ts: state.counter.ts}}),
+            },
+            selfUrl: () => 'mem://v2', durable: {storage, everyEvents: 1}, log: quiet,
+        })
+        v2.control.start()
+        ok(v2.view.restored()?.fromArchive == true && v2.view.state().counter?.value == 500 && (v2.view.state() as any).$version == 2,
+            'a newer definition migrates the restored archive once and stamps its version')
+        v2.control.close()
+        const v3 = createServiceLeader({definition: {...serviceDefinition, version: 2}, selfUrl: () => 'mem://v3', durable: {storage, everyEvents: 1}, log: quiet})
+        ok((v3.view.state() as any).$version == 2 && v3.view.state().counter?.value == 500, 'the migrated archive restores at its version without migrating again')
+        v3.control.close()
+        let refused = ''
+        try { createServiceLeader({definition: {...serviceDefinition, version: 3}, selfUrl: () => 'mem://v4', durable: {storage, everyEvents: 1}, log: quiet}) }
+        catch (error) { refused = (error as Error).message }
+        ok(/schema version 2, the definition at 3, and no migrate/.test(refused), `a version bump without migrate() refuses to boot over an older archive (${refused.slice(0, 60)}…)`)
     }
 
     // ============== leader from the template factory ==============
@@ -234,10 +334,49 @@ async function main() {
             if (text.includes('{{name}}')) leftovers++
             if (file == 'service.ts' && text.includes(`name: 'demo-rental'`)) substituted = true
         }
-        ok(names.length == 7 && leftovers == 0 && substituted,
-            'create.mjs instantiates all 7 template files with {{name}} substituted')
+        ok(names.length == 14 && names.includes('README.md') && names.includes('access.ts') && names.includes('rest.ts') && names.includes('panel.ts') && names.includes('effects.ts') && names.includes('payments.ts') && names.includes('client.ts') && leftovers == 0 && substituted,
+            `create.mjs instantiates all 14 template files with {{name}} substituted (${names.length})`)
     } finally {
         await rm(targetDir, {recursive: true, force: true})
+    }
+
+    // ============== day 1: the leader entrypoint is a whole deployment by itself ==============
+    // the template's leader.ts main() as a REAL process: env in, port bound, the ungated 'app'
+    // surface answering over a real Socket.IO connection — with zero nodes (ROADMAP §6.1)
+    {
+        const tsx = path.resolve(__dirname, '..', '..', 'node_modules', 'tsx', 'dist', 'cli.mjs')
+        const child = spawn(process.execPath, [tsx, path.join(__dirname, 'template', 'leader.ts')], {
+            env: {...process.env, SERVICE_PORT: '0'},
+            stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        let output = ''
+        const url = await new Promise<string>(function awaitListening(resolve, reject) {
+            const timer = setTimeout(function bootTimedOut() { reject(new Error('leader.ts did not bind within 15s:\n' + output)) }, 15_000)
+            function scan(chunk: unknown) {
+                output += String(chunk)
+                const bound = /leader listening on (http:\/\/localhost:\d+)/.exec(output)
+                if (bound) { clearTimeout(timer); resolve(bound[1]) }
+            }
+            child.stdout.on('data', scan)
+            child.stderr.on('data', scan)
+            child.once('exit', function exitedEarly(code) { clearTimeout(timer); reject(new Error(`leader.ts exited early (${code}):\n` + output)) })
+        }).catch(function bootFailed(error: Error) { ok(false, error.message); return '' })
+        if (url) {
+            ok(true, `leader.ts boots as a process and binds a port (${url})`)
+            const socket = ioClient(url, {transports: ['websocket'], auth: {account: 'day-one'}})
+            const read = createRpcClient<any>({socket: socket as any, socketKey: 'app'})
+            const view = await read.readyStrict().then(() => read.func[name].view()).catch((error: any) => ({error: String(error?.message ?? error)}))
+            ok(JSON.stringify(view) == '{"counter":0}', `the process serves the read view over a real socket with zero nodes (${JSON.stringify(view)})`)
+            // the roster projection, read the way a cluster client reads it
+            const wireRoster = followNodeDirectory(read.func[name].roster)
+            await wireRoster.ready
+            const rows = wireRoster.nodes().map(view => view.nodeId)
+            ok(rows.length == 1 && rows[0] == 'leader', `the roster projection on the wire holds only the leader row (${rows.join(',')})`)
+            wireRoster.close()
+            socket.close()
+            child.kill()
+            await new Promise<void>(resolve => child.once('exit', () => resolve()))
+        }
     }
 
     follower.close()

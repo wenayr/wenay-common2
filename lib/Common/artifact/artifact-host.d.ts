@@ -74,7 +74,7 @@ export declare function createArtifactHost(deps: ArtifactHostDeps): {
     reap: (at?: number) => Promise<ArtifactRecord[]>;
     connection: (account: string) => {
         fragment: {
-            state: {
+            state: ({
                 line: {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 } & import("../Observe").StoreReplayLineLocal;
@@ -111,7 +111,7 @@ export declare function createArtifactHost(deps: ArtifactHostDeps): {
                 } | undefined;
             } & {
                 line: import("../Observe").StoreReplayLineLocal;
-            });
+            })) & import("../Observe").StoreReplayState<ArtifactStore>;
             open: (artifactId: string) => Promise<{
                 url: string;
                 expiresAt: number;

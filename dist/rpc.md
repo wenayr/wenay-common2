@@ -160,7 +160,7 @@ A transient Socket.IO disconnect on the same socket suspends transport without e
 
 Only logical Listen subscriptions are recovered. Pending or failed ordinary RPC calls and pipelines are not retried, because repeating them could duplicate side effects.
 
-`client.dispose()` is terminal for that RPC client. `Api.setToken(token)` and its `Api.connect(token)` alias are hard rotations: the old socket/client generation and its subscriptions are permanently closed, and the new facade starts without inherited subscriptions. `connect(null)` starts a new anonymous generation; it is not a transient reconnect.
+`client.dispose()` is terminal for that RPC client. `Api.setToken(token)` and its `Api.connect(token)` alias are hard rotations: the old socket/client generation and its subscriptions are permanently closed, and the new facade starts without inherited subscriptions. `connect(null)` starts a new anonymous generation; it is not a transient reconnect. `Api.close()` is terminal for the WHOLE hub: it disposes every facade client, disconnects the socket and kills its reconnection, rejects a still-pending wave, and refuses every later `connect`/`setToken`/`reauth` (rejected `'RPC hub closed'`) — tear a hub down only through it, never by disconnecting raw sockets (a wave landing after such a sweep is adopted and unreachable; canonical: doc/RPC-AUTH.md).
 
 ### 3.3 Call Modes
 Access API channel: `Api.facade.mainAPI`. Hub initializes all channels, so schema loads automatically.
@@ -424,6 +424,8 @@ calls are issued one at a time. Decode-side limits and the registry's lifetime �
 The client presents a token in `Pkt.HELLO`; the server verifies it and replaces the served object
 with a facade built for that principal, then answers `Pkt.MAP` whose 5th element is `authAck`.
 Token lifetime, expiry and revocation are pushed back as `Pkt.AUTH` (negotiated by `Caps.AUTH_STATE`).
+Server `debug` masks the token in HELLO logs as `[redacted]`, preserving its correlation id and
+the original token delivered to `resolveAuth`.
 When the grant declared a deadline, the server attaches it to the ack under one reserved key:
 `ack.$rpc = { expiresAt }` — attached on a copy, so your own ack is never clobbered, and optional by
 contract (absent for an old server, a non-object ack, an ack that already owns `$rpc`, or no deadline).
@@ -455,6 +457,11 @@ const { api, control } = createRpcServerAuto({   // control = revoke/grant for T
 Both parts are required. `gate` guards `CALL`/`PIPE` only — it does **not** gate `Pkt.STRICT`, so
 anything left in `object` is public schema. Prune per principal with the `role()` idiom of §2.2: a
 method absent from the schema is stronger than a method that checks.
+
+A returned `{ack: {ok: false}}`, like a non-revoking throw, refuses only this attempt: the existing
+principal, gate state, stored ack, subscriptions and deadline survive. Any refused `object` or
+`expiresAt` is ignored. The same rule applies to `control.grant`; an ungated initial public facade
+stays open, and a gated initial facade stays closed.
 
 ### 5.2 Client: one token provider
 
@@ -541,9 +548,16 @@ uncorrelated, so it can never settle a pending `reauth()` (and emits no `"renewe
 safe before any HELLO, twice in a row and after detach; `revoke` clears the grant's timers, and an
 application revocation is not undone by a `resolveAuth` that started before it.
 
+CALL/PIPE still awaiting `hooks.onRequest` cannot start its old function after principal replacement,
+expiry or revocation: waiting requests receive `E_UNAUTHORIZED`, no-wait requests are dropped.
+Detach also prevents execution. Already-started application work is not cancelled; a refused grant
+does not invalidate pending admission because it preserves the principal.
+
 ### 5.6 `createTokenCodec` is a default, not a security product
 
 `import { createTokenCodec } from "wenay-common2/server/auth"` (or the compatibility
 `wenay-common2/server` facade) gives one honest default: one secret, one
 pinned algorithm, one expiry (`issue` / `verify`, default TTL 15 min). No JWT, no key rotation, no
 revocation list, no refresh flow, no identity provider — those are the application's.
+
+Node-link register/heartbeat/goodbye are bound to the authority ownership generation and refuse stale links after demotion/re-promotion/close. See [RPC-AUTH.md](doc/RPC-AUTH.md#node-link-ownership-after-succession) and [SCALE-SAFETY.md](doc/SCALE-SAFETY.md).

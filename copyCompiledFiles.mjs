@@ -50,7 +50,7 @@ if (fs.existsSync("./doc")) {
 
 // living examples ship in the package (AI-readable usage): oracle suites + demo stand
 // (demo/public is a generated bundle, node_modules never belongs in a package)
-for (const dir of ["replay", "observe", "oracle", "demo"]) {
+for (const dir of ["replay", "observe", "oracle", "demo", "examples"]) {
     if (fs.existsSync(dir))
         fs.cpSync(dir, path.join(tempDir, dir), {
             recursive: true,

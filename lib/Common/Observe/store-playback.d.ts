@@ -11,13 +11,12 @@ export type StorePlaybackOpts = {
 export declare function playbackStoreReplay<T extends object>(storage: ReplayStorage<[readonly StorePatch[]]>, opts?: StorePlaybackOpts): {
     store: import("./store").Store<T>;
     api: {
-        get(): T;
-        get<M extends import("./store").StoreMask<T>>(mask: M): import("./store").StorePick<T, M>;
+        get: import("./store").StoreGetter<T>;
         set(path: import("./store").StorePath, value: any): void;
         replace(path: import("./store").StorePath, value: any): void;
         changed: any;
         changedPaths: any;
-        replay: {
+        replay: ({
             line: {
                 on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
             } & import("./store-replay").StoreReplayLineLocal;
@@ -54,7 +53,7 @@ export declare function playbackStoreReplay<T extends object>(storage: ReplaySto
             } | undefined;
         } & {
             line: import("./store-replay").StoreReplayLineLocal;
-        });
+        })) & import("./store-replay").StoreReplayState<T>;
     };
     replay: {
         has(key: import("../..").ListenKey): boolean;

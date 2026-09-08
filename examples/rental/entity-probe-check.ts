@@ -1,0 +1,45 @@
+import assert from 'node:assert/strict'
+import {createEntityProbe} from './entity-probe-resource'
+
+for (const mode of ['shared', 'facades'] as const) {
+    const probe = createEntityProbe({mode, count: 3})
+    const baseline = {entities: 3, facades: mode == 'facades' ? 3 : 0, streams: 0, subscriptions: 0}
+    assert.deepEqual(probe.view.counts(), baseline)
+    assert.throws(() => probe.view.read('0', 'bob'), /forbidden/)
+    assert.throws(() => probe.control.write('0', 'bob', 7), /forbidden/)
+    assert.throws(() => probe.events.on('0', 'bob', function denied() {}), /forbidden/)
+    assert.throws(() => probe.control.remove('0', 'bob'), /forbidden/)
+    assert.deepEqual(probe.view.counts(), baseline)
+    probe.view.read('0', 'alice').value = 99
+    assert.equal(probe.view.read('0', 'alice').value, 0)
+    const seen: number[] = []
+    const first = probe.events.on('0', 'alice', function mutateCopy(value) { value.value = 99 })
+    const second = probe.events.on('0', 'alice', function record(value) { seen.push(value.value) })
+    assert.deepEqual(probe.view.counts(), {...baseline, streams: 1, subscriptions: 2})
+    probe.control.write('0', 'alice', 7)
+    assert.deepEqual(seen, [7])
+    assert.equal(probe.view.read('0', 'alice').value, 7)
+    first()
+    assert.equal(probe.view.counts().subscriptions, 1)
+    second()
+    second()
+    assert.deepEqual(probe.view.counts(), baseline)
+    const off = probe.events.on('0', 'alice', function removed() { assert.fail('removed stream emitted') })
+    probe.control.remove('0', 'alice')
+    assert.deepEqual(probe.view.counts(), {entities: 2, facades: mode == 'facades' ? 2 : 0, streams: 0, subscriptions: 0})
+    off()
+    assert.throws(() => probe.view.read('0', 'alice'), /missing/)
+    assert.throws(() => probe.control.write('0', 'alice', 1), /missing/)
+    assert.throws(() => probe.events.on('0', 'alice', function gone() {}), /missing/)
+    assert.throws(() => probe.control.remove('0', 'alice'), /missing/)
+    const last = probe.events.on('1', 'alice', function closed() { assert.fail('closed stream emitted') })
+    probe.close()
+    probe.close()
+    last()
+    assert.deepEqual(probe.view.counts(), {entities: 0, facades: 0, streams: 0, subscriptions: 0})
+    assert.throws(() => probe.view.read('1', 'alice'), /closed/)
+    assert.throws(() => probe.control.write('1', 'alice', 1), /closed/)
+    assert.throws(() => probe.events.on('1', 'alice', function closed() {}), /closed/)
+    assert.throws(() => probe.control.remove('1', 'alice'), /closed/)
+    console.log('PASS entity probe ' + mode + ': equivalent ownership, copy isolation, events, lazy stream cleanup and close')
+}

@@ -65,6 +65,8 @@ export function leaderEnv(env: tEnv) {
     const tokenSecret = optionalEnv(env, 'SERVICE_TOKEN_SECRET')
     return {
         port: portEnv(env, 'SERVICE_PORT'),
+        /** Present = the authority line is durable on this directory (one JSONL archive per service). */
+        dataDir: optionalEnv(env, 'SERVICE_DATA_DIR'),
         // absent secrets stay absent: the leader factory mints per-run ones and
         // the entrypoint passes leader.secrets to the node processes it spawns
         secrets: {

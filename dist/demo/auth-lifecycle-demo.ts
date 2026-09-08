@@ -82,7 +82,7 @@ export function setupAuthLifecycleDemo(deps: AuthLifecycleDemoDeps) {
         const at = Date.now()
         const row = document.createElement('div')
         row.className = 'authLogRow'
-        if (tone) row.dataset.tone = tone
+        if (tone) row.dataset['tone'] = tone
         const since = lastRow ? ' (+' + ((at - lastRow) / 1000).toFixed(1) + 's)' : ''
         lastRow = at
         row.textContent = clockStamp(at) + since + '  ' + text
@@ -94,7 +94,7 @@ export function setupAuthLifecycleDemo(deps: AuthLifecycleDemoDeps) {
         if (closed) return
         const live = state == 'authorized' || state == 'expiring'
         statusBadge.textContent = state
-        statusBadge.dataset.state = state == 'authorized' ? 'live'
+        statusBadge.dataset['state'] = state == 'authorized' ? 'live'
             : state == 'expiring' ? 'connecting'
                 : state == 'anonymous' ? 'idle' : 'stale'
         whoLine.textContent = live && grant?.who ? grant.who : 'anonymous (gate refuses every call)'

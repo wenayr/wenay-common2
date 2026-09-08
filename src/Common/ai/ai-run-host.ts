@@ -6,6 +6,7 @@
 // stay in the application adapter behind the runner port.
 
 import {createStore, StoreChange, StoreDrain} from '../Observe/store'
+import {commandReceiptKey} from '../command/command-receipts'
 import {exposeStoreReplay} from '../Observe/store-replay'
 import {
     cloneStoreProjectionValue,
@@ -406,7 +407,9 @@ export function createAiRunHost(deps: AiRunHostDeps) {
 
     function requestProviderCancel(run: AiRun, reason?: string) {
         if (!runner.cancel) return
-        Promise.resolve(runner.cancel({run: copyRun(run), reason})).catch(function ignoreProviderCancelFailure() {})
+        try {
+            Promise.resolve(runner.cancel({run: copyRun(run), reason})).catch(function ignoreProviderCancelFailure() {})
+        } catch { /* Provider cleanup cannot interrupt local cancellation or shutdown. */ }
     }
 
     function reportRun(runId: string, next: AiRunReport) {
@@ -532,7 +535,7 @@ export function createAiRunHost(deps: AiRunHostDeps) {
         if (!request || typeof request.requestId != 'string' || !request.requestId.trim()) throw new Error('AI run create: requestId is required')
         if (typeof request.kind != 'string' || !request.kind.trim()) throw new Error('AI run create: kind is required')
         if (policy?.canCreate && !policy.canCreate(account, request)) throw new Error('AI run create: forbidden')
-        const requestKey = account + '\u0000' + request.requestId
+        const requestKey = commandReceiptKey(account, request.requestId)
         const previous = requestIds.get(requestKey)
         if (previous) {
             const existing = store.state.runs[previous]

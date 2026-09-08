@@ -1,0 +1,150 @@
+{
+    "measuredAt": "2026-09-07T00:13:21.223Z",
+    "node": "v24.18.0",
+    "machine": {
+        "platform": "win32",
+        "arch": "x64",
+        "cpu": "AMD Ryzen AI 7 350 w/ Radeon 860M              ",
+        "logicalCpus": 16,
+        "memoryBytes": 16418983936
+    },
+    "workload": {
+        "bookings": 32,
+        "warmupPerEndpoint": 80,
+        "requests": 600,
+        "concurrency": 8,
+        "trials": 3
+    },
+    "dispatch": "explicit round robin; authority excluded when readers present; one client connection per endpoint",
+    "results": [
+        {
+            "trial": 1,
+            "readers": 0,
+            "startupMs": 362.12030000000004,
+            "connectAndCatchupMs": 6.944999999999936,
+            "durationMs": 58.99480000000017,
+            "successfulRequestsPerSecond": 10170.387898594423,
+            "p95SuccessMs": 1.282699999999977,
+            "errors": 0,
+            "completions": [
+                600
+            ],
+            "restartReadyMs": null
+        },
+        {
+            "trial": 1,
+            "readers": 1,
+            "startupMs": 764.2626,
+            "connectAndCatchupMs": 9.00630000000001,
+            "durationMs": 55.69360000000006,
+            "successfulRequestsPerSecond": 10773.23067641523,
+            "p95SuccessMs": 1.099699999999757,
+            "errors": 0,
+            "completions": [
+                600
+            ],
+            "restartReadyMs": 437.39090000000033
+        },
+        {
+            "trial": 1,
+            "readers": 2,
+            "startupMs": 1144.6192999999998,
+            "connectAndCatchupMs": 10.448599999999715,
+            "durationMs": 66.38730000000032,
+            "successfulRequestsPerSecond": 9037.873207676725,
+            "p95SuccessMs": 2.0255999999999403,
+            "errors": 0,
+            "completions": [
+                300,
+                300
+            ],
+            "restartReadyMs": 393.3195999999998
+        },
+        {
+            "trial": 2,
+            "readers": 1,
+            "startupMs": 737.6764999999996,
+            "connectAndCatchupMs": 10.193299999999908,
+            "durationMs": 63.54309999999987,
+            "successfulRequestsPerSecond": 9442.409954818087,
+            "p95SuccessMs": 1.6060999999999694,
+            "errors": 0,
+            "completions": [
+                600
+            ],
+            "restartReadyMs": 433.52580000000034
+        },
+        {
+            "trial": 2,
+            "readers": 2,
+            "startupMs": 1148.6928000000007,
+            "connectAndCatchupMs": 10.73660000000018,
+            "durationMs": 56.78689999999915,
+            "successfulRequestsPerSecond": 10565.817116271692,
+            "p95SuccessMs": 1.606999999999971,
+            "errors": 0,
+            "completions": [
+                300,
+                300
+            ],
+            "restartReadyMs": 423.2446
+        },
+        {
+            "trial": 2,
+            "readers": 0,
+            "startupMs": 346.1237999999994,
+            "connectAndCatchupMs": 3.944099999998798,
+            "durationMs": 63.86160000000018,
+            "successfulRequestsPerSecond": 9395.31737382086,
+            "p95SuccessMs": 1.6845000000012078,
+            "errors": 0,
+            "completions": [
+                600
+            ],
+            "restartReadyMs": null
+        },
+        {
+            "trial": 3,
+            "readers": 2,
+            "startupMs": 1155.8304000000007,
+            "connectAndCatchupMs": 10.917299999999159,
+            "durationMs": 49.08779999999933,
+            "successfulRequestsPerSecond": 12222.996345324258,
+            "p95SuccessMs": 1.3963999999996304,
+            "errors": 0,
+            "completions": [
+                300,
+                300
+            ],
+            "restartReadyMs": 436.0583000000006
+        },
+        {
+            "trial": 3,
+            "readers": 0,
+            "startupMs": 346.7466000000004,
+            "connectAndCatchupMs": 4.670799999999872,
+            "durationMs": 57.471700000000055,
+            "successfulRequestsPerSecond": 10439.92086539983,
+            "p95SuccessMs": 1.39259999999922,
+            "errors": 0,
+            "completions": [
+                600
+            ],
+            "restartReadyMs": null
+        },
+        {
+            "trial": 3,
+            "readers": 1,
+            "startupMs": 743.7896000000001,
+            "connectAndCatchupMs": 8.803100000000995,
+            "durationMs": 58.734699999999066,
+            "successfulRequestsPerSecond": 10215.426315278864,
+            "p95SuccessMs": 1.3955000000005384,
+            "errors": 0,
+            "completions": [
+                600
+            ],
+            "restartReadyMs": 432.72700000000077
+        }
+    ]
+}

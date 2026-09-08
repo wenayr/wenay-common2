@@ -127,9 +127,19 @@ function createPathProxyCache() {
     return {get, set}
 }
 // Helper types
+import type {StoreGetter, StoreMask, StorePick} from '../Observe/store'
+import type {StoreReplayState} from '../Observe/store-replay'
+import type {tJsonData} from '../core/json-data'
+
 type UnwrapPromise<T> = T extends Promise<infer R> ? R : T;
 
-export type DeepDataOnly<T> = T extends Function
+// Preserve the complete recursive family before distributing its union members.
+// Narrower structural subtypes can carry methods that the transport drops.
+export type DeepDataOnly<T> = [T] extends [tJsonData]
+    ? [tJsonData] extends [T] ? T : DeepDataOnlyValue<T>
+    : DeepDataOnlyValue<T>
+
+type DeepDataOnlyValue<T> = T extends Function
     ? never
     : T extends ArrayBuffer | ArrayBufferView
         ? T
@@ -141,9 +151,25 @@ export type DeepDataOnly<T> = T extends Function
                 ? { [K in keyof T as T[K] extends Function ? never : K]: DeepDataOnly<T[K]> }
                 : T;
 
+type RpcCallResult<T, P extends boolean> = Promise<DeepDataOnly<T>> & (P extends true ? PipeAPI<T> : unknown)
+
+type RpcStoreGetter<T extends object, P extends boolean> = {
+    (): RpcCallResult<T, P>
+    <M extends StoreMask<T>>(mask: M): RpcCallResult<StorePick<T, M>, P>
+}
+
+type RpcFunction<F, P extends boolean = false> = F extends (...args: infer A) => infer R
+    ? 0 extends (1 & F)
+        ? (...args: A) => RpcCallResult<UnwrapPromise<R>, P>
+        : keyof StoreGetter<object> extends keyof F
+            ? F extends StoreGetter<infer S> ? RpcStoreGetter<S, P> : never
+            : (...args: A) => RpcCallResult<UnwrapPromise<R>, P>
+    : never
+
 // --- 1. TYPING FOR REGULAR CALLS (WITHOUT PIPE) ---
 export type ClientAPIAll<T> = {
-    [K in keyof T as NonNullable<T[K]> extends Function ? K : NonNullable<T[K]> extends object ? K : never]:
+    [K in keyof T as K extends keyof StoreReplayState ? K : NonNullable<T[K]> extends Function ? K : NonNullable<T[K]> extends object ? K : never]:
+        K extends keyof StoreReplayState ? T[K] :
         // replay member (detection as in listen-deep) → client replay surface,
         // structurally compatible with ReplayRemote: replaySubscribe(client.func.key) without casts
         IsReplayMember<NonNullable<T[K]>> extends true
@@ -157,7 +183,7 @@ export type ClientAPIAll<T> = {
             ? SocketListenMember<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null>
             : NonNullable<T[K]> extends (...args: infer A) => infer R
                 // Regular call returns ONLY Promise with clean data. No chain continuation.
-                ? ((...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>>) | Extract<T[K], undefined | null>
+                ? RpcFunction<NonNullable<T[K]>> | Extract<T[K], undefined | null>
                 : NonNullable<T[K]> extends object
                     ? ClientAPIAll<NonNullable<T[K]>> | Extract<T[K], undefined | null>
                     : never;
@@ -166,20 +192,20 @@ export type ClientAPIAll<T> = {
 type NonFalsy<T> = Exclude<T, false | null | 0 | "" | undefined>;
 
 export type ClientAPIStrict<T> = {
-    [K in keyof T as NonFalsy<T[K]> extends Function
+    [K in keyof T as K extends keyof StoreReplayState ? K : NonFalsy<T[K]> extends Function
         ? K
         : NonFalsy<T[K]> extends object
             ? K
             : never]:
     // replay member — as in ClientAPIAll; already projected ReplaySocketListen (auto-path,
     // ClientAPIStrict<DeepSocketListen<T>>) does not reach here (it has no getSince) and is mapped below
-    IsReplayMember<NonFalsy<T[K]>> extends true
+    K extends keyof StoreReplayState ? T[K] : IsReplayMember<NonFalsy<T[K]>> extends true
         ? ReplaySocketListen<InferArgs<NonFalsy<T[K]>>>
         // plain Listen member — same branch as ClientAPIAll, same reason
         : IsListenMember<NonFalsy<T[K]>> extends true
         ? SocketListenMember<InferArgs<NonFalsy<T[K]>>>
         : NonFalsy<T[K]> extends (...args: infer A) => infer R
-            ? (...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>>
+            ? RpcFunction<NonFalsy<T[K]>>
             : NonFalsy<T[K]> extends object
                 ? ClientAPIStrict<NonFalsy<T[K]>>
                 : never;
@@ -198,10 +224,10 @@ export interface PipeArrayAPI<T> extends Promise<DeepDataOnly<T[]>> {
 export type PipeAPI<T> = T extends Array<infer U>
     ? PipeArrayAPI<U>
     : {
-        [K in keyof T as T[K] extends Function ? K : T[K] extends object ? K : never]:
-            T[K] extends (...args: infer A) => infer R
+        [K in keyof T as K extends keyof StoreReplayState ? K : T[K] extends Function ? K : T[K] extends object ? K : never]:
+            K extends keyof StoreReplayState ? T[K] : T[K] extends (...args: infer A) => infer R
                 // Pipe call returns both Promise (for await) and continues PipeAPI for chaining
-                ? (...args: A) => Promise<DeepDataOnly<UnwrapPromise<R>>> & PipeAPI<UnwrapPromise<R>>
+                ? RpcFunction<T[K], true>
                 : T[K] extends object
                     ? PipeAPI<T[K]>
                     : never;

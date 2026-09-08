@@ -1,5 +1,6 @@
 import { type ListenOn } from "../events/Listen";
 import type { ReplayEvent } from "../events/replay-listen";
+import type { StoreReplayState } from '../Observe/store-replay';
 import { listenSocket, listenSocketFirst, listenSocketAll, listenSocketSmart, type SubscriptionHandle } from "./listen-socket";
 type WithSubHandle<R> = R extends {
     callback: (...a: infer A) => any;
@@ -19,7 +20,7 @@ export type ReplaySocketListen<Z extends any[]> = WithSubHandle<ReturnType<typeo
     keyframe: () => Promise<ReplayEvent<Z> | null>;
     frame: (seq: number, hint?: unknown) => Promise<ReplayEvent<Z>[]>;
 };
-export type IsReplayMember<V> = V extends {
+export type IsReplayMember<V> = [V] extends [never] ? false : V extends {
     keyframe: Function;
     line: object;
     on: Function;
@@ -29,28 +30,24 @@ export type IsReplayMember<V> = V extends {
     since: Function;
 } ? true : false : false;
 export type SocketListenMember<Z extends any[]> = WithSubHandle<ReturnType<typeof listenSocket<Z>>>;
-export type IsListenMember<V> = V extends {
+export type IsListenMember<V> = [V] extends [never] ? false : V extends {
     on: Function;
 } ? IsReplayMember<V> extends true ? false : true : false;
 export type DeepSocketListen<T> = {
-    [K in keyof T]: IsReplayMember<NonNullable<T[K]>> extends true ? ReplaySocketListen<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null> : NonNullable<T[K]> extends {
-        on: Function;
-    } ? SocketListenMember<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null> : NonNullable<T[K]> extends ListenOn<infer Z> ? WithSubHandle<ReturnType<typeof listenSocket<Z>>> | Extract<T[K], undefined | null> : NonNullable<T[K]> extends (...a: any[]) => any ? T[K] : NonNullable<T[K]> extends Promise<any> ? T[K] : NonNullable<T[K]> extends typeof Promise ? T[K] : NonNullable<T[K]> extends object ? DeepSocketListen<NonNullable<T[K]>> | Extract<T[K], undefined | null> : T[K];
+    [K in keyof T]: K extends keyof StoreReplayState ? T[K] : [NonNullable<T[K]>] extends [never] ? T[K] : IsReplayMember<NonNullable<T[K]>> extends true ? ReplaySocketListen<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null> : IsListenMember<NonNullable<T[K]>> extends true ? SocketListenMember<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null> : NonNullable<T[K]> extends ListenOn<infer Z> ? WithSubHandle<ReturnType<typeof listenSocket<Z>>> | Extract<T[K], undefined | null> : NonNullable<T[K]> extends (...a: any[]) => any ? T[K] : NonNullable<T[K]> extends Promise<any> ? T[K] : NonNullable<T[K]> extends typeof Promise ? T[K] : NonNullable<T[K]> extends object ? DeepSocketListen<NonNullable<T[K]>> | Extract<T[K], undefined | null> : T[K];
 };
 export type DeepSocketListenFirst<T> = {
-    [K in keyof T]: T[K] extends {
+    [K in keyof T]: K extends keyof StoreReplayState ? T[K] : [NonNullable<T[K]>] extends [never] ? T[K] : T[K] extends {
         on: Function;
     } ? ReturnType<typeof listenSocketFirst<InferArgs<T[K]>>> : T[K] extends ListenOn<infer Z> ? ReturnType<typeof listenSocketFirst<Z>> : T[K] extends (...a: any[]) => any ? T[K] : T[K] extends Promise<any> ? T[K] : T[K] extends typeof Promise ? T[K] : T[K] extends object ? DeepSocketListenFirst<T[K]> : T[K];
 };
 export type DeepSocketListenAll<T> = {
-    [K in keyof T]: T[K] extends {
+    [K in keyof T]: K extends keyof StoreReplayState ? T[K] : [NonNullable<T[K]>] extends [never] ? T[K] : T[K] extends {
         on: Function;
     } ? ReturnType<typeof listenSocketAll<InferArgs<T[K]>>> : T[K] extends ListenOn<infer Z> ? ReturnType<typeof listenSocketAll<Z>> : T[K] extends (...a: any[]) => any ? T[K] : T[K] extends Promise<any> ? T[K] : T[K] extends typeof Promise ? T[K] : T[K] extends object ? DeepSocketListenAll<T[K]> : T[K];
 };
 export type DeepSocketListenSmart<T> = {
-    [K in keyof T]: IsReplayMember<NonNullable<T[K]>> extends true ? ReplaySocketListen<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null> : NonNullable<T[K]> extends {
-        on: Function;
-    } ? ReturnType<typeof listenSocketSmart<InferArgs<NonNullable<T[K]>>>> | Extract<T[K], undefined | null> : NonNullable<T[K]> extends ListenOn<infer Z> ? ReturnType<typeof listenSocketSmart<Z>> : NonNullable<T[K]> extends (...a: any[]) => any ? T[K] : NonNullable<T[K]> extends Promise<any> ? T[K] : NonNullable<T[K]> extends typeof Promise ? T[K] : NonNullable<T[K]> extends object ? DeepSocketListenSmart<T[K]> : T[K];
+    [K in keyof T]: K extends keyof StoreReplayState ? T[K] : [NonNullable<T[K]>] extends [never] ? T[K] : IsReplayMember<NonNullable<T[K]>> extends true ? ReplaySocketListen<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null> : IsListenMember<NonNullable<T[K]>> extends true ? ReturnType<typeof listenSocketSmart<InferArgs<NonNullable<T[K]>>>> | Extract<T[K], undefined | null> : NonNullable<T[K]> extends ListenOn<infer Z> ? ReturnType<typeof listenSocketSmart<Z>> : NonNullable<T[K]> extends (...a: any[]) => any ? T[K] : NonNullable<T[K]> extends Promise<any> ? T[K] : NonNullable<T[K]> extends typeof Promise ? T[K] : NonNullable<T[K]> extends object ? DeepSocketListenSmart<T[K]> : T[K];
 };
 export declare function matchKeys<T extends Obj, T2 extends Obj>(obj1: T, obj2: T2): boolean;
 export declare function matchKeysList<T extends Obj>(obj1: T, keys: string[]): boolean;

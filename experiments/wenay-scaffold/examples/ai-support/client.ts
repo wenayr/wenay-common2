@@ -1,0 +1,32 @@
+import {io} from 'socket.io-client'
+import {Ai} from '../../../../src'
+import {createRpcClientHub} from '../../../../src/Common/rcp/rpc-clientHub'
+import type {SupportFacade} from './service'
+
+export async function connectSupport(deps: {url: string, token: () => string}) {
+    const hub = createRpcClientHub(
+        () => io(deps.url, {transports: ['websocket'], forceNew: true}),
+        rpc => ({support: rpc<SupportFacade>('support')}), {token: deps.token},
+    )
+    try {
+        const remote = await hub.promise
+        await remote.support.readyStrict()
+        const client = Ai.createAiRunClient({remote: remote.support.func})
+        try { await client.ready } catch (error) {
+            client.close()
+            throw error
+        }
+        return {store: client.store, events: client.events,
+            control: {create: client.createRun, cancel: client.cancelRun,
+                offline() { hub.socket.disconnect() }, online() { hub.socket.connect() }},
+            close() {
+                client.close()
+                hub.close()
+            },
+        }
+    } catch (error) {
+        hub.close()
+        throw error
+    }
+}
+export type SupportClient = Awaited<ReturnType<typeof connectSupport>>

@@ -34,6 +34,7 @@
 // ============================================================
 
 import {createListen} from "../events/Listen";
+import {deferImmediate} from '../core/defer-immediate'
 import {
     REACTIVE_ARRAY_MUTATIONS,
     type ReactiveArrayMutations,
@@ -56,12 +57,11 @@ const isReactiveObj = (v: any) => {
 }
 
 // the only place the deferral primitive is chosen — pluggable on purpose
-const hasSetImmediate = typeof setImmediate == 'function'
 function scheduler(drain: Drain): (f: Fn) => void {
     if (drain == 'micro') return f => queueMicrotask(f)
     if (typeof drain == 'number') return f => { setTimeout(f, drain) }
     if (typeof drain == 'function') return f => drain(f)
-    return hasSetImmediate ? f => { setImmediate(f) } : f => { setTimeout(f, 0) }   // 'immediate'
+    return deferImmediate
 }
 
 type Node = {
@@ -93,6 +93,8 @@ type Eng = {
     depth: number
     onMutation?: (path: PropertyKey[]) => void
     schedule: () => void
+    /** The scheduled drain, runnable now (flushReactiveNow): a durable close must not wait a turn. */
+    flush: () => void
 }
 
 // ============================================================
@@ -118,7 +120,12 @@ export function reactive<T extends object>(root: T, opts: Opts = {}) {
             eng.scheduled = true
             // drain deferred: a callback that mutates re-queues for the NEXT
             // drain (we snapshot the batch first), so cascades never loop sync.
-            fire(function flush() {
+            fire(eng.flush)
+        },
+        flush() {
+            {
+                // an early flushReactiveNow already drained this window; the deferred fire finds nothing
+                if (!eng.scheduled) return
                 eng.scheduled = false
                 const batch = [...eng.dirty]; eng.dirty.clear()
                 const dirtyPaths = eng.dirtyPaths; eng.dirtyPaths = []
@@ -156,7 +163,7 @@ export function reactive<T extends object>(root: T, opts: Opts = {}) {
                     for (const w of waiters) w()
                 }
                 if (err !== undefined) setTimeout(() => { throw err }, 0)
-            })
+            }
         },
     }
     if (hasMutationHook) {
@@ -180,7 +187,12 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
     }
     // proxy target is a dummy with the right broad shape. Every trap reads/writes
     // node.target (the CURRENT value), so the proxy survives wholesale replace.
-    const proxyTarget = (Array.isArray(target) ? [] : {}) as any
+    const proxyTarget = (Array.isArray(target) ? new Array(target.length) : {}) as any
+    function syncArrayLength() {
+        if (!Array.isArray(proxyTarget) || !Array.isArray(node.target)) return
+        const descriptor = Reflect.getOwnPropertyDescriptor(node.target, 'length')!
+        Reflect.defineProperty(proxyTarget, 'length', descriptor)
+    }
     node.proxy = new Proxy(proxyTarget, {
         get(_, k) {
             if (k == NODE) return node
@@ -200,8 +212,9 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
             const had = Object.prototype.hasOwnProperty.call(node.target, k)
             const old = node.target[k]
             if (had && Object.is(old, v)) return true
+            let accepted = true
             if (had) {
-                if (!Reflect.set(node.target, k, v, node.target)) return false
+                accepted = Reflect.set(node.target, k, v, node.target)
             } else {
                 // A Store key is data, even when Object/Array.prototype was polluted
                 // with a setter or a non-writable property of the same name.
@@ -212,25 +225,32 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
                     writable: true,
                 })) return false
             }
-            if (Array.isArray(proxyTarget) && k == "length") proxyTarget.length = v
+            const next = node.target[k]
+            if (!accepted && Object.is(old, next)) return false
+            if (Array.isArray(node.target) && k == 'length') {
+                syncArrayLength()
+                if (next < old) detachTruncatedChildren(node)
+            }
             const kid = node.kids.get(k)
-            if (kid) rebind(kid, v)                  // an existing child slot got a whole new value
+            if (kid) rebind(kid, next)                  // an existing child slot got a whole new value
             node.eng.onMutation?.(dirtyPathFor(node, k))
             if (eng.live > 0) bubble(node, k, Array.isArray(old) || Array.isArray(v))
-            return true
+            return accepted
         },
         defineProperty(_, k, d) {
             const had = Object.prototype.hasOwnProperty.call(node.target, k)
             const old = node.target[k]
             const desc = 'value' in d ? {...d, value: toRaw(d.value)} : d
             const ok = Reflect.defineProperty(node.target, k, desc)
-            if (!ok) return false
-            if (desc.configurable === false) {
+            const v = node.target[k]
+            if (!ok && Object.is(old, v)) return false
+            if (Array.isArray(node.target) && k == 'length') syncArrayLength()
+            else if (desc.configurable === false) {
                 const mirror = Reflect.defineProperty(proxyTarget, k, desc)
                 if (!mirror) return false
             }
-            const v = node.target[k]
             if (!had || !Object.is(old, v)) {
+                if (Array.isArray(node.target) && k == 'length' && v < old) detachTruncatedChildren(node)
                 const kid = node.kids.get(k)
                 if (kid) {
                     if (isReactiveObj(v)) rebind(kid, v)
@@ -239,7 +259,7 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
                 node.eng.onMutation?.(dirtyPathFor(node, k))
                 if (eng.live > 0) bubble(node, k, Array.isArray(old) || Array.isArray(v))
             }
-            return true
+            return ok
         },
         deleteProperty(_, k) {
             if (!Object.prototype.hasOwnProperty.call(node.target, k)) return true
@@ -261,8 +281,10 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
             return keys
         },
         getOwnPropertyDescriptor(_, k) {
-            if (Array.isArray(proxyTarget) && k == "length")
+            if (Array.isArray(proxyTarget) && k == "length") {
+                syncArrayLength()
                 return Reflect.getOwnPropertyDescriptor(proxyTarget, k)
+            }
             const pd = Reflect.getOwnPropertyDescriptor(proxyTarget, k)
             if (pd && pd.configurable === false) return pd
             const d = Reflect.getOwnPropertyDescriptor(node.target, k)
@@ -375,6 +397,15 @@ function detachTree(node: Node) {
     node.kids.clear()
 }
 
+function detachTruncatedChildren(node: Node) {
+    for (const [key, child] of node.kids) {
+        if (Object.prototype.hasOwnProperty.call(node.target, key)) continue
+        node.kids.delete(key)
+        markChanged(child)
+        detachTree(child)
+    }
+}
+
 // eager: pre-wrap the whole tree to depth (full reactivity up front)
 function prewalk(node: Node) {
     if (node.level >= node.eng.depth) return
@@ -435,6 +466,18 @@ export function flushReactive(p: any) {
     const eng = node.eng
     if (!eng.scheduled && eng.dirty.size == 0 && eng.dirtyPaths.length == 0) return Promise.resolve()
     return new Promise<void>(resolve => { eng.waiters.add(resolve) })
+}
+
+/**
+ * Drain the pending window NOW, synchronously, instead of on the scheduler's next turn.
+ * A durable line closing right after an acknowledged write needs its batch in the journal
+ * before the process goes away (observe/scale-durable-close.test.ts); ordinary consumers
+ * never need this — the deferred drain is what keeps cascades from looping synchronously.
+ */
+export function flushReactiveNow(p: any) {
+    const node: Node | undefined = p && p[NODE]
+    if (!node) throw new Error('flushReactiveNow: not a reactive object')
+    if (node.eng.scheduled) node.eng.flush()
 }
 
 export function listenUpdate(p: any) {

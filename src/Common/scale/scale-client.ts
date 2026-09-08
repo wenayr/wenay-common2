@@ -20,7 +20,7 @@
 
 import {
     directoryReplicaOffers, directoryRoutePriority, followNodeDirectory, pickDirectoryNode,
-    type NodeDirectoryView,
+    type NodeDirectoryView, type NodeDirectoryState,
 } from '../Observe/node-directory'
 import type {StoreReplayRemote} from '../Observe/store-replay'
 import {
@@ -35,9 +35,9 @@ export type ScaleClusterClientDeps<T extends Record<string, any>> = {
     /** Replica-line coordinates (must match the cluster's line) and the state before the first keyframe. */
     line: StoreLineCoordinates & {initial: T}
     /** The roster line — an authority's serve.browser().roster or a standalone directory's api. */
-    roster: StoreReplayRemote
+    roster: StoreReplayRemote<NodeDirectoryState>
     /** Transport adapter: open a live session to a node; the host owns sockets. */
-    connect: (view: NodeDirectoryView) => StoreReplicaSession | Promise<StoreReplicaSession>
+    connect: (view: NodeDirectoryView) => StoreReplicaSession<NoInfer<T>> | Promise<StoreReplicaSession<NoInfer<T>>>
     placement?: {
         /** Log prefix distinguishing this consumer among many (per-reader placement). */
         label?: string
@@ -52,7 +52,8 @@ export type ScaleClusterClientDeps<T extends Record<string, any>> = {
          * by seq). Off by default — plain sticky placement never yanks a client.
          */
         balance?: {
-            /** Migrate only when the placed node's load exceeds fair share × this (default 2). */
+            /** Overload threshold: fair share × this (default 2). At equality, move only if
+             *  the target's load per weight after adding this reader is lower than the source's. */
             aboveShare?: number
             /** ...and some other node sits below fair share × this (default 0.6). */
             belowShare?: number
@@ -168,9 +169,14 @@ export function createClusterClient<T extends Record<string, any>>(deps: ScaleCl
         function shareOf(view: NodeDirectoryView) {
             return Math.max(totalLoad * Math.max(view.weight, 0) / totalWeight, 0.5)
         }
-        if (loadOf(placed) <= (balance.aboveShare ?? 2) * shareOf(placed)) return
+        const placedLoad = loadOf(placed)
+        const threshold = (balance.aboveShare ?? 2) * shareOf(placed)
+        if (placedLoad < threshold) return
         const target = pickBalanced(views.filter(view => view.nodeId != placedNodeId))
         if (!target || loadOf(target) >= (balance.belowShare ?? 0.6) * shareOf(target)) return
+        // One → two equal nodes hits the threshold exactly. Allow a useful move,
+        // but do not move a lone reader just to exchange the busy and empty nodes.
+        if (placedLoad == threshold && (loadOf(target) + 1) / target.weight >= placedLoad / placed.weight) return
         if (random() > (balance.moveChance ?? 0.5)) return
         lastMoveAt = now
         log(`cluster client ${label}rebalance ${placedNodeId} → ${target.nodeId} (load ${loadOf(placed)} above fair share)`)

@@ -1,0 +1,91 @@
+import assert from 'node:assert/strict'
+import type {Ai} from '../../../../src'
+import {startSupportHost} from './host'
+import {connectSupport} from './client'
+
+async function until(label: string, predicate: () => boolean) {
+    const deadline = Date.now() + 5000
+    while (!predicate()) {
+        assert(Date.now() < deadline, 'timeout: ' + label)
+        await new Promise(function tick(resolve) { setTimeout(resolve, 10) })
+    }
+}
+
+async function main() {
+    type Context = Parameters<Ai.AiRunRunner['run']>[0]
+    const active = new Map<string, {context: Context, resolve: (output: Ai.AiRunOutput) => void, reject: (error: Error) => void}>()
+    const cancellations: string[] = []
+    const host = await startSupportHost({runner: {
+        run(context) {
+            return new Promise<Ai.AiRunOutput>(function pending(resolve, reject) {
+                active.set(context.run.id, {context, resolve, reject})
+            })
+        },
+        cancel({run}) { cancellations.push(run.id) },
+    }})
+    const clients: Awaited<ReturnType<typeof connectSupport>>[] = []
+    try {
+        const alice = await connectSupport({url: host.url, token: () => host.source.token('alice')})
+        clients.push(alice)
+        const bob = await connectSupport({url: host.url, token: () => host.source.token('bob')})
+        clients.push(bob)
+        const aliceEvents: unknown[] = []
+        const bobEvents: unknown[] = []
+        alice.events.on(function observed(event) { aliceEvents.push(event) })
+        bob.events.on(function observed(event) { bobEvents.push(event) })
+        const [cancelled, failed, aliceWork, bobWork] = await Promise.all([
+            alice.control.create({requestId: 'cancel', kind: 'ticket', input: {ticket: 'cancel me'}}),
+            alice.control.create({requestId: 'fail', kind: 'ticket', input: {ticket: 'fail me'}}),
+            alice.control.create({requestId: 'shared', kind: 'ticket', input: {ticket: 'Alice private'}}),
+            bob.control.create({requestId: 'shared', kind: 'ticket', input: {ticket: 'Bob private'}}),
+        ])
+        await until('four concurrent provider runs', () => active.size == 4)
+        assert.notEqual(aliceWork.id, bobWork.id)
+        await assert.rejects(bob.control.cancel(cancelled.id), /forbidden|unknown|not found/i)
+        assert.equal(cancellations.length, 0)
+        await alice.control.cancel(cancelled.id)
+        active.get(failed.id)!.reject(new Error('isolated provider failure'))
+        for (const [run, marker] of [[aliceWork, 'Alice private'], [bobWork, 'Bob private']] as const) {
+            const task = active.get(run.id)!
+            assert.equal(task.context.cancelled(), false)
+            task.context.report({progress: 0.5, message: marker})
+            task.context.emit({type: 'text.delta', text: marker})
+        }
+        await until('independent progress', () => alice.store.state.runs[aliceWork.id]?.progress == 0.5 && bob.store.state.runs[bobWork.id]?.progress == 0.5)
+        await until('each account receives its live output', () => JSON.stringify(aliceEvents).includes('Alice private') && JSON.stringify(bobEvents).includes('Bob private'))
+        await until('independent terminal states', () => alice.store.state.runs[cancelled.id]?.state == 'cancelled' && alice.store.state.runs[failed.id]?.state == 'failed')
+        const late = active.get(cancelled.id)!
+        assert.equal(late.context.cancelled(), true)
+        late.context.report({progress: 1, message: 'late cancelled output'})
+        late.context.emit({type: 'text.delta', text: 'late cancelled output'})
+        late.resolve({result: 'late cancelled output'})
+        active.get(aliceWork.id)!.resolve({result: 'Alice private result'})
+        active.get(bobWork.id)!.resolve({result: 'Bob private result'})
+        await until('healthy siblings complete', () => alice.store.state.runs[aliceWork.id]?.state == 'completed' && bob.store.state.runs[bobWork.id]?.state == 'completed')
+        assert.equal(alice.store.state.runs[cancelled.id].result, undefined)
+        assert.equal(alice.store.state.runs[cancelled.id].state, 'cancelled')
+        assert.match(alice.store.state.runs[failed.id].error ?? '', /isolated provider failure/)
+        assert.deepEqual(Object.keys(alice.store.state.runs).sort(), [cancelled.id, failed.id, aliceWork.id].sort())
+        assert.deepEqual(Object.keys(bob.store.state.runs), [bobWork.id])
+        assert(!JSON.stringify(aliceEvents).includes('Bob private'))
+        assert(!JSON.stringify(bobEvents).includes('Alice private'))
+        assert(!JSON.stringify(aliceEvents).includes('late cancelled output'))
+        assert.equal(alice.store.state.runs[aliceWork.id].result, 'Alice private result')
+        assert.equal(bob.store.state.runs[bobWork.id].result, 'Bob private result')
+        const pending = await Promise.all([
+            alice.control.create({requestId: 'shutdown', kind: 'ticket', input: {ticket: 'pending Alice'}}),
+            bob.control.create({requestId: 'shutdown', kind: 'ticket', input: {ticket: 'pending Bob'}}),
+        ])
+        await until('both shutdown runs admitted', () => pending.every(run => active.has(run.id)))
+        await host.close()
+        assert.deepEqual([...cancellations].sort(), [cancelled.id, ...pending.map(run => run.id)].sort())
+        for (const run of pending) assert.equal(active.get(run.id)!.context.cancelled(), true)
+        console.log('PASS support concurrency: isolated progress/results, cancellation and failure leave siblings running, late output fenced, close cancels remaining runs once')
+    } finally {
+        for (const client of clients) client.close()
+        await host.close()
+        for (const task of active.values()) task.resolve({})
+    }
+}
+
+main().catch(function failed(error) { console.error(error); process.exitCode = 1 })

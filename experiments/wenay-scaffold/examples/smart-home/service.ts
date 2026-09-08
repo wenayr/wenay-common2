@@ -1,0 +1,195 @@
+import {createStore, type StorePatch} from '../../../../src/Common/Observe/store'
+import {deriveStore} from '../../../../src/Common/Observe/store-derive'
+import {exposeStoreReplay, type StoreReplayState} from '../../../../src/Common/Observe/store-replay'
+import {openDurableStore} from '../../../../src/Common/Observe/store-durable'
+import {listen} from '../../../../src/Common/events/Listen'
+import {type ReplayStorage} from '../../../../src/Common/events/replay-history'
+
+export type tReading = number | boolean | string | null
+export type Device = {home: string, label: string, reading: tReading, secret: string}
+export type HomeState = {devices: Record<string, Device>}
+type HouseholdState = {devices: Record<string, Pick<Device, 'label' | 'reading'>>}
+type HouseholdReplay = ReturnType<typeof exposeStoreReplay<HouseholdState>>['api']['replay']
+type tHouseholdBatch = Parameters<Parameters<HouseholdReplay['line']['on']>[0]>[0]
+
+// === Trusted household resources ===
+export function createHomeService(deps: {
+    initial: HomeState
+    idleMs?: number
+    storage?: (home: string) => ReplayStorage<[readonly StorePatch[]]>
+}) {
+    const idleMs = deps.idleMs ?? 1000
+    if (!Number.isSafeInteger(idleMs) || idleMs < 1) throw new RangeError('idleMs must be a positive safe integer')
+    const homes = new Map<string, ReturnType<typeof createHousehold>>()
+    const deviceHomes = new Map<string, string>()
+    let closed = false
+    let projections = 0
+
+    const grouped = new Map<string, HomeState>()
+    for (const [id, device] of Object.entries(structuredClone(deps.initial.devices))) {
+        let state = grouped.get(device.home)
+        if (!state) {
+            state = {devices: Object.create(null)}
+            grouped.set(device.home, state)
+        }
+        state.devices[id] = device
+    }
+    try {
+        for (const [home, initial] of grouped) {
+            const household = createHousehold(home, initial)
+            homes.set(home, household)
+            for (const id of household.deviceIds()) deviceHomes.set(id, home)
+        }
+    } catch (error) {
+        close()
+        throw error
+    }
+
+    function requireOpen() {
+        if (closed) throw new Error('home service is closed')
+    }
+
+    function createHousehold(home: string, initial: HomeState) {
+        const durable = deps.storage ? openDurableStore({initial, storage: deps.storage(home)}) : undefined
+        const store = durable?.store ?? createStore(initial)
+        const journal = durable ? exposeStoreReplay(store, durable.expose) : undefined
+        let archive: ReturnType<NonNullable<typeof durable>['attach']> | undefined
+        try { archive = durable?.attach(journal!) }
+        catch (error) {
+            journal?.close()
+            throw error
+        }
+        let active: ReturnType<typeof openProjection> | undefined
+        let timer: ReturnType<typeof setTimeout> | undefined
+        let firstSeq = 0
+        const [emit, readers] = listen<[tHouseholdBatch]>({
+            event: function readerCountChanged(type, count) {
+                if (type == 'add') {
+                    cancelIdle()
+                    ensureProjection()
+                } else if (count == 0) scheduleIdle()
+            },
+        })
+
+        function cancelIdle() {
+            if (timer != undefined) clearTimeout(timer)
+            timer = undefined
+        }
+
+        function scheduleIdle() {
+            cancelIdle()
+            if (closed || readers.count() > 0 || !active) return
+            timer = setTimeout(function releaseIdleProjection() {
+                timer = undefined
+                if (readers.count() == 0) releaseProjection()
+            }, idleMs)
+            timer.unref?.()
+        }
+
+        // === Public projection: private device fields never enter this Store ===
+        function openProjection() {
+            const projected = deriveStore(store, function projectHome(state): HouseholdState {
+                projections++
+                return {devices: Object.fromEntries(Object.entries(state.devices).map(function publicDevice([id, device]) {
+                    return [id, {label: device.label, reading: device.reading}]
+                }))}
+            }, {keys: ['devices']})
+            const exposed = exposeStoreReplay(projected.store, {firstSeq, chunks: false})
+            const off = exposed.api.replay.line.on(function relay(batch) { emit(batch) })
+            return {
+                ...exposed,
+                close() {
+                    off()
+                    exposed.close()
+                    projected.close()
+                },
+            }
+        }
+
+        function ensureProjection() {
+            requireOpen()
+            if (!active) active = openProjection()
+            scheduleIdle()
+            return active
+        }
+
+        function releaseProjection() {
+            if (!active) return
+            // Idle changes require a newer snapshot, even when the previous tail was empty.
+            firstSeq = active.replay.head() + 1
+            active.close()
+            active = undefined
+        }
+
+        function since(seq: number) { return ensureProjection().api.replay.since(seq) }
+        function keyframe() { return ensureProjection().api.replay.keyframe() }
+        function frame(seq: number, hint?: unknown) { return ensureProjection().api.replay.frame!(seq, hint) }
+        // RPC recognizes the whole Listen facet; its owner alone may close the shared resource.
+        const line = {...readers, close: function leaveSharedLineOpen() {}}
+        const replaySource = {line, since, keyframe, frame}
+        const source = replaySource as typeof replaySource & StoreReplayState<HouseholdState>
+
+        function record(id: string, reading: tReading) {
+            store.state.devices[id].reading = reading
+            archive?.flush()
+        }
+
+        function closeHousehold() {
+            cancelIdle()
+            readers.close()
+            releaseProjection()
+            try { archive?.close() }
+            finally { journal?.close() }
+        }
+        return {
+            control: {record}, source,
+            view: {active: () => !!active, readers: readers.count},
+            deviceIds: () => Object.keys(store.state.devices),
+            close: closeHousehold,
+        }
+    }
+
+    // === Service addressing ===
+    function household(home: string) {
+        requireOpen()
+        const entry = homes.get(home)
+        if (!entry) throw new Error(`unknown home: ${home}`)
+        return entry.source
+    }
+
+    function record(deviceId: string, reading: tReading) {
+        requireOpen()
+        const home = deviceHomes.get(deviceId)
+        if (home == undefined) throw new Error(`unknown device: ${deviceId}`)
+        homes.get(home)!.control.record(deviceId, reading)
+    }
+
+    function stats() {
+        const entries = [...homes.values()]
+        return {
+            households: homes.size,
+            lines: entries.filter(entry => entry.view.active()).length,
+            readers: entries.reduce((sum, entry) => sum + entry.view.readers(), 0),
+            projections,
+        }
+    }
+
+    function close() {
+        if (closed) return
+        closed = true
+        const errors: unknown[] = []
+        for (const entry of homes.values()) {
+            try { entry.close() }
+            catch (error) { errors.push(error) }
+        }
+        homes.clear()
+        deviceHomes.clear()
+        if (errors.length) throw new AggregateError(errors, 'home service close failed')
+    }
+
+    return {control: {record}, source: {household}, view: {stats}, close}
+}
+export type HomeService = ReturnType<typeof createHomeService>
+
+
+

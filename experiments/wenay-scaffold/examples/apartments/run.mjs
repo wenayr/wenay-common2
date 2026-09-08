@@ -1,0 +1,146 @@
+#!/usr/bin/env node
+// =====================================================================
+// apartments stand — leader (durable, with the fake bank) + N nodes + a lock
+// =====================================================================
+// Plain node. The orchestrator mints the corridor secrets and the webhook
+// secret ONCE, hands them to every process through env, boots the leader on
+// a data directory (SERVICE_DATA_DIR: the line survives a restart), waits for
+// its port, spawns the nodes and the lock device, and stops everything on
+// Ctrl+C. Importable: the check starts a stand on ephemeral ports and
+// restarts the leader to prove the archive.
+
+import {spawn} from 'node:child_process'
+import {randomBytes} from 'node:crypto'
+import {mkdtempSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import path from 'node:path'
+import {fileURLToPath} from 'node:url'
+
+const here = path.dirname(fileURLToPath(import.meta.url))
+const LOCK_PASSWORD = 'lock-1-secret'
+
+/** @param {{port?: number, nodes?: number, device?: boolean, dataDir?: string, verbose?: boolean, signal?: AbortSignal}} [deps] */
+export async function startStand({port = 0, nodes = 2, device = true, dataDir = undefined, verbose = false, signal = undefined} = {}) {
+    if (!Number.isInteger(nodes) || nodes < 0 || nodes > 8) throw new Error('nodes must be between 0 and 8')
+    if (signal?.aborted) throw new Error('stand startup cancelled')
+    const secrets = {
+        SERVICE_NODE_TOKEN: randomBytes(24).toString('hex'),
+        SERVICE_TOKEN_SECRET: randomBytes(32).toString('hex'),
+        BANK_WEBHOOK_SECRET: randomBytes(16).toString('hex'),
+        SERVICE_DATA_DIR: dataDir ?? mkdtempSync(path.join(tmpdir(), 'apartments-data-')),
+    }
+    const children = []
+    let closing
+    let restarting
+    function aborted() { void close() }
+    signal?.addEventListener('abort', aborted, {once: true})
+    function boot(script, env) {
+        if (closing) throw new Error('stand is closing')
+        const child = spawn(process.execPath, ['--import', 'tsx', script], {
+            cwd: here, env: {...process.env, ...secrets, ...env},
+            stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+        })
+        let output = ''
+        let failure
+        const done = new Promise(function waitForExit(resolve) {
+            child.once('error', function failed(error) { failure = error; resolve() })
+            child.once('exit', resolve)
+        })
+        function capture(chunk) {
+            output = (output + String(chunk)).slice(-24_000)
+            if (verbose) process.stdout.write(chunk)
+        }
+        child.stdout.on('data', capture)
+        child.stderr.on('data', capture)
+        const entry = {child, done, expected: false, stopping: undefined, output: () => output, failure: () => failure}
+        children.push(entry)
+        child.once('exit', function unexpectedExit() {
+            if (!entry.expected) { process.exitCode = 1; void close() }
+        })
+        return entry
+    }
+    async function waitForLine(entry, pattern) {
+        const deadline = Date.now() + 20_000
+        while (Date.now() < deadline) {
+            if (closing || signal?.aborted) throw new Error('stand startup cancelled')
+            if (entry.failure() || entry.child.exitCode != null || entry.child.signalCode != null) {
+                throw new Error('stand process failed to start:\n' + entry.output())
+            }
+            const match = pattern.exec(entry.output())
+            if (match) return match[1] ?? match[0]
+            await new Promise(function tick(resolve) { setTimeout(resolve, 25) })
+        }
+        throw new Error('stand process readiness timed out:\n' + entry.output())
+    }
+    function stop(entry) {
+        if (entry.stopping) return entry.stopping
+        entry.expected = true
+        entry.stopping = (async function stopProcess() {
+            if (entry.child.exitCode == null && entry.child.signalCode == null) entry.child.kill('SIGTERM')
+            const force = setTimeout(function forceExit() { entry.child.kill('SIGKILL') }, 1500)
+            try { await entry.done } finally { clearTimeout(force) }
+        })()
+        return entry.stopping
+    }
+    function close() {
+        if (closing) return closing
+        signal?.removeEventListener('abort', aborted)
+        closing = (async function closeResources() {
+            await Promise.all(children.map(stop))
+            await Promise.allSettled(restarting ? [restarting] : [])
+        })()
+        return closing
+    }
+    try {
+        if (signal?.aborted) throw new Error('stand startup cancelled')
+        let leader = boot('leader-apartments.ts', {SERVICE_PORT: String(port)})
+        const url = await waitForLine(leader, /leader listening on (http:\/\/localhost:\d+)/)
+        const nodeUrls = []
+        for (let i = 0; i < nodes; i++) {
+            const node = boot('node-apartments.ts', {SERVICE_NODE_ID: 'apartments-node-' + i, SERVICE_UPSTREAM: url, SERVICE_PORT: '0'})
+            nodeUrls.push(await waitForLine(node, /serving at (http:\/\/localhost:\d+)/))
+        }
+        if (device) {
+            // the device places itself on a serving node from the roster; it only needs the leader
+            const lock = boot('device-lock.ts', {SERVICE_URL: url, LOCK_ACCOUNT: 'lock-1', LOCK_PASSWORD})
+            await waitForLine(lock, /lock-1 ready/)
+        }
+        /** Restart the leader on the same port and data directory: the archive restores the line. */
+        function restartLeader() {
+            if (closing) throw new Error('stand is closing')
+            if (restarting) return restarting
+            const previous = leader
+            restarting = (async function replaceLeader() {
+                await stop(previous)
+                if (closing) throw new Error('stand is closing')
+                leader = boot('leader-apartments.ts', {SERVICE_PORT: new URL(url).port})
+                const seq = await waitForLine(leader, /durable line at seq (\d+), restored from the archive/)
+                if (closing) throw new Error('stand closed during leader startup')
+                return seq
+            })().finally(function finished() { restarting = undefined })
+            return restarting
+        }
+        return {url, nodeUrls, webhookSecret: secrets.BANK_WEBHOOK_SECRET, dataDir: secrets.SERVICE_DATA_DIR, restartLeader, close,
+            view: {processes: () => children.map(entry => ({pid: entry.child.pid,
+                exited: entry.child.exitCode != null || entry.child.signalCode != null || entry.failure() != undefined}))},
+        }
+    } catch (error) {
+        await close()
+        throw error
+    }
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) == fileURLToPath(import.meta.url)) {
+    const stop = new AbortController()
+    function shutdown() { stop.abort() }
+    process.once('SIGINT', shutdown)
+    process.once('SIGTERM', shutdown)
+    const stand = await startStand({
+        port: Number(process.env.SERVICE_PORT ?? 3600), nodes: Number(process.env.APARTMENTS_NODES ?? 2),
+        dataDir: process.env.SERVICE_DATA_DIR, verbose: true, signal: stop.signal,
+    })
+    console.log('Panel: ' + stand.url + '/panel')
+    console.log('Swagger: ' + stand.url + '/docs')
+    console.log('Data: ' + stand.dataDir)
+    console.log('Reader endpoints: ' + [stand.url, ...stand.nodeUrls].join(', '))
+}

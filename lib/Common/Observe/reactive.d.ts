@@ -15,6 +15,7 @@ export declare function toRaw<T>(p: T): T;
 export declare function onUpdate(p: any, cb: Fn): () => void;
 export declare function onUpdatePaths(p: any, cb: PathUpdateFn): () => void;
 export declare function flushReactive(p: any): Promise<void>;
+export declare function flushReactiveNow(p: any): void;
 export declare function listenUpdate(p: any): import("../..").ListenApi<[]>;
 export declare function listenUpdatePaths(p: any): import("../..").ListenApi<[ReactiveChange]>;
 export type Reactive<T extends object> = T;

@@ -1,4 +1,5 @@
-import type {ReplicatedMapRemote} from '../src/Common/Observe/replicated-map'
+import type {followReplicatedMap} from '../src/Common/Observe/replicated-map'
+import type {WorkboardHost} from './workboard-host'
 
 export const workboardStatuses = ['new', 'active', 'done'] as const
 
@@ -47,11 +48,6 @@ export type WorkboardRemoveResult = {
     deleted: true
 }
 
-export type WorkboardRemote = {
-    state: ReplicatedMapRemote<WorkboardItem>
-    create: (input: WorkboardCreateInput) => WorkboardItem | Promise<WorkboardItem>
-    rename: (input: WorkboardRenameInput) => WorkboardItem | Promise<WorkboardItem>
-    move: (input: WorkboardMoveInput) => WorkboardItem | Promise<WorkboardItem>
-    assign: (input: WorkboardAssignInput) => WorkboardItem | Promise<WorkboardItem>
-    remove: (input: WorkboardRevisionInput) => WorkboardRemoveResult | Promise<WorkboardRemoveResult>
+export type WorkboardRemote = Omit<ReturnType<WorkboardHost['connection']>['fragment'], 'state'> & {
+    state: Parameters<typeof followReplicatedMap<WorkboardItem>>[0]
 }

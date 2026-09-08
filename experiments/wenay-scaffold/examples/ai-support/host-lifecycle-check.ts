@@ -1,0 +1,56 @@
+import assert from 'node:assert/strict'
+import {spawnSync} from 'node:child_process'
+import {startSupportHost} from './host'
+import {connectSupport} from './client'
+
+async function scenario() {
+    let cancelled = () => false
+    let cancellations = 0
+    const host = await startSupportHost({runner: {
+        run(context) {
+            cancelled = context.cancelled
+            return new Promise<never>(function pending() {})
+        },
+        cancel() { cancellations++ },
+    }})
+    const clients: Awaited<ReturnType<typeof connectSupport>>[] = []
+    try {
+        await assert.rejects(startSupportHost({port: Number(new URL(host.url).port)}), {code: 'EADDRINUSE'})
+        assert.equal((await fetch(host.url)).status, 200)
+        const alice = await connectSupport({url: host.url, token: () => host.source.token('alice')})
+        clients.push(alice)
+        const bob = await connectSupport({url: host.url, token: () => host.source.token('bob')})
+        clients.push(bob)
+        await alice.control.create({requestId: 'close-active', kind: 'ticket', input: {ticket: 'Pending request'}})
+        const closing = host.close()
+        assert.equal(host.close(), closing)
+        await closing
+        assert.equal(cancelled(), true)
+        assert.equal(cancellations, 1)
+        // Keep both clients alive while asynchronous disconnect/replay callbacks settle.
+        await new Promise(function settle(resolve) { setTimeout(resolve, 100) })
+        assert.deepEqual(Object.keys(bob.store.state.runs), [])
+        const replacement = await startSupportHost({port: Number(new URL(host.url).port)})
+        try {
+            assert.equal((await fetch(replacement.url)).status, 200)
+            const fresh = await connectSupport({url: replacement.url, token: () => replacement.source.token('alice')})
+            clients.push(fresh)
+            assert.deepEqual(Object.keys(fresh.store.state.runs), [])
+            fresh.close()
+        } finally { await replacement.close() }
+    } finally {
+        for (const client of clients) client.close()
+        await host.close()
+    }
+}
+
+if (process.argv.includes('--child')) {
+    scenario().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+} else {
+    const child = spawnSync(process.execPath, ['--import', 'tsx', __filename, '--child'], {
+        encoding: 'utf8', timeout: 15000, windowsHide: true,
+    })
+    assert.equal(child.error, undefined)
+    assert.equal(child.status, 0, child.stdout + child.stderr)
+    console.log('PASS support host: bind failure preserves owner, live-client shutdown, provider cancellation once, port reuse and fresh identity')
+}

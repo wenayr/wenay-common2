@@ -268,7 +268,7 @@ export function createMediaDemo(deps: MediaDemoDeps) {
             maxVideoMode.textContent = max
                 ? 'MAX · video only · unpaced · JPEG q68'
                 : 'Balanced · 12fps · JPEG q68'
-            maxVideoMode.dataset.mode = videoLoadMode
+            maxVideoMode.dataset['mode'] = videoLoadMode
         }
 
         maxVideoButton.addEventListener('click', async function toggleMaxVideoLoad() {
@@ -500,7 +500,7 @@ export function createMediaDemo(deps: MediaDemoDeps) {
         function makeTile(account: string, isSelf: boolean): CallTile {
             const root = document.createElement('figure')
             root.className = 'callTile'
-            root.dataset.account = account
+            root.dataset['account'] = account
             const cv = document.createElement('canvas')
             cv.width = 320
             cv.height = 180
@@ -585,7 +585,7 @@ export function createMediaDemo(deps: MediaDemoDeps) {
         }
 
         function setView(view: 'speaker' | 'grid') {
-            grid.dataset.layout = view
+            grid.dataset['layout'] = view
         }
 
         function setSound(on: boolean) {
@@ -605,7 +605,7 @@ export function createMediaDemo(deps: MediaDemoDeps) {
             if (selfTile) {
                 const talking = local.sources.mic.state == 'live' && (localMic.rms ?? 0) > 0.01
                 selfTile.speaking = talking ? (localMic.rms ?? 0) : 0
-                selfTile.root.dataset.speaking = String(talking)
+                selfTile.root.dataset['speaking'] = String(talking)
                 selfTile.nameChip.textContent = 'You' + (local.sources.mic.state != 'live' ? ' · 🎙 off' : talking ? ' · 🎙' : '')
                 selfTile.badge.hidden = local.sources.cam.state == 'live'
                 selfTile.badge.textContent = '📷 camera off'
@@ -619,7 +619,7 @@ export function createMediaDemo(deps: MediaDemoDeps) {
                 const flags = peerAv?.(account)
                 const talking = perSec > 0 && flags?.micOn != false
                 tile.speaking = talking ? perSec : 0
-                tile.root.dataset.speaking = String(talking)
+                tile.root.dataset['speaking'] = String(talking)
                 tile.nameChip.textContent = participantName(account)
                     + (flags?.micOn == false ? ' · 🎙 muted' : talking ? ' · 🎙' : '')
                 tile.badge.hidden = cam.width > 0
@@ -638,7 +638,7 @@ export function createMediaDemo(deps: MediaDemoDeps) {
                 const firstPeer = Array.from(tiles.keys()).find(a => a != 'self')
                 activeSpeaker = firstPeer ?? 'self'
             }
-            for (const [account, tile] of tiles) tile.root.dataset.active = String(account == activeSpeaker)
+            for (const [account, tile] of tiles) tile.root.dataset['active'] = String(account == activeSpeaker)
             return {count: tiles.size, activeSpeaker}
         }
 
@@ -691,7 +691,7 @@ export function createMediaDemo(deps: MediaDemoDeps) {
             loadOutput.textContent = cameraSource.state == 'live'
                 ? `${local.videoLoadMode().toUpperCase()} TX · ${encodedFps} encoded fps · ${mibPerSec.toFixed(2)} MiB/s · ${averageKiB.toFixed(0)} KiB/frame${local.videoLoadMode() == 'max' ? ' · unpaced' : ` · ${droppedPerSec} busy drops/s`}`
                 : `${local.videoLoadMode().toUpperCase()} TX · camera is not producing frames`
-            loadOutput.dataset.mode = local.videoLoadMode()
+            loadOutput.dataset['mode'] = local.videoLoadMode()
 
             const mic = local.sources.mic.getStats()
             microphoneStatus.textContent = mic.state == 'live'

@@ -1,5 +1,6 @@
 export * from "./reactive";
 export * from "./store";
+export * from "./store-external";
 export * from "./store-replay";
 export * from "./store-lazy-line";
 export * from "./store-follower";
@@ -9,4 +10,7 @@ export * from "./store-manager";
 export * from "./store-durable";
 export * from "./store-playback";
 export * from "./node-health";
+export * from './node-directory';
+export * from './store-node';
 export * from './replicated-map';
+export * from './store-derive';

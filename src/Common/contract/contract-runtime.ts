@@ -46,6 +46,7 @@ type LiveBinding = {
     session: ContractSession
     leases: number
     retired: boolean
+    draining: boolean
     closed: boolean
     offFail: any
     drainTimer: ReturnType<typeof setTimeout> | null
@@ -121,6 +122,8 @@ export function createContractRuntime(deps: ContractRuntimeDeps = {}) {
     const revoked = new Map<string, string>()
     const failures = new Map<string, OfferFailure>()
     const slots = new Map<string, Slot>()
+    const retired = new Set<LiveBinding>()
+    const candidates = new Map<ContractSession, () => void>()
     const history: ContractBindingEvent[] = []
     const [emitBinding, bindingEvents] = listen<[ContractBindingEvent]>({
         [LISTEN_DISPATCH_ERROR]: reportContractBindingObserverError,
@@ -130,8 +133,15 @@ export function createContractRuntime(deps: ContractRuntimeDeps = {}) {
 
     const status = createStore<ContractRuntimeStatus>({closed: false, slots: {}})
 
+    function assertOpen() {
+        if (closed) throw new Error('contract runtime closed')
+    }
+
     function chained<T>(run: () => Promise<T>) {
-        const task = opChain.then(run, run)
+        const task = opChain.then(function runContractControl() {
+            assertOpen()
+            return run()
+        })
         opChain = task.catch(function swallowContractControlError() {})
         return task
     }
@@ -193,30 +203,47 @@ export function createContractRuntime(deps: ContractRuntimeDeps = {}) {
         emitBinding(event)
     }
 
-    function finishRetire(live: LiveBinding, reason?: unknown) {
+    function closeCandidate(session: ContractSession) {
+        const unsubscribe = candidates.get(session)
+        if (!candidates.delete(session)) return
+        try { unsubscribe?.() } catch {}
+        try { session.close() } catch {}
+    }
+
+    function closeRetired(live: LiveBinding) {
         if (live.closed) return
         live.closed = true
+        retired.delete(live)
         if (live.drainTimer) clearTimeout(live.drainTimer)
         live.drainTimer = null
         unsubscribeHandle(live.offFail)
         live.offFail = null
-        Promise.resolve()
-            .then(function drainRetiredContract() { return live.session.drain?.(reason) })
-            .catch(function ignoreDrainFailure() {})
-            .then(function closeRetiredContract() {
-                try { live.session.close() } catch {}
-            })
+        try { live.session.close() } catch {}
+    }
+
+    function finishRetire(live: LiveBinding, reason?: unknown) {
+        if (live.closed || live.draining) return
+        live.draining = true
+        let draining
+        try { draining = live.session.drain?.(reason) }
+        catch { closeRetired(live); return }
+        Promise.resolve(draining)
+            .then(function drainedContract() { closeRetired(live) },
+                function failedContractDrain() { closeRetired(live) })
     }
 
     function retire(live: LiveBinding, reason?: unknown) {
-        if (live.retired) return
+        if (live.retired || live.closed) return
         live.retired = true
+        retired.add(live)
         unsubscribeHandle(live.offFail)
         live.offFail = null
-        if (live.leases == 0 || drainTimeoutMs == 0) { finishRetire(live, reason); return }
+        // One deadline covers both outstanding leases and the resource's own drain.
         live.drainTimer = timer(drainTimeoutMs, function contractDrainTimedOut() {
             finishRetire(live, reason)
+            closeRetired(live)
         })
+        if (live.leases == 0) finishRetire(live, reason)
     }
 
     function clearFailure(offerId: string) {
@@ -232,6 +259,7 @@ export function createContractRuntime(deps: ContractRuntimeDeps = {}) {
     }
 
     function failOffer(offerId: string, error: unknown) {
+        if (closed) return
         clearFailure(offerId)
         const failure: OfferFailure = {error: errorText(error), until: now() + retryMs, timer: null}
         failure.timer = timer(retryMs, function retryContractOffer() {
@@ -256,26 +284,56 @@ export function createContractRuntime(deps: ContractRuntimeDeps = {}) {
     }
 
     async function openCandidate(slot: Slot, offer: ContractOffer, reason: string) {
+        assertOpen()
         const demand = slot.demand!
         slot.state = 'preparing'
         slot.error = null
         publishStatus()
         let session: ContractSession | null = null
+        let offFail: any
+        let live: LiveBinding | null = null
+        const preparation = {failed: false, error: undefined as unknown}
+        function removeFailureListener() {
+            const off = offFail
+            offFail = null
+            unsubscribeHandle(off)
+        }
         try {
             session = await offer.open({
                 demand: copyDemand(demand),
                 descriptor: {...offer.descriptor},
                 previous: slot.active ? copyBinding(slot.active.binding) : null,
             })
-            if (closed) throw new Error('contract runtime closed')
+            if (session && typeof session.close == 'function') candidates.set(session, removeFailureListener)
+            assertOpen()
             if (!session || (typeof session.api != 'object' && typeof session.api != 'function') || session.api == null) {
                 throw rejectedError('offer returned an invalid contract api')
             }
             if (typeof session.close != 'function') throw rejectedError('offer session close is required')
+            // A process can fail while its asynchronous readiness policy is still running.
+            offFail = session.onFail?.on(function contractSessionFailed(failureReason?: unknown) {
+                const failure = failureReason ?? new Error('contract session failed')
+                const active = live
+                if (!active) { preparation.failed = true; preparation.error = failure; return }
+                void chained(async function handleActiveContractFailure() {
+                    if (closed || slot.active != active) return
+                    failOffer(offer.id, failure)
+                    const from = active.binding
+                    slot.active = null
+                    slot.error = errorText(failure)
+                    slot.state = 'failed'
+                    retire(active, failure)
+                    record(slot, from, null, 'session failed', failure)
+                    await reconcileSlot(slot, 'session failover')
+                })
+            })
+            assertOpen()
             if (policy.acceptSession) {
                 const accepted = await policy.acceptSession(demand, offer, session.api)
+                assertOpen()
                 if (!accepted.accepted) throw rejectedError(accepted.reason?.trim() || 'session rejected by policy')
             }
+            if (preparation.failed) throw preparation.error
             if (slot.demand != demand) throw new Error('contract demand changed while candidate opened')
 
             clearFailure(offer.id)
@@ -291,40 +349,32 @@ export function createContractRuntime(deps: ContractRuntimeDeps = {}) {
                 bindingGeneration: ++slot.bindingGeneration,
                 activatedAt: now(),
             }
-            const live: LiveBinding = {
+            live = {
                 binding,
                 offer,
                 session,
                 leases: 0,
                 retired: false,
+                draining: false,
                 closed: false,
-                offFail: null,
+                offFail,
                 drainTimer: null,
             }
-            live.offFail = session.onFail?.on(function activeContractFailed(failureReason?: unknown) {
-                void chained(async function handleActiveContractFailure() {
-                    if (closed || slot.active != live) return
-                    failOffer(offer.id, failureReason ?? new Error('contract session failed'))
-                    const from = live.binding
-                    slot.active = null
-                    slot.error = errorText(failureReason ?? 'contract session failed')
-                    slot.state = 'failed'
-                    retire(live, failureReason)
-                    record(slot, from, null, 'session failed', failureReason)
-                    await reconcileSlot(slot, 'session failover')
-                })
-            })
-
+            assertOpen()
+            candidates.delete(session)
             slot.active = live
             slot.previous = old ? copyBinding(old.binding) : slot.previous
             slot.state = 'active'
             slot.error = null
+            if (old) retire(old, reason)
+            assertOpen()
             record(slot, old?.binding ?? null, binding, reason)
             publishStatus()
-            if (old) retire(old, reason)
             return {ok: true as const}
         } catch (error) {
-            try { session?.close() } catch {}
+            removeFailureListener()
+            if (session) closeCandidate(session)
+            assertOpen()
             const rejected = !!(error as any)?.contractRejected
             if (!rejected) failOffer(offer.id, error)
             return {ok: false as const, error, rejected}
@@ -349,6 +399,7 @@ export function createContractRuntime(deps: ContractRuntimeDeps = {}) {
             policy,
             unavailable,
         })
+        assertOpen()
         slot.candidates = resolution.candidates
         publishStatus()
 
@@ -360,6 +411,7 @@ export function createContractRuntime(deps: ContractRuntimeDeps = {}) {
                 return
             }
             const opened = await openCandidate(slot, offer, reason)
+            assertOpen()
             if (opened.ok) return
             const message = errorText(opened.error)
             rejectCandidate(slot, offer.id, opened.rejected ? message : 'open failed: ' + message)
@@ -368,13 +420,14 @@ export function createContractRuntime(deps: ContractRuntimeDeps = {}) {
         }
 
         const old = slot.active
+        slot.state = demand.required == false ? 'degraded' : 'failed'
+        slot.error = slot.error ?? 'no compatible contract offer'
         if (old) {
             slot.active = null
             retire(old, 'no compatible offer')
             record(slot, old.binding, null, 'no compatible offer', slot.error ?? undefined)
         }
-        slot.state = demand.required == false ? 'degraded' : 'failed'
-        slot.error = slot.error ?? 'no compatible contract offer'
+        assertOpen()
         publishStatus()
     }
 
@@ -395,10 +448,11 @@ export function createContractRuntime(deps: ContractRuntimeDeps = {}) {
     }
 
     async function acceptDemand(demandValue: ContractDemand) {
-        if (closed) throw new Error('contract runtime closed')
+        assertOpen()
         const demand = copyDemand(validateContractDemand(demandValue))
         if (policy.acceptDemand) {
             const accepted = await policy.acceptDemand(demand)
+            assertOpen()
             if (!accepted.accepted) return {accepted: false, reason: accepted.reason?.trim() || 'demand rejected by policy'}
         }
         const slot = slotFor(demand.slotId)
@@ -441,12 +495,14 @@ export function createContractRuntime(deps: ContractRuntimeDeps = {}) {
         const offer = offers.get(slot.previous.offerId)
         if (!offer) throw new Error('contract runtime: previous offer is unavailable: ' + slot.previous.offerId)
         const resolution = await resolveContractBinding({demand: slot.demand, offers: [offer], policy, unavailable})
+        assertOpen()
         slot.candidates = resolution.candidates
         if (!resolution.selected) {
             publishStatus()
             throw new Error('contract runtime: previous offer is no longer compatible')
         }
         const opened = await openCandidate(slot, offer, 'rollback')
+        assertOpen()
         if (!opened.ok) {
             slot.state = slot.active ? 'active' : 'failed'
             slot.error = errorText(opened.error)
@@ -575,10 +631,15 @@ export function createContractRuntime(deps: ContractRuntimeDeps = {}) {
             for (const slot of slots.values()) {
                 slot.state = 'closed'
                 if (slot.active) {
-                    finishRetire(slot.active, 'runtime closed')
+                    retire(slot.active, 'runtime closed')
                     slot.active = null
                 }
             }
+            for (const live of retired) {
+                finishRetire(live, 'runtime closed')
+                closeRetired(live)
+            }
+            for (const session of candidates.keys()) closeCandidate(session)
             bindingEvents.close()
             publishStatus()
         },

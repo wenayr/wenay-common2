@@ -44,6 +44,7 @@ import type { DeepSocketListen } from "./listen-deep"
 import { MyError } from "../../toError/myThrow"
 import { createStore, createStoreMirror, exposeStore, exposeStoreReplay, flushReactive, syncStoreReplay } from "../Observe"
 import {runRpcCallbackBatchTests} from './rpc-callback-batch.spec'
+import {runRpcAuthBoundaryTests} from './rpc-auth-boundary.spec'
 
 // --- loopback: emit from one end delivers to on of the other (async, like real socket) ---
 // Each message goes through JSON clone: real transport serializes, and raw Date/Map/BigInt
@@ -2684,6 +2685,7 @@ export async function runHarness() {
     }
 
     await runRpcCallbackBatchTests()
+    await runRpcAuthBoundaryTests()
 
     console.log(`\n${fails === 0 ? "ALL GREEN ✅" : fails + " FAILURE(S) ❌"}`)
     return fails

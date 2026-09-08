@@ -14,11 +14,15 @@
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {listen as createListenPair} from '../../src/Common/events/Listen'
 
-const PORT = 4120
+function serverPort(srv: Awaited<ReturnType<typeof startRealServer>>) {
+    const address = srv.httpServer.address()
+    if (!address || typeof address == 'string') throw new Error('expected a listening TCP server')
+    return address.port
+}
 
 // one scenario: boot a server (opt = serverOpt) + connect a client (opt = clientOpt),
 // fire N monomorphic ticks, count CBV(9)/CB(2) packets on the real server socket.
-async function scenario(port: number, serverOpt?: {compact?: boolean}, clientOpt?: {compact?: boolean}) {
+async function scenario(serverOpt?: {compact?: boolean}, clientOpt?: {compact?: boolean}) {
     let emit: ((v: any) => void) | null = null
     function makeObject() {
         const [e, listen] = createListenPair<any>()
@@ -27,7 +31,7 @@ async function scenario(port: number, serverOpt?: {compact?: boolean}, clientOpt
     }
     let cbv = 0, cb = 0
     const srv = await startRealServer({
-        port, makeObject,
+        port: 0, makeObject,
         serverOpts: {opt: serverOpt},
         onServer: (_api, socket) => {
             const orig = socket.emit.bind(socket)
@@ -37,7 +41,7 @@ async function scenario(port: number, serverOpt?: {compact?: boolean}, clientOpt
             }
         },
     })
-    const cli = await startRealClient({port, opt: clientOpt})
+    const cli = await startRealClient({port: serverPort(srv), opt: clientOpt})
     const got: any[] = []
     const off = cli.api.stream.callback((v: any) => got.push(v))
     await delay(60) // subscription round-trip + CAPS handshake over the real socket
@@ -57,7 +61,7 @@ async function main() {
 
     // ---- 1) default: COMPACT negotiated (both peers new) ----
     {
-        const r = await scenario(PORT)
+        const r = await scenario()
         await check('default: all ticks intact', () => r.got.length, r.N)
         await check('default: last tick exact (Date)', () => [r.got[r.N - 1].a, r.got[r.N - 1].tag, r.got[r.N - 1].when], [r.N - 1, 'x', new Date((r.N - 1) * 1000)])
         await check('default: compaction engaged (CBV>0)', () => r.cbv > 0, true)
@@ -65,7 +69,7 @@ async function main() {
 
     // ---- 2) client opt:{compact:false}: client does NOT advertise → server plain CB ----
     {
-        const r = await scenario(PORT + 1, undefined, {compact: false})
+        const r = await scenario(undefined, {compact: false})
         await check('client-off: all ticks intact', () => r.got.length, r.N)
         await check('client-off: last tick exact (Date)', () => [r.got[r.N - 1].a, r.got[r.N - 1].when], [r.N - 1, new Date((r.N - 1) * 1000)])
         await check('client-off: NO compaction (CBV==0)', () => r.cbv, 0)
@@ -74,7 +78,7 @@ async function main() {
 
     // ---- 3) server opt:{compact:false}: server advertises no COMPACT → no compaction ----
     {
-        const r = await scenario(PORT + 2, {compact: false})
+        const r = await scenario({compact: false})
         await check('server-off: all ticks intact', () => r.got.length, r.N)
         await check('server-off: last tick exact (Date)', () => [r.got[r.N - 1].a, r.got[r.N - 1].when], [r.N - 1, new Date((r.N - 1) * 1000)])
         await check('server-off: NO compaction (CBV==0)', () => r.cbv, 0)
@@ -84,8 +88,8 @@ async function main() {
     // ---- 4) subscribe via .on(cb) over the REAL web (idiomatic alias of .callback) ----
     {
         let emit: ((v: any) => void) | null = null
-        const srv = await startRealServer({port: PORT + 3, makeObject: () => { const [e, l] = createListenPair<any>(); emit = e; return {stream: l} }})
-        const cli = await startRealClient({port: PORT + 3})
+        const srv = await startRealServer({port: 0, makeObject: () => { const [e, l] = createListenPair<any>(); emit = e; return {stream: l} }})
+        const cli = await startRealClient({port: serverPort(srv)})
         const got: any[] = []
         const off = (cli.api.stream as any).on((v: any) => got.push(v))   // .on instead of .callback — «fact of callback setup»
         await delay(60)
@@ -101,8 +105,8 @@ async function main() {
     // ---- 5) bare-on exposure ({ stream: listen.on }) + once over the REAL web ----
     {
         let emit: ((v: any) => void) | null = null
-        const srv = await startRealServer({port: PORT + 4, makeObject: () => { const [e, l] = createListenPair<any>(); emit = e; return {stream: (l as any).on} }})
-        const cli = await startRealClient({port: PORT + 4})
+        const srv = await startRealServer({port: 0, makeObject: () => { const [e, l] = createListenPair<any>(); emit = e; return {stream: (l as any).on} }})
+        const cli = await startRealClient({port: serverPort(srv)})
         const got: any[] = []
         ;(cli.api.stream as any).on((v: any) => got.push(v))   // exposed ONLY listen.on → client got subscription
         await delay(60)

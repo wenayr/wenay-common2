@@ -11,7 +11,7 @@
 // Internal to the Scale tier: the authority and the store node are its users.
 
 import {createStore, applyStorePatches, listenStorePatches, type Store, type StorePatch} from '../Observe/store'
-import {exposeStoreReplay, type StoreReplayRemote} from '../Observe/store-replay'
+import {exposeStoreReplay, type StoreReplayOpts, type StoreReplayRemote} from '../Observe/store-replay'
 import {createStoreFollower, type StoreFollower} from '../Observe/store-follower'
 import type {NodeDirectoryState} from '../Observe/node-directory'
 import type {CommandReceiptsState} from '../command/command-receipts'
@@ -36,6 +36,12 @@ export type ControlLineDeps<S extends object> = {
     initial: S
     /** Own the line from birth (a born leader); default: idle until follow()/promote(). */
     own?: boolean
+    /** A born-owned line over THIS store (restored from an archive) instead of a fresh one; used once. */
+    store?: Store<S>
+    /** Extra line options for the owned line (an archiver's journal hooks). */
+    expose?: Partial<StoreReplayOpts>
+    /** The owned line as exposed (born or promoted from idle) — an archiver attaches here. */
+    onOwned?: (exposed: {replay: ReturnType<typeof exposeStoreReplay>['replay'], flushPending: () => void}) => void
     /** Static descriptor fields served on the line (schema/originId...). */
     describe?: Record<string, any>
     label?: string
@@ -55,6 +61,7 @@ export function createControlLine<S extends object>(deps: ControlLineDeps<S>) {
     // the last state known from EITHER side; a demote/follow hand-over seeds from it
     let lastKnown: S = deps.initial
     let closed = false
+    let seedStore = deps.store ?? null
 
     function role(): tControlLineRole {
         return owner ? 'owner' : follower ? 'follower' : 'idle'
@@ -104,10 +111,12 @@ export function createControlLine<S extends object>(deps: ControlLineDeps<S>) {
         } else {
             // a follower whose link already died is terminal: its state is still the freshest we have
             stopFollowing()
-            const fresh = idleStore ?? createStore<S>(lastKnown)
+            const fresh = idleStore ?? seedStore ?? createStore<S>(lastKnown)
             idleStore = null
-            const exposed = exposeStoreReplay(fresh, expose)
+            seedStore = null
+            const exposed = exposeStoreReplay(fresh, {...expose, ...deps.expose})
             owner = {store: fresh, api: exposed.api.replay, close: exposed.close}
+            deps.onOwned?.({replay: exposed.replay, flushPending: exposed.flushPending})
         }
         deps.log?.(`${label}: owned`)
         return owner.store

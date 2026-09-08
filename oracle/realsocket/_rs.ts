@@ -39,7 +39,7 @@ export async function startRealServer(opts: ServerOpts) {
     const ioServer = new SocketIOServer(httpServer, {maxHttpBufferSize: 1e8})
 
     ioServer.on('connection', socket => {
-        const [disconnect, disconnectListen] = createListenPair()
+        const [disconnect, disconnectListen] = createListenPair<[]>()
         socket.on('disconnect', () => disconnect())
         const adapter = {
             emit: (key: string, data: any) => socket.emit(key, data),

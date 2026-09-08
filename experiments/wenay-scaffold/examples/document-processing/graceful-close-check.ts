@@ -1,0 +1,63 @@
+import assert from 'node:assert/strict'
+import {spawnSync} from 'node:child_process'
+import {startDocumentHost} from './host'
+import {connectDocuments} from './client'
+
+async function scenario() {
+    let cancelled = () => false
+    const host = await startDocumentHost({runner: {
+        run(context) {
+            cancelled = context.cancelled
+            return new Promise<never>(function pending() {})
+        },
+    }})
+    const clients: Awaited<ReturnType<typeof connectDocuments>>[] = []
+    try {
+        const alice = await connectDocuments({url: host.url, token: () => host.source.token('alice')})
+        clients.push(alice)
+        const bob = await connectDocuments({url: host.url, token: () => host.source.token('bob')})
+        clients.push(bob)
+        const store = alice.store
+        const upload = await alice.control.startUpload({name: 'active.txt', size: 1, mime: 'text/plain'})
+        await alice.resource.put(upload.file.id, new Uint8Array([65]))
+        await alice.control.confirmUpload(upload.file.id)
+        await alice.control.startJob(upload.file.id, {})
+        assert.equal(cancelled(), false)
+        const closing = host.close()
+        assert.equal(host.close(), closing)
+        await closing
+        assert.equal(cancelled(), true, 'active runner observes shutdown')
+        // Let RPC disconnect and deferred replay error callbacks run with both clients still alive.
+        await new Promise(function settleDisconnect(resolve) { setTimeout(resolve, 100) })
+        assert.equal(alice.store, store)
+        assert.deepEqual(Object.keys(bob.store.state.files), [])
+        const replacement = await startDocumentHost({port: Number(new URL(host.url).port)})
+        try {
+            // A new in-memory host has new identity and data; establish a fresh authenticated client.
+            const fresh = await connectDocuments({url: replacement.url, token: () => replacement.source.token('alice')})
+            clients.push(fresh)
+            assert.deepEqual(Object.keys(fresh.store.state.files), [])
+            const next = await fresh.control.startUpload({name: 'new.txt', size: 1, mime: 'text/plain'})
+            await fresh.resource.put(next.file.id, new Uint8Array([66]))
+            await fresh.control.confirmUpload(next.file.id)
+            fresh.close()
+        } finally { await replacement.close() }
+    } finally {
+        for (const client of clients) client.close()
+        await host.close()
+    }
+}
+
+if (process.argv.includes('--child')) {
+    scenario().catch(function failed(error) {
+        console.error(error)
+        process.exitCode = 1
+    })
+} else {
+    const child = spawnSync(process.execPath, ['--import', 'tsx', __filename, '--child'], {
+        encoding: 'utf8', timeout: 15000, windowsHide: true,
+    })
+    assert.equal(child.error, undefined, 'shutdown child must exit without hanging')
+    assert.equal(child.status, 0, child.stdout + child.stderr)
+    console.log('PASS graceful document shutdown: live account clients survive, runner cancelled, port reused with fresh authenticated session')
+}

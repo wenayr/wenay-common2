@@ -80,6 +80,8 @@ export function createMediaRoute<Z extends any[] = any[]>(deps: MediaRouteDeps<Z
 
     // ============== synchronous facts ==============
 
+    function isClosed() { return stage == 'closed' }
+
     function activeRoute(): tMediaActiveRoute {
         if (stage == 'idle' || stage == 'starting' || stage == 'closed') return null
         const routeState = link.state()
@@ -127,12 +129,14 @@ export function createMediaRoute<Z extends any[] = any[]>(deps: MediaRouteDeps<Z
     }
 
     async function replaceSubscription() {
+        if (isClosed()) return
         unsubscribeHandle(offLine)
         offLine = link.subscribe(forwardFrame as Listener<Z>)
         await offLine.ready
     }
 
     async function ensureSubscription() {
+        if (isClosed()) return
         if (offLine) return
         offLine = link.subscribe(forwardFrame as Listener<Z>)
         await offLine.ready
@@ -169,9 +173,11 @@ export function createMediaRoute<Z extends any[] = any[]>(deps: MediaRouteDeps<Z
     }
 
     async function promote(reason?: unknown) {
+        if (isClosed()) return status()
         directReady = false
         try {
             const result = await link.promoteDirect({reason})
+            if (isClosed()) return status()
             if (!result.ok) {
                 error = result.reason
                 if (mode == 'best') scheduleBestRetry(result.reason)
@@ -181,10 +187,12 @@ export function createMediaRoute<Z extends any[] = any[]>(deps: MediaRouteDeps<Z
             error = undefined
             cancelRetry()
             if (mode == 'direct') await replaceSubscription()
+            if (isClosed()) return status()
             directReady = true
             publish(reason)
             return status()
         } catch (nextError) {
+            if (isClosed()) return status()
             directReady = false
             error = nextError
             if (mode == 'direct') {
@@ -199,6 +207,7 @@ export function createMediaRoute<Z extends any[] = any[]>(deps: MediaRouteDeps<Z
     }
 
     async function applyMode(reason?: unknown) {
+        if (isClosed()) return status()
         if (mode == 'relay') {
             cancelRetry()
             directReady = false
@@ -223,6 +232,7 @@ export function createMediaRoute<Z extends any[] = any[]>(deps: MediaRouteDeps<Z
             stage = 'starting'
             error = undefined
             publish('start')
+            if (isClosed()) return status()
             if (mode == 'direct') {
                 stage = 'started'
                 publish('direct start')
@@ -230,10 +240,12 @@ export function createMediaRoute<Z extends any[] = any[]>(deps: MediaRouteDeps<Z
             }
             try {
                 await ensureSubscription()
+                if (isClosed()) return status()
                 stage = 'started'
                 publish('relay ready')
                 return await applyMode('start')
             } catch (nextError) {
+                if (isClosed()) return status()
                 stage = 'started'
                 error = nextError
                 publish(nextError)

@@ -19,11 +19,11 @@ export function setupAppShell(deps: AppShellDeps) {
 
     function render() {
         for (const button of buttons) {
-            const selected = button.dataset.viewButton == current
+            const selected = button.dataset['viewButton'] == current
             button.classList.toggle('selected', selected)
             button.setAttribute('aria-selected', String(selected))
         }
-        for (const view of views) view.hidden = view.dataset.view != current
+        for (const view of views) view.hidden = view.dataset['view'] != current
     }
 
     function show(view: tDemoView, updateHash = true) {
@@ -34,7 +34,7 @@ export function setupAppShell(deps: AppShellDeps) {
 
     for (const button of buttons) {
         button.addEventListener('click', function selectDemoView() {
-            const view = button.dataset.viewButton as tDemoView
+            const view = button.dataset['viewButton'] as tDemoView
             if (demoViews.includes(view)) show(view)
         })
     }

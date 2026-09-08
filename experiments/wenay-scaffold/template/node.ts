@@ -21,10 +21,11 @@ import {Server as SocketIOServer} from 'socket.io'
 import {io as ioClient} from 'socket.io-client'
 import {createStoreNode, type StoreNodeDeps, type StoreNodePrincipal} from '../../../src/Common/Observe/store-node'
 import {createRpcClientHub} from '../../../src/Common/rcp/rpc-clientHub'
+import type {Store} from '../../../src/Common/Observe/store'
 import {createTokenCodec} from '../../../src/server/auth-token'
-import {corsOrigins, nodeEnv} from './config'
-import type {tServiceDefinition} from './leader'
-import {serviceDefinition} from './service'
+import {createServiceAccess, type ServiceAccess} from './access'
+import {corsOrigins, nodeEnv, type tEnv} from './config'
+import {SYSTEM_ACCOUNT, type tServiceDefinition} from './leader'
 
 // ============================================================
 // definition-driven node wiring (self-check boots this in-process)
@@ -49,7 +50,14 @@ export type ServiceNodeDeps<S extends Record<string, any>> = {
 
 export function createServiceNode<S extends Record<string, any>>(deps: ServiceNodeDeps<S>) {
     const {definition} = deps
-    return createStoreNode<S>({
+    // the read policy runs on THIS node's mirror: the audience hooks hand the
+    // local store over, and the same definition-driven shaper the leader uses
+    // decides what every connection is served (see ./access.ts)
+    let access: ServiceAccess<tServiceDefinition<S>> | null = null
+    function accessOf(store: Store<S>) {
+        return access ??= createServiceAccess<tServiceDefinition<S>>({definition, store})
+    }
+    const node = createStoreNode<S>({
         line: {
             nodeId: deps.nodeId,
             storeId: definition.storeId,
@@ -68,25 +76,55 @@ export function createServiceNode<S extends Record<string, any>>(deps: ServiceNo
             onConnection: deps.serve.onConnection,
             // the service's wire identity: every surface is served under the definition name
             wrap: (fragment: Record<string, unknown>) => ({[definition.name]: fragment}),
+            audience: {
+                // a definition WITH views serves its public projections and never the raw line
+                reader(defaults) {
+                    const views = accessOf(defaults.store).publicViews()
+                    return views ? {views} : {replica: defaults.replica, node: defaults.node}
+                },
+                principal(who, defaults, session) {
+                    return accessOf(defaults.store).principal(who, defaults, session)
+                },
+            },
         },
         onLeave: deps.onLeave,
         ...(deps.log ? {log: deps.log} : {}),
     })
+    return {
+        ...node,
+        close() {
+            access?.close()
+            node.close()
+        },
+    }
 }
 
 // ============================================================
 // process entrypoint: env → transports → factory → signals
 // ============================================================
 
-async function main() {
-    const env = nodeEnv(process.env)
+export type NodeProcessDeps<S extends Record<string, any>> = {
+    definition: tServiceDefinition<S>
+    /** Defaults to process.env: SERVICE_NODE_ID, SERVICE_UPSTREAM, the two corridor secrets, SERVICE_PORT. */
+    env?: tEnv
+}
+
+/**
+ * The node PROCESS from a definition: env → transports → factory → signals.
+ * Exported so an example or a product runs the unchanged process around its
+ * own definition; `node.ts` executed directly runs it around ./service.
+ */
+export async function runNodeProcess<S extends Record<string, any>>(deps: NodeProcessDeps<S>) {
+    const serviceDefinition = deps.definition
+    const processEnv = deps.env ?? process.env
+    const env = nodeEnv(processEnv)
     const app = express()
     const httpServer = createServer(app)
     // browser clients arrive from the leader origin; this node is a second origin.
     // CORS is pinned to it (config.corsOrigins) so arbitrary websites cannot read
     // the ungated surface through a visitor's browser; Node clients have no Origin
     const ioServer = new SocketIOServer(httpServer, {
-        cors: {origin: corsOrigins(process.env, [env.upstream]), methods: ['GET', 'POST']},
+        cors: {origin: corsOrigins(processEnv, [env.upstream]), methods: ['GET', 'POST']},
     })
     const hub = createRpcClientHub(
         () => ioClient(env.upstream, {
@@ -98,12 +136,14 @@ async function main() {
     const codec = createTokenCodec({secret: env.tokenSecret})
 
     let url = ''
-    const node = createServiceNode({
+    const node = createServiceNode<S>({
         definition: serviceDefinition,
         nodeId: env.nodeId,
         verifyToken: function verifyPresentedToken(presented) {
             const verdict = codec.verify(presented)
             if (!verdict.ok) throw new Error('token rejected: ' + verdict.reason)
+            // the host principal is never a token: a forged `system` claim is refused here too
+            if (verdict.claims.sub == SYSTEM_ACCOUNT) throw new Error('token rejected: reserved account')
             return {account: verdict.claims.sub, expiresAt: verdict.claims.exp}
         },
         upstream: async function resolveLeaderLink() {
@@ -122,7 +162,7 @@ async function main() {
         },
         serve: {onConnection(handler) { ioServer.on('connection', handler) }},
         selfUrl: () => url,
-        // the factory has already said goodbye after the drain grace; only the process remains
+        // the factory has completed the drain grace; only the process remains
         onLeave: function shutdownAfterLeave() {
             ioServer.close()
             httpServer.close()
@@ -139,12 +179,15 @@ async function main() {
 
     process.once('SIGTERM', function onSigterm() { node.leave('SIGTERM') })
     process.once('SIGINT', function onSigint() { node.leave('SIGINT') })
+    return {node, url, httpServer}
 }
 
-// Importable module + runnable entrypoint: main() runs only when this file is
+// Importable module + runnable entrypoint: the process runs only when this file is
 // executed directly (self-check imports createServiceNode without a process host).
 if (require.main == module) {
-    main().catch(function fatal(error) {
+    import('./service').then(function runAroundService({serviceDefinition}) {
+        return runNodeProcess({definition: serviceDefinition})
+    }).catch(function fatal(error) {
         console.error(error)
         process.exit(2)
     })

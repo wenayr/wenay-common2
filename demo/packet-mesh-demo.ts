@@ -113,7 +113,7 @@ export function setupPacketMeshDemo(deps: PacketMeshDemoDeps) {
         summary.textContent = route
             ? `live · selected ${route.path.map(label).join(' → ')} · cost ${route.cost}`
             : 'no route to Server'
-        summary.dataset.state = route ? 'live' : 'offline'
+        summary.dataset['state'] = route ? 'live' : 'offline'
         routeView.replaceChildren()
         const selectedPath = new Set(route?.path ?? [])
         for (const link of links) {

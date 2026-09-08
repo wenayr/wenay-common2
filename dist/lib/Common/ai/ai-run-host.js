@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createAiRunHost = createAiRunHost;
 const store_1 = require("../Observe/store");
+const command_receipts_1 = require("../command/command-receipts");
 const store_replay_1 = require("../Observe/store-replay");
 const store_projection_1 = require("../Observe/store-projection");
 const Listen_1 = require("../events/Listen");
@@ -233,7 +234,10 @@ function createAiRunHost(deps) {
     function requestProviderCancel(run, reason) {
         if (!runner.cancel)
             return;
-        Promise.resolve(runner.cancel({ run: copyRun(run), reason })).catch(function ignoreProviderCancelFailure() { });
+        try {
+            Promise.resolve(runner.cancel({ run: copyRun(run), reason })).catch(function ignoreProviderCancelFailure() { });
+        }
+        catch { }
     }
     function reportRun(runId, next) {
         const run = store.state.runs[runId];
@@ -369,7 +373,7 @@ function createAiRunHost(deps) {
             throw new Error('AI run create: kind is required');
         if (policy?.canCreate && !policy.canCreate(account, request))
             throw new Error('AI run create: forbidden');
-        const requestKey = account + '\u0000' + request.requestId;
+        const requestKey = (0, command_receipts_1.commandReceiptKey)(account, request.requestId);
         const previous = requestIds.get(requestKey);
         if (previous) {
             const existing = store.state.runs[previous];

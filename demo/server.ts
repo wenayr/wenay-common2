@@ -11,7 +11,7 @@ import {createMediaRelay, createPeerHost} from '../src/Common/peer/peer-index'
 import {createFileJobHost} from '../src/Common/resource/resource-index'
 import {createAiRunHost} from '../src/Common/ai/ai-index'
 import {createArtifactHost} from '../src/Common/artifact/artifact-index'
-import {createConversationHost} from '../src/Common/conversation/conversation-index'
+import {createConversationHost, type ConversationRemote} from '../src/Common/conversation/conversation-index'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 import {createHttpFacadeServer} from '../src/server/httpFacadeServer'
 import {createHttpFacadeOpenApi} from './http-openapi'
@@ -21,7 +21,7 @@ import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createStoreFollower} from '../src/Common/Observe/store-follower'
 import {createArtifactByteCache, createArtifactMirror, sha256Hex} from '../src/Common/artifact/artifact-index'
 import type {ArtifactRecord, ArtifactStore} from '../src/Common/artifact/artifact-index'
-import {forwardCommands} from '../src/Common/command/command-host'
+import {forwardCommands, type CommandCtx} from '../src/Common/command/command-host'
 import {createWorkboardHost, WorkboardHost} from './workboard-host'
 import {createMiniScaleHost} from './mini-scale-host'
 import type {WorkboardState} from './workboard-contract'
@@ -29,9 +29,9 @@ import {createAuthLifecycleHost} from './auth-lifecycle-host'
 import {authSocketKeys} from './auth-lifecycle-contract'
 import {demoRpcOpt} from './protocol-schema'
 
-const portStart = Number(process.env.DEMO_PORT_START ?? 3100)
-const portEnd = Number(process.env.DEMO_PORT_END ?? 3500)
-const listenHost = process.env.DEMO_HOST
+const portStart = Number(process.env['DEMO_PORT_START'] ?? 3100)
+const portEnd = Number(process.env['DEMO_PORT_END'] ?? 3500)
+const listenHost = process.env['DEMO_HOST']
 let port = portStart
 
 // ============== instance role: standalone leader or a mirror of another stand ==============
@@ -39,13 +39,13 @@ let port = portStart
 // workboard store is mirrored from the leader over the ordinary replay wire and
 // commands are forwarded with the end client's account — receipts and ordering
 // stay on the leader as the single point of order.
-const mirrorOf = process.env.DEMO_MIRROR_OF?.trim() || null
+const mirrorOf = process.env['DEMO_MIRROR_OF']?.trim() || null
 // Mirror participants get their own letter namespace (person-za, person-zb, ...)
 // so the shared board never shows two different people as the same "Participant A".
-const accountPrefix = (process.env.DEMO_ACCOUNT_PREFIX ?? (mirrorOf ? 'z' : '')).trim().toLowerCase()
+const accountPrefix = (process.env['DEMO_ACCOUNT_PREFIX'] ?? (mirrorOf ? 'z' : '')).trim().toLowerCase()
 // Epoch line (fork-choice during failover): standalone leader takes it from config
 // startup; mirror learns leader epoch on connect, promote yields epoch + 1.
-const demoEpoch = Number(process.env.DEMO_EPOCH ?? 1)
+const demoEpoch = Number(process.env['DEMO_EPOCH'] ?? 1)
 
 type DemoIceServer = {
     urls: string | string[]
@@ -64,7 +64,7 @@ function isIceServer(value: unknown): value is DemoIceServer {
 }
 
 function readDemoIceServers() {
-    const raw = process.env.DEMO_RTC_ICE_SERVERS
+    const raw = process.env['DEMO_RTC_ICE_SERVERS']
     if (!raw) return [{urls: 'stun:stun.l.google.com:19302'}]
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed) || !parsed.every(isIceServer)) {
@@ -74,7 +74,7 @@ function readDemoIceServers() {
 }
 
 const rtcConfiguration = {iceServers: readDemoIceServers()}
-const configuredHttpFacadeToken = process.env.DEMO_HTTP_FACADE_TOKEN?.trim() || null
+const configuredHttpFacadeToken = process.env['DEMO_HTTP_FACADE_TOKEN']?.trim() || null
 const httpFacadeToken = configuredHttpFacadeToken ?? randomUUID()
 
 function configuredOrigin(value: string, label: string) {
@@ -89,7 +89,7 @@ function configuredOrigin(value: string, label: string) {
 }
 
 function readConfiguredAppOrigins() {
-    const raw = process.env.DEMO_APP_ORIGINS
+    const raw = process.env['DEMO_APP_ORIGINS']
     if (!raw) return null
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed) || parsed.length == 0 || parsed.some(value => typeof value != 'string')) {
@@ -98,8 +98,8 @@ function readConfiguredAppOrigins() {
     return parsed.map(value => configuredOrigin(value, 'DEMO_APP_ORIGINS entry'))
 }
 
-const configuredArtifactOrigin = process.env.DEMO_ARTIFACT_ORIGIN
-    ? configuredOrigin(process.env.DEMO_ARTIFACT_ORIGIN, 'DEMO_ARTIFACT_ORIGIN')
+const configuredArtifactOrigin = process.env['DEMO_ARTIFACT_ORIGIN']
+    ? configuredOrigin(process.env['DEMO_ARTIFACT_ORIGIN'], 'DEMO_ARTIFACT_ORIGIN')
     : null
 const configuredAppOrigins = readConfiguredAppOrigins()
 
@@ -119,7 +119,7 @@ function artifactFrameAncestors() {
 const guards = {
     uploadLimitBytes: 8 * 1024 * 1024,
     uploadBudgetBytes: 64 * 1024 * 1024,
-    uploadTtlMs: Number(process.env.DEMO_UPLOAD_TTL_MS ?? 15 * 60_000),
+    uploadTtlMs: Number(process.env['DEMO_UPLOAD_TTL_MS'] ?? 15 * 60_000),
     workboardMaxItems: 200,
     maxRooms: 40,
     commandsPerMinute: 120,
@@ -346,7 +346,7 @@ function createVideoRooms() {
     const emptyTimers = new Map<string, ReturnType<typeof setTimeout>>()
     const [emitChange, changes] = listen<[number]>()
     // Empty rooms linger briefly so a reload or reconnect does not kill them.
-    const emptyRoomGraceMs = Number(process.env.DEMO_ROOM_TTL_MS ?? 30_000)
+    const emptyRoomGraceMs = Number(process.env['DEMO_ROOM_TTL_MS'] ?? 30_000)
     let revision = 0
     let nextRoom = 1
 
@@ -577,7 +577,7 @@ const app = express()
 app.put('/resource-upload/:fileId', express.raw({type: '*/*', limit: '9mb'}), function receiveResourceUpload(req, res) {
     const expected = uploadTickets.get(req.params.fileId)
     const body = req.body
-    if (!expected || req.query.ticket != expected.ticket || !Buffer.isBuffer(body) || body.byteLength != expected.size) {
+    if (!expected || req.query['ticket'] != expected.ticket || !Buffer.isBuffer(body) || body.byteLength != expected.size) {
         res.status(400).send('invalid upload instruction')
         return
     }
@@ -587,7 +587,7 @@ app.put('/resource-upload/:fileId', express.raw({type: '*/*', limit: '9mb'}), fu
 app.get('/resource-download/:fileId', function downloadResource(req, res) {
     const expected = uploadTickets.get(req.params.fileId)
     const bytes = uploadBytes.get(req.params.fileId)
-    if (!expected || req.query.ticket != expected.ticket || !bytes) {
+    if (!expected || req.query['ticket'] != expected.ticket || !bytes) {
         res.status(404).end()
         return
     }
@@ -606,7 +606,7 @@ app.post('/auth-lifecycle/login', express.json({limit: '1kb'}), function issueAu
     res.json({sid: result.sid, token: result.token, expiresAt: result.expiresAt})
 })
 app.get('/artifact-open/:artifactId', function openArtifact(req, res) {
-    const ticket = typeof req.query.ticket == 'string' ? artifactTickets.get(req.query.ticket) : undefined
+    const ticket = typeof req.query['ticket'] == 'string' ? artifactTickets.get(req.query['ticket']) : undefined
     if (req.hostname != new URL(artifactOrigin()).hostname || !ticket
         || ticket.artifactId != req.params.artifactId || ticket.expiresAt <= Date.now()) {
         res.status(404).end()
@@ -736,7 +736,7 @@ window.ui = SwaggerUIBundle({
 // becomes a live replaceable module and its own methods become routes, so a
 // save is immediately callable. Off by default: it starts a worker thread and
 // exposes whatever methods the module happens to have.
-const devModulePath = process.env.DEMO_DEV_MODULE?.trim() || null
+const devModulePath = process.env['DEMO_DEV_MODULE']?.trim() || null
 const devModuleBridge = devModulePath == null ? null : createDevModuleBridge({
     app,
     file: devModulePath == '1'
@@ -785,8 +785,7 @@ function participantAccount(tab: string) {
 }
 
 // ============== mirror mode: the workboard follows the leader stand ==============
-type tWorkboardCommand = 'create' | 'rename' | 'move' | 'assign' | 'remove'
-const workboardCommands: tWorkboardCommand[] = ['create', 'rename', 'move', 'assign', 'remove']
+const workboardCommands = ['create', 'rename', 'move', 'assign', 'remove'] as const satisfies readonly (keyof WorkboardHost['forward'])[]
 
 function mirrorAccount(who: unknown) {
     const value = String(who ?? '').trim()
@@ -799,19 +798,22 @@ function mirrorAccount(who: unknown) {
 // hop and the receipts are the SAME layer the mini-scale stand uses; this file
 // only adds the demo's per-account rate limit and the promoted-authority switch.
 function mirrorFragment() {
-    function mirrorCommand(name: tWorkboardCommand) {
-        return function forwardedCommand(who: unknown, requestId: unknown, input: unknown) {
+    function currentAuthority(): WorkboardHost { return upstreamLink?.promotedWorkboard() ?? workboard }
+    function mirrorCommand<Input, Result>(command: () => (account: string, requestId: string, input: Input) => Result) {
+        return function forwardedCommand(who: unknown, requestId: unknown, input: Input) {
             const account = mirrorAccount(who)
-            return limited(account, function applyForwarded(value: any) {
-                // after promote, board authority is the promoted host, not the original
-                const authority = upstreamLink?.promotedWorkboard() ?? workboard
-                return (authority.forward as any)[name](account, String(requestId ?? ''), value)
+            return limited(account, function applyForwarded(value: Input) {
+                return command()(account, String(requestId ?? ''), value)
             })(input)
         }
     }
-    const commands: Record<string, (who: unknown, requestId: unknown, input: unknown) => unknown> = {}
-    for (const name of workboardCommands) commands[name] = mirrorCommand(name)
-    return {workboard: commands}
+    return {workboard: {
+        create: mirrorCommand(() => currentAuthority().forward.create),
+        rename: mirrorCommand(() => currentAuthority().forward.rename),
+        move: mirrorCommand(() => currentAuthority().forward.move),
+        assign: mirrorCommand(() => currentAuthority().forward.assign),
+        remove: mirrorCommand(() => currentAuthority().forward.remove),
+    } satisfies WorkboardHost['forward']}
 }
 
 // Trusted artifact entries for a connected mirror: bytes by id (behind the host's
@@ -861,19 +863,34 @@ function mirrorArtifactsFragment(link: {open: (artifactId: string) => Promise<{u
 type UpstreamLink = Awaited<ReturnType<typeof connectUpstream>>
 let upstreamLink: UpstreamLink | null = null
 
+function createMirrorFacade(deps: {
+    epoch: () => number
+    state: ReturnType<WorkboardHost['connection']>['fragment']['state']
+        | ReturnType<typeof createStoreFollower<WorkboardState>>['api']['replay']
+    artifacts: ReturnType<typeof artifacts.connection>['fragment']
+    workboard: ReturnType<typeof mirrorFragment>['workboard']
+}) {
+    return {
+        epoch: deps.epoch,
+        workboard: {state: deps.state},
+        artifacts: deps.artifacts,
+        mirror: {workboard: deps.workboard, artifacts: mirrorArtifactsFragment(deps.artifacts)},
+    }
+}
+
 async function connectUpstream(target: string) {
     console.log(`[demo] mirror mode: connecting to the leader at ${target}`)
     const hub = createRpcClientHub(
         () => ioClient(target, {
             transports: ['websocket'],
-            auth: {tab: 'mirror-' + process.pid, role: 'mirror', token: process.env.DEMO_MIRROR_TOKEN ?? ''},
+            auth: {tab: 'mirror-' + process.pid, role: 'mirror', token: process.env['DEMO_MIRROR_TOKEN'] ?? ''},
         }),
-        r => ({app: r<any>('app')}) as const,
+        r => ({app: r<ReturnType<typeof createMirrorFacade>>('app')}) as const,
         {opt: demoRpcOpt},
     )
     const clients = await hub.setToken(null)
     await clients.app.readyStrict()
-    const leader = clients.app.func as any
+    const leader = clients.app.func
     // Leader epoch is the fork-choice reference point: our promote will yield leaderEpoch + 1
     const leaderEpoch = Number(await leader.epoch().catch(() => 1) ?? 1)
     const follower = createStoreFollower<WorkboardState>({remote: leader.workboard.state, epoch: leaderEpoch})
@@ -898,26 +915,42 @@ async function connectUpstream(target: string) {
     // The hop rides the library relay: forwardCommands guarantees the fragment
     // shape; this upstream table only picks WHICH authority answers (leader over
     // RPC, or the local promoted host after failover).
-    const upstreamCommands: Record<string, (account: string, requestId: string, input: any) => unknown> = {}
-    for (const name of workboardCommands) {
-        upstreamCommands[name] = function forwardOrApply(account: string, requestId: string, input: any) {
-            // after promote commands are applied locally — this node is the leader
-            if (promotedHost) return (promotedHost.forward as any)[name](account, requestId, input)
-            if (!(hub.socket as any)?.connected) throw new Error('leader offline — try again soon')
-            return leader.mirror.workboard[name](account, requestId, input)
-        }
+    function currentForward(): WorkboardHost['forward'] {
+        if (promotedHost) return promotedHost.forward
+        if (!hub.socket.connected) throw new Error('leader offline — try again soon')
+        return leader.mirror.workboard
     }
-    const forwardedWorkboard = forwardCommands({upstream: upstreamCommands as any, names: workboardCommands})
+    function forwardCurrent<A extends unknown[], R>(command: () => (...args: A) => R) {
+        return function forwardOrApply(...args: A) { return command()(...args) }
+    }
+    type WorkboardCommands = {
+        [K in keyof WorkboardHost['forward']]: (ctx: CommandCtx, input: Parameters<WorkboardHost['forward'][K]>[2]) => ReturnType<WorkboardHost['forward'][K]>
+    }
+    const forwardedWorkboard = forwardCommands<WorkboardCommands>({
+        upstream: {
+            create: forwardCurrent(() => currentForward().create),
+            rename: forwardCurrent(() => currentForward().rename),
+            move: forwardCurrent(() => currentForward().move),
+            assign: forwardCurrent(() => currentForward().assign),
+            remove: forwardCurrent(() => currentForward().remove),
+        },
+        names: workboardCommands,
+    })
     function fragmentFor(account: string) {
-        const bound = forwardedWorkboard.fragment(account) as any
-        const fragment: any = {state: follower.api.replay}
-        for (const name of workboardCommands) {
-            fragment[name] = function forwardWorkboardCommand(input: any) {
-                // the browser wire keeps requestId INSIDE the input; the hop carries it explicitly
-                return bound[name](String(input?.requestId ?? ''), input)
+        const bound = forwardedWorkboard.fragment(account)
+        function command<Input extends {requestId: string}, Result>(apply: (requestId: string, input: Input) => Result) {
+            return function forwardWorkboardCommand(input: Input) {
+                return apply(String(input?.requestId ?? ''), input)
             }
         }
-        return fragment
+        return {
+            state: follower.api.replay,
+            create: command(bound.create),
+            rename: command(bound.rename),
+            move: command(bound.move),
+            assign: command(bound.assign),
+            remove: command(bound.remove),
+        }
     }
 
     // ============== artifacts: catalog-follower + lazy bytes by hash ==============
@@ -1006,20 +1039,62 @@ function trustedTokenMatch(presented: unknown, expected: string) {
     return timingSafeEqual(given, wanted)
 }
 
+export function createDemoParticipantFacade(deps: {
+    account: string
+    rtcConfiguration: typeof rtcConfiguration
+    artifactOrigin: typeof artifactOrigin
+    instance: ReturnType<typeof instanceFragment>
+    rooms: ReturnType<ReturnType<typeof createVideoRooms>['connection']>
+    peer: ReturnType<typeof host.connection>['fragment']
+    files: ReturnType<typeof files.connection>['fragment']
+    ai: ReturnType<typeof ai.connection>['fragment']
+    artifacts: ReturnType<typeof artifacts.connection>['fragment']
+        | ReturnType<ReturnType<typeof createArtifactMirror>['connection']>['fragment']
+    conversation: ConversationRemote
+    workboard: ReturnType<WorkboardHost['connection']>['fragment'] | ReturnType<UpstreamLink['fragmentFor']>
+    miniScale: ReturnType<typeof miniScale.browserFragment>
+    media: Pick<typeof media, 'publishOf' | 'watchOf'>
+    limitCommands: typeof limitCommands
+}) {
+    const {account, limitCommands: limit} = deps
+    return {
+        serverTime: () => new Date().toISOString(),
+        demo: {
+            account: () => account,
+            rtcConfiguration: () => deps.rtcConfiguration,
+            artifactOrigin: deps.artifactOrigin,
+            instance: deps.instance,
+            rooms: limit(account, deps.rooms, ['create', 'join', 'leave']),
+        },
+        peer: deps.peer,
+        files: deps.files,
+        ai: deps.ai,
+        artifacts: deps.artifacts,
+        conversation: deps.conversation,
+        workboard: limit(account, deps.workboard, ['create', 'rename', 'move', 'assign', 'remove']),
+        miniScale: {
+            ...deps.miniScale,
+            identity: limit(account, deps.miniScale.identity, ['login', 'renew']),
+            admin: limit(account, deps.miniScale.admin, ['spawn', 'drain']),
+        },
+        media: {publish: deps.media.publishOf(account), watch: deps.media.watchOf(account)},
+    }
+}
+
 ioServer.on('connection', function onDemoConnection(socket) {
-    const tab = socket.handshake.auth?.tab
+    const tab = socket.handshake.auth?.['tab']
     if (typeof tab != 'string' || !tab) {
         socket.disconnect(true)
         return
     }
     // A follower instance connects with role=mirror: no presence, no participant
     // account — only the replay line and the trusted forwarded-command entry.
-    if (socket.handshake.auth?.role == 'mirror') {
-        const expectedToken = process.env.DEMO_MIRROR_TOKEN ?? ''
+    if (socket.handshake.auth?.['role'] == 'mirror') {
+        const expectedToken = process.env['DEMO_MIRROR_TOKEN'] ?? ''
         // Mirrors are served by the LEADER — original or promoted: after failover
         // this node accepts returning nodes as their new leader (higher epoch).
         const canServeMirrors = !mirrorOf || Boolean(upstreamLink?.isPromoted())
-        if (!canServeMirrors || (expectedToken && !trustedTokenMatch(socket.handshake.auth?.token, expectedToken))) {
+        if (!canServeMirrors || (expectedToken && !trustedTokenMatch(socket.handshake.auth?.['token'], expectedToken))) {
             socket.disconnect(true)
             return
         }
@@ -1033,13 +1108,12 @@ ioServer.on('connection', function onDemoConnection(socket) {
         createRpcServerAuto({
             socket: {emit: (key, data) => socket.emit(key, data), on: (key, cb) => socket.on(key, cb)},
             socketKey: 'app',
-            object: {
-                // Promoted node distributes its own epoch and its own cascade (same line as its clients)
+            object: createMirrorFacade({
                 epoch: () => upstreamLink ? upstreamLink.follower.status.state.epoch : demoEpoch,
-                workboard: {state: upstreamLink ? upstreamLink.follower.api.replay : workboard.connection('mirror-link').fragment.state},
+                state: upstreamLink ? upstreamLink.follower.api.replay : workboard.connection('mirror-link').fragment.state,
                 artifacts: mirrorArtifacts.fragment,
-                mirror: {...mirrorFragment(), artifacts: mirrorArtifactsFragment(mirrorArtifacts.fragment)},
-            },
+                workboard: mirrorFragment().workboard,
+            }),
             disconnectListen: mirrorGoneListen,
             opt: demoRpcOpt,
         })
@@ -1048,11 +1122,11 @@ ioServer.on('connection', function onDemoConnection(socket) {
     }
     // A spawned mini node connects with role=mini-node: only the trusted
     // registration link plus the shared replica/directory lines.
-    if (socket.handshake.auth?.role == 'mini-node') {
+    if (socket.handshake.auth?.['role'] == 'mini-node') {
         // the link is BOUND to the id the node claims: with the fleet token shared, binding
         // is what keeps one node from touching a peer's row (RPC-AUTH, node links)
-        const miniNodeId = String(socket.handshake.auth?.node ?? '')
-        if (!miniNodeId || !trustedTokenMatch(socket.handshake.auth?.token, miniScale.token)) {
+        const miniNodeId = String(socket.handshake.auth?.['node'] ?? '')
+        if (!miniNodeId || !trustedTokenMatch(socket.handshake.auth?.['token'], miniScale.token)) {
             socket.disconnect(true)
             return
         }
@@ -1074,7 +1148,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
     // The mini-scale GATED write surface: anonymous serves nothing, a verified
     // codec token serves that principal's commands. Own connection, so the
     // ungated participant surface below stays exactly as it is.
-    if (socket.handshake.auth?.role == 'scale') {
+    if (socket.handshake.auth?.['role'] == 'scale') {
         const link = miniScale.scaleConnection()
         const [scaleGone, scaleGoneListen] = listen<[]>()
         socket.on('disconnect', function closeScaleLink() {
@@ -1096,7 +1170,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
     // A lean mini-scale reader: ONLY the ungated read line, shape-identical to a
     // mini node's app surface — no presence, no participant account, no peer/files
     // resources. Its reading shows up in the readers fact through the line itself.
-    if (socket.handshake.auth?.role == 'reader') {
+    if (socket.handshake.auth?.['role'] == 'reader') {
         const [readerGone, readerGoneListen] = listen<[]>()
         socket.on('disconnect', function closeMiniScaleReader() {
             readerGone()
@@ -1113,7 +1187,7 @@ ioServer.on('connection', function onDemoConnection(socket) {
     }
     // The auth-lifecycle stand connects with role=auth: no presence, no participant
     // account — only its two GATED facades, each starting from the anonymous object.
-    if (socket.handshake.auth?.role == 'auth') {
+    if (socket.handshake.auth?.['role'] == 'auth') {
         const link = authLifecycle.connection()
         const [authLinkGone, authLinkGoneListen] = listen<[]>()
         socket.on('disconnect', function closeAuthLifecycleLink() {
@@ -1148,34 +1222,13 @@ ioServer.on('connection', function onDemoConnection(socket) {
     createRpcServerAuto({
         socket,
         socketKey: 'app',
-        object: {
-            // Stable application method beside the SDK fragments on the same connection.
-            serverTime: () => new Date().toISOString(),
-            // Deployment owns ICE/TURN credentials; the SDK only receives an rtc factory.
-            demo: {
-                account: () => account,
-                rtcConfiguration: () => rtcConfiguration,
-                artifactOrigin,
-                instance: instanceFragment(),
-                rooms: limitCommands(account, videoRooms.connection(account), ['create', 'join', 'leave']),
-            },
-            peer: peer.fragment,
-            files: resource.fragment,
-            ai: aiRun.fragment,
-            artifacts: artifact.fragment,
-            conversation: conversation.fragment,
-            workboard: limitCommands(account, workboardFragment, ['create', 'rename', 'move', 'assign', 'remove']),
-            miniScale: {
-                ...miniScaleFragment,
-                identity: limitCommands(account, miniScaleFragment.identity, ['login', 'renew']),
-                admin: limitCommands(account, miniScaleFragment.admin, ['spawn', 'drain']),
-            },
-            media: {
-                publish: media.publishOf(account),
-                // policy-gated view: THIS connection's account is what canWatch receives
-                watch: media.watchOf(account),
-            },
-        },
+        object: createDemoParticipantFacade({
+            account, rtcConfiguration, artifactOrigin, instance: instanceFragment(),
+            rooms: videoRooms.connection(account),
+            peer: peer.fragment, files: resource.fragment, ai: aiRun.fragment,
+            artifacts: artifact.fragment, conversation: conversation.fragment satisfies ConversationRemote,
+            workboard: workboardFragment, miniScale: miniScaleFragment, media, limitCommands,
+        }),
         disconnectListen,
         opt: demoRpcOpt,
     })

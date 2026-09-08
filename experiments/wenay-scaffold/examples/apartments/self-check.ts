@@ -1,0 +1,257 @@
+// ============================================================
+//  apartments — the level-3 oracle (in the repository AND the copy's check)
+//
+//  A real stand as OS processes (durable leader with the fake bank, one
+//  serving node) plus the lock device IN-PROCESS on the node, driven over the
+//  documented REST routes. Proven end to end: a booking → a payment intent →
+//  the runner charges the bank → the signed webhook settles it → the code is
+//  minted → the lock (through the node) arms it → the guest sees the code →
+//  unlock from the app → the door reports; the decline path; a redelivered
+//  and a forged settlement; and the leader restarted from its archive with
+//  the node and the device still attached.
+//  Run: node node_modules/tsx/dist/cli.mjs experiments/wenay-scaffold/examples/apartments/self-check.ts
+// ============================================================
+
+import {runLockDevice} from './device-lock'
+import {signSettlement} from '../../template/payments'
+import {DEMO_LOGINS} from './service'
+
+let fails = 0
+let step = 0
+const ok = (condition: any, message: string) => {
+    const label = String(++step).padStart(2, ' ')
+    if (!condition) { fails++; console.log(`${label}. FAIL ${message}`) }
+    else console.log(`${label}. OK   ${message}`)
+}
+const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10)
+
+async function main() {
+    const {startStand} = await import('./run.mjs')
+    // APARTMENTS_DEBUG=1 shows every process's output and the device log
+    const debug = process.env['APARTMENTS_DEBUG'] == '1'
+    const stand = await startStand({nodes: 1, device: false, verbose: debug})
+    const watchdog = setTimeout(function expired() {
+        console.error('apartments check timed out')
+        void stand.close()
+        process.exit(3)
+    }, 180_000)
+    const api = () => stand.url + '/api/apartments'
+
+    async function get(pathname: string, bearer?: string) {
+        const answer = await fetch(api() + pathname, {headers: bearer ? {authorization: 'Bearer ' + bearer} : {}})
+        return {status: answer.status, body: await answer.json() as any}
+    }
+    async function post(pathname: string, args: unknown[], bearer?: string) {
+        const answer = await fetch(api() + pathname, {
+            method: 'POST',
+            headers: {'content-type': 'application/json', ...(bearer ? {authorization: 'Bearer ' + bearer} : {})},
+            body: JSON.stringify({args}),
+        })
+        return {status: answer.status, body: await answer.json() as any}
+    }
+    async function login(account: string, password: string) {
+        const answer = await post('/login', [{account, password}])
+        if (!answer.body.ok) throw new Error('login ' + account + ': ' + answer.body.error?.message)
+        return answer.body.value.token as string
+    }
+    /** Poll a view until the predicate holds; returns the last value (or null on timeout). */
+    async function until<T>(read: () => Promise<T>, predicate: (value: T) => boolean, timeoutMs = 15_000) {
+        const deadline = Date.now() + timeoutMs
+        let last: T | null = null
+        while (Date.now() < deadline) {
+            last = await read()
+            if (predicate(last)) return last
+            await new Promise(resolve => setTimeout(resolve, 60))
+        }
+        return null
+    }
+    const hostBoard = (token: string) => get('/views/hostBoard', token).then(answer => answer.body.value)
+    const myBookings = (token: string) => get('/views/myBookings', token).then(answer => answer.body.value)
+    const lockEvents = async (token: string) => ((await hostBoard(token))?.apartments?.['loft-1']?.lock?.events ?? []) as {kind: string, ts: number}[]
+
+    let device: ReturnType<typeof runLockDevice> | null = null
+    let addedDevice: ReturnType<typeof runLockDevice> | null = null
+    try {
+        const anna = await login('anna', DEMO_LOGINS.anna)
+        const bob = await login('bob', DEMO_LOGINS.bob)
+
+        // ============== the device joins through the NODE ==============
+        device = runLockDevice({
+            // 2s heartbeats: the corridor allows 60 commands per minute per account (template default)
+            url: stand.url, account: 'lock-1', password: DEMO_LOGINS['lock-1'], heartbeatMs: 2000,
+            ...(debug ? {log: (line: string) => console.log('[device] ' + line)} : {}),
+        })
+        await device.ready
+        const online = await until(() => hostBoard(anna), board => board?.apartments?.['loft-1']?.lock?.online == true)
+        ok(online != null && typeof online.apartments['loft-1'].lock.battery == 'number' && device.view.endpoint()?.nodeId == 'apartments-node-0',
+            `the lock logs in, the roster places it on the serving node, the host board shows it online (${device.view.endpoint()?.nodeId})`)
+        const forgedDevice = await post('/commands/lockHeartbeat', ['h1', {battery: 1}], bob)
+        ok(forgedDevice.body.ok == false && /forbidden/.test(forgedDevice.body.error?.message ?? ''), 'a guest cannot report as a device')
+
+        // ============== book → pay (intent → runner → bank → webhook) → code → lock arms it ==============
+        const booked = await post('/commands/book', ['b1', {apartmentId: 'loft-1', from: day(0), to: day(2)}], bob)
+        const bookingId = booked.body.value?.id as string
+        const paymentId = booked.body.value?.paymentId as string
+        ok(booked.body.ok && booked.body.value.state == 'pending' && booked.body.value.total == 240, `book holds the dates and records a payment intent (${booked.body.value?.id}, ${booked.body.value?.total})`)
+        const paid = await until(() => myBookings(bob), view => view?.bookings?.[bookingId]?.state == 'paid')
+        ok(paid != null && paid.bookings[bookingId].payment == 'confirmed', 'the runner charged the bank and the signed webhook settled the payment')
+        const armed = await until(() => myBookings(bob), view => typeof view?.bookings?.[bookingId]?.code == 'string')
+        ok(armed != null && /^\d{6}$/.test(armed.bookings[bookingId].code), `the guest sees the door code once the lock (via the node) reported it armed (${armed?.bookings[bookingId]?.code})`)
+        const code = armed!.bookings[bookingId].code as string
+        const board = await hostBoard(anna)
+        ok(board.bookings[bookingId]?.guest == 'Bob' && board.bookings[bookingId]?.payment == 'confirmed' && typeof board.bookings[bookingId]?.ref == 'string' && board.bookings[bookingId]?.codeArmed == true,
+            'the host board shows the guest, the settled payment with its reference and the armed code')
+        const publicView = (await get('/views/apartments')).body.value
+        ok(publicView.apartments[0].taken.length == 1 && !JSON.stringify(publicView).includes('Bob') && !JSON.stringify(publicView).includes(code),
+            'the public view shows the taken span and neither the guest nor the code')
+
+        // ============== the door: unlock from the app, the code at the keypad ==============
+        const unlocked = await post('/commands/unlock', ['u1', {bookingId: bookingId}], bob)
+        ok(unlocked.body.ok && unlocked.body.value.state == 'pending', 'unlock records a lock intent')
+        const opened = await until(() => lockEvents(anna), events => events.some(event => event.kind == 'unlock done'))
+        ok(opened != null, 'the lock executed the unlock and reported it')
+        ok(await device.control.enterCode(code) == true, 'the right code at the keypad opens the door (validated on the device line)')
+        ok(await device.control.enterCode('000000') == false, 'a wrong code is rejected')
+        const events = await until(() => lockEvents(anna), list => list.some(event => event.kind == 'code-rejected'))
+        ok(events != null && events.some(event => event.kind == 'door-opened') && events.some(event => event.kind == 'code-entered'), 'the door events reach the host board')
+        const early = await post('/commands/unlock', ['u2', {bookingId: bookingId}], anna)
+        ok(early.body.ok == false, 'the host cannot unlock as a guest')
+
+        // ============== the decline path and the overlap rule ==============
+        const big = await post('/commands/book', ['b2', {apartmentId: 'loft-1', from: day(30), to: day(40)}], bob)
+        const bigBookingId = big.body.value?.id as string
+        const bigPaymentId = big.body.value?.paymentId as string
+        ok(big.body.ok && big.body.value.total == 1200, 'a 10-night booking is held pending')
+        const declined = await until(() => myBookings(bob), view => view?.bookings?.[bigBookingId]?.state == 'declined')
+        ok(declined != null && /declined/.test(declined.bookings[bigBookingId].paymentError ?? ''), `the bank declined it and the booking is released (${declined?.bookings[bigBookingId]?.paymentError})`)
+        const carlSignup = await post('/signup', ['s1', {account: 'carl', name: 'Carl', password: 'carl-pass'}])
+        ok(carlSignup.body.ok, 'a new guest signs up')
+        const carl = await login('carl', 'carl-pass')
+        const clash = await post('/commands/book', ['b3', {apartmentId: 'loft-1', from: day(1), to: day(3)}], carl)
+        ok(clash.body.ok == false && /taken/.test(clash.body.error?.message ?? ''), 'an overlapping booking is refused')
+        const freed = await post('/commands/book', ['b4', {apartmentId: 'loft-1', from: day(30), to: day(32)}], carl)
+        const shortBookingId = freed.body.value?.id as string
+        ok(freed.body.ok, 'the declined span is free again')
+        const cancelled = await until(() => myBookings(carl), view => ['paid', 'declined'].includes(view?.bookings?.[shortBookingId]?.state))
+        const cancelLate = await post('/commands/cancelBooking', ['c1', {bookingId: shortBookingId}], carl)
+        ok(cancelled?.bookings[shortBookingId].state == 'paid' && cancelLate.body.ok == false, 'a paid booking cannot be cancelled by the guest (the settlement decided)')
+
+        // ============== the webhook boundary: redelivery is a receipt, a forged signature is refused ==============
+        const settlement = JSON.stringify({eventId: 'evt-replayed', paymentId: paymentId, ref: 'ch_forged', status: 'failed', error: 'late reversal'})
+        const replayed = await fetch(stand.url + '/webhooks/payments', {
+            method: 'POST', headers: {'content-type': 'application/json', 'x-bank-signature': signSettlement(stand.webhookSecret, settlement)}, body: settlement,
+        }).then(answer => answer.json()) as any
+        ok(replayed.ok && replayed.value.state == 'confirmed' && replayed.value.booking == 'paid', 'a late settlement for a settled payment changes nothing (final)')
+        const ledger = (await get('/views/ledger', anna)).body.value
+        const tracked = ledger?.payments?.[paymentId]
+        ok(tracked?.state == 'confirmed' && tracked.events.length == 2 && tracked.events[0].applied == true && tracked.events[1].applied == false && tracked.events[1].id == 'evt-replayed',
+            `the ledger tracks BOTH provider events for the payment: the applied one and the late one (${tracked?.events?.length})`)
+        ok(ledger.payments[bigPaymentId]?.state == 'failed' && ledger.payments[bigPaymentId].events[0]?.status == 'failed', 'the declined payment shows its failed event')
+        const replayedAgain = await fetch(stand.url + '/webhooks/payments', {
+            method: 'POST', headers: {'content-type': 'application/json', 'x-bank-signature': signSettlement(stand.webhookSecret, settlement)}, body: settlement,
+        }).then(answer => answer.json()) as any
+        ok(replayedAgain.ok && Object.keys((await get('/views/ledger', anna)).body.value.payments[paymentId].events).length == 2, 'the same event id twice is one ledger record (idempotent by construction, not only by receipt)')
+        const forged = await fetch(stand.url + '/webhooks/payments', {
+            method: 'POST', headers: {'content-type': 'application/json', 'x-bank-signature': 'sha256=0000'}, body: settlement,
+        })
+        ok(forged.status == 401, 'a settlement with a bad signature is refused')
+
+        // ============== the archive: restart the leader, everything is still there ==============
+        const restartedAt = Date.now()
+        const seq = await stand.restartLeader()
+        ok(Number(seq) > 0, `the leader restarted from its archive at seq ${seq}`)
+        const bobAgain = await login('bob', DEMO_LOGINS.bob)
+        const after = await myBookings(bobAgain)
+        ok(after?.bookings?.[bookingId]?.state == 'paid' && after.bookings[bookingId].code == code, 'the paid booking and its code survived the restart')
+        // the pre-restart unlock ('u1') is long done; its RECEIPT still answers the original outcome —
+        // the control line came back from its own archive (without it the domain's idempotency
+        // would answer the current state 'done')
+        const replayedUnlock = await post('/commands/unlock', ['u1', {bookingId: bookingId}], bobAgain)
+        ok(replayedUnlock.body.ok && replayedUnlock.body.value.commandId == unlocked.body.value.commandId && replayedUnlock.body.value.state == 'pending',
+            `an acknowledged requestId answers its receipt across the restart (${JSON.stringify(replayedUnlock.body.value)})`)
+        const annaAgain = await login('anna', DEMO_LOGINS.anna)
+        const relinked = await until(() => lockEvents(annaAgain), list => list.length > 0, 20_000)
+        ok(relinked != null, 'the host board reads the lock history after the restart')
+        const unlockedAgain = await post('/commands/unlock', ['u3', {bookingId: bookingId}], bobAgain)
+        ok(unlockedAgain.body.ok, 'a new unlock intent after the restart')
+        // the node re-homes only once its upstream socket reconnected (socket.io backoff, up to 5s per
+        // attempt) and the replica route retried — on a slow machine that is tens of seconds
+        // the board shows the LAST five lock events, so the proof is an 'unlock done' stamped after the restart
+        const reopened = await until(() => lockEvents(annaAgain), list => list.some(event => event.kind == 'unlock done' && event.ts > restartedAt), 60_000)
+        ok(reopened != null, `the device, still attached to the node, executed it — the node re-linked to the restarted leader (${Date.now() - restartedAt}ms after the restart)`)
+
+        // ============== a new instance uses the already running API ==============
+        const processesBefore = JSON.stringify(stand.view.processes())
+        const apartmentInput = {id: 'loft-dynamic', title: 'Created after startup', pricePerNight: 90,
+            lockId: 'lock-dynamic', devicePassword: 'dynamic-device-pass'}
+        const forbiddenAdd = await post('/commands/addApartment', ['guest-add', apartmentInput], bobAgain)
+        ok(forbiddenAdd.body.ok == false, 'a guest cannot create an apartment or device account')
+        const created = await post('/commands/addApartment', ['host-add', apartmentInput], annaAgain)
+        ok(created.body.ok && created.body.value.id == apartmentInput.id, 'host creates an apartment and device through the existing API')
+        const repeated = await post('/commands/addApartment', ['host-add', apartmentInput], annaAgain)
+        ok(repeated.body.ok && repeated.body.value.id == apartmentInput.id, 'creation retry returns the retained command result')
+        const dynamicPublic = (await get('/views/apartments')).body.value
+        ok(dynamicPublic.apartments.some((apartment: {id: string}) => apartment.id == apartmentInput.id)
+            && !JSON.stringify(dynamicPublic).includes(apartmentInput.devicePassword), 'new apartment appears in the existing public projection without device credentials')
+        addedDevice = runLockDevice({url: stand.url, account: apartmentInput.lockId,
+            password: apartmentInput.devicePassword, heartbeatMs: 2000})
+        await addedDevice.ready
+        const dynamicBookingInput = {apartmentId: apartmentInput.id, from: day(0), to: day(1)}
+        const dynamicBooking = await post('/commands/book', ['dynamic-book', dynamicBookingInput], bobAgain)
+        ok(dynamicBooking.body.ok && dynamicBooking.body.value.total == 90, 'existing book command addresses the newly created ID')
+        const dynamicId = dynamicBooking.body.value.id as string
+        const dynamicPaid = await until(() => myBookings(bobAgain), view => typeof view?.bookings?.[dynamicId]?.code == 'string')
+        ok(dynamicPaid != null && dynamicPaid.bookings[dynamicId].state == 'paid', 'new device arms the code after the existing payment workflow')
+        ok(addedDevice.view.state().lock?.id == apartmentInput.lockId && device.view.state().lock?.id == 'lock-1'
+            && !Object.values(device.view.state().codes).some(entry => entry.bookingId == dynamicId)
+            && !Object.values(addedDevice.view.state().codes).some(entry => entry.bookingId == bookingId),
+            'each connected device sees only its own lock and booking codes')
+        ok(JSON.stringify(stand.view.processes()) == processesBefore, 'dynamic creation, booking and device admission do not restart server processes')
+
+        // ============== restore the newly created instance, not just seeded data ==============
+        const liveBefore = stand.view.processes().filter(entry => !entry.exited).map(entry => entry.pid)
+        const dynamicRestartAt = Date.now()
+        const dynamicSeq = await stand.restartLeader()
+        ok(Number(dynamicSeq) > Number(seq), 'second restore includes events from the dynamically created instance')
+        const hostRestored = await login('anna', DEMO_LOGINS.anna)
+        const guestRestored = await login('bob', DEMO_LOGINS.bob)
+        const deviceRestored = await login(apartmentInput.lockId, apartmentInput.devicePassword)
+        const restoredLock = (await get('/views/myLock', deviceRestored)).body.value
+        ok(restoredLock?.lock?.id == apartmentInput.lockId, 'the dynamically created device account retains its credentials and scoped identity')
+        const createReceipt = await post('/commands/addApartment', ['host-add', apartmentInput], hostRestored)
+        const bookingReceipt = await post('/commands/book', ['dynamic-book', dynamicBookingInput], guestRestored)
+        const restoredBookings = await myBookings(guestRestored)
+        ok(createReceipt.body.ok && JSON.stringify(createReceipt.body.value) == JSON.stringify(created.body.value)
+            && bookingReceipt.body.ok && bookingReceipt.body.value.state == 'pending'
+            && restoredBookings?.bookings?.[dynamicId]?.state == 'paid'
+            && restoredBookings.bookings[dynamicId].code == dynamicPaid?.bookings?.[dynamicId]?.code,
+            'original creation/booking receipts survive while current paid state and armed code remain restored')
+        const dynamicUnlock = await post('/commands/unlock', ['dynamic-after-restore', {bookingId: dynamicId}], guestRestored)
+        ok(dynamicUnlock.body.ok, 'a fresh command addresses the restored dynamic booking')
+        const dynamicOpened = await until(() => hostBoard(hostRestored), board =>
+            board?.apartments?.[apartmentInput.id]?.lock?.events?.some((event: {kind: string, ts: number}) =>
+                event.kind == 'unlock done' && event.ts > dynamicRestartAt), 60_000)
+        ok(dynamicOpened != null && addedDevice.view.endpoint()?.nodeId == 'apartments-node-0',
+            'the existing dynamic device reconnects through the retained reader and executes the new command')
+        const liveAfter = stand.view.processes().filter(entry => !entry.exited).map(entry => entry.pid)
+        ok(liveAfter.length == liveBefore.length && liveAfter.filter(pid => liveBefore.includes(pid)).length == liveBefore.length - 1
+            && device.view.state().lock?.id == 'lock-1' && addedDevice.view.state().lock?.id == apartmentInput.lockId
+            && !Object.values(device.view.state().codes).some(entry => entry.bookingId == dynamicId),
+            'only the authority process was replaced; device scopes remain isolated after recovery')
+    } finally {
+        clearTimeout(watchdog)
+        device?.close()
+        addedDevice?.close()
+        await stand.close()
+    }
+    console.log(fails == 0 ? '\napartments check: ALL GREEN' : `\napartments check: ${fails} FAILURES`)
+    // exitCode, not exit(): the child pipes and sockets drain first (a hard exit trips libuv on Windows)
+    process.exitCode = fails ? 1 : 0
+}
+
+main().catch(function fatal(error) {
+    console.error(error)
+    process.exitCode = 2
+})
+
+

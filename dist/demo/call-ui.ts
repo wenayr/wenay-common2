@@ -131,8 +131,8 @@ export function setupCallUi(deps: CallUiDeps) {
         micButton.textContent = capture.state('mic') == 'live' ? '🎙 mute' : '🎙 unmute'
         camButton.textContent = capture.state('cam') == 'live' ? '📷 camera off' : '📷 camera on'
         screenButton.textContent = capture.state('screen') == 'live' ? '🖥 stop sharing' : '🖥 share screen'
-        micButton.dataset.off = String(capture.state('mic') != 'live')
-        camButton.dataset.off = String(capture.state('cam') != 'live')
+        micButton.dataset['off'] = String(capture.state('mic') != 'live')
+        camButton.dataset['off'] = String(capture.state('cam') != 'live')
         const frozen = session.reconnecting()
         for (const b of [micButton, camButton, screenButton, addButton]) b.disabled = frozen
     }
@@ -198,7 +198,7 @@ export function setupCallUi(deps: CallUiDeps) {
         for (const entry of entries.slice(0, 6)) {
             const row = document.createElement('div')
             row.className = 'callHistoryRow'
-            row.dataset.outcome = entry.outcome
+            row.dataset['outcome'] = entry.outcome
             row.textContent = `${entry.direction == 'in' ? '↙' : '↗'} ${participantName(entry.peer)}` +
                 ` · ${outcomeLabels[entry.outcome]}` +
                 (entry.durationMs ? ` · ${formatDuration(entry.durationMs)}` : '') +
@@ -212,7 +212,7 @@ export function setupCallUi(deps: CallUiDeps) {
         const inCall = phase == 'outgoing' || phase == 'active'
         overlay.hidden = !inCall || minimized
         pill.hidden = !inCall || !minimized
-        overlay.dataset.phase = phase
+        overlay.dataset['phase'] = phase
         if (!inCall) return
         const title = callTitle()
         paintAvatar(overlayAvatar, title)

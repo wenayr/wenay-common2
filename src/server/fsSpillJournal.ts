@@ -44,7 +44,7 @@ export function openFsSpillJournal<Z extends any[] = any[]>(file: string, opts: 
     const history = positiveIntegerOption(opts.history, 1, 'openFsSpillJournal: history')
     const maxBytes = positiveIntegerOption(opts.maxBytes, 2, 'openFsSpillJournal: maxBytes')
     const codec = opts.codec ?? {stringify: JSON.stringify, parse: JSON.parse}
-    const segmentBytes = Math.max(1, maxBytes >> 1)
+    const segmentBytes = Math.max(1, Math.floor(maxBytes / 2))
     const prevFile = file + '.1'
 
     fs.mkdirSync(path.dirname(file), {recursive: true})
@@ -99,9 +99,12 @@ export function openFsSpillJournal<Z extends any[] = any[]>(file: string, opts: 
     }
 
     function spill(evicted: ReplayEvent<Z>[]) {
-        const line = codec.stringify(evicted) + '\n'
-        const bytes = Buffer.byteLength(line, 'utf8')
-        try { fs.appendFileSync(file, line) }
+        let bytes: number
+        try {
+            const line = codec.stringify(evicted) + '\n'
+            bytes = Buffer.byteLength(line, 'utf8')
+            fs.appendFileSync(file, line)
+        }
         catch { dropDiskWindow(); return }
         curr.records.push({first: evicted[0].seq, last: evicted[evicted.length - 1].seq, offset: curr.bytes, bytes})
         curr.bytes += bytes

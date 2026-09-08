@@ -42,6 +42,7 @@ export function createCallManager(deps: CallManagerDeps) {
     const {port, self, ringTimeoutMs = 30_000, incoming} = deps
     const [emitRing, rings] = listen<[CallHandle]>()
     const calls = new Map<string, ReturnType<typeof makeCall>>() // by pair key 'call:<id>'
+    const pendingIncoming = new Map<string, SignalEnvelope>()
     let n = 0
     const callScope = Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
     let evaluatingIncoming = 0
@@ -136,7 +137,8 @@ export function createCallManager(deps: CallManagerDeps) {
 
     // ============== incoming ==============
     async function onRing(env: SignalEnvelope) {
-        if (calls.has(env.pair)) return // duplicate ring of a live pair
+        if (calls.has(env.pair) || pendingIncoming.has(env.pair)) return
+        pendingIncoming.set(env.pair, env)
         evaluatingIncoming++
         const gate = incoming ?? function defaultBusyGate() {
             // Reserve the first admission while an async gate yields. Otherwise two
@@ -147,6 +149,8 @@ export function createCallManager(deps: CallManagerDeps) {
         try { allowed = !!(await gate({peer: env.from, meta: env.session})) }
         catch { allowed = false }
         finally { evaluatingIncoming-- }
+        if (pendingIncoming.get(env.pair) != env) return
+        pendingIncoming.delete(env.pair)
         if (closed) return
         if (!allowed) {
             void Promise.resolve(port.send({type: 'decline', pair: env.pair, from: self, to: env.from, reason: 'busy'})).catch(swallowSendError)
@@ -176,7 +180,11 @@ export function createCallManager(deps: CallManagerDeps) {
         if (env.pair == readyProbe) { settleReady(); return }
         if (env.type == 'ring') { void onRing(env); return }
         const live = calls.get(env.pair)
-        if (!live) return
+        if (!live) {
+            if (env.type == 'hangup' && pendingIncoming.get(env.pair)?.from == env.from) pendingIncoming.delete(env.pair)
+            return
+        }
+        if (env.from != live.handle.peer) return
         if (env.type == 'accept') { live.activate(); return }
         if (env.type == 'decline') { live.finish((env.reason as tCallEnd) ?? 'declined', false); return }
         if (env.type == 'hangup') { live.finish(live.handle.state() == 'ringing' ? 'canceled' : 'hangup', false) }
@@ -197,6 +205,7 @@ export function createCallManager(deps: CallManagerDeps) {
         close() {
             if (closed) return
             closed = true
+            pendingIncoming.clear()
             settleReady()
             if (typeof offSignals == 'function') offSignals()
             else (offSignals as any)?.off?.()

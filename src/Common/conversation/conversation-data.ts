@@ -2,7 +2,9 @@
 // Conversation data — safe declarative payloads for facts and blocks
 // =====================================================================
 
-export type tConversationData = null | boolean | number | string | tConversationData[] | {[key: string]: tConversationData}
+import type {tJsonData} from '../core/json-data'
+
+export type tConversationData = tJsonData
 
 export function copyConversationData(value: unknown, label = 'conversation data'): tConversationData {
     const seen = new Set<object>()

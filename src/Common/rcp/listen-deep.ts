@@ -2,6 +2,7 @@
 
 import { createListen, type ListenOn } from "../events/Listen";
 import type { ReplayEvent } from "../events/replay-listen";
+import type {StoreReplayState} from '../Observe/store-replay'
 import { listenSocket, listenSocketFirst, listenSocketAll, listenSocketSmart, type SubscriptionHandle } from "./listen-socket";
 
 // Client projection of listenSocket result: on(fn) gives CALLABLE
@@ -53,7 +54,7 @@ export type ReplaySocketListen<Z extends any[]> = WithSubHandle<ReturnType<typeo
 // missed on the second pass and dropped the member to a plain subscription, losing
 // line/since/keyframe. Accepting both makes the projection idempotent, which is what
 // composing two passes requires.
-export type IsReplayMember<V> = V extends { keyframe: Function; line: object; on: Function }
+export type IsReplayMember<V> = [V] extends [never] ? false : V extends { keyframe: Function; line: object; on: Function }
     ? V extends { getSince: Function } ? true
     : V extends { since: Function } ? true
     : false
@@ -67,15 +68,15 @@ export type SocketListenMember<Z extends any[]> = WithSubHandle<ReturnType<typeo
 // Plain Listen member at type level: it subscribes, but carries no replay coordinates.
 // Replay is checked FIRST at every use site, so the two never overlap. The `{on: Function}`
 // shape is the same detector DeepSocketListen has always used — this only gives it a name.
-export type IsListenMember<V> = V extends { on: Function }
+export type IsListenMember<V> = [V] extends [never] ? false : V extends { on: Function }
     ? IsReplayMember<V> extends true ? false : true
     : false
 
 // Types for various Socket listener variants
 export type DeepSocketListen<T> = {
-    [K in keyof T]: IsReplayMember<NonNullable<T[K]>> extends true
+    [K in keyof T]: K extends keyof StoreReplayState ? T[K] : [NonNullable<T[K]>] extends [never] ? T[K] : IsReplayMember<NonNullable<T[K]>> extends true
         ? ReplaySocketListen<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null>
-        : NonNullable<T[K]> extends { on: Function }
+        : IsListenMember<NonNullable<T[K]>> extends true
         ? SocketListenMember<InferArgs<NonNullable<T[K]>>>
             | Extract<T[K], undefined | null>
         : NonNullable<T[K]> extends ListenOn<infer Z>   // bare on (branded) → same subscription {on, once, close, ...}
@@ -89,7 +90,7 @@ export type DeepSocketListen<T> = {
 };
 
 export type DeepSocketListenFirst<T> = {
-    [K in keyof T]: T[K] extends { on: Function }
+    [K in keyof T]: K extends keyof StoreReplayState ? T[K] : [NonNullable<T[K]>] extends [never] ? T[K] : T[K] extends { on: Function }
         ? ReturnType<typeof listenSocketFirst<InferArgs<T[K]>>>
         : T[K] extends ListenOn<infer Z> ? ReturnType<typeof listenSocketFirst<Z>>
         : T[K] extends (...a: any[]) => any ? T[K]
@@ -100,7 +101,7 @@ export type DeepSocketListenFirst<T> = {
 };
 
 export type DeepSocketListenAll<T> = {
-    [K in keyof T]: T[K] extends { on: Function }
+    [K in keyof T]: K extends keyof StoreReplayState ? T[K] : [NonNullable<T[K]>] extends [never] ? T[K] : T[K] extends { on: Function }
         ? ReturnType<typeof listenSocketAll<InferArgs<T[K]>>>
         : T[K] extends ListenOn<infer Z> ? ReturnType<typeof listenSocketAll<Z>>
         : T[K] extends (...a: any[]) => any ? T[K]
@@ -119,9 +120,9 @@ export type DeepSocketListenAll<T> = {
 //         : T[K];
 // };
 export type DeepSocketListenSmart<T> = {
-    [K in keyof T]: IsReplayMember<NonNullable<T[K]>> extends true
+    [K in keyof T]: K extends keyof StoreReplayState ? T[K] : [NonNullable<T[K]>] extends [never] ? T[K] : IsReplayMember<NonNullable<T[K]>> extends true
         ? ReplaySocketListen<InferArgs<NonNullable<T[K]>>> | Extract<T[K], undefined | null>
-        : NonNullable<T[K]> extends { on: Function }
+        : IsListenMember<NonNullable<T[K]>> extends true
         ? ReturnType<typeof listenSocketSmart<InferArgs<NonNullable<T[K]>>>> | Extract<T[K], undefined | null>
         : NonNullable<T[K]> extends ListenOn<infer Z> ? ReturnType<typeof listenSocketSmart<Z>>
         : NonNullable<T[K]> extends (...a: any[]) => any ? T[K]

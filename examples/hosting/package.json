@@ -1,0 +1,22 @@
+{
+    "name": "wenay-hosting-example",
+    "private": true,
+    "version": "0.1.0",
+    "scripts": {
+        "start": "tsx run.ts",
+        "example": "tsx example.ts",
+        "check": "tsx check.ts",
+        "typecheck": "tsc --noEmit"
+    },
+    "engines": {
+        "node": ">=20.0.0"
+    },
+    "dependencies": {
+        "wenay-common2": "^2.16.0"
+    },
+    "devDependencies": {
+        "@types/node": "^26.1.2",
+        "tsx": "^4.23.1",
+        "typescript": "^7.0.2"
+    }
+}

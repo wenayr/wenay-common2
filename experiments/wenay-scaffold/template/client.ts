@@ -1,0 +1,338 @@
+// =====================================================================
+// client — a service client from the definition: login, placement, views, commands
+// =====================================================================
+// TEMPLATE-OWNED. What every front end, device or job needs from a service,
+// derived from the SAME definition the leader runs, so the types are exact:
+//   - identity: a token, or credentials the leader turns into one, renewed
+//     through the leader's identity port before it expires (RPC-AUTH rule 4);
+//   - placement: the leader's roster line picks WHERE to attach (a serving
+//     node by weight, the leader alone on day 1), sticky until that endpoint
+//     dies, then a new pick — the view lines hand off underneath;
+//   - views: one replica set per view line the principal may read (public
+//     views ungated, role views inside the gated facade), each a live Store;
+//   - commands: typed calls through the CURRENT endpoint, forwarded by a node
+//     or executed by the leader, never silently retried.
+// The library primitives underneath: createRpcClientHub (token lifecycle),
+// followNodeDirectory + pickDirectoryNode (placement), and one STABLE mirror
+// Store per view over syncStoreReplayRoute — a view line is a plain replay
+// line (no replica descriptor, so no replica-set fork choice): on re-placement
+// the route SWITCHES to the new endpoint's line and the mirror object a UI is
+// bound to never changes. A product's UI binds to `views.<name>.store`.
+
+import {io} from 'socket.io-client'
+import {createRpcClientHub} from '../../../src/Common/rcp/rpc-clientHub'
+import {followNodeDirectory, pickDirectoryNode, type NodeDirectoryView} from '../../../src/Common/Observe/node-directory'
+import {createStore, type Store} from '../../../src/Common/Observe/store'
+import {syncStoreReplayRoute} from '../../../src/Common/Observe/store-replay'
+import type {tServiceCommand, tServiceDefinition, tServicePrincipal, tServiceView} from './leader'
+
+export type tServiceAuth =
+    | {token: string}
+    /** The definition's login form; the leader mints the token (and renews it). */
+    | {credentials: unknown}
+    /** A product's own identity provider: called whenever a token is needed. */
+    | {login: () => Promise<string>}
+
+export type ServiceClientDeps<D extends tServiceDefinition<any, any>> = {
+    definition: D
+    /** The leader's origin: identity and the roster live there. */
+    url: string
+    /** Absent = anonymous: public views only, no commands. */
+    auth?: tServiceAuth
+    placement?: {
+        /** 'nodes' (default): the leader is used only when no serving node is eligible; 'any': weighted over every row. */
+        prefer?: 'nodes' | 'any'
+        rng?: () => number
+    }
+    /** Stable identity of this client's lines (default: random). */
+    clientId?: string
+    /** Socket handshake auth (e.g. {account} for the ungated participant surface). */
+    handshake?: Record<string, unknown>
+    log?: (line: string) => void
+}
+
+// ============================================================
+// types derived from the definition
+// ============================================================
+
+type tViewsOf<D> = D extends {views: infer V extends Record<string, tServiceView<any>>} ? V : {}
+type tProjectionOf<V> = V extends {project: (...args: any[]) => infer P extends object} ? P : never
+type tCommandsOf<D> = D extends {commands: infer C extends Record<string, tServiceCommand<any>>} ? C : {}
+export type tClientCommands<D> = tCommandsOf<D> extends infer C extends Record<string, tServiceCommand<any>>
+    ? {[K in keyof C & string]: (requestId: string, input: Parameters<C[K]['apply']>[1]) => Promise<Awaited<ReturnType<C[K]['apply']>>>}
+    : {}
+export type tClientViews<D> = {
+    [K in keyof tViewsOf<D> & string]: ServiceClientView<tProjectionOf<tViewsOf<D>[K]>>
+}
+export type ServiceClientView<P extends object> = {
+    /** The live projection; bind a UI to it — the object survives re-placement. */
+    store: Store<P>
+    /** Resolves on the first keyframe. */
+    ready: Promise<void>
+    /** The line's seq on the current endpoint (-1 before the first keyframe). */
+    seq: () => number
+    close: () => void
+}
+
+// ============================================================
+// the client
+// ============================================================
+
+export function createServiceClient<D extends tServiceDefinition<any, any>>(deps: ServiceClientDeps<D>) {
+    const definition = deps.definition as tServiceDefinition<any, Record<string, tServiceCommand<any>>>
+    const name = definition.name
+    const log = deps.log ?? (() => {})
+    const clientId = deps.clientId ?? 'client-' + Math.random().toString(36).slice(2, 10)
+    const rng = deps.placement?.rng ?? Math.random
+    const prefer = deps.placement?.prefer ?? 'nodes'
+    const viewNames = Object.keys(definition.views ?? {})
+    const publicViews = new Set(viewNames.filter(view => definition.views![view].allow == 'public'))
+    let closed = false
+    function requireOpen() {
+        if (closed) throw new Error(`client ${clientId} is closed`)
+    }
+
+    // ============== the leader: identity and the roster ==============
+    const leaderHub = createRpcClientHub(
+        () => io(deps.url, {transports: ['websocket'], forceNew: true, auth: deps.handshake ?? {}}),
+        r => ({app: r<any>('app')}),
+    )
+    let leaderRead: any = null
+    async function leader() {
+        requireOpen()
+        if (leaderRead) return leaderRead
+        const clients = await leaderHub.setToken(null)
+        await clients.app.readyStrict()
+        requireOpen()
+        leaderRead = clients.app.func[name]
+        return leaderRead
+    }
+
+    // ============== identity: mint, renew ==============
+    let token: string | null = null
+    let account: string | null = null
+    async function mint() {
+        requireOpen()
+        const auth = deps.auth
+        if (!auth) return null
+        if ('token' in auth) { token = auth.token; return token }
+        if ('login' in auth) {
+            const minted = await auth.login()
+            requireOpen()
+            token = minted
+            return token
+        }
+        const minted = await (await leader()).identity.login(auth.credentials) as {token: string, account: string}
+        requireOpen()
+        token = minted.token
+        account = minted.account
+        return token
+    }
+    async function renew() {
+        if (!token || !deps.auth || 'token' in deps.auth) return mint()
+        try {
+            const renewed = await (await leader()).identity.renew(token) as {token: string}
+            requireOpen()
+            token = renewed.token
+            return token
+        } catch (error) {
+            log(`client ${clientId}: renew failed (${(error as Error)?.message ?? error}); logging in again`)
+            return mint()
+        }
+    }
+
+    // ============== placement: the roster picks the endpoint ==============
+    let directory: ReturnType<typeof followNodeDirectory> | null = null
+    let avoid: string | null = null
+    async function pickEndpoint() {
+        if (!directory) {
+            const remote = await leader()
+            requireOpen()
+            directory = followNodeDirectory(remote.roster)
+            await directory.ready
+        }
+        requireOpen()
+        const rows = directory.nodes()
+        const nodes = rows.filter(view => view.eligible && view.role != 'leader' && view.nodeId != avoid)
+        const pool = prefer == 'nodes' && nodes.length ? nodes : rows.filter(view => view.nodeId != avoid || rows.length == 1)
+        const picked = pickDirectoryNode(pool, {rng})
+        if (!picked) throw new Error(`client ${clientId}: no eligible endpoint in the roster`)
+        return picked
+    }
+
+    // ============== the session: one hub to the picked endpoint ==============
+    type tSession = {node: NodeDirectoryView, hub: ReturnType<typeof createSessionHub>, api: {app: any, scale: any | null}}
+    let session: tSession | null = null
+    let opening: Promise<tSession> | null = null
+    let pendingHub: ReturnType<typeof createSessionHub> | null = null
+    function createSessionHub(node: NodeDirectoryView) {
+        return createRpcClientHub(
+            () => io(node.url, {transports: ['websocket'], forceNew: true, auth: deps.handshake ?? {}}),
+            r => ({app: r<any>('app'), scale: r<any>('scale')}),
+            deps.auth ? {token: async ({reason}: {reason: string}) => (reason == 'connect' && token) ? token : renew()} : {},
+        )
+    }
+    async function openSession(): Promise<tSession> {
+        const node = await pickEndpoint()
+        requireOpen()
+        const hub = createSessionHub(node)
+        pendingHub = hub
+        try {
+            let api: {app: any, scale: any | null}
+            if (deps.auth) {
+                const clients = await hub.promise
+                await clients.app.readyStrict()
+                await clients.scale.readyStrict()
+                api = {app: clients.app.func[name], scale: clients.scale.func[name]}
+            } else {
+                const clients = await hub.setToken(null)
+                await clients.app.readyStrict()
+                api = {app: clients.app.func[name], scale: null}
+            }
+            requireOpen()
+            const opened: tSession = {node, hub, api}
+            hub.disconnectListen(function endpointGone() {
+                if (closed || session != opened) return
+                log(`client ${clientId}: endpoint ${node.nodeId} gone; placing again`)
+                avoid = node.nodeId
+                session = null
+                hub.close()
+                // every open view line switches to the next endpoint's line
+                for (const reattach of reattachers) reattach()
+            })
+            log(`client ${clientId}: attached to ${node.nodeId} (${node.url})`)
+            return opened
+        } catch (error) {
+            hub.close()
+            throw error
+        } finally {
+            if (pendingHub == hub) pendingHub = null
+        }
+    }
+    async function current() {
+        requireOpen()
+        if (session) return session
+        opening ??= openSession().then(function adopt(opened) {
+            if (closed) { opened.hub.close(); requireOpen() }
+            session = opened
+            return opened
+        }).finally(function settled() { opening = null })
+        return opening
+    }
+    if (!deps.auth && viewNames.length && !publicViews.size) log(`client ${clientId}: anonymous, and every view is role-gated`)
+
+    // ============== views: a stable mirror per line, the route switches on re-placement ==============
+    const reattachers = new Set<() => void>()
+    const views = {} as tClientViews<D>
+    const openViews = new Map<string, {close: () => void}>()
+    for (const view of viewNames) {
+        Object.defineProperty(views, view, {
+            enumerable: true,
+            get() {
+                requireOpen()
+                const known = openViews.get(view)
+                if (known) return known
+                const mirror = createStore<any>({})
+                let route: ReturnType<typeof syncStoreReplayRoute<any>> | null = null
+                let viewClosed = false
+                let resolveReady!: () => void
+                let rejectReady!: (error: unknown) => void
+                const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject })
+                ready.catch(() => {})
+                let attempt = 0
+                let retryTimer: ReturnType<typeof setTimeout> | undefined
+                async function attach() {
+                    if (closed || viewClosed) return
+                    try {
+                        const opened = await current()
+                        if (closed || viewClosed) return
+                        const facade = publicViews.has(view) ? opened.api.app : opened.api.scale
+                        const remote = facade?.views?.[view]
+                        if (!remote) throw new Error(`view ${view} is not served to this principal`)
+                        if (!route) {
+                            route = syncStoreReplayRoute(mirror, remote, {label: view})
+                            route.ready.then(resolveReady, rejectReady)
+                        } else {
+                            await route.switch(remote, {label: view})
+                        }
+                        attempt = 0
+                    } catch (error) {
+                        if (closed || viewClosed) return
+                        attempt++
+                        log(`client ${clientId}: view ${view} attach failed (${(error as Error)?.message ?? error})`)
+                        if (!route && attempt >= 3) { rejectReady(error); return }
+                        clearTimeout(retryTimer)
+                        retryTimer = setTimeout(reattach, Math.min(500 * attempt, 5000))
+                    }
+                }
+                function reattach() { clearTimeout(retryTimer); retryTimer = undefined; void attach() }
+                reattachers.add(reattach)
+                void attach()
+                const handle: ServiceClientView<any> = {
+                    store: mirror, ready, seq: () => route?.seq() ?? -1,
+                    close() {
+                        if (viewClosed) return
+                        viewClosed = true
+                        clearTimeout(retryTimer)
+                        rejectReady(new Error(`view ${view} is closed`))
+                        reattachers.delete(reattach)
+                        openViews.delete(view)
+                        route?.()
+                    },
+                }
+                openViews.set(view, handle)
+                return handle
+            },
+        })
+    }
+
+    // ============== commands: through the current endpoint, typed from the definition ==============
+    const commands = {} as tClientCommands<D>
+    for (const command of Object.keys(definition.commands)) {
+        Object.defineProperty(commands, command, {
+            enumerable: true,
+            value: async function callCommand(requestId: string, input: unknown) {
+                const opened = await current()
+                const fragment = opened.api.scale?.commands
+                if (!fragment) throw new Error(`commands need auth (client ${clientId} is anonymous)`)
+                if (!fragment[command]) throw new Error(`forbidden: ${command} is not served to this principal`)
+                return fragment[command](requestId, input)
+            },
+        })
+    }
+
+    async function me(): Promise<tServicePrincipal> {
+        const opened = await current()
+        if (!opened.api.scale) throw new Error('anonymous client has no principal')
+        return opened.api.scale.me()
+    }
+
+    function close() {
+        if (closed) return
+        closed = true
+        for (const handle of [...openViews.values()]) handle.close()
+        pendingHub?.close()
+        session?.hub.close()
+        session = null
+        directory?.close()
+        leaderHub.close()
+    }
+
+    return {
+        /** Attach now (otherwise the first view or command does it). */
+        ready: () => current().then(() => undefined),
+        identity: {account: () => account, token: () => token, me},
+        views,
+        commands,
+        view: {
+            endpoint: () => session?.node ?? null,
+            roster: () => directory?.nodes() ?? [],
+        },
+        control: {
+            /** Leave the current endpoint and place again on the next call. */
+            repick() { avoid = session?.node.nodeId ?? null; session?.hub.close(); session = null },
+        },
+        close,
+    }
+}
+export type ServiceClient<D extends tServiceDefinition<any, any> = tServiceDefinition<any, any>> = ReturnType<typeof createServiceClient<D>>

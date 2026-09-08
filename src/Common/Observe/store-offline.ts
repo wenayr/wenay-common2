@@ -55,7 +55,7 @@ export type PersistStoreOpts = {
 
 export type CreateOfflineStoreOpts<T extends object> = {
     key: string
-    remote?: StoreReplayRemote
+    remote?: StoreReplayRemote<NoInfer<T>>
     initial: T
     storage: OfflineStorage
     version?: number
@@ -76,7 +76,7 @@ export type OfflineStore<T extends object> = Store<T> & {
     flush(): Promise<void>
     status(): OfflineStoreStatus
     statusListen: PersistedStoreControl['statusListen']
-    reconnect(remote: StoreReplayRemote, opts?: StoreReplaySyncOpts<T>): Promise<void>
+    reconnect(remote: StoreReplayRemote<T>, opts?: StoreReplaySyncOpts<T>): Promise<void>
 }
 
 type LoadedSnapshot<T extends object> = {
@@ -330,7 +330,7 @@ export async function createOfflineStore<T extends object>(opts: CreateOfflineSt
     async function runReconnect(
         generation: number,
         cancelled: Promise<'cancelled'>,
-        nextRemote: StoreReplayRemote,
+        nextRemote: StoreReplayRemote<T>,
         nextSyncOpts: StoreReplaySyncOpts<T>,
     ) {
         function isCurrent() {
@@ -369,10 +369,10 @@ export async function createOfflineStore<T extends object>(opts: CreateOfflineSt
                     onError?.(error)
                     if (!onError) opts.onError?.(error)
                 },
-                onStale: onStale && function offlineStoreOnStale(info) {
+                onStale: function offlineStoreOnStale(info) {
                     if (!isCurrent()) return
                     persist.setSyncStatus({stale: info.stale})
-                    onStale(info)
+                    onStale?.(info)
                 },
             })
             if (!isCurrent()) { candidate(); return }
@@ -394,7 +394,7 @@ export async function createOfflineStore<T extends object>(opts: CreateOfflineSt
         }
     }
 
-    function reconnect(nextRemote: StoreReplayRemote, nextSyncOpts: StoreReplaySyncOpts<T> = syncOpts) {
+    function reconnect(nextRemote: StoreReplayRemote<T>, nextSyncOpts: StoreReplaySyncOpts<T> = syncOpts) {
         cancelReconnect?.()
         cancelReconnect = null
         const generation = ++reconnectGeneration

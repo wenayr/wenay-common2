@@ -24,7 +24,7 @@ import type {SocketTmpl} from '../../../../src/Common/rcp/rpc-protocol'
 import {createTokenCodec} from '../../../../src/server/auth-token'
 import {createServiceLeader} from '../../template/leader'
 import {createServiceNode} from '../../template/node'
-import {createRentalRest} from './rest'
+import {createRentalRest} from './board-rest'
 import {serviceDefinition, type RentalState} from './service'
 
 let fails = 0
@@ -141,7 +141,7 @@ async function main() {
         ['r1', {itemId: 'kayak', from: '2026-09-01', to: '2026-09-03'}], minted.token)
     const receipt = first.body?.value
     ok(first.status == 200 && first.body.ok == true
-        && receipt?.id == 'bk-r1' && receipt?.state == 'active' && receipt?.account == 'renter',
+        && typeof receipt?.id == 'string' && receipt?.state == 'active' && receipt?.account == 'renter',
         'POST book with the bearer books as the VERIFIED account — 200 receipt')
 
     // ============== replication proof: a live follower through the node ==============
@@ -152,12 +152,12 @@ async function main() {
     const follower = createStoreFollower<RentalState>({remote: (read.func[name].replica as any).replay})
     await follower.ready
     await waitFor('the booking appears in a LIVE follower subscription through the node',
-        () => follower.store.state.bookings?.['bk-r1']?.state == 'active')
+        () => follower.store.state.bookings?.[receipt.id]?.state == 'active')
 
     // ============== receipts: one execution per (account, requestId) ==============
     const dup = await httpPost('/api/rental/book',
         ['r1', {itemId: 'kayak', from: '2026-10-01', to: '2026-10-05'}], minted.token)
-    ok(dup.status == 200 && dup.body.value?.id == 'bk-r1'
+    ok(dup.status == 200 && dup.body.value?.id == receipt.id
         && dup.body.value?.from == '2026-09-01' && bookingCount() == 1,
         'the same requestId answers the receipt — the booking is NOT doubled')
 
@@ -169,20 +169,20 @@ async function main() {
         'an overlapping book is refused and commits nothing')
     const retried = await httpPost('/api/rental/book',
         ['r2', {itemId: 'kayak', from: '2026-09-05', to: '2026-09-07'}], minted.token)
-    ok(retried.status == 200 && retried.body.value?.id == 'bk-r2' && bookingCount() == 2,
+    ok(retried.status == 200 && typeof retried.body.value?.id == 'string' && bookingCount() == 2,
         'the refused requestId left NO receipt — the same id retries honestly')
 
     // ============== ownership: the account is the token principal ==============
     const stranger = leader.serve.browserFragment('stranger').identity.login()
-    const stolen = await httpPost('/api/rental/cancel', ['s1', {bookingId: 'bk-r2'}], stranger.token)
+    const stolen = await httpPost('/api/rental/cancel', ['s1', {bookingId: retried.body.value.id}], stranger.token)
     ok(stolen.body.ok == false && /owner/.test(stolen.body.error?.message ?? '')
-        && bookings()['bk-r2']?.state == 'active',
+        && bookings()[retried.body.value.id]?.state == 'active',
         'a stranger bearer cannot cancel someone else\'s booking')
 
-    const cancelled = await httpPost('/api/rental/cancel', ['r3', {bookingId: 'bk-r1'}], minted.token)
+    const cancelled = await httpPost('/api/rental/cancel', ['r3', {bookingId: receipt.id}], minted.token)
     const board1 = await httpGet('/api/rental/board')
     ok(cancelled.status == 200 && cancelled.body.value?.state == 'cancelled'
-        && board1.body.value.bookings.length == 1 && board1.body.value.bookings[0].id == 'bk-r2',
+        && board1.body.value.bookings.length == 1 && board1.body.value.bookings[0].id == retried.body.value.id,
         'cancel works for the owner and the board shows the booking gone')
 
     // ============== the spec serves what the server registered ==============
@@ -220,7 +220,7 @@ async function main() {
     const write = createRpcClient<any>({socket: clientEnd, socketKey: 'scale', token: minted.token})
     await write.readyStrict()
     const viaNode = await write.func[name].commands.book('r-drain', {itemId: 'tent', from: '2026-09-01', to: '2026-09-05'})
-    ok(viaNode?.id == 'bk-r-drain' && bookingCount() == 3,
+    ok(typeof viaNode?.id == 'string' && bookingCount() == 3,
         'a book through the NODE corridor lands in the leader store')
 
     leader.control.drain('node-1')
@@ -230,7 +230,7 @@ async function main() {
 
     const replayed = await httpPost('/api/rental/book',
         ['r-drain', {itemId: 'tent', from: '2026-09-01', to: '2026-09-05'}], minted.token)
-    ok(replayed.status == 200 && replayed.body.value?.id == 'bk-r-drain' && bookingCount() == 3,
+    ok(replayed.status == 200 && replayed.body.value?.id == viaNode.id && bookingCount() == 3,
         'the SAME requestId at the leader answers the receipt after the node\'s death — one booking')
 
     // ============== the SCHEMA guards the corridor before the domain sees input ==============
@@ -251,7 +251,7 @@ async function main() {
         'an undeclared field is refused — additionalProperties: false is enforced, not just documented')
     const schemaRetried = await httpPost('/api/rental/book',
         ['r-schema', {itemId: 'tent', from: '2026-11-01', to: '2026-11-03'}], minted.token)
-    ok(schemaRetried.status == 200 && schemaRetried.body.value?.id == 'bk-r-schema' && bookingCount() == 4,
+    ok(schemaRetried.status == 200 && typeof schemaRetried.body.value?.id == 'string' && bookingCount() == 4,
         'schema refusals left NO receipt — the same requestId then passes to the domain and books')
 
     // ============== third-party consumer: the emitted .d.ts carries the REAL fields ==============

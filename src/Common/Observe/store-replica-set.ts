@@ -42,31 +42,31 @@ export type StoreReplicaDescriptor = {
     proof?: unknown
 }
 
-export type StoreReplicaRemote = {
+export type StoreReplicaRemote<T extends object = any> = {
     descriptor: () => StoreReplicaDescriptor | Promise<StoreReplicaDescriptor>
     changed?: {on: (cb: (descriptor?: StoreReplicaDescriptor) => void) => any}
-    replay: StoreReplayRemote
+    replay: StoreReplayRemote<T>
     /** The return value is opaque; elapsed wall time is the route sample. */
     ping?: () => unknown | Promise<unknown>
 }
 
-export type StoreReplicaSession = {
-    remote: StoreReplicaRemote
+export type StoreReplicaSession<T extends object = any> = {
+    remote: StoreReplicaRemote<T>
     close: () => void
     onFail?: {on: (cb: (reason?: unknown) => void) => any}
 }
 
 /** A reusable connection capability, not a live connection. */
-export type StoreReplicaOffer = {
+export type StoreReplicaOffer<T extends object = any> = {
     id: string
-    connect: () => StoreReplicaSession | Promise<StoreReplicaSession>
+    connect: () => StoreReplicaSession<T> | Promise<StoreReplicaSession<T>>
     /** Additive route cost in milliseconds; lower is preferred. */
     priority?: number
 }
 
-export type StoreReplicaOfferSource = {
-    list: () => readonly StoreReplicaOffer[]
-    changes: {on: (cb: (offers: readonly StoreReplicaOffer[]) => void) => any}
+export type StoreReplicaOfferSource<T extends object = any> = {
+    list: () => readonly StoreReplicaOffer<T>[]
+    changes: {on: (cb: (offers: readonly StoreReplicaOffer<T>[]) => void) => any}
 }
 
 export type StoreReplicaRouteStatus = {
@@ -162,7 +162,7 @@ export type StoreReplicaSetDeps<T extends object> = StoreLineCoordinates & {
     store?: Store<T>
     initial?: T
     expose?: StoreReplayOpts
-    offers?: StoreReplicaOfferSource
+    offers?: StoreReplicaOfferSource<NoInfer<T>>
     leadership?: StoreReplicaLeadership
     route?: StoreReplicaRoutePolicy
     now?: () => number
@@ -221,15 +221,15 @@ function timer(delay: number, run: () => void) {
 // Dynamic offer registry — useful when discovery itself is another stream
 // =====================================================================
 
-export function createStoreReplicaOffers(initial: readonly StoreReplicaOffer[] = []) {
-    const offers = new Map<string, StoreReplicaOffer>()
-    const [emitChanges, changes] = listen<[readonly StoreReplicaOffer[]]>()
+export function createStoreReplicaOffers<T extends object = any>(initial: readonly StoreReplicaOffer<T>[] = []) {
+    const offers = new Map<string, StoreReplicaOffer<T>>()
+    const [emitChanges, changes] = listen<[readonly StoreReplicaOffer<T>[]]>()
 
     function publish() {
         emitChanges(Array.from(offers.values()))
     }
 
-    function upsert(offer: StoreReplicaOffer) {
+    function upsert(offer: StoreReplicaOffer<T>) {
         const id = requiredId(offer.id, 'offer id')
         offers.set(id, {...offer, id})
         publish()
@@ -240,7 +240,7 @@ export function createStoreReplicaOffers(initial: readonly StoreReplicaOffer[] =
         }
     }
 
-    function replace(next: readonly StoreReplicaOffer[]) {
+    function replace(next: readonly StoreReplicaOffer<T>[]) {
         offers.clear()
         for (const offer of next) offers.set(requiredId(offer.id, 'offer id'), offer)
         publish()
@@ -269,7 +269,7 @@ export function createStoreReplicaOffers(initial: readonly StoreReplicaOffer[] =
     }
 }
 
-export type StoreReplicaOffers = ReturnType<typeof createStoreReplicaOffers>
+export type StoreReplicaOffers<T extends object = any> = ReturnType<typeof createStoreReplicaOffers<T>>
 
 // =====================================================================
 // Replica-set controller
@@ -320,10 +320,10 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
     const ready = new Promise<void>(function waitForReplicaReady(resolve) { settleReady = resolve })
 
     type OfferEntry = {
-        offer: StoreReplicaOffer
+        offer: StoreReplicaOffer<T>
         generation: number
         state: tStoreReplicaRouteState
-        session: StoreReplicaSession | null
+        session: StoreReplicaSession<T> | null
         descriptor: StoreReplicaDescriptor | null
         rtt: number | null
         error: string | null
@@ -625,7 +625,7 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
         }
     }
 
-    function addOffer(offerValue: StoreReplicaOffer) {
+    function addOffer(offerValue: StoreReplicaOffer<T>) {
         const id = requiredId(offerValue.id, 'offer id')
         removeOffer(id)
         const offer = {...offerValue, id}
@@ -661,8 +661,8 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
         return true
     }
 
-    function setOffers(next: readonly StoreReplicaOffer[]) {
-        const wanted = new Map<string, StoreReplicaOffer>()
+    function setOffers(next: readonly StoreReplicaOffer<T>[]) {
+        const wanted = new Map<string, StoreReplicaOffer<T>>()
         for (const offer of next) wanted.set(requiredId(offer.id, 'offer id'), offer)
         for (const id of Array.from(offers.keys())) {
             const replacement = wanted.get(id)
@@ -749,9 +749,18 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
         const authorityFrame = previousRole == 'leader' && authorityChanged
             ? keyframeState<T>(await session.remote.replay.keyframe())
             : null
+        if (closed || entry.session != session) throw new Error('replica route changed during hand-off')
         const pendingConflict = authorityFrame
             ? conflictFor(store.snapshot(), authorityFrame, previousAuthority, next)
             : null
+        // A route re-opened DIRECTLY into the sequence space this replica already follows resumes
+        // by seq: the line answers the tail from its journal (a durable line: from storage), or
+        // refuses a foreign lifetime with a keyframe — the seq-from-the-future guard of since().
+        // Cascaded routes carry the authority's seq, not their own line's, so they never resume.
+        const resumeSeq = previousRole != 'leader' && previousLineId != null && previousSeq >= 0
+            && next.lineId == next.authorityLineId && previousLineId == next.authorityLineId
+            && previousEpoch == next.epoch && previousLeaderId == next.leaderId
+            ? previousSeq : -1
 
         role = 'reconciling'
         leaderId = next.leaderId
@@ -769,7 +778,7 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
                 created = true
                 upstreamSub = syncStoreReplayRoute(store, session.remote.replay, {
                     label: entry.offer.id,
-                    since: -1,
+                    since: resumeSeq,
                     reset: true,
                     onSeq: trackAuthoritySeq,
                     onError: function activeReplicaRouteFailed(error) { failEntry(entry, error) },
@@ -801,6 +810,7 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
             emitRoute({from: previousEntry?.offer.id ?? null, to: entry.offer.id, reason, rtt: entry.rtt})
             publishStatus()
         } catch (error) {
+            if (closed) throw error
             if (created) { upstreamSub?.(); upstreamSub = null }
             activeEntry = previousEntry
             activeDescriptor = previousDescriptor
@@ -826,8 +836,10 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
         const elected = leadership.elect
             ? await leadership.elect(ctx)
             : {epoch: maxObservedEpoch + 1}
+        if (closed) throw new Error('store replica set is closed')
         if (!elected) {
-            role = 'offline'
+            // A declined attempt does not revoke a role established during its await.
+            if (role == 'electing') role = 'offline'
             publishStatus()
             return null
         }
@@ -991,7 +1003,7 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
             probe,
             reconcile,
             promote,
-            canWrite: () => role == 'leader',
+            canWrite: () => !closed && role == 'leader',
             close,
         },
         api: {
@@ -1004,7 +1016,7 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
             routes: routeListen,
             replay: exposed.replay,
             fragment,
-            canWrite: () => role == 'leader',
+            canWrite: () => !closed && role == 'leader',
         },
         close,
     }

@@ -1,0 +1,143 @@
+import {createHash} from 'node:crypto'
+import {Command} from '../../../../src'
+import {schemaCommand} from '../../template/input-schema'
+import type {ServiceCommandCtx, tServiceDefinition, tServicePrincipal} from '../../template/leader'
+import {hashSecret, verifySecret, type tSecret} from '../pizzeria/identity'
+
+export type tRole = 'customer' | 'worker'
+export type tJobStatus = 'open' | 'assigned' | 'submitted' | 'accepted' | 'cancelled'
+export type Job = {
+    id: string, title: string, description: string, budget: number, status: tJobStatus,
+    customer: string, contact: string, proposals: Record<string, {quote: number, note: string}>,
+    worker?: string, result?: string,
+}
+export type JobsState = {
+    accounts: Record<string, {roles: tRole[], secret: tSecret}>
+    jobs: Record<string, Job>
+}
+export const DEMO_LOGINS = {alice: 'alice-pass', bella: 'bella-pass', will: 'will-pass', wendy: 'wendy-pass'} as const
+
+function requireJob(state: JobsState, id: string) {
+    const job = state.jobs[id]
+    if (!job) throw new Error('unknown job')
+    return job
+}
+function customerJob(ctx: ServiceCommandCtx<JobsState>, id: string) {
+    const job = requireJob(ctx.state, id)
+    if (job.customer != ctx.account) throw new Error('only this customer can change the job')
+    return job
+}
+function requireStatus(job: Job, expected: tJobStatus) {
+    if (job.status != expected) throw new Error('job must be ' + expected)
+}
+function publicJob(job: Job) {
+    return {id: job.id, title: job.title, description: job.description, budget: job.budget, status: job.status}
+}
+function positiveAmount(value: number) {
+    if (!Number.isFinite(value) || value <= 0 || value > 1_000_000) throw new Error('amount must be positive and at most 1000000')
+}
+
+export const serviceDefinition = {
+    name: 'small-jobs', storeId: 'small-jobs-store', originId: 'small-jobs-origin',
+    initial: {
+        accounts: Object.fromEntries(Object.entries(DEMO_LOGINS).map(function seed([account, password]) {
+            return [account, {roles: [account == 'alice' || account == 'bella' ? 'customer' : 'worker'], secret: hashSecret(password)}]
+        })), jobs: {},
+    } as JobsState,
+    access: {
+        rolesOf: (state: JobsState, account: string) => state.accounts[account]?.roles ?? [],
+        login: {
+            input: {account: 'string', password: 'string'},
+            resolve(state: JobsState, input: {account: string, password: string}) {
+                return verifySecret(state.accounts[input.account]?.secret, input.password) ? input.account : null
+            },
+        },
+    },
+    commands: {
+        post: schemaCommand({title: 'string', description: 'string', budget: 'number', contact: 'string'}, {
+            allow: ['customer'],
+            validate(input) {
+                positiveAmount(input.budget)
+                if (!input.title.trim() || input.title.length > 120 || input.description.length > 4000 || !input.contact.trim()) throw new Error('provide a short title, description and private contact')
+            },
+            apply(ctx: ServiceCommandCtx<JobsState>, input) {
+                // Receipt scoping remains private; public ids contain no account or caller request id.
+                const id = 'job-' + createHash('sha256').update(Command.commandReceiptKey(ctx.account, ctx.requestId)).digest('hex')
+                if (Object.hasOwn(ctx.state.jobs, id)) throw new Error('job already exists; use a new request id')
+                ctx.state.jobs[id] = {...input, id, customer: ctx.account, status: 'open', proposals: {}}
+                return {id, status: 'open' as tJobStatus}
+            },
+        }),
+        propose: schemaCommand({jobId: 'string', quote: 'number', note: 'string'}, {
+            allow: ['worker'],
+            validate(input) { positiveAmount(input.quote); if (input.note.length > 2000) throw new Error('proposal note is too long') },
+            apply(ctx: ServiceCommandCtx<JobsState>, input) {
+                const job = requireJob(ctx.state, input.jobId)
+                requireStatus(job, 'open')
+                if (job.customer == ctx.account) throw new Error('cannot propose to your own job')
+                if (job.proposals[ctx.account]) throw new Error('proposal already exists')
+                job.proposals[ctx.account] = {quote: input.quote, note: input.note}
+                return {id: job.id, proposed: true}
+            },
+        }),
+        assign: schemaCommand({jobId: 'string', worker: 'string'}, {
+            allow: ['customer'],
+            apply(ctx: ServiceCommandCtx<JobsState>, input) {
+                const job = customerJob(ctx, input.jobId)
+                requireStatus(job, 'open')
+                if (!Object.hasOwn(job.proposals, input.worker)) throw new Error('choose a worker who proposed')
+                job.worker = input.worker
+                job.status = 'assigned'
+                return {id: job.id, worker: job.worker, status: job.status}
+            },
+        }),
+        submit: schemaCommand({jobId: 'string', result: 'string'}, {
+            allow: ['worker'],
+            validate(input) { if (!input.result.trim() || input.result.length > 4000) throw new Error('provide a short result') },
+            apply(ctx: ServiceCommandCtx<JobsState>, input) {
+                const job = requireJob(ctx.state, input.jobId)
+                if (job.worker != ctx.account) throw new Error('only the assigned worker may submit')
+                requireStatus(job, 'assigned')
+                job.result = input.result
+                job.status = 'submitted'
+                return {id: job.id, status: job.status}
+            },
+        }),
+        accept: schemaCommand({jobId: 'string'}, {
+            allow: ['customer'],
+            apply(ctx: ServiceCommandCtx<JobsState>, input) {
+                const job = customerJob(ctx, input.jobId)
+                requireStatus(job, 'submitted')
+                job.status = 'accepted'
+                return {id: job.id, status: job.status}
+            },
+        }),
+        cancel: schemaCommand({jobId: 'string'}, {
+            allow: ['customer'],
+            apply(ctx: ServiceCommandCtx<JobsState>, input) {
+                const job = customerJob(ctx, input.jobId)
+                requireStatus(job, 'open')
+                job.status = 'cancelled'
+                return {id: job.id, status: job.status}
+            },
+        }),
+    },
+    views: {
+        board: {allow: 'public', keys: ['jobs'], project(state: JobsState) {
+            return {jobs: Object.values(state.jobs).filter(job => job.status != 'cancelled').map(publicJob)}
+        }},
+        customerJobs: {allow: ['customer'], keys: ['jobs'], project(state: JobsState, principal: tServicePrincipal | null) {
+            return {jobs: Object.values(state.jobs).filter(job => job.customer == principal?.account).map(job => ({...job,
+                proposals: Object.fromEntries(Object.entries(job.proposals).map(([who, proposal]) => [who, {...proposal}])),
+            }))}
+        }},
+        workJobs: {allow: ['worker'], keys: ['jobs'], project(state: JobsState, principal: tServicePrincipal | null) {
+            const who = principal?.account ?? ''
+            return {jobs: Object.values(state.jobs).filter(job => Object.hasOwn(job.proposals, who)).map(function myWork(job) {
+                return {...publicJob(job), proposal: {...job.proposals[who]}, assigned: job.worker == who,
+                    ...(job.worker == who ? {contact: job.contact, result: job.result ?? ''} : {})}
+            })}
+        }},
+    },
+} satisfies tServiceDefinition<JobsState>
+export type JobsDefinition = typeof serviceDefinition

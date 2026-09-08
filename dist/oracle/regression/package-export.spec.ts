@@ -25,7 +25,8 @@ const focusedExports = [
     {subpath: 'debug-console', target: './lib/debug-console.js', sentinel: 'installConsoleCallerAnnotations'},
     {subpath: 'server/fs', target: './lib/server/fs-index.js', sentinel: 'openFsReplayStorage'},
     {subpath: 'server/auth', target: './lib/server/auth-token.js', sentinel: 'createTokenCodec'},
-    {subpath: 'server/http', target: './lib/server/httpFacadeServer.js', sentinel: 'createHttpFacadeServer'},
+    // the http entry is an index since the OpenAPI generator graduated next to the facade server
+    {subpath: 'server/http', target: './lib/server/http-index.js', sentinel: 'createHttpFacadeServer'},
     {subpath: 'server/webhook', target: './lib/server/WebHook3.js', sentinel: 'createWebhookServer'},
 ] as const
 

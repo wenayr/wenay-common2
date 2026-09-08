@@ -37,7 +37,7 @@ export type PersistStoreOpts = {
 };
 export type CreateOfflineStoreOpts<T extends object> = {
     key: string;
-    remote?: StoreReplayRemote;
+    remote?: StoreReplayRemote<NoInfer<T>>;
     initial: T;
     storage: OfflineStorage;
     version?: number;
@@ -57,7 +57,7 @@ export type OfflineStore<T extends object> = Store<T> & {
     flush(): Promise<void>;
     status(): OfflineStoreStatus;
     statusListen: PersistedStoreControl['statusListen'];
-    reconnect(remote: StoreReplayRemote, opts?: StoreReplaySyncOpts<T>): Promise<void>;
+    reconnect(remote: StoreReplayRemote<T>, opts?: StoreReplaySyncOpts<T>): Promise<void>;
 };
 export declare function createMemoryOfflineStorage(initial?: Record<string, unknown>): OfflineStorage & {
     dump(): Record<string, unknown>;

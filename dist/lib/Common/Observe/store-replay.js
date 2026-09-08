@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.STORE_REPLAY_CHUNK_TTL_MS = exports.STORE_REPLAY_CHUNK_BUDGET_MAX = exports.STORE_REPLAY_CHUNK_BUDGET_MIN = exports.STORE_REPLAY_CHUNK_BUDGET_DEFAULT = void 0;
 exports.storeReplayMode = storeReplayMode;
 exports.exposeStoreReplay = exposeStoreReplay;
 exports.syncStoreReplayBatch = syncStoreReplayBatch;
@@ -17,6 +18,7 @@ const replay_history_1 = require("../events/replay-history");
 const mapListen_1 = require("../events/mapListen");
 const replay_rpc_wire_1 = require("../events/replay-rpc-wire");
 const rpc_off_1 = require("../rcp/rpc-off");
+const rpc_wire_size_1 = require("../rcp/rpc-wire-size");
 const positive_integer_option_1 = require("../positive-integer-option");
 const transport_lifecycle_1 = require("../events/transport-lifecycle");
 const observe_private_1 = require("./observe-private");
@@ -75,18 +77,35 @@ function createBatchReplay(currentBatch, opts, label = 'exposeStoreReplay') {
     if (!Number.isFinite(maxDelayMs) || maxDelayMs < 0) {
         throw new RangeError(label + ': batch.maxDelayMs must be >= 0');
     }
+    const envelopeBytes = 48;
+    let announcedBatchBytes = -1;
+    function measureStoreReplayEventBytes(event) {
+        if (announcedBatchBytes >= 0)
+            return announcedBatchBytes;
+        let bytes = envelopeBytes;
+        for (const patch of event.event[0]) {
+            try {
+                bytes += (0, store_replay_codec_1.storeReplayPatchV2WireMetrics)(patch).byteLength + 1;
+            }
+            catch {
+                bytes += maxBytes;
+            }
+        }
+        return bytes;
+    }
     const [emitBatch, replay] = (0, replay_listen_1.replayListen)({
         current: currentBatch,
         frame: condenseBatchPatchTail,
         history: opts.getSince ? undefined : (opts.history ?? 1024),
         keepMs: opts.getSince ? undefined : opts.keepMs,
+        keepBytes: opts.getSince ? undefined : opts.keepBytes,
+        sizeOf: opts.sizeOf ?? measureStoreReplayEventBytes,
         getSince: opts.getSince,
         onJournal: opts.onJournal,
         onJournalBatch: opts.onJournalBatch,
         now: opts.now,
         firstSeq: opts.firstSeq,
     });
-    const envelopeBytes = 48;
     const exactEmptyEnvelopeBytes = (0, store_replay_codec_1.storeReplayBatchV2WireMetrics)([]).byteLength;
     let pending = [];
     const ready = [];
@@ -155,7 +174,13 @@ function createBatchReplay(currentBatch, opts, label = 'exposeStoreReplay') {
         try {
             while (delivered < ready.length) {
                 const batch = ready[delivered];
-                emitBatch(batch.patches);
+                announcedBatchBytes = batch.bytes;
+                try {
+                    emitBatch(batch.patches);
+                }
+                finally {
+                    announcedBatchBytes = -1;
+                }
                 delivered++;
                 emittedBatches++;
                 emittedPatches += batch.patches.length;
@@ -250,7 +275,7 @@ function createBatchReplay(currentBatch, opts, label = 'exposeStoreReplay') {
         limits: { maxItems, maxBytes },
     };
 }
-function exposeStoreReplayWire(replay, encode, prepareRead) {
+function exposeStoreReplayWire(replay, encode, prepareRead, chunking) {
     const [, line] = (0, mapListen_1.mapListen)(replay.line, function encodeStoreReplayLive(event) {
         return [encode(cloneStoreReplayBatchEvent(event))];
     });
@@ -272,11 +297,65 @@ function exposeStoreReplayWire(replay, encode, prepareRead) {
             return encode(cloneStoreReplayBatchEvent(event));
         });
     }
+    function buildChunksFacet(chunking) {
+        const now = chunking.now ?? Date.now;
+        const chunkSets = new Map();
+        let nextSnapshotId = 0;
+        function sweepChunkSets() {
+            const at = now();
+            for (const [snapshotId, retained] of chunkSets) {
+                if (retained.expiresAt <= at)
+                    chunkSets.delete(snapshotId);
+            }
+            while (chunkSets.size > STORE_REPLAY_CHUNK_SETS_MAX) {
+                const oldest = chunkSets.keys().next().value;
+                if (oldest == null)
+                    break;
+                chunkSets.delete(oldest);
+            }
+        }
+        function begin(opts) {
+            prepareRead();
+            const requested = Number(opts?.budgetBytes ?? exports.STORE_REPLAY_CHUNK_BUDGET_DEFAULT);
+            const budgetBytes = Number.isFinite(requested)
+                ? Math.min(exports.STORE_REPLAY_CHUNK_BUDGET_MAX, Math.max(exports.STORE_REPLAY_CHUNK_BUDGET_MIN, Math.floor(requested)))
+                : exports.STORE_REPLAY_CHUNK_BUDGET_DEFAULT;
+            const event = replay.keyframe();
+            if (!event)
+                return null;
+            const chunks = chunking.split(event, budgetBytes).map(encode);
+            if (chunks.length == 0)
+                return null;
+            const snapshotId = 'snap-' + (++nextSnapshotId) + '-' + event.seq;
+            sweepChunkSets();
+            chunkSets.set(snapshotId, { chunks, expiresAt: now() + exports.STORE_REPLAY_CHUNK_TTL_MS });
+            return { snapshotId, seq: event.seq, ts: event.ts, total: chunks.length, budgetBytes, chunk0: chunks[0] };
+        }
+        function pull(snapshotId, index) {
+            sweepChunkSets();
+            const key = String(snapshotId);
+            const retained = chunkSets.get(key);
+            if (!retained)
+                return null;
+            chunkSets.delete(key);
+            chunkSets.set(key, retained);
+            retained.expiresAt = now() + exports.STORE_REPLAY_CHUNK_TTL_MS;
+            const at = Number(index);
+            if (!Number.isInteger(at) || at < 0 || at >= retained.chunks.length)
+                return null;
+            return retained.chunks[at];
+        }
+        function end(snapshotId) {
+            return chunkSets.delete(String(snapshotId));
+        }
+        return { begin, pull, end };
+    }
     const facade = {
         line,
         since,
         keyframe,
         frame,
+        ...(chunking ? { chunks: buildChunksFacet(chunking) } : {}),
     };
     return (0, replay_rpc_wire_1.brandRpcReplayWire)(facade, {
         head: replay.head,
@@ -285,8 +364,55 @@ function exposeStoreReplayWire(replay, encode, prepareRead) {
         },
     });
 }
-function exposeStoreReplayBatch(replay, prepareRead) {
-    return exposeStoreReplayWire(replay, store_replay_codec_1.encodeStoreReplayBatchV2, prepareRead);
+exports.STORE_REPLAY_CHUNK_BUDGET_DEFAULT = 256 * 1024;
+exports.STORE_REPLAY_CHUNK_BUDGET_MIN = 16 * 1024;
+exports.STORE_REPLAY_CHUNK_BUDGET_MAX = 4 * 1024 * 1024;
+exports.STORE_REPLAY_CHUNK_TTL_MS = 60_000;
+const STORE_REPLAY_CHUNK_SETS_MAX = 4;
+function splitStoreKeyframe(event, budgetBytes) {
+    const batch = event.event[0];
+    const root = batch?.length == 1 ? batch[0] : null;
+    const value = root && root.exists && root.path.length == 0 ? root.value : null;
+    if (value == null || typeof value != 'object' || Array.isArray(value))
+        return [event];
+    const keys = Object.keys(value);
+    if (keys.length < 2)
+        return [event];
+    function partOf(group) {
+        return { seq: event.seq, ts: event.ts, event: [[{ ...root, value: group }]] };
+    }
+    const parts = [];
+    let group = Object.create(null);
+    let groupBytes = 0;
+    let groupKeys = 0;
+    for (const key of keys) {
+        const entry = value[key];
+        let bytes;
+        try {
+            bytes = (0, rpc_wire_size_1.rpcResultWireMetricsFast)(entry).byteLength + key.length + 8;
+        }
+        catch {
+            bytes = budgetBytes;
+        }
+        if (groupKeys > 0 && groupBytes + bytes > budgetBytes) {
+            parts.push(partOf(group));
+            group = Object.create(null);
+            groupBytes = 0;
+            groupKeys = 0;
+        }
+        group[key] = entry;
+        groupBytes += bytes;
+        groupKeys++;
+    }
+    if (groupKeys > 0)
+        parts.push(partOf(group));
+    return parts.length ? parts : [event];
+}
+function exposeStoreReplayBatch(replay, prepareRead, now, chunks) {
+    return exposeStoreReplayWire(replay, store_replay_codec_1.encodeStoreReplayBatchV2, prepareRead, chunks == false ? undefined : {
+        split: splitStoreKeyframe,
+        ...(now ? { now } : {}),
+    });
 }
 function subscribeDecodedReplayLine(line, decode, cb, opts) {
     let upstream;
@@ -352,7 +478,7 @@ function subscribeDecodedReplayLine(line, decode, cb, opts) {
         stopUpstream();
     });
 }
-function decodeStoreReplayWireRemote(remote, decode, lifecycleSource = remote, knowledge) {
+function decodeStoreReplayWireRemote(remote, decode, lifecycleSource = remote, knowledge, chunked) {
     function decodeEvents(events) {
         if (events == null)
             return events;
@@ -369,7 +495,46 @@ function decodeStoreReplayWireRemote(remote, decode, lifecycleSource = remote, k
     async function since(seq) {
         return decodeEvents(await remote.since(seq, knowledge?.()));
     }
+    function keyframePartValue(part) {
+        const batch = part.event[0];
+        const root = batch?.length == 1 ? batch[0] : null;
+        const value = root && root.exists && root.path.length == 0 ? root.value : null;
+        if (value == null || typeof value != 'object' || Array.isArray(value)) {
+            throw new Error('chunked keyframe part is not a partial root snapshot');
+        }
+        return value;
+    }
+    async function assembleChunkedKeyframe() {
+        const config = typeof chunked == 'object' && chunked ? chunked : {};
+        const chunksRemote = remote.chunks;
+        const begin = await chunksRemote.begin(config.budgetBytes != undefined ? { budgetBytes: config.budgetBytes } : undefined);
+        if (begin == null || typeof begin.total != 'number' || begin.total < 1)
+            return null;
+        const first = decode(begin.chunk0);
+        config.onProgress?.({ snapshotId: begin.snapshotId, received: 1, total: begin.total });
+        if (begin.total == 1)
+            return first;
+        const merged = Object.assign(Object.create(null), keyframePartValue(first));
+        for (let index = 1; index < begin.total; index++) {
+            const wire = await chunksRemote.pull(begin.snapshotId, index);
+            if (wire == null)
+                return null;
+            Object.assign(merged, keyframePartValue(decode(wire)));
+            config.onProgress?.({ snapshotId: begin.snapshotId, received: index + 1, total: begin.total });
+        }
+        void Promise.resolve(chunksRemote.end?.(begin.snapshotId)).catch(function releaseFailed() { });
+        return { seq: begin.seq, ts: begin.ts, event: [[{ path: [], exists: true, value: merged }]] };
+    }
     async function keyframe() {
+        if (chunked != false && (0, transport_lifecycle_1.rpcMemberAvailable)(remote, 'chunks')) {
+            try {
+                const assembled = await assembleChunkedKeyframe();
+                if (assembled)
+                    return assembled;
+            }
+            catch {
+            }
+        }
         return decodeEvent(await remote.keyframe(knowledge?.()));
     }
     const decoded = {
@@ -395,7 +560,7 @@ function decodeStoreReplayWireRemote(remote, decode, lifecycleSource = remote, k
     Object.defineProperty(decoded, transport_lifecycle_1.RPC_SCHEMA_READY, { get: () => lifecycleSource[transport_lifecycle_1.RPC_SCHEMA_READY] });
     return decoded;
 }
-function decodeStoreReplayRemote(remote) {
+function decodeStoreReplayRemote(remote, chunked) {
     function decodeStoreReplayV2(value) {
         const local = value;
         if (local && typeof local == 'object' && typeof local.seq == 'number' && typeof local.ts == 'number'
@@ -404,14 +569,14 @@ function decodeStoreReplayRemote(remote) {
         }
         return (0, store_replay_codec_1.decodeStoreReplayBatchV2)(value);
     }
-    return decodeStoreReplayWireRemote(remote, decodeStoreReplayV2);
+    return decodeStoreReplayWireRemote(remote, decodeStoreReplayV2, remote, undefined, chunked);
 }
 function exposeStoreReplay(store, opts = {}) {
     function currentStoreReplayBatch() {
         return [[{ path: [], exists: true, value: store.snapshot() }]];
     }
     const batchReplay = createBatchReplay(currentStoreReplayBatch, opts);
-    const replayApi = exposeStoreReplayBatch(batchReplay.replay, batchReplay.flush);
+    const replayApi = exposeStoreReplayBatch(batchReplay.replay, batchReplay.flush, opts.now, opts.chunks);
     const { patches: _patches, patchesBatch: _patchesBatch, changedData: _changedData, ...storeApi } = (0, store_1.exposeStore)(store, { push: true });
     const getExactPatches = store[observe_private_1.STORE_REPLAY_PATCH_SOURCE];
     const patchBatches = opts.patchSource ?? getExactPatches?.() ?? (0, store_1.listenStorePatches)(store);
@@ -439,8 +604,8 @@ function exposeStoreReplay(store, opts = {}) {
     };
 }
 function syncStoreReplayBatch(store, remote, opts = {}) {
-    const { onBatch, validateBatch, ...wireOpts } = opts;
-    return (0, replay_wire_1.replaySubscribe)(decodeStoreReplayRemote(remote), function applyBatch(patches) {
+    const { onBatch, validateBatch, chunkedKeyframe, ...wireOpts } = opts;
+    return (0, replay_wire_1.replaySubscribe)(decodeStoreReplayRemote(remote, chunkedKeyframe), function applyBatch(patches) {
         validateBatch?.(patches, store);
         (0, store_1.applyStorePatches)(store, patches);
         onBatch?.(patches, store);
@@ -513,8 +678,8 @@ function syncStoreReplayView(store, remote, opts = {}) {
     return storeReplayViewLayer.syncStoreReplayView(store, remote, opts);
 }
 function syncStoreReplayRouteResolved(store, remote, opts) {
-    const { onBatch, validateBatch, ...routeOpts } = opts;
-    const route = (0, replay_route_1.replayRouteSubscribe)(decodeStoreReplayRemote(remote), function applyRouteBatch(patches) {
+    const { onBatch, validateBatch, chunkedKeyframe, ...routeOpts } = opts;
+    const route = (0, replay_route_1.replayRouteSubscribe)(decodeStoreReplayRemote(remote, chunkedKeyframe), function applyRouteBatch(patches) {
         validateBatch?.(patches, store);
         (0, store_1.applyStorePatches)(store, patches);
         onBatch?.(patches, store);
@@ -554,7 +719,7 @@ function syncStoreReplayRouteResolved(store, remote, opts) {
         await waitForV2Schema(nextRemote);
         if (closed)
             throw new Error('syncStoreReplayRoute: closed');
-        return switchBatchRoute(decodeStoreReplayRemote(nextRemote), nextOpts);
+        return switchBatchRoute(decodeStoreReplayRemote(nextRemote, chunkedKeyframe), nextOpts);
     }
     function off() {
         if (closed)

@@ -400,13 +400,16 @@ Original slicing for reference:
 
 ## Order and immediate next steps
 
-Steps 1–3 are DONE (see above, proven on the stand). Order for the rest: 4 → 5 and 6
-(parallel; 6e last); 7 assembles the finished steps and may start its skeleton after 4.
-
-1. **Step 4a** — `createStoreNode` (read `DYNAMIC-RUNTIME.md` first; name needs its
-   public-interface discussion) — the demo node wiring collapses into a config object.
-2. **Step 4b** — whole-socket placement by directory facts (power-of-two-choices).
-3. **Step 4c** — the admin panel as one more mirror of the same stores.
+Steps 1–4 and 7–10 are DONE (see above, proven on the stand and in the incubators). What remains is
+stage 5/6 graduation, gated by ONE run against a real cluster (`experiments/wenay-k8s/cluster-check.ts`
+after an elevated `minikube start --driver=hyperv`), and the growth-path items recorded as
+`ROADMAP.md §6` (solo start, partition address = storeId, the storage seam on the authority line,
+recipes) — §6.1/6.3/6.5 landed 2026-09-03 with `observe/scale-solo.test.ts` /
+`observe/scale-durable.test.ts` and the scaffold's day-1 leader process.
 
 When a stage completes, move its durable outcome into `ROADMAP.md`/`doc/changes/` and trim this
 page; delete the page when stage 5 ships.
+
+## Safety clarification after partition verification
+
+The local two-authority socket fixture exercises host admission and resource commit fencing, including a negative control without fencing. It does not implement stage 6c or a K8s Lease adapter. Injected elect/accept only select/validate descriptors; they do not expire or renew local ownership. The resource must atomically fence writes and deduplicate committed effects. See [SCALE-SAFETY.md](../SCALE-SAFETY.md).

@@ -15,7 +15,7 @@ export type ArtifactMirrorDeps = {
 export declare function createArtifactMirror(deps: ArtifactMirrorDeps): {
     connection: (account: string) => {
         fragment: {
-            state: {
+            state: ({
                 line: {
                     on: (cb: (batch: import("../Observe/store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
                 } & import("../Observe").StoreReplayLineLocal;
@@ -52,7 +52,7 @@ export declare function createArtifactMirror(deps: ArtifactMirrorDeps): {
                 } | undefined;
             } & {
                 line: import("../Observe").StoreReplayLineLocal;
-            });
+            })) & import("../Observe").StoreReplayState<ArtifactStore>;
             open: (artifactId: string) => Promise<{
                 url: string;
                 expiresAt: number;

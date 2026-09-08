@@ -89,6 +89,7 @@ function countWireReads<W extends {
     since(seq: number): any
     keyframe(): any
     frame?: (seq: number, hint?: unknown) => any
+    chunks?: {begin(opts?: unknown): any, pull(snapshotId: string, index: number): any, end?: (snapshotId: string) => any}
 }>(remote: W, count: () => void) {
     const counted = {
         ...remote,
@@ -100,6 +101,14 @@ function countWireReads<W extends {
             count()
             return remote.keyframe()
         },
+        // a chunked keyframe IS a V2 catch-up read — the begin answer carries chunk 0
+        ...(remote.chunks ? {chunks: {
+            ...remote.chunks,
+            begin(opts?: unknown) {
+                count()
+                return remote.chunks!.begin(opts)
+            },
+        }} : {}),
     }
     if (remote.frame) {
         counted.frame = function countReplicatedMapFrame(seq: number, hint?: unknown) {

@@ -100,7 +100,7 @@ export function joinListens(
         listen: out,
         pending: buckets,
         clear: (tid?: string) => {
-            tid ? buckets.delete(tid) : buckets.clear()
+            tid != null ? buckets.delete(tid) : buckets.clear()
         },
         destroy: () => {
             for (const u of unsubs) u()

@@ -1,0 +1,37 @@
+import {createHomeReader, createHomeDevice} from './client'
+import {startHomeStand} from './stand'
+
+async function main() {
+    const stand = await startHomeStand()
+    const phone = createHomeReader(stand.source.reader('anna'))
+    const meter = createHomeDevice(stand.source.device('anna'))
+    let stopReading = () => {}
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+        await Promise.all([phone.ready, meter.ready])
+        console.log('Current household:', phone.store.snapshot())
+
+        // Subscribe before writing: command acknowledgement and UI delivery are separate events.
+        const displayed = new Promise<void>(function waitForReading(resolve, reject) {
+            timeout = setTimeout(function expired() { reject(new Error('phone did not receive the reading')) }, 5000)
+            stopReading = phone.store.node.devices.meter.reading.on(function readingChanged(reading) {
+                console.log('Phone displays:', reading)
+                if (Object.is(reading, 21.5)) resolve()
+            })
+        })
+        // Observe both outcomes even when the command fails before the display timeout.
+        await Promise.all([meter.control.record(21.5), displayed])
+        console.log('Reading saved and delivered')
+    } finally {
+        clearTimeout(timeout)
+        stopReading()
+        phone.close()
+        meter.close()
+        await stand.close()
+    }
+}
+
+main().catch(function failed(error) {
+    console.error(error)
+    process.exitCode = 1
+})

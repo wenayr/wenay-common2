@@ -1,5 +1,29 @@
 # wenay-common2 — EXTENDED cheat sheet (notation)
 
+The [rental example](../examples/rental/README.md) ships its own client and host composition.
+It demonstrates one authority and optional reader processes, including endpoint restart recovery.
+It defaults to memory; SERVICE_DATA_DIR enables the existing business/control archives and requires
+stable node/token secrets. Process restart and stopped two-file backup restoration are tested,
+including original receipt replies. The files are not a cross-journal transaction, have no fsync
+power-loss guarantee, and require one writer. The RPC replica contains full state; HTTP board
+projection does not filter it. Schema/OpenAPI helpers are example-local, not new package exports.
+Rental's optional benchmark measures RPC replica keyframe reads against authority or one/two reader processes.
+It uses explicit round-robin dispatch and a fresh client after reader restart; it measures neither
+automatic placement nor write scaling, and makes no production throughput guarantee.
+RENTAL_BENCHMARK_MS accepts 1000–10000 ms of request admission per trial; pending reads drain
+afterward. Reports include attempts, actual duration, success p50/p95/p99 and generator-only
+CPU/memory. One generator and all server processes share a machine; server saturation is unproven.
+With RENTAL_BENCHMARK_GENERATORS=compare, the sustained benchmark instead uses one/two fresh
+load processes, two connections total and eight lanes total in both variants. Readiness/warmup
+precede a common scheduled start. Results include per-worker measurements and pooled success
+latencies; IPC result collection and child startup are outside measured request time.
+Its separate entity probe compares shared ID handlers with eager per-object facades and lazy Listen
+subscriptions in fresh GC-enabled processes. Heap deltas include identical row storage and remain
+engine-dependent estimates; HTTP/RPC/schema registration costs are outside this experiment.
+The separate `probe:http` uses the existing HTTP facade adapter to measure a shared handler versus
+per-entity route registration over loopback. It checks owner isolation and deleted-row refusal;
+routes themselves are not unregistered. Fixture tokens are not a production identity provider.
+
 > The full surface. For everyday helpers use **`wenay-common2.md`** (brief). Root import:
 > `import { ... } from "wenay-common2"`. Notation: `name(args) -> ret  // note`. Short names are
 > canonical. Removed old names are listed in `NAMING_RENAMES.md`.
@@ -245,6 +269,10 @@ RpcAuthGrant = { object?: any, ack?: any, expiresAt?: number, renewBeforeMs?: nu
   // resolveAuth throw = TRANSIENT: principal, routeMap, authed and subscriptions are untouched, the
   //   caller's reauth() just resolves {ok:false,reason}. throw a value carrying `revoke: true`
   //   (Object.assign(new Error('...'), {revoke:true})) = the full downgrade corridor.
+  // {ack:{ok:false}} also rejects only the attempt: prior facade, gate state, subscriptions and expiry remain.
+  //   Refused object/expiry fields are ignored. Before the first successful grant, the initial gate is unchanged.
+  // Pending onRequest admission cannot execute an old CALL/PIPE after principal change or detach;
+  //   this does not cancel application work that already started. Server debug redacts HELLO tokens.
   // Downgrade corridor (HELLO success / expiry / revocation all share it): Pkt.AUTH state FIRST (so the
   //   client learns WHY before its streams end) -> rebuild dispatch -> teardown -> Pkt.MAP with
   //   authAck {ok:false,state,reason}. That ack rides every later MAP but is NOT sticky: a successful
@@ -539,7 +567,10 @@ can settle no pending `reauth()`).
 ### HTTP facade server: static GET/POST mirror
 
 `createHttpFacadeServer` is exported from `wenay-common2/server/http` and the compatibility
-`wenay-common2/server` facade. It receives a caller-owned Express app and
+`wenay-common2/server` facade. `createHttpFacadeOpenApi({object, basePath, methods, info,
+bearerAuth?, summaries?, argSchemas?, limits?}) -> {document()}` lives beside it (graduated from
+the demo incubator): the same facade walk as an OpenAPI 3.1 document, `argSchemas` giving a route
+its real tuple body. The scaffold's `template/rest.ts` mounts both from a service definition. It receives a caller-owned Express app and
 walks the supplied object once at server setup. Every nested enumerable string-keyed function becomes a route whose
 URL segments match its object path:
 
@@ -662,11 +693,161 @@ The mechanism is already in the contract — this is how to use it when the shap
   `checkpoint()` (Replicated Map) and lazy-line cursors already bind them; hand-rolled persistence
   of a naked seq is the mistake this recipe exists to prevent.
 
+### Recipe: the Scale growth path — one process today, a fleet later, no rewrite
+The tier's three factories are the SAME config at every size (ROADMAP §6); what grows is env.
+- **Day 1 — one process.** `Scale.createAuthority({line, roster, identity, corridor})` alone is a
+  deployment: `serve.browser(account)` gives a browser the line, the roster projection and identity;
+  `Scale.createClusterClient({line, roster, connect})` places on the leader row because nothing else
+  exists. Put the line on the storage port from the first day
+  (`line: {..., durable: {storage: createFsReplayStorage(...)}}`) so a restart restores the state
+  and continues the seq space — followers resume with `since()`, never a forced keyframe. The
+  scaffold (`experiments/wenay-scaffold`) ships this process as `npm run leader`.
+- **No database in the small configuration.** The archive IS the store: the state (every
+  keyframe and journal event) and the control line (receipts, deny list) live on the
+  `ReplayStorage` port — fs files for one process, a DB adapter of the same port when a product
+  needs one, never a provider inside the library. What a database would add (search over a large
+  history, reporting across many partitions) is a separate resource behind the same port, and the
+  segments these examples target (rentals, small shops) never reach it. The scaffold turns both
+  archives on with one env (`SERVICE_DATA_DIR`) and versions the state (`version` + `migrate`).
+- **Day N — nodes.** Start `Observe.createStoreNode` processes with the leader's url and the two
+  corridor secrets in env (`npm run node` in the scaffold). New readers land on nodes by weight;
+  already placed clients stay where they are; `roster.control.drain(nodeId)` returns a node's
+  readers gap-free and the node leaves on its own row fact. The client config is untouched.
+- **Standby.** A second `createAuthority` with `leadership: {role: 'standby', upstream,
+  autoPromoteMs}` follows the line and the control line; only receipts delivered to and retained by that standby survive failover
+  (storage does NOT carry the control line — a solo restart can repeat even an acknowledged requestId).
+- **Multi-tenancy.** N authorities in one host = N calls, each closed over its own `storeId`; rosters,
+  readers and lines are separate by construction (`observe/scale-solo.test.ts` proves two).
+- **Partitions (when ONE authority is the measured write ceiling).** One authority per `storeId`, a
+  `key → storeId` map in front, one cluster client per partition behind a facade. A command lives
+  inside one partition; cross-partition atomicity is a different library. Nothing to add to the
+  config today — `storeId` already IS the partition address.
+- **What is NOT config-only:** a cascade deeper than authority → node → client (a node serves no
+  node link, so a regional node feeding other nodes is an open seam), quorum election (plug a
+  lease into `leadership.elect/accept`), the DNS/ingress entry (level 1 is infrastructure).
+
+### Recipe: audiences — roles from state, one view line per audience, one panel
+A product has many panels (a cook, a courier, an owner, a guest, a device) over ONE state. The
+library gives two seams and the scaffold turns them into data in the domain module:
+- **Roles are state, read per call.** `rolesOf(state, account)` in the definition; the authority
+  refuses a command whose `allow` the principal lacks at EXECUTION (whatever hop it took), and every
+  served facade is PRUNED by the same rule (RPC-AUTH rule 3: absent, not checking). Changing an
+  account's roles acts on already issued tokens.
+- **A view is a line, not a filter.** `views: {kitchen: {allow: ['cook'], keys, project(state,
+  principal)}}` — `Observe.deriveStore` re-projects the local mirror (on the leader AND on every
+  node) and `exposeStoreReplay` serves the projection as its own replay line; `allow: 'public'`
+  views replace the raw line on the ungated key, so a browser never receives what a projection drops
+  (secrets, contacts). `project` receives the principal: "my orders" is one view, one line per
+  session (`shared: true` = one line per process). The seams: `createStoreNode({serve: {audience}})`
+  and `createAuthority.serve.connection({principal})`.
+- **One generic panel.** `/panel` (template/panel.ts) logs in through `/api/<name>/login`, asks
+  `/me` what this principal may read and call, polls the readable views and posts commands — the
+  same documented routes for every role; a product replaces the page, not the routes.
+Proof: `examples/pizzeria` (five roles; `npm run check`), `observe/scale-audience.test.ts`.
+
+Projection values follow Store same-value semantics: `0`, `false` and `'0'` differ,
+as do `null` and an explicitly present `undefined`; unchanged `NaN` does not emit.
+Arrays and rich values use the same comparator and are replaced as whole values when changed.
+Start with `examples/smart-home/example.ts` (`npm start`) for the ordinary read/subscribe/write
+path. It waits separately for command acknowledgement and Store delivery and closes every resource.
+`npm run check` additionally exercises lifecycle and recovery failures.
+
+The scaffold `createServiceClient` owns its pending connections too: `close()` prevents late
+roster/login completions from installing a session or view. Closing a view before its first
+snapshot rejects that view's `ready`; retrieving it again from an open client creates a fresh
+handle. Initial login belongs to the hub token provider and is not called twice by the wrapper.
+
+`examples/small-jobs` uses this client without another product session layer. Its role-scoped
+projections and synchronous commands demonstrate competing assignments and acceptance. Object IDs
+must have at least the same scope as command receipts: `requestId` alone is not globally unique.
+These examples hash the existing account/request tuple key for public IDs and guard surviving
+objects against overwrite after receipt eviction. Opaque IDs never replace authorization checks.
+
+For replica-bearing lines, `Scale.createClusterClient` already combines roster, placement and
+handoff. Its opt-in `placement.balance` accepts useful moves at the default exact overload
+threshold, including growth from one node to two equal nodes. A single reader cannot improve
+that equal split and stays put. `createStoreNode.leave(reason)` now announces withdrawal before
+the grace period; its host callback is not held indefinitely by an unanswered goodbye. Departure
+is best-effort if the directory cannot be reached; stale-row expiry remains necessary.
+The scaffold process check exercises active growth, planned drain and crash recovery using real
+reader counts. These checks demonstrate read scaling; they do not benchmark capacity or establish
+write-owner transfer. See `doc/target/SAAS-SCALE-GROWTH.md` in the source repository.
+
+The `examples/smart-home` consumer grows this into independent household Stores, idle projection
+reclamation, gated RPC and two explicitly placed owner processes with per-home file archives.
+It checks exact values, a shared read line, crash/restart, isolation of the unaffected home and
+the same client Store continuing after reconnect. Its client uses the existing
+`syncStoreReplay(..., {prepareCatchUp() { return {reset: true} }})` seam: a new process can start
+the projection seq at zero, so reconnect installs a fresh snapshot rather than reusing a cursor
+from the previous process. This is static placement, not automatic ownership transfer.
+
+The example's stable idle-line facade relays the whole recognized Listen block (with shared
+resource close owned by the service). A partial `{on: listen.on}` is not the same RPC addressing
+surface: a bare Listen function itself becomes a subscription node. Full original replay
+facades carry internal RPC backpressure metadata; this example's lazy wrapper does not retain
+that optimization. Do not add throttling to its sequenced line or claim a high-volume slow-reader
+guarantee from these functional checks. See `doc/target/SMART-HOME-FINDINGS.md` in the repository.
+
+### Recipe: external effects — intents in state, a runner beside the authority, a webhook
+A command never calls a bank, a lock or a mail gateway: it records an INTENT (a fact on the line,
+in the archive) and returns. Beside the authority a runner (`template/effects.ts`
+`createEffectRunner({store, keys, select, id, perform, report})`) selects pending intents, performs
+each at-least-once with the intent id as the provider's idempotency key, and reports the outcome
+as a SYSTEM command whose requestId is the intent id — so the outcome is idempotent through the
+receipts and a crash between the call and the report replays into the same facts. A provider's
+settlement arrives out of band as a signed webhook; the host verifies the signature over the raw
+body and runs a system command keyed by the provider's EVENT id (redelivery answers the receipt; a
+settlement is final by the domain rule). Equipment is a principal like a person: its own account
+(role `device`), its own view line (its pending commands, the codes valid today), its own allow
+list; it executes and reports through the corridor everybody uses, from a node or the leader.
+Proof: `examples/apartments` (payment intent → fake bank → signed webhook → door code → lock via a
+node → unlock; decline; redelivery and forgery; the leader restarted from `SERVICE_DATA_DIR` with
+the node and the device attached; `npm run check`). The same journey then creates another apartment
+and device, books the new ID and arms its code without restarting the server processes. Device
+views remain isolated; a separate host fixture checks ownership without adding a host signup API.
+Another restart restores the runtime-created apartment, device credentials, paid booking/code and
+original command receipts; the retained reader and device then execute a fresh unlock intent.
+
+The scaffold's `template/payments.ts` is the whole provider seam: the PORT (`charge(request)`
+under the payment id as idempotency key), `mountPaymentWebhook({app, path, codec, onSettlement})`
+(raw body → signature → provider-neutral settlements → one system command per event id; 401 / 400 /
+500-for-retry), `createFakeBank` (the dev provider) and `createStripeProvider` (PaymentIntents +
+`Stripe-Signature` events, proven offline through an injected fetch and a self-signed event — the
+scaffold self-check). Tracking falls out: every verified event is a command, so it is in the state,
+the archive and the host's `ledger` view, applied or not.
+
+### Recipe: a client from the definition — login, placement, views, commands
+`template/client.ts` `createServiceClient({definition, url, auth?, placement?})` is what a front
+end, a device or a job needs, typed from the same definition the leader runs: `auth` is a token,
+the definition's login form (the leader mints and renews through its identity port) or a product's
+own provider; placement follows the leader's roster (`followNodeDirectory` + `pickDirectoryNode`,
+serving nodes by weight, the leader alone on day 1) and re-places when the endpoint dies; each
+`views.<name>` is ONE stable mirror Store over `syncStoreReplayRoute` — a view line is a plain
+replay line (no replica descriptor, so no replica-set fork choice), and on re-placement the route
+switches to the new endpoint's line while the object a UI is bound to stays; `commands.<name>` go
+through the current endpoint (a node forwards, the leader executes). The lock device of
+`examples/apartments` composes this client with its own deadline, actuator and outcome-report rules.
+Transport replay cannot decide whether an old physical action is still appropriate. The example
+checks command deadlines at the service boundary and again at the device, and validates cached
+keypad dates locally. A lost report acknowledgement must not trigger another motor action.
+An acknowledged software report is not independent evidence that a physical door opened.
+
+The apartment and rental `run.mjs` stands share concurrent requests to restart the same process.
+Closing fences replacement creation and waits for owned children and pending replacements; their
+`stand-check.ts` exercises the race through the facade and verifies PID exit. This is local example
+orchestration, not a public library process supervisor or a multi-machine deployment guarantee.
+
 ## 📦 Resource — file storage intents + AI job coordinator
 
 `Resource.createFileJobHost({storage, runner, policy?, id?, now?, history?, drain?})` is the
 application-facing layer for a frontend file and a backend/AI workflow. It does not choose a
 storage provider, transport URL, or AI vendor.
+
+Host close refuses further commands, suppresses late job reports and upload-confirmation writes.
+An already-started storage request may still finish externally: this port has no cancellation method.
+Concurrent confirmations of the same file share one storage verification. Authorization is checked
+for every caller before joining it; all callers observe the same success or failure. A later separate
+confirmation still requires an uploading file. This is not general request replay for starting jobs.
 
 ```ts
 type FileStoragePort = {
@@ -708,6 +889,17 @@ descriptor, link, or structured AI result — write large output back through th
 The local stand (`npm run demo`) uses a tiny in-memory HTTP storage adapter solely to show the full
 upload → confirm → AI progress/result → download path; production code supplies its own storage
 port. Oracle: `replay/file-job.test.ts` (real Socket.IO/RPC, owner ACL, progress, result, cancel).
+
+Copyable `examples/document-processing` separates owner-checked HTTP bytes from FileJob metadata.
+Its `http-host.ts` is generated from the same private scaffold resource as rental: it owns
+HTTP/Socket.IO startup and bounded shutdown, while routes and authorization stay in the product.
+The document host explicitly disconnects clients before ending replay sources on shutdown.
+This server-issued disconnect stops automatic reconnect; a restarted in-memory host needs a fresh
+session/client. Ordinary offline/online against the same live host retains the client Store.
+Its bounded in-memory storage reserves pending capacity, verifies byte size and UTF-8, and seals
+confirmed uploads. The processor produces deterministic counts/excerpts and a small downloadable JSON
+report, without an AI model. A failed confirmation releases the byte allocation; restart loses all
+in-memory work. Neither distributed workers nor durable task recovery are claimed.
 
 ## 🤖 AI — provider-neutral run protocol
 
@@ -764,6 +956,21 @@ Event contract:
 application may intentionally retry `createRun` with the same id. The host returns the original run
 and never invokes the runner twice. Cancellation immediately marks state terminal, rejects pending
 input/approval waits, calls optional `runner.cancel`, and ignores every later report, event and result.
+Request identity includes the account with unambiguous tuple encoding. Synchronous exceptions and
+rejected promises from provider cancellation cannot interrupt local cancellation or host cleanup.
+This is a local lifecycle guarantee; cancellation does not prove that an external provider stopped billing.
+
+`examples/ai-support` composes this host with a runner, authenticated RPC, an HTTP adapter and a
+small browser page. The default provider uses deterministic templates, requires no key and performs
+no model calls. Socket reconnect resumes the original client Store while the host remains alive;
+process restart loses in-memory runs. An actual model adapter and durable task scheduling remain
+application work; the example does not claim multi-worker execution or production identity.
+Its private HTTP resource disconnects clients before replay cleanup and awaits bounded shutdown.
+Independent checks cover occupied-port startup, active provider cancellation and port reuse.
+A replacement host requires a fresh demo session and client after server-issued disconnect.
+The installed concurrent-run check verifies four overlapping tasks across two accounts, scoped
+progress/live output/results, late-output fencing after cancellation and one cancel callback per
+remaining active run on close. Cooperative provider cancellation is not forced worker termination.
 
 Security boundary: resource bytes, storage/provider keys, reusable URLs, arbitrary browser callbacks,
 and raw chain-of-thought do not cross this API. Let the application adapter fetch a `resourceId` from
@@ -942,9 +1149,21 @@ Required capabilities are checked before `open`. Higher offer priority wins, the
 
 Replacement is prepare-before-switch: the current session remains active until the candidate has
 opened and passed `acceptSession`. `api.acquire` returns `{api, binding, release}`; a retired session
-drains only after its leases release or `drainTimeoutMs` expires. An open or active-session failure
+drains only after its leases release or `drainTimeoutMs` expires. The same deadline forces session
+close even if its drain hook hangs. Runtime close owns active, retired and opened candidate sessions;
+queued/resumed control work rejects after shutdown and cannot reactivate a slot. An open or active-session failure
 suppresses the offer for `retryMs` and tries the next compatible candidate. Revocation is reversible;
 rollback reopens the previous offer only if it still satisfies the current demand and policy.
+
+Candidate `onFail` is subscribed before asynchronous `acceptSession`; failure during readiness
+rejects that candidate without replacing the serving binding. Pending listeners detach on close.
+`examples/hosting` demonstrates this lifecycle with real child HTTP apps and a stable gateway.
+Its per-site createAsyncQueue keeps each multi-command deployment or rollback together. Failed
+updates do not block later intents; shutdown rejects queued work and awaits queue completion.
+This is in-memory ordering, not durable scheduling, a queue limit or distributed deployment coordination.
+The installed hosting check also terminates an owned active child during a request: that request
+gets 503, Contract reopens a previous healthy offer during cooldown and retries the newest offer.
+The neighboring site's PID remains live. This does not promise uninterrupted service or request replay.
 
 Slots report `idle | resolving | preparing | active | degraded | failed | closed`. `required:false`
 with no offer is degraded; a required slot fails. `api.status` is an Observe Store, `changed` emits
@@ -1236,6 +1455,11 @@ Contract:
 - Dirty paths are facts about changed object routes: add key, delete key, or deep set. Array mutation dirties the whole array branch; no public splice/index diff is promised.
 - `snapshot()`/`update().get()` walk raw targets (`toRaw`), so a snapshot of a cold store creates no lazy reactive nodes.
 - `cloneStoreValue(value)` exposes that detached Store snapshot clone for boundary adapters; it preserves cycles, rich values and binary views.
+  Sparse array length/holes and repeated rich-value identities survive within one clone. Separate binary views
+  own detached byte ranges; shared backing-buffer identity is not retained. Replicated mutable state must use
+  independent branches or entity IDs: shared cross-branch object identity can diverge after wire detachment.
+  `on`/`once` clean up after an immediate callback throws; mirror sync discards late pulls after unsubscribe.
+  See [the consumer journey and type boundaries](STORE-CONSUMER-GUIDE.md).
 - `listenStorePatches(store)` is the public settled source behind push: one absolute patch array per natural Store drain. A bounded `patchesBatch` transport may split that source array.
 - Store-owned Replay privately refines safe array-slot replacement/growth facts to exact index patches in the same physical drain envelope. Public `changedPaths`/`listenStorePatches` retain the whole-array boundary. An observed `length` mutation or whole-array property replacement falls back to one complete-array patch; injected `patchSource` and Replicated Map retain their declared source semantics.
 - Fresh batch keyframes encode the owned `snapshot()` directly instead of cloning the complete tree a second time. Live/history/frame events remain defensively detached. Snapshot and columnar materialization use direct own-data writes only when the prototype chain has no setter/non-writable collision; otherwise they retain descriptor-based writes, including `__proto__`.
@@ -1431,6 +1655,8 @@ Peer.createMediaRelay({lines: {name: 'video'|'audio'}, videoHistory? = 8, audioH
   //   `watch` (unfiltered global map) stays for trusted wiring (demo/single-tenant); prefer watchOf.
   //   dropAccount also clears the account's watcher-view cache both as owner and as watcher.
 Peer.createCallManager({port, self, ringTimeoutMs? = 30000, incoming?}) -> {ready, call(peer, meta?), rings, active(), close()}
+  // A pending admission consumes duplicate rings and respects caller hangup; live call signals
+  //   must come from the call's peer. The host still owns authenticated signal identities/policy.
   // messenger-style calls as envelopes over the EXISTING signal port (callPortOf(remote) flattens the
   //   fragment proxy) — zero new server surface; pair = 'call:<id>' never collides with route pairs.
   //   ready = registration ack (a self-probe rides the same ordered socket AFTER the subscribe — before
@@ -1601,6 +1827,10 @@ conflateReplay(replay, {pending, highWater, lowWater?, pollMs?, keyOf?, maxKeys?
 ReplayStorage = {putEvent, putEvents?, putKeyframe, getKeyframe({seq?|ts?}?) -> ReplayEvent | undefined, getEvents(from, to)}   // layer C: putEvents is atomic all-or-throw; createMemoryReplayStorage(caps?) = reference impl
 archiveReplay(replay, {storage, everyEvents? = 64, everyMs?}) -> {close, stats}          // event log + keyframe cadence (every N events OR T ms of line-ts, whichever first; frames only ON events)
 openHistory(storage, live?) -> {at({seq?|ts?}?), subscribe(cb, {since?|ts?, onSeq?}) -> off}   // seek + playback, SAME subscriber interface; with live: archive -> live journal -> live handover
+  // Validates retained seq continuity before returning/applying any archive prefix. A gap throws;
+  // subscribe can instead reset through a newer complete keyframe. Durable restore uses this same validation.
+  // Retention must keep a recoverable keyframe + tail. No independent persisted head exists in ReplayStorage:
+  // a wholly missing suffix with no later retained coordinate cannot be distinguished from an older complete archive.
   // seamless rewind->live: create the line with getSince reading the same storage («memory outside»); else the gap closes with a keyframe jump (still consistent)
 storeReplayAt(storage, {seq?|ts?}?) -> snapshot | undefined                              // store time machine over archived V2 patch batches
 ```
@@ -1665,3 +1895,27 @@ const facade = {
 // as normal RPC Listen subscriptions. This is a notification stream, not a full
 // automatic snapshot mirror; send/read snapshots explicitly via facade methods.
 ```
+
+## Store: compatibility of type metadata
+
+StoreGetter<T> preserves the masked/full getter overload across RPC. StoreReplayState<T>
+provides optional compile-time metadata for StoreReplayRemote<T>, sessions and offers; it
+introduces no runtime property or wire validation. Covariance allows extra source fields, while
+destination state and command maps constrain connectors via NoInfer. Legacy default any
+remotes remain accepted and bypass compatibility checks. Derive remote types from their source.
+See [STORE-CONSUMER-GUIDE.md](STORE-CONSUMER-GUIDE.md).
+
+Ownership and partition limits: [SCALE-SAFETY.md](SCALE-SAFETY.md). Local canWrite and elect/accept do not provide automatic lease expiry or external-effect fencing. Old authority node links reject registry writes after their ownership generation ends.
+
+Generated scaffold projects use Node16 module resolution and public entrypoints, including the root Scale/Command namespaces; a namespace does not imply a /scale or /command package subpath. Generation is available from the repository incubator, not a published generator CLI.
+The private input-schema validator rejects calendar rollover (such as February 29 in a non-leap
+year) and unknown nested fields before domain validation/apply. Rental's installed check also
+verifies that rejected input leaves no effect and permits a corrected retry with the same request ID.
+Startup archive migration runs against a snapshot. A missing or throwing migration closes the
+already allocated authority; rental's installed check observes timer disposal and verifies a
+corrected retry migrates once. This does not establish atomic migration across storage failures.
+Migration output is fully cloned with the existing Store value utility before archived fields
+are changed. A throwing result getter leaves old business data available for a corrected retry;
+later mutation of the callback's returned object cannot change the adopted state.
+
+Compiler compatibility and receipt-delivery failure windows are recorded in [2.16.0](changes/2.16.0.md#compatibility-and-receipt-limits). NoInfer requires TypeScript 5.4 or newer; the strict tested compiler is 7.0.2.

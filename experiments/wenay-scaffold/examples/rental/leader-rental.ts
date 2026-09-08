@@ -15,16 +15,18 @@
 // TODO(graduation): the '../../../../src' imports become package entrypoints
 // when the template graduates out of the incubator.
 
-import express from 'express'
-import {createServer} from 'http'
-import {Server as SocketIOServer} from 'socket.io'
+import {existsSync, mkdirSync} from 'node:fs'
+import path from 'node:path'
 import {listen} from '../../../../src/Common/events/Listen'
 import {createRpcServerAuto} from '../../../../src/Common/rcp/rpc-server-auto'
 import {createTokenCodec} from '../../../../src/server/auth-token'
+import {openFsReplayStorage} from '../../../../src/server/fsReplayStorage'
+import type {Scale} from '../../../../src'
 import {corsOrigins, leaderEnv, portEnv} from '../../template/config'
 import {createServiceLeader} from '../../template/leader'
-import {createRentalRest} from './rest'
+import {createRentalRest} from './board-rest'
 import {serviceDefinition} from './service'
+import {createHostResource} from '../../resources/http-host'
 
 const DEMO_ACCOUNT = 'demo-renter'
 const DEMO_TTL_MS = 12 * 60 * 60 * 1000
@@ -33,126 +35,154 @@ async function main() {
     const env = leaderEnv(process.env)
     const port = portEnv(process.env, 'RENTAL_PORT') ?? 3400
     const name = serviceDefinition.name
-    const app = express()
-    const httpServer = createServer(app)
+    if (env.dataDir && (!env.secrets.nodeToken || !env.secrets.tokenSecret)) {
+        throw new Error('SERVICE_DATA_DIR requires SERVICE_NODE_TOKEN and SERVICE_TOKEN_SECRET to preserve identity across restarts')
+    }
     // node processes have no Origin and pass regardless; browser stands get CORS
     // pinned to the stand's own origin (config.corsOrigins carries the env override)
-    const ioServer = new SocketIOServer(httpServer, {
+    const transport = createHostResource({port, socket: {
         cors: {origin: corsOrigins(process.env, ['http://localhost:' + port]), methods: ['GET', 'POST']},
-    })
+    }})
+    const {app, io: ioServer} = transport.resource
+    let closeLeader = function noLeader() {}
+    let closing: Promise<void> | undefined
+    function close() {
+        closing ??= Promise.resolve().then(async function closeResources() {
+            try { closeLeader() }
+            finally { await transport.close() }
+        })
+        return closing
+    }
+    try {
+        let url = ''
+        if (env.dataDir) mkdirSync(env.dataDir, {recursive: true})
+        if (env.dataDir && existsSync(path.join(env.dataDir, name + '.jsonl')) != existsSync(path.join(env.dataDir, name + '.control.jsonl'))) {
+            throw new Error('rental restore requires both archives: rental.jsonl and rental.control.jsonl')
+        }
+        const durable: Scale.ScaleDurableLine | undefined = env.dataDir ? {storage: openFsReplayStorage(path.join(env.dataDir, name + '.jsonl'))} : undefined
+        const durableControl: Scale.ScaleDurableLine | undefined = env.dataDir ? {storage: openFsReplayStorage(path.join(env.dataDir, name + '.control.jsonl'))} : undefined
+        const leader = createServiceLeader({
+            definition: serviceDefinition,
+            selfUrl: () => url,
+            // absent env secrets stay absent: the factory mints per-run ones and
+            // run.mjs pins them through env so node processes can join
+            secrets: env.secrets,
+            ...(durable ? {durable} : {}),
+            ...(durableControl ? {durableControl} : {}),
+        })
 
-    let url = ''
-    const leader = createServiceLeader({
-        definition: serviceDefinition,
-        selfUrl: () => url,
-        // absent env secrets stay absent: the factory mints per-run ones and
-        // run.mjs pins them through env so node processes can join
-        secrets: env.secrets,
-    })
+        closeLeader = leader.control.close
 
-    // ============== socket surfaces, one per audience ==============
-    ioServer.on('connection', function onLeaderConnection(socket) {
-        const auth = socket.handshake.auth as Record<string, unknown> | undefined
-        const [gone, goneListen] = listen<[]>()
+        // ============== socket surfaces, one per audience ==============
+        ioServer.on('connection', function onLeaderConnection(socket) {
+            const auth = socket.handshake.auth as Record<string, unknown> | undefined
+            const [gone, goneListen] = listen<[]>()
 
-        // the node link: only for connections that presented the node token
-        if (auth?.role == 'service-node') {
-            // bound to the claimed node id: the fleet token is shared, so binding is what
-            // keeps one node from registering, beating or delisting a peer's row
-            const nodeId = String(auth?.node ?? '')
-            if (!nodeId || auth?.token != leader.secrets.nodeToken) {
-                socket.disconnect(true)
+            // the node link: only for connections that presented the node token
+            if (auth?.role == 'service-node') {
+                // bound to the claimed node id: the fleet token is shared, so binding is what
+                // keeps one node from registering, beating or delisting a peer's row
+                const nodeId = String(auth?.node ?? '')
+                if (!nodeId || auth?.token != leader.secrets.nodeToken) {
+                    socket.disconnect(true)
+                    return
+                }
+                socket.on('disconnect', function nodeLinkGone() { gone() })
+                createRpcServerAuto({
+                    socket,
+                    socketKey: 'node-link',
+                    object: {[name]: leader.serve.nodeLinkFragment(nodeId)},
+                    disconnectListen: goneListen,
+                })
+                console.log(`[${name}] node link connected`)
                 return
             }
-            socket.on('disconnect', function nodeLinkGone() { gone() })
-            createRpcServerAuto({
+
+            // gated write surface on its own key — the same wire shape as a node's
+            const link = leader.serve.scaleConnection()
+            socket.on('disconnect', function leaderClientGone() {
+                gone()
+                link.close()
+            })
+            const {control} = createRpcServerAuto({
                 socket,
-                socketKey: 'node-link',
-                object: {[name]: leader.serve.nodeLinkFragment(nodeId)},
+                socketKey: 'scale',
+                object: link.object,
+                auth: {
+                    gate: true,
+                    resolveAuth: function wrapResolvedPrincipal(presented: unknown) {
+                        // the serve fragments are bodies; the entrypoint applies the wire wrap
+                        const resolved = link.auth.resolveAuth(presented)
+                        return {...resolved, object: {[name]: resolved.object}}
+                    },
+                },
                 disconnectListen: goneListen,
             })
-            console.log(`[${name}] node link connected`)
-            return
+            link.attach(control)
+
+            // ungated read surface: the leader AS a node, shape-identical to one
+            createRpcServerAuto({
+                socket,
+                socketKey: 'app',
+                object: {[name]: leader.serve.readFragment()},
+                disconnectListen: goneListen,
+            })
+        })
+
+        // ============== the REST surface (step 7b pieces over the running service) ==============
+        createRentalRest({
+            app,
+            board: leader.view.reader,
+            // the corridor facet is the honest address for the token hop; the node
+            // link retransmits the same fragment to trusted node connections
+            corridor: leader.corridor.byToken(),
+        })
+
+        await transport.control.listen()
+        url = transport.view.url()
+        leader.control.start()
+        const restored = leader.view.restored()
+        if (restored) console.log(`[${name}] durable line at seq ${restored.seq}${restored.fromArchive ? ', restored from the archive' : ', fresh archive'}`)
+        if (restored?.control) console.log(`[${name}] control line (receipts, deny list) at seq ${restored.control.seq}${restored.control.fromArchive ? ', restored from the archive' : ', fresh archive'}`)
+
+        // ============== the stand identity: a ready-made bearer ==============
+        // Token crypto is a host concern: the entrypoint builds its own codec on the
+        // SHARED corridor secret to mint a long-lived stand bearer — the leader's
+        // internal 15-minute default would expire mid-demo. Every node and the
+        // leader verify it like any login token.
+        const standCodec = createTokenCodec({secret: leader.secrets.tokenSecret, ttlMs: DEMO_TTL_MS})
+        const bearer = standCodec.issue({sub: DEMO_ACCOUNT})
+
+        console.log(`[${name}] leader listening on ${url}`)
+        console.log(`[${name}]   board:   ${url}/board`)
+        console.log(`[${name}]   docs:    ${url}/docs`)
+        console.log(`[${name}]   openapi: ${url}/openapi.json`)
+        console.log(`[${name}] demo bearer (account ${DEMO_ACCOUNT}, 12h) — paste into Swagger "Authorize":`)
+        console.log(bearer)
+        console.log(`[${name}] ready-made curl:`)
+        console.log(`curl -X POST ${url}/api/rental/book -H "Authorization: Bearer ${bearer}"`
+            + ` -H "Content-Type: application/json"`
+            + ` -d "{\\"args\\":[\\"r-demo-1\\",{\\"itemId\\":\\"kayak\\",\\"from\\":\\"2026-09-01\\",\\"to\\":\\"2026-09-03\\"}]}"`)
+
+        async function shutdown(signal: string) {
+            console.log(`[${name}] ${signal} - leader closing`)
+            await close()
         }
-
-        // gated write surface on its own key — the same wire shape as a node's
-        const link = leader.serve.scaleConnection()
-        socket.on('disconnect', function leaderClientGone() {
-            gone()
-            link.close()
-        })
-        const {control} = createRpcServerAuto({
-            socket,
-            socketKey: 'scale',
-            object: link.object,
-            auth: {
-                gate: true,
-                resolveAuth: function wrapResolvedPrincipal(presented: unknown) {
-                    // the serve fragments are bodies; the entrypoint applies the wire wrap
-                    const resolved = link.auth.resolveAuth(presented)
-                    return {...resolved, object: {[name]: resolved.object}}
-                },
-            },
-            disconnectListen: goneListen,
-        })
-        link.attach(control)
-
-        // ungated read surface: the leader AS a node, shape-identical to one
-        createRpcServerAuto({
-            socket,
-            socketKey: 'app',
-            object: {[name]: leader.serve.readFragment()},
-            disconnectListen: goneListen,
-        })
-    })
-
-    // ============== the REST surface (step 7b pieces over the running service) ==============
-    createRentalRest({
-        app,
-        board: leader.view.reader,
-        // the corridor facet is the honest address for the token hop; the node
-        // link retransmits the same fragment to trusted node connections
-        corridor: leader.corridor.byToken(),
-    })
-
-    await new Promise<void>(function listenForClients(resolve, reject) {
-        httpServer.once('error', reject)
-        httpServer.listen(port, function bound() { resolve() })
-    })
-    url = 'http://localhost:' + port
-    leader.control.start()
-
-    // ============== the stand identity: a ready-made bearer ==============
-    // Token crypto is a host concern: the entrypoint builds its own codec on the
-    // SHARED corridor secret to mint a long-lived stand bearer — the leader's
-    // internal 15-minute default would expire mid-demo. Every node and the
-    // leader verify it like any login token.
-    const standCodec = createTokenCodec({secret: leader.secrets.tokenSecret, ttlMs: DEMO_TTL_MS})
-    const bearer = standCodec.issue({sub: DEMO_ACCOUNT})
-
-    console.log(`[${name}] leader listening on ${url}`)
-    console.log(`[${name}]   board:   ${url}/board`)
-    console.log(`[${name}]   docs:    ${url}/docs`)
-    console.log(`[${name}]   openapi: ${url}/openapi.json`)
-    console.log(`[${name}] demo bearer (account ${DEMO_ACCOUNT}, 12h) — paste into Swagger "Authorize":`)
-    console.log(bearer)
-    console.log(`[${name}] ready-made curl:`)
-    console.log(`curl -X POST ${url}/api/rental/book -H "Authorization: Bearer ${bearer}"`
-        + ` -H "Content-Type: application/json"`
-        + ` -d "{\\"args\\":[\\"r-demo-1\\",{\\"itemId\\":\\"kayak\\",\\"from\\":\\"2026-09-01\\",\\"to\\":\\"2026-09-03\\"}]}"`)
-
-    function shutdown(signal: string) {
-        console.log(`[${name}] ${signal} — leader closing`)
-        leader.control.close()
-        ioServer.close()
-        httpServer.close()
-        setTimeout(function exitNow() { process.exit(0) }, 300)
+        function shutdownFailed(error: unknown) {
+            console.error(error)
+            process.exitCode = 1
+        }
+        process.once('SIGINT', function onSigint() { void shutdown('SIGINT').catch(shutdownFailed) })
+        process.once('SIGTERM', function onSigterm() { void shutdown('SIGTERM').catch(shutdownFailed) })
+    } catch (error) {
+        await close().catch(function ignoreCleanupFailure() {})
+        throw error
     }
-    process.once('SIGINT', function onSigint() { shutdown('SIGINT') })
-    process.once('SIGTERM', function onSigterm() { shutdown('SIGTERM') })
 }
 
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exit(2)
-})
+if (require.main == module) {
+    main().catch(function fatal(error) {
+        console.error(error)
+        process.exitCode = 2
+    })
+}

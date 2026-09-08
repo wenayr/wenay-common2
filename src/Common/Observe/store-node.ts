@@ -32,10 +32,12 @@ import {createSessionRegistry} from '../rcp/rpc-session-registry'
 import type {RpcOpt} from '../rcp/rpc-caps'
 import type {SocketTmpl} from '../rcp/rpc-protocol'
 import {forwardCommandsByToken, type CommandTokenFragment} from '../command/command-token'
-import type {tCommandMap} from '../command/command-host'
-import {createStoreReplicaSet, type StoreLineCoordinates, type StoreReplicaSession} from './store-replica-set'
+import {bindCommandNames} from '../command/command-fragment'
+import type {CommandFragment, tCommandMap} from '../command/command-host'
+import {createStoreReplicaSet, type StoreLineCoordinates, type StoreReplicaRemote, type StoreReplicaSession} from './store-replica-set'
 import {createStoreFollower, type StoreFollower} from './store-follower'
 import type {StoreReplayRemote} from './store-replay'
+import type {Store} from './store'
 import type {NodeDirectoryEntry, NodeDirectoryState} from './node-directory'
 
 // ============================================================
@@ -52,13 +54,13 @@ export type StoreNodePrincipal = {account: string, expiresAt?: number}
 export type StoreNodeControlState = NodeDirectoryState & {revoked: Record<string, StoreNodeRevocation>}
 
 /** The already-resolved authority link; the host owns the transport under it. */
-export type StoreNodeUpstream = {
+export type StoreNodeUpstream<T extends object = any, Cmds extends tCommandMap = tCommandMap> = {
     /** The authority's replica-line fragment (replica-set session remote). */
-    replica: StoreReplicaSession['remote']
+    replica: StoreReplicaSession<T>['remote']
     /** The authority's control line: roster + deny list (+ receipts, which a node ignores). */
-    control: StoreReplayRemote
+    control: StoreReplayRemote<StoreNodeControlState>
     /** The authority's verifyCommands fragment (token-envelope entries). */
-    commandsByToken?: CommandTokenFragment<tCommandMap>
+    commandsByToken?: CommandTokenFragment<Cmds>
     /** The node reports its OWN facts here: readers resets a dead predecessor's
      *  count on the row, pid makes the process visible on panels. */
     register: (entry: {nodeId: string, url: string, weight: number, pid?: number, readers?: number}) => unknown
@@ -68,7 +70,37 @@ export type StoreNodeUpstream = {
     onFail: {on: (cb: () => void) => () => void}
 }
 
-export type StoreNodeDeps<T extends Record<string, any>> = {
+/** What the ungated read key serves by default: the replica line and this node's id. */
+export type StoreNodeReaderDefaults<T extends object = any> = {
+    replica: StoreReplicaRemote<T>
+    node: () => string
+    /** This node's local mirror of the line — the source of any projection. */
+    store: Store<T>
+}
+
+/** What the gated write key serves a verified principal by default. */
+export type StoreNodePrincipalDefaults<T extends object = any, Cmds extends tCommandMap = tCommandMap> = {
+    whoami: () => string
+    /** The token-envelope hop to the authority; absent on a read-only node. */
+    commands?: CommandFragment<Cmds>
+    store: Store<T>
+}
+
+/** One gated connection as the shaping hook sees it: stable per socket, gone once. */
+export type StoreNodeSession = {
+    nodeId: string
+    /** Fires ONCE when the connection is gone — release per-session lines here. */
+    onGone: (cb: () => void) => () => void
+}
+
+export type StoreNodeAudience<T extends Record<string, any>, Cmds extends tCommandMap = tCommandMap> = {
+    /** The ungated read fragment; `null` serves nothing on the read key. Called per connection. */
+    reader?: (defaults: StoreNodeReaderDefaults<T>) => Record<string, unknown> | null
+    /** The gated fragment for one verified principal; called on every successful HELLO. */
+    principal?: (principal: StoreNodePrincipal, defaults: StoreNodePrincipalDefaults<T, Cmds>, session: StoreNodeSession) => Record<string, unknown>
+}
+
+export type StoreNodeDeps<T extends Record<string, any>, Cmds extends tCommandMap = tCommandMap> = {
     /** Replica-line coordinates (must match the authority's line) and the state before the first keyframe. */
     line: StoreLineCoordinates & {initial?: T}
     /** This node's roster row: client-reachable origin (read lazily — the port binds late), share, cadence. */
@@ -83,7 +115,7 @@ export type StoreNodeDeps<T extends Record<string, any>> = {
     /** Resolve the authority link; the host owns connection and link auth.
      *  Called again on every replica reconnect — return the CURRENT link, so a
      *  hard hub rotation or a failover hands the node the live authority. */
-    upstream: () => Promise<StoreNodeUpstream> | StoreNodeUpstream
+    upstream: () => Promise<StoreNodeUpstream<NoInfer<T>, Cmds>> | StoreNodeUpstream<NoInfer<T>, Cmds>
     /**
      * Gated write surface: verify a presented token or throw to reject —
      * a throw carrying `revoke: true` kills the live session (RPC-AUTH rule 6).
@@ -94,7 +126,7 @@ export type StoreNodeDeps<T extends Record<string, any>> = {
         renewBeforeMs?: number
     }
     /** Forwarded command names; an RPC proxy cannot be enumerated, so they are explicit. */
-    commands?: readonly string[]
+    commands?: readonly (keyof NoInfer<Cmds> & string)[]
     /** How this node serves: the host's socket-server hook plus the RPC shape around the fragments. */
     serve: {
         onConnection(handler: (socket: SocketTmpl) => void): void
@@ -102,13 +134,23 @@ export type StoreNodeDeps<T extends Record<string, any>> = {
         wrap?: (fragment: Record<string, unknown>) => object
         keys?: {read?: string, write?: string}
         opt?: RpcOpt
+        /**
+         * Audience shaping — what each connection is SERVED, decided by the host from
+         * this node's local mirror (`store`). Defaults keep today's shapes: the whole
+         * replica line ungated, `{whoami, commands}` per principal. A host with read
+         * policy replaces the ungated line by public projections (`null` serves nothing
+         * on the read key) and shapes the gated facade per role/account (RPC-AUTH
+         * rule 3: prune with `null`, never check inside). The authority re-verifies
+         * every forwarded command regardless — shaping here is visibility, not trust.
+         */
+        audience?: StoreNodeAudience<T, Cmds>
     }
     /** The host owns the actual shutdown/process.exit; called ONCE, after the grace. */
     onLeave: (reason: string) => void
     log?: (line: string) => void
 }
 
-export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDeps<T>) {
+export function createStoreNode<T extends Record<string, any>, Cmds extends tCommandMap = tCommandMap>(deps: StoreNodeDeps<T, Cmds>) {
     const {nodeId} = deps.line
     const log = deps.log ?? console.log
     const weight = deps.roster.weight ?? 4
@@ -125,7 +167,7 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
     let leaving = false
     let torndown = false
     let readersOf: (() => number) | null = null
-    let upstream: StoreNodeUpstream | null = null
+    let upstream: StoreNodeUpstream<T, Cmds> | null = null
     let replica: ReturnType<typeof createStoreReplicaSet<T>> | null = null
     let control: StoreFollower<StoreNodeControlState> | null = null
     let offControl: (() => void)[] = []
@@ -134,7 +176,7 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
     // set once the first registration + own-row watch are live; re-homing happens only after
     let served = false
     let rehomes = 0
-    let rehome: ((fresh: StoreNodeUpstream) => Promise<void>) | null = null
+    let rehome: ((fresh: StoreNodeUpstream<T, Cmds>) => Promise<void>) | null = null
 
     function releaseControl() {
         for (const off of offControl) off()
@@ -176,7 +218,7 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
         upstream = link
         // the first route attempt reuses THIS link: a host whose resolver rotates the hub on every
         // call (demo/scaffold: setToken) would otherwise dispose it before we ever registered
-        let firstLink: StoreNodeUpstream | null = link
+        let firstLink: StoreNodeUpstream<T, Cmds> | null = link
 
         const {initial, ...coordinates} = deps.line
         const line = createStoreReplicaSet<T>({
@@ -232,27 +274,46 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
         // ============== per-connection RPC: the same fragment shapes as the authority ==============
         // Writes forward with the END client's token — this node never asserts an
         // account, and the authority re-verifies every call itself.
+        // Bound to the CURRENT link at call time, not at session time: a session opened
+        // before a re-home (leader restart, hub rotation) must not keep forwarding through
+        // the link that died with it — observe/store-node-rehome-forward.test.ts.
+        const liveByToken = bindCommandNames<CommandTokenFragment<Cmds>>(commands, function bindLiveForward(name) {
+            return function forwardThroughCurrentLink(token: unknown, requestId: string, input: any) {
+                const link = upstream?.commandsByToken
+                if (!link) return Promise.reject(new Error('store node: no upstream link for commands'))
+                return link[name as keyof Cmds & string](token, requestId, input)
+            }
+        })
         function forwardedHop() {
             return auth && upstream?.commandsByToken && commands.length
-                ? forwardCommandsByToken({upstream: upstream.commandsByToken, names: commands})
+                ? forwardCommandsByToken<Cmds>({upstream: liveByToken, names: commands})
                 : null
         }
+        const audience = deps.serve.audience ?? {}
         deps.serve.onConnection(function onNodeConnection(socket) {
             // a stale handler from an abandoned or failed start serves nothing;
             // the host's serve hook has no un-register, so the guard lives here
             if (replica != line || torndown) return
             const [gone, goneListen] = listen<[]>()
-            // ungated read surface: the replica line is public, like on the authority
-            createRpcServerAuto({
-                socket,
-                socketKey: readKey,
-                object: wrap({
-                    replica: line.api.fragment,
-                    node: () => nodeId,
-                }),
-                disconnectListen: goneListen,
-                ...rpcOpt,
-            })
+            // ungated read surface: the replica line by default — or what the host's
+            // read policy projects from the local mirror (nothing at all with `null`)
+            const readerDefaults: StoreNodeReaderDefaults<T> = {
+                replica: line.api.fragment,
+                node: () => nodeId,
+                store: line.control.store,
+            }
+            const readerFragment = audience.reader ? audience.reader(readerDefaults) : {replica: readerDefaults.replica, node: readerDefaults.node}
+            if (readerFragment) {
+                createRpcServerAuto({
+                    socket,
+                    socketKey: readKey,
+                    object: wrap(readerFragment),
+                    disconnectListen: goneListen,
+                    ...rpcOpt,
+                })
+            }
+            // one session object per connection: the shaping hook keys per-session lines on it
+            const session: StoreNodeSession = {nodeId, onGone: (cb: () => void) => goneListen.on(cb)}
             // gated write surface: THIS node verifies the token, locally
             let bound: string | null = null
             const gated = auth ? createRpcServerAuto({
@@ -274,11 +335,14 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
                         }
                         // bound per HELLO through the slot: after a re-home the hop reaches the CURRENT authority
                         const forwarded = forwardedHop()
+                        const principalDefaults: StoreNodePrincipalDefaults<T, Cmds> = {
+                            whoami: () => account + ' @ ' + nodeId,
+                            ...(forwarded ? {commands: forwarded.fragment(presented)} : {}),
+                            store: line.control.store,
+                        }
+                        const {store: _store, ...served} = principalDefaults
                         return {
-                            object: wrap({
-                                whoami: () => account + ' @ ' + nodeId,
-                                ...(forwarded ? {commands: forwarded.fragment(presented)} : {}),
-                            }),
+                            object: wrap(audience.principal ? audience.principal(principal, principalDefaults, session) : served),
                             ack: {ok: true, who: account, node: nodeId},
                             ...(principal.expiresAt != undefined ? {expiresAt: principal.expiresAt} : {}),
                             renewBeforeMs: auth.renewBeforeMs ?? 15_000,
@@ -297,7 +361,7 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
         const url = deps.roster.url()
         // the node's OWN facts ride the registration: a fresh process resets a
         // dead predecessor's readers count instead of inheriting its load
-        function register(at: StoreNodeUpstream) {
+        function register(at: StoreNodeUpstream<T, Cmds>) {
             return at.register({
                 nodeId, url, weight, readers: readers(),
                 ...(typeof globalThis.process?.pid == 'number' ? {pid: globalThis.process.pid} : {}),
@@ -320,7 +384,7 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
         ;(beat as any).unref?.()
 
         // ============== the control line: own row (leave rule) + deny list (session cuts) ==============
-        async function followControl(from: StoreNodeUpstream) {
+        async function followControl(from: StoreNodeUpstream<T, Cmds>) {
             releaseControl()
             const follower = createStoreFollower<StoreNodeControlState>({remote: from.control, initial: {nodes: {}, revoked: {}}})
             control = follower
@@ -358,7 +422,7 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
         served = true
 
         /** A new authority link: announce ourselves there and follow ITS control line. */
-        rehome = async function rehomeOnto(fresh: StoreNodeUpstream) {
+        rehome = async function rehomeOnto(fresh: StoreNodeUpstream<T, Cmds>) {
             if (abandoned()) return
             log(`store node ${nodeId}: re-homing onto a new authority link`)
             try { await register(fresh) } catch (error) {
@@ -370,7 +434,7 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
     }
 
     // ============================================================
-    // leave: grace for clients, goodbye, then the host takes over
+    // leave: withdraw, grace for clients, then the host takes over
     // ============================================================
     function teardown() {
         if (torndown) return
@@ -385,9 +449,12 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
         leaving = true
         log(`store node ${nodeId}: leaving — ${reason}`)
         if (beat) clearInterval(beat)
-        // grace: connected clients see the leave fact and move BEFORE this node goes silent
-        grace = setTimeout(async function sayGoodbye() {
-            try { await upstream?.goodbye(nodeId) } catch {}
+        // Withdraw before the grace so local host shutdown also gives readers time to move.
+        // The control plane cannot hold the process alive beyond its shutdown budget.
+        void Promise.resolve().then(function withdraw() {
+            return upstream?.goodbye(nodeId)
+        }).catch(function withdrawalFailed() {})
+        grace = setTimeout(function finishLeave() {
             teardown()
             deps.onLeave(reason)
         }, graceMs)
@@ -413,4 +480,4 @@ export function createStoreNode<T extends Record<string, any>>(deps: StoreNodeDe
 }
 // `StoreNode`/`StoreNodeApi` are the store TREE node types (store.ts), so the
 // factory instance derives under its own unambiguous name.
-export type StoreNodeInstance = ReturnType<typeof createStoreNode>
+export type StoreNodeInstance<T extends Record<string, any> = Record<string, any>, Cmds extends tCommandMap = tCommandMap> = ReturnType<typeof createStoreNode<T, Cmds>>

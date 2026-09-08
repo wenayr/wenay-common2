@@ -14,6 +14,8 @@
 // TODO(graduation): '../../template/leader' becomes the scaffold package
 // entrypoint when the template graduates out of the incubator.
 
+import {createHash} from 'node:crypto'
+import {Command} from '../../../../src'
 import {schemaCommand} from '../../template/input-schema'
 import type {ServiceCommandCtx, tServiceDefinition} from '../../template/leader'
 
@@ -62,6 +64,10 @@ export const serviceDefinition = {
                 if (input.from >= input.to) throw new Error('from must be strictly before to')
             },
             apply(ctx: ServiceCommandCtx<RentalState>, input) {
+                // Receipt identity includes the account; the public board must not expose it.
+                const id = 'bk-' + createHash('sha256').update(Command.commandReceiptKey(ctx.account, ctx.requestId)).digest('hex')
+                // Domain records can outlive the receipt retention window.
+                if (Object.hasOwn(ctx.state.bookings, id)) throw new Error('booking identity already exists')
                 const item = ctx.state.items[input.itemId]
                 if (!item) throw new Error(`unknown item: ${input.itemId}`)
                 for (const other of Object.values(ctx.state.bookings)) {
@@ -70,8 +76,7 @@ export const serviceDefinition = {
                     }
                 }
                 const booking: RentalBooking = {
-                    // requestId IS the attempt's identity, so the id survives retries
-                    id: 'bk-' + ctx.requestId,
+                    id,
                     itemId: item.id,
                     account: ctx.account,
                     from: input.from,

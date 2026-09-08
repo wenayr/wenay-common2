@@ -263,7 +263,7 @@ export function createDevModuleBridge(deps: DevModuleBridgeDeps) {
         // a bare string or number, not only an object or array.
         express.json({limit: bodyLimit, strict: false}),
         async function callDevMethod(req, res) {
-            const method = req.params.method
+            const method = req.params['method']
             if (typeof method != 'string' || !methods().includes(method)) {
                 res.status(404).json({ok: false, error: {message: 'no such method: ' + String(method)}})
                 return

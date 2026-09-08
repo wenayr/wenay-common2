@@ -8,6 +8,7 @@ const positive_integer_option_1 = require("../positive-integer-option");
 const store_selection_1 = require("./store-selection");
 const observe_private_1 = require("./observe-private");
 const reactive_1 = require("./reactive");
+const defer_immediate_1 = require("../core/defer-immediate");
 const store_replay_codec_1 = require("./store-replay-codec");
 function createStoreReplayViewLayer(deps) {
     const { createBatchReplay, exposeStoreReplayBatch, syncStoreReplay } = deps;
@@ -25,10 +26,7 @@ function createStoreReplayViewLayer(deps) {
     }
     function storeReplayViewSnapshotTask() {
         return new Promise(function yieldSnapshotChunk(resolve) {
-            if (typeof setImmediate == 'function')
-                setImmediate(resolve);
-            else
-                setTimeout(resolve, 0);
+            (0, defer_immediate_1.deferImmediate)(resolve);
         });
     }
     function createStoreReplayView(store, opts) {

@@ -8,7 +8,7 @@ export type FollowerStatus = {
     error: string | null;
 };
 export type StoreFollowerDeps<T extends object> = {
-    remote: StoreReplayRemote;
+    remote: StoreReplayRemote<T>;
     initial?: T;
     expose?: StoreReplayOpts;
     staleMs?: number;
@@ -19,13 +19,12 @@ export declare function createStoreFollower<T extends object>(deps: StoreFollowe
     status: import("./store").Store<FollowerStatus>;
     isStale: () => boolean;
     api: {
-        get(): T;
-        get<M extends import("./store").StoreMask<T>>(mask: M): import("./store").StorePick<T, M>;
+        get: import("./store").StoreGetter<T>;
         set(path: import("./store").StorePath, value: any): void;
         replace(path: import("./store").StorePath, value: any): void;
         changed: any;
         changedPaths: any;
-        replay: {
+        replay: ({
             line: {
                 on: (cb: (batch: import("./store-replay-codec").tStoreReplayWireBatchV2) => void) => any;
             } & import("./store-replay").StoreReplayLineLocal;
@@ -62,7 +61,7 @@ export declare function createStoreFollower<T extends object>(deps: StoreFollowe
             } | undefined;
         } & {
             line: import("./store-replay").StoreReplayLineLocal;
-        });
+        })) & import("./store-replay").StoreReplayState<T>;
     };
     replay: {
         has(key: import("../..").ListenKey): boolean;

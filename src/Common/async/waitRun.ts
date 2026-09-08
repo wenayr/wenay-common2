@@ -62,8 +62,10 @@ export function createAsyncQueue(concurrency = 1) {
     const enqueue = <T>(task: Task<T>): Promise<T> =>
         new Promise<T>((res, rej) => { queue.push(async () => { try { res(await task()); } catch (e) { rej(e); } }); drain(); });
 
-    const onIdle = (): Promise<void> =>
-        idle ??= new Promise(r => (active === 0 && !queue.length) ? r() : (resolveIdle = r));
+    function onIdle(): Promise<void> {
+        if (active == 0 && !queue.length) return Promise.resolve()
+        return idle ??= new Promise(resolve => { resolveIdle = resolve })
+    }
 
     const getQueueSize = () => queue.length;
 
@@ -113,11 +115,14 @@ export function createReadyGate() {
         isReadyFlag = true;
         const run = tasks.splice(0);
         let err: any;
+        let failed = false
         for (const fn of run) {
             try { await fn(); }
-            catch (e) { err ??= e; }
+            catch (e) {
+                if (!failed) { failed = true; err = e }
+            }
         }
-        if (err !== undefined) throw err;
+        if (failed) throw err
     };
     return {
         add: (fn: () => any) => isReadyFlag ? void fn() : tasks.push(fn),

@@ -116,7 +116,7 @@ export function setupContractRuntimeDemo(deps: ContractRuntimeDemoDeps) {
         const card = document.createElement('article')
         card.className = 'contractOfferCard'
         const selected = candidate.offerId == activeId
-        card.dataset.state = selected ? 'active' : candidate.accepted ? 'available' : 'rejected'
+        card.dataset['state'] = selected ? 'active' : candidate.accepted ? 'available' : 'rejected'
         const heading = document.createElement('header')
         const name = document.createElement('strong')
         name.textContent = labels[candidate.offerId] ?? candidate.offerId
@@ -136,7 +136,7 @@ export function setupContractRuntimeDemo(deps: ContractRuntimeDemoDeps) {
         const explanation = runtime.api.explain('workspace')
         const binding = explanation.binding
         summary.textContent = `${explanation.state} · ${binding ? labels[binding.offerId] ?? binding.offerId : 'no binding'}`
-        summary.dataset.state = explanation.state
+        summary.dataset['state'] = explanation.state
         demandBox.innerHTML = '<em>1 · Desired contract</em>' +
             `<strong>${explanation.demand?.contractId ?? 'none'}</strong>` +
             `<span>${explanation.demand?.versionRange ?? '—'} · desired generation ${explanation.demand?.generation ?? '—'}</span>`

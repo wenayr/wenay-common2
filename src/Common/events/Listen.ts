@@ -65,30 +65,30 @@ export function getListenByOn(fn: any) { return typeof fn == 'function' ? listen
 export function isListenOn(fn: any): boolean { return typeof fn == 'function' && listenByOn.has(fn) }
 export function registerListenOn(on: Function, api: any) { listenByOn.set(on, api) }
 
-export function createListenCore<T>(options: ListenCoreOptions<T> = {}): ListenCoreApi<T> {
+function createListenCoreLayer<T>(options: ListenCoreOptions<T>) {
     const {fast = true, onRemove, event} = options
     const dispatchError = options[LISTEN_DISPATCH_ERROR]
     type Z = NormalizeTuple<T>
-    const subs = new Map<ListenKey, Listener<Z>>()
+    const subs = new Map<ListenKey, {cb: Listener<Z>}>()
     function dispatch(cb: Listener<Z>, args: Z) {
         if (!dispatchError) { cb(...args); return }
         try { cb(...args) }
         catch (error) { dispatchError(error) }
     }
     function dispatchInitial(...args: Z) {
-        for (const cb of subs.values()) dispatch(cb, args)
+        for (const entry of subs.values()) dispatch(entry.cb, args)
     }
     let dispatcher: Listener<Z> | null = dispatchInitial
     let cached: Listener<Z>[] | null = null
 
-    const getArr = () => cached ?? (cached = Array.from(subs.values()))
+    const getArr = () => cached ?? (cached = Array.from(subs.values(), entry => entry.cb))
 
     function rebuild() {
         cached = null
         const size = subs.size
         if (size == 0) { dispatcher = null; return }
         if (size == 1) {
-            const cb = subs.values().next().value!
+            const cb = subs.values().next().value!.cb
             function dispatchOne(...args: Z) { dispatch(cb, args) }
             dispatcher = dispatchError ? dispatchOne : cb
             return
@@ -119,28 +119,44 @@ export function createListenCore<T>(options: ListenCoreOptions<T> = {}): ListenC
     function removeOne(key: ListenKey) {
         if (!subs.has(key)) return
         subs.delete(key)
-        onRemove?.(key)
         if (fast) rebuild()
+        onRemove?.(key)
         event?.('remove', subs.size, api)
+    }
+
+    function add(cb: Listener<Z>, key?: ListenKey, admitted?: () => void) {
+        const k = key ?? Symbol()
+        if (subs.has(k)) {
+            subs.delete(k)
+            if (fast) rebuild()
+            onRemove?.(k)
+        }
+        const entry = {cb}
+        subs.set(k, entry)
+        if (fast) rebuild()
+        try {
+            admitted?.()
+            event?.('add', subs.size, api)
+        } catch (error) {
+            // A failed admission owns only its registration, not a reentrant replacement.
+            if (subs.get(k) === entry) {
+                try { removeOne(k) }
+                catch { /* Preserve the admission error after removing the callback. */ }
+            }
+            throw error
+        }
+        return function off() { removeOne(k) }
     }
 
     const api: ListenCoreApi<T> = {
         emit: ((...args: Z) => { dispatcher?.(...args) }) as Listener<Z>,
         has: (key) => subs.has(key),
         on: ((cb: Listener<Z>, {key}: {key?: ListenKey} = {}) => {
-            const k = key ?? Symbol()
-            if (subs.has(k)) {
-                subs.delete(k)
-                onRemove?.(k)
-            }
-            subs.set(k, cb)
-            if (fast) rebuild()
-            event?.('add', subs.size, api)
-            return function off() { removeOne(k) }
+            return add(cb, key)
         }) as ListenOn<Z>,
         off: (keyOrCallback) => {
             if (typeof keyOrCallback == 'function') {
-                for (const [key, cb] of [...subs]) if (cb === keyOrCallback) removeOne(key)
+                for (const [key, entry] of [...subs]) if (entry.cb === keyOrCallback) removeOne(key)
                 return
             }
             if (keyOrCallback != null) removeOne(keyOrCallback)
@@ -158,7 +174,11 @@ export function createListenCore<T>(options: ListenCoreOptions<T> = {}): ListenC
         keys: () => [...subs.keys()],
     }
     listenByOn.set(api.on, api)
-    return api
+    return {listen: api, control: {add}}
+}
+
+export function createListenCore<T>(options: ListenCoreOptions<T> = {}): ListenCoreApi<T> {
+    return createListenCoreLayer(options).listen
 }
 
 export function createListen<T>(
@@ -179,12 +199,13 @@ export function createListen<T>(
         if (type == 'remove') event?.(type, count, api)
     }
 
-    const core = createListenCore<T>({
+    const resource = createListenCoreLayer<T>({
         fast,
         onRemove: forgetKey,
         [LISTEN_DISPATCH_ERROR]: options[LISTEN_DISPATCH_ERROR],
         event: event ? forwardRemoveEvent : undefined,
     })
+    const core = resource.listen
 
     const api: ListenApi<T> = {
         emit: core.emit,
@@ -215,13 +236,13 @@ export function createListen<T>(
         },
         on: ((cb: Listener<Z>, {cbClose, key}: {cbClose?: CloseCallback; key?: ListenKey} = {}) => {
             const k = key ?? Symbol()
-            const off = core.on(cb, {key: k})
-            if (cbClose) {
-                closeHooks = closeHooks ?? new Map()
-                closeHooks.set(k, cbClose)
-            }
-            event?.('add', core.count(), api)
-            return off
+            return resource.control.add(cb, k, function admitted() {
+                if (cbClose) {
+                    closeHooks = closeHooks ?? new Map()
+                    closeHooks.set(k, cbClose)
+                }
+                event?.('add', core.count(), api)
+            })
         }) as ListenOn<Z>,
         off: core.off,
         once: (cb, opts = {}) => {

@@ -1,5 +1,17 @@
 # wenay-common2 — BRIEF cheat sheet (notation)
 
+Copyable application: [rental stand](../examples/rental/README.md), with a small `example.ts`,
+typed commands, Store, HTTP/Swagger and optional serving nodes. Uses installed package exports.
+Rental and document-processing share a private scaffold HTTP host for startup and bounded shutdown.
+Document shutdown disconnects clients before closing their replay sources; restart needs a fresh session.
+Rental optionally persists data and receipts with SERVICE_DATA_DIR plus stable identity secrets;
+see its README for stopped backup/restore and single-writer limits.
+Its optional `npm run benchmark` measures a fixed local read workload separately from correctness checks.
+RENTAL_BENCHMARK_MS selects a bounded sustained phase; no setting retains the 600-request mode.
+RENTAL_BENCHMARK_GENERATORS=compare compares one/two fresh local load processes with matched connections and total concurrency.
+Rental's `npm run probe:entities` compares local entity facade costs; it is an experimental example, not a package API.
+Its optional `npm run probe:http` separately measures fixed versus per-entity HTTP route costs.
+
 > Root import: `import { ... } from "wenay-common2"`.
 > Node runtime: `>=20`.
 > Notation: `name(args: types) -> ret  // note`. Types are shown where they decide a correct call (callback shape,
@@ -50,8 +62,13 @@ listen.on(cb, {current: () => argsOrUndefined}) -> off
 
 opts: { fast? = true, event?(t: 'add'|'remove', count, api), closeOn? }
 ```
+An `event('add')` error rolls back that registration and its close hook, preserving other
+listeners and reentrant replacements. A throwing removal hook cannot leave the removed callback
+in the fast dispatcher. See `oracle/regression/listen-hook-rollback.spec.ts`.
+
 ```
 mapListen<TIn, TOut>(src, map: (...a: TIn) => TOut | null, opts?) -> [emit, listen]   // map+filter (null skips); lazy subscribe
+  // Closing the mapped Listen releases its source, including closeOn and reentrant reopen.
 joinListens(listens | ports, keyExtractor?) -> { listen, add(port, key?), pending: number, clear(tid?) }   // zip by key
 ```
 ## ⭐ sleep
@@ -80,7 +97,9 @@ createThrottle() -> { throttle(ms: number, fn: () => void) -> void,
   // ONE createThrottle() = ONE shared limiter (shared busy/pending) — use a SEPARATE instance per operation;
   //   throttle + debounce on the SAME instance contend (a busy throttle silently drops the debounce's trailing run)
 createAsyncQueue(concurrency = 1) -> { add<R>(task: () => Promise<R>) -> Promise<R>, onIdle() -> Promise<void>, size: number }   // p-queue
+  // onIdle observes the current work wave, including after a previous idle observation.
 createReadyGate() -> { add(fn: () => void), ready() }                  // buffer fns until ready(), then run them in order
+  // ready drains the buffered tasks and rejects with the first failure, including null/undefined.
 promiseProgress<T>(arr: (Promise<T> | (() => Promise<T>))[]) -> {
   onOk(cb), onError(cb), all() -> Promise<any[]>, allSettled(), items(), stats() -> { ok: number, error: number, count: number } }
   // factory entries start on .all()/.allSettled()/items() (once); .all() rejects like Promise.all — read aggregate progress via stats()
@@ -210,6 +229,9 @@ auth: { resolveAuth(token) -> { object?, ack?, expiresAt?, renewBeforeMs? } | Pr
   //   and 'expired' at the deadline; any other non-finite value fails CLOSED (immediate downgrade).
   // throw = TRANSIENT rejection, live session untouched; throw a value carrying `revoke: true` = hard
   //   downgrade (Pkt.AUTH 'revoked' + base facade + authAck {ok:false,state,reason}).
+  // {ack:{ok:false}} is also transient: it preserves the prior facade, subscriptions and deadline.
+  // Pending onRequest admission is invalidated by principal replacement/expiry/revocation or detach.
+  // Server debug masks the HELLO token before logging.
   // A privilege DECREASE ends the streams of Listen nodes the new facade no longer declares (clean
   //   RPC_STOP/CB_END). Listen nodes inside noStrict(...) are never walked, so they are never torn down.
   // A grant's deadline rides authAck in ONE reserved sub-object: ack.$rpc = {expiresAt} (exported key
@@ -392,12 +414,22 @@ resource.store.state.jobs                         // queued/running/ready/failed
 `FileJobPolicy` can grant read/write access beyond the owner. Never put bytes, a storage key, or a
 reusable download URL in the shared Store; return short-lived instructions from the storage port.
 
+`examples/document-processing` is a copyable upload → job → JSON-download workflow with bounded
+UTF-8 storage, account isolation and cancellation. Its deterministic processor needs no model key.
+Concurrent upload confirmations share verification; starting uploads/jobs still has no replay key.
+
 ## 🤖 AI — resumable runs over the existing RPC connection
 > `import { Ai } from 'wenay-common2'` or `import * as Ai from 'wenay-common2/ai'`.
 
 `Ai.createAiRunHost` is provider-neutral: an application injects the model/tool adapter, while the
 library supplies owner-scoped idempotency, Store/replay state, semantic event replay, approval/input
 waits, cancellation and ACL projections. It complements `Resource` — pass resource ids, never bytes.
+
+Copyable `examples/ai-support` starts a support drafting page with a labelled local template
+provider (no model/key), account separation, progress and cancellation. Its checks reconnect the
+same client Store to a living host; this does not restore tasks after host process restart.
+The shared private HTTP resource also verifies live-client shutdown and cancellation of active work.
+Concurrent support checks cover isolated failure/cancellation while healthy sibling runs complete.
 
 ```ts
 const ai = Ai.createAiRunHost({runner, capabilities: [{kind: 'assistant'}]})
@@ -558,12 +590,28 @@ try { await lease.api.save() } finally { lease.release() }
 
 Exact contract-version equality is the safe default; ranges require an injected compatibility
 policy. A candidate opens and passes policy before the active binding changes. Old sessions drain
-behind explicit leases; failures try the next candidate. `revokeOffer`/`restoreOffer`, compatible
+behind explicit leases; one retirement deadline also bounds asynchronous `drain`. Closing the
+runtime closes active/retired/candidate sessions and prevents later activation. Failures try the
+next candidate. `revokeOffer`/`restoreOffer`, compatible
 `rollback`, required/degraded states, `status`, `changed`, `explain` and `history` make every decision
 observable. Replayed demand coordinates are idempotent; stale and same-coordinate conflicting demands
 are rejected. Full model and integration rules: `doc/CONTRACT-RUNTIME.md`. Oracles:
 `observe/contract-runtime.test.ts` and `oracle/realsocket/contract-runtime.spec.ts`; interactive path:
 `npm run demo` → **Lab** → **Versioned contract runtime**.
+
+Copyable product: `examples/hosting` starts a local host with stable site URLs, real child-process
+releases, health checks and rollback. Failed candidates are monitored during readiness before swap.
+Overlapping deploy/rollback requests are ordered per site with the existing async queue.
+Its crash check verifies fallback, retry of the newest release and isolation of a neighboring site.
+
+`examples/small-jobs` composes existing command/access/Store resources into a marketplace with
+competing assignments, private results and a stable client after serving-node restart.
+
+`examples/apartments` adds equipment rules over the same client: short-lived unlock commands,
+device-side deadline checks and outcome reports. Retrying a report does not repeat the simulated
+motor action; durable execution deduplication on a physical device remains the adapter's responsibility.
+It also verifies post-start apartment/device creation through existing commands without new routes.
+Those new instances, device credentials and command receipts are also checked after authority restart.
 
 ## 🤝 Peer — accounts see each other's stores (one-call SDK)
 > `import { Peer } from "wenay-common2"` or `import * as Peer from "wenay-common2/peer"`.
@@ -690,6 +738,7 @@ Observe.reactive<T extends object>(obj, opts?) -> T
 Observe.onUpdate(node, cb: () => void) -> off
 Observe.onUpdatePaths(node, cb: ({paths}) => void) -> off   // optional dirty paths, relative to node
 Observe.flushReactive(node) -> Promise<void>
+Observe.flushReactiveNow(node) -> void                       // drain the pending window NOW (a durable close); ordinary consumers never need it
 Observe.toRaw(node) -> raw value behind the proxy              // snapshots/serialization without touching lazy nodes
 Observe.listenUpdate(node) -> Listen<void>                  // RPC bridge for coarse change notifications
 Observe.listenUpdatePaths(node) -> Listen<{paths: PropertyKey[][]}>
@@ -720,6 +769,8 @@ store.each(opts?) -> Listen<[key, value, ctx]>                 // changed TOP-LE
   //   ONE call per window with the whole dict (a dev warn points to each())
 store.count() -> number
 Observe.cloneStoreValue<T>(value) -> T                            // detached clone with the same rich/binary/cycle semantics as Store snapshots
+  // arrays retain sparse length/holes; repeated rich values retain identity within a clone.
+  // Replica state must be a value tree: shared mutable cross-branch identity is not preserved by wire patches.
 Observe.storeExternal(nodeOrStore) -> { subscribe(onChange) -> off, getSnapshot() -> T }
   // the useSyncExternalStore tuple over any {on, snapshot} source (a store.node path or the Store
   //   root) — zero React dependency; getSnapshot identity is stable between changes (recomputed
@@ -728,6 +779,7 @@ Observe.storeExternal(nodeOrStore) -> { subscribe(onChange) -> off, getSnapshot(
 Observe.listenStorePatches(store) -> Listen<[readonly StorePatch[]]> // public settled patch feed: one source array per Store drain
 
 // network shape: backend exposes snapshots + changed Listen; frontend mirrors selected masks locally
+// Consumer journey and ownership/type caveats: doc/STORE-CONSUMER-GUIDE.md.
 Observe.exposeStore(store, {push?: true | {maxItems?, maxBytes?}}?) -> { get(mask?), set(path,value), replace(path,value), changed, changedPaths, patches?, patchesBatch?, changedData? }
 Observe.createStoreMirror(remote, initial, opts?) -> store & { sync(mask, opts?) -> Promise<off>; syncPatches(mask, opts?) -> Promise<off>; syncChangedData(mask, opts?) -> Promise<off> }
 // changedPaths is optional optimization: mirror pulls mask ∩ dirty paths; fallback is changed -> get(mask).
@@ -868,6 +920,14 @@ Observe.createStoreFollower<T>({remote, initial?, expose?, staleMs?}) -> {store,
   // follower.promote() -> {store, replay, epoch}: manual failover — mirroring stops, epoch grows by 1,
   //   the cascade journal LIVES ON, so this node's subscribers keep their line without a re-keyframe;
   //   build the command authority OVER the same store (the demo workboard host adopts it via deps.store)
+Observe.deriveStore<S, P extends object>(source: Store<S>, project: (state: S) => P, {keys?}?) -> {store: Store<P>, close}
+  // a READ PROJECTION as its own Store: re-projected on the source's settled batches (keys = the top-level
+  //   keys it reads; a batch touching none of them is skipped), patched MINIMALLY (Observe.storeDiffPatches),
+  //   so exposeStoreReplay(derived.store) is a per-audience line that never carries what the projection
+  //   drops. Values are compared without coercion (0, false and '0' are distinct).
+  //   Oracles: observe/store-derive.test.ts, observe/store-derive-values.test.ts.
+  //   Used by the scaffold's views (access.ts) and examples/smart-home.
+  //   smart-home/example.ts: connect, subscribe to a typed Store node, record, close.
 Observe.createStoreReplicaOffers(initial?) -> {control: {upsert, remove, replace, clear}, api: {list, changes}}
 Observe.createStoreReplicaSet<T>({storeId, originId, nodeId, lineId?, store?, initial?, offers?, leadership?, route?})
   -> {control, api, close}
@@ -878,8 +938,12 @@ Observe.createStoreReplicaSet<T>({storeId, originId, nodeId, lineId?, store?, in
   //   client replicas may participate with leadership.eligible:false and still serve downstream copies
   // route choice = freshest route to the selected authority, then cumulative measured latency + priority;
   //   hysteresis avoids jitter flaps, path rejects cycles, syncStoreReplayRoute keeps hand-off gap-free
+  // a route RE-OPENED directly into the sequence space already followed (same authority line, epoch and
+  //   leader — e.g. after a link failure or an authority restart on a durable line) resumes with
+  //   since(seq): the line serves the tail from its journal or refuses a foreign lifetime with a
+  //   keyframe; cascaded routes (a node's own line) never resume by the authority's seq
   // leadership: epoch/leader/authority-line fork choice by default; autoPromoteMs is opt-in availability mode;
-  //   inject elect/accept/compare for quorum certificates or leases. canWrite() is the command admission guard
+  //   inject elect/accept/compare for quorum certificates or leases. canWrite() is LOCAL command admission; external effects also need host/resource fencing
   // divergent writable partitions are never merged silently: the losing leader adopts the winning keyframe
   //   and emits conflicts with localOnly/authorityOnly/same-key pairs for application recovery
 Observe.diffKeyedState(local, authority) -> {localOnly, authorityOnly, conflicts}
@@ -916,8 +980,14 @@ Observe.directoryReplicaOffers({directory, connect, priorityOf?}) -> {api, refre
   //   scaling (spawn/drain REAL extra processes; the tick line survives every move and a hard kill)
 Observe.createStoreNode<T>({line: {storeId, originId, nodeId, lineId?, initial?}, roster: {url, weight?, heartbeatMs?, graceMs?},
     upstream: () => {replica, control, commandsByToken?, register, heartbeat, goodbye, onFail}, auth?: {verify, renewBeforeMs?}, commands?,
-    serve: {onConnection, wrap?, keys?: {read?, write?}, opt?}, onLeave, log?})
+    serve: {onConnection, wrap?, keys?: {read?, write?}, opt?, audience?: {reader?(defaults), principal?(who, defaults, session)}}, onLeave, log?})
   -> {start, leave(reason), view: {nodeId, status() /* {started, leaving, rehomes, readers, seq} */}, close}
+  // serve.audience = the READ-POLICY seam: reader(defaults {replica, node, store}) shapes (or nulls) the
+  //   ungated fragment from THIS node's mirror; principal(who, defaults {whoami, commands?, store}, session)
+  //   shapes the gated facade per verified principal (session.onGone releases what it opened). Without
+  //   it the raw line is served as before. Oracle: observe/scale-audience.test.ts.
+  // forwarded commands resolve the node's CURRENT upstream link at call time: a session opened before
+  //   a re-home (leader restart) keeps working — observe/store-node-rehome-forward.test.ts.
   // the node follows the authority's ONE control line (its own row + the deny list arrive together); when
   //   upstream() returns a DIFFERENT link (failover, hub rotation) it re-homes: registers there and follows
   //   THAT control line — status().rehomes counts completed moves.
@@ -937,9 +1007,9 @@ Observe.createStoreNode<T>({line: {storeId, originId, nodeId, lineId?, initial?}
   //   mini nodes of the same Lab card are exactly this factory + a ~90-line process host.
 
 // The WRITE corridor to one authority (import {Command} from 'wenay-common2'):
-Command.createCommandHost({commands: {name(ctx: {account, requestId, command}, input) {...}}, limits?: {perMinute?}, receipts?: {keepMs?, maxPerAccount?, maxTotal? /* 8192 */, line?}, now?})
+Command.createCommandHost({commands: {name(ctx: {account, requestId, command}, input) {...}}, limits?: {perMinute?, budgetOf?(account) -> number /* Infinity = unlimited: the host's own principal */}, receipts?: {keepMs?, maxPerAccount?, maxTotal? /* 8192 */, line?}, now?})
   -> {execute(account, name, requestId, input), fragment(account), forwardFragment(), names, stats, adopt(line | null), close}
-  // at-most-once per (account, requestId): a duplicate — including one arriving through ANOTHER node —
+  // deduplication while the receipt is retained per (account, requestId): a duplicate — including one arriving through ANOTHER node —
   //   answers with a CLONE of the first result (the receipt); concurrent duplicates share one in-flight run;
   //   an error commits nothing (honest retry); receipts expire by keepMs / evict past maxPerAccount;
   //   rate limit burns budget on new executions only — receipt answers are free. The limiter is a
@@ -948,12 +1018,16 @@ Command.createCommandHost({commands: {name(ctx: {account, requestId, command}, i
   //   departed accounts are drained (receipts, budget window and all) as other work flows.
   // fragment(account) = per-connection facade (requestId, input); forwardFragment() = TRUSTED hop entry
   //   (account, requestId, input) — give it only to links the application authenticated (service token).
-Command.createCommandReceipts({initial?, lineId?, replay?}) -> {api, control: {set, delete, snapshot, ...}}   // + commandReceiptKey(account, requestId)
+Command.createCommandReceipts({store?, initial?, replay?}) -> {api, control: {set, delete, snapshot, ...}, store, close}   // + commandReceiptKey(account, requestId)
+  // commandReceiptKey encodes a JSON tuple; restored embedded receipts are rekeyed from their record fields.
+  //   Previously overwritten colliding records cannot be recovered. Treat keys as opaque; do not concatenate them.
   // the receipt space as a replicated LINE: with receipts.line the host publishes every COMMITTED receipt
   //   (and every drop — bounds hold on the line too) and rebuilds its index from the line; adopt(line)
   //   swaps the memory at runtime (a promoted authority adopts the line it seeded from the followed
-  //   snapshot), adopt(null) detaches. Pending receipts are never published: a command in flight when
-  //   its authority dies may execute again on the successor — the stated at-most-once boundary.
+  //   snapshot), adopt(null) clears the index and detaches. Late work cannot modify a closed or replaced index.
+  //   Pending receipts are never published. Replication is asynchronous: even an acknowledged command
+  //   can repeat after failover if its receipt has not reached the successor. Expiry/eviction also permits
+  //   another execution. External effects require resource-side atomic deduplication/fencing.
   //   Oracle: replay/command-receipts.test.ts.
 Command.forwardCommands({upstream /* authority forwardFragment proxy */, names}) -> {fragment(account), names}
   // a mirror node serves the SAME (requestId, input) fragment shape as the authority — clients cannot
@@ -984,17 +1058,41 @@ Command.forwardCommandsByToken({upstream /* authority verifyCommands proxy */, n
 
 // The deployment triangle assembled (import {Scale} from 'wenay-common2'):
 Scale.createAuthority<T>({
-    line: {storeId, originId, nodeId? /* 'authority' */, lineId?, initial},
+    line: {storeId, originId, nodeId? /* 'authority' */, lineId?, initial, durable?: {storage, everyEvents?, everyMs?}},
     roster: {url, weight? /* 1 */, heartbeatMs?, staleMs? /* 15s */, acceptNode?, meta?},
     identity: {issue(account) -> token, verify(presented) -> {account, expiresAt?} | throw, renewBeforeMs?},
     corridor?: {commands?, limits?, receipts?},
+    control?: {durable?: {storage, everyEvents?, everyMs?}},
     leadership?: {role?: 'leader' | 'standby', epoch?, upstream?: () => AuthorityUpstream, autoPromoteMs?, elect?, accept?}, log?})
   -> {line: {control, api}, roster: {control: {set, patch, heartbeat, drain, undrain, remove, get, snapshot}, api /* the nodes PROJECTION line */},
-      identity: {login, renew, revoke, mint}, corridor: {execute, names, fragment(account), byToken()},
-      serve: {browser(account), reader(), nodeLink(linkNodeId?), connection()},
-      control: {promote(reason?)}, events: {role}, view: {role(), leaderId(), epoch(), nodes(), readers(), isRevoked(account)}, start, close}
+      identity: {login, renew, revoke, mint, principal(token) /* verified {account, expiresAt?} or throw; the deny list applies */},
+      corridor: {execute, names, fragment(account), byToken()},
+      serve: {browser(account), reader(), nodeLink(linkNodeId?), connection({principal?}?)},
+  // serve.connection({principal}) = the same audience seam as createStoreNode's serve.audience.principal:
+  //   shape the gated facade per verified principal (defaults {whoami, commands, revoke, store}); the
+  //   shaper's return type flows to the wire types. identity.principal(token) is the REST relay's
+  //   verifier (a bearer → the principal). Oracle: observe/scale-audience.test.ts.
+      control: {promote(reason?)}, events: {role}, view: {role(), leaderId(), epoch(), nodes(), readers(), isRevoked(account), restored(), archive()}, start, close}
   // inputs mirror the outputs: line = the replica coordinates (StoreLineCoordinates, declared once in
   //   store-replica-set), roster = this process's own row + the liveness policy, corridor = the write half.
+  // line.durable = the STORAGE SEAM: the replica line on the persistence port (ReplayStorage — memory,
+  //   fs from wenay-common2/server, or the host's DB adapter; the port, never a provider). A restart
+  //   restores the state, CONTINUES the seq space and serves reconnecting followers from the journal
+  //   (since() answered, no forced keyframe); `initial` then only seeds an empty archive.
+  //   view.restored() = what the boot found ({seq, fromArchive} | null without the seam), view.archive()
+  //   = the archiver counters. `initial` is ADOPTED by the Store (no copy): give every authority its own object.
+  //   control.durable puts the CONTROL line on the same port (its own archive): receipts and the deny
+  //   list survive a solo restart, the roster is wiped on restore (rows are liveness facts of a dead
+  //   lifetime — nodes re-register); view.restored().control says what the boot found. A born leader
+  //   only; a promoted standby keeps what it followed. Without it a solo restart re-executes an
+  //   acknowledged requestId. Oracles: observe/scale-durable.test.ts, observe/scale-durable-receipts.test.ts.
+  //   close() flushes the pending Store window into the archive first (observe/scale-durable-close.test.ts).
+  //   Partition address = storeId: one authority per partition, the same
+  //   three factories; a command lives inside ONE partition (ROADMAP §6.2).
+  // Solo start = the cluster config: an authority with zero nodes serves readers itself and the cluster
+  //   client places on the leader row; a node added later takes new readers by weight, placed clients
+  //   stay sticky, a drain returns them gap-free — the consumer config never changes. Two authorities in
+  //   one process share nothing (closures over their own storeId). Oracle: observe/scale-solo.test.ts.
   // ONE control line: roster + deny list + receipts are three SECTIONS of one store served as one Store
   //   Replay line (nodeLink().control). Nodes and standbys follow it in ONE subscription; browsers get the
   //   `nodes` section as a projection line (serve.browser().roster / roster.api) — never the deny list or
@@ -1021,7 +1119,7 @@ Scale.createAuthority<T>({
   //   seam): when it makes this process the leader, the followed control store CONTINUES as the owned line
   //   (the follower's own promote — every section re-owned in the same instant; a follower whose link
   //   already died hands over its last state by copy), the command host adopts the receipts section (an OLD
-  //   requestId answers its receipt, nothing re-runs), the fleet gets a grace of staleMs before anyone is
+  //   requestId answers its receipt only if delivered to and retained by the successor), the fleet gets a grace of staleMs before anyone is
   //   published dead,
   //   the dead leader's row goes, the own row flips to 'leader'. A leader that loses fork choice DEMOTES:
   //   writes refuse ("is standby ... the leader is X"), and with an upstream it follows the winner.
@@ -1040,6 +1138,9 @@ Scale.createClusterClient<T>({line: {storeId, originId, nodeId, lineId?, initial
   //   bridge + a replica set. The pick decides WHERE to land and is NOT re-rolled on roster churn —
   //   only when the placed node loses eligibility (drain / dead / weight<=0 / gone) or on repick();
   //   below the placement the line always moves gap-free by seq (level 2 decides, level 3 hands off).
+  //   Opt-in balance also uses readers/weight to move toward spare capacity; default 1→2 growth
+  //   includes beneficial moves at the exact threshold, without moving a lone equal-weight reader.
+  //   createStoreNode.leave withdraws before its grace; an unanswered goodbye cannot delay host exit.
 // Scale.createStoreNode = the third corner, the SAME factory as Observe.createStoreNode above.
 // Oracles: observe/scale-authority.test.ts + observe/scale-client.test.ts (real RPC / live authority).
 Observe.syncStoreReplayEach<T>(remote, (key, value, ctx) => {}, opts?) -> off & {store, ready, mode, seq(), isStale(), lastTs()}
@@ -1250,7 +1351,7 @@ openFsSpillJournal(file, {history, maxBytes, codec?}) -> {line: {getSince, onJou
   // Wire it as the line's memory-outside: exposeStoreReplay(store, {...spill.line}) or
   // replayListen(base, {current, ...spill.line}). Deliberately NOT restart-durable (open()
   // starts a fresh lifetime — a dead process's RAM suffix leaves an unfillable gap; restarts
-  // are createDurableStoreReplay's job) and best-effort on disk trouble: a failed spill shrinks
+  // are createDurableStoreReplay's job) and best-effort on disk/codec trouble: a failed spill shrinks
   // the window to RAM (size().spillErrors counts), old readers degrade to the keyframe reset
   // the wire already knows — never to a broken tail. Oracle: replay/fs-spill-journal.test.ts
 
@@ -1258,8 +1359,10 @@ Observe.createDurableStoreReplay<T>({storage, initial?, everyEvents? = 64, every
     -> {store, api, replay, restored: {seq, fromArchive}, stats, retry, close}
   // the line SURVIVES a process restart: state hydrates from [keyframe + deltas], seq numbering
   // continues (firstSeq), a mirror reconnecting with its old seq gets the exact persisted tail
-  // (no keyframe reset), every new patch + cadence keyframes go back into storage. A capable adapter receives
-  // one atomic all-or-throw putEvents(...) per natural Store drain before head/fan-out. A failed batch is retained;
+  // (no keyframe reset), every new patch + cadence keyframes go back into storage.
+  // Restore rejects gaps in retained deltas instead of silently returning partial state; retention must preserve
+  // a complete keyframe-to-head chain. Storage without an independent head cannot detect a wholly missing suffix.
+  // A capable adapter receives one atomic all-or-throw putEvents(...) per natural Store drain before head/fan-out. A failed batch is retained;
   // retry() persists/publishes it once. The FS adapter writes one `b` JSONL record and discards a torn trailing record on open.
   // Leadership/epoch stay upper-layer (follower/replica-set). Oracle: oracle/realsocket/store-durable.spec.ts
 
@@ -1291,3 +1394,19 @@ createArtifactHost({store: promotedFollower.store, storage: {open, adoptKey?}, .
 Observe.exposeStoreReplay(store, {describe: {schema: 'v2', originId: 'n1'}})   // serves remote.describe()
 Replay.readReplayDescriptor(remote) -> Promise<object | null>                  // null on older servers
 ```
+
+## Store: сквозные типы
+
+Store get() и get(mask) сохраняют результат через RPC func, strict и pipe. Тип состояния
+проходит через replay, follower, replica sessions и cluster connector; Store node сохраняет
+карту пересылаемых команд. node.at(key) выводит тип известного ключа.
+Пример и ограничения: [STORE-CONSUMER-GUIDE.md](STORE-CONSUMER-GUIDE.md).
+
+Ownership and partition limits: [SCALE-SAFETY.md](SCALE-SAFETY.md). Local canWrite and elect/accept do not provide automatic lease expiry or external-effect fencing. Old authority node links reject registry writes after their ownership generation ends.
+
+The repository scaffold generator now produces a standalone service using public package entrypoints. Its external tarball, strict typecheck and multiprocess command/reconnect journey are verified by npm run test:scaffold. See [project assessment](LIBRARY-ASSESSMENT.md).
+Scaffold `date-string` inputs require a real calendar day in YYYY-MM-DD form, validated before command effects.
+Failed scaffold startup migrations close the allocated authority and preserve the original error.
+Migration results are cloned before applying changes, so unreadable results cannot first delete old fields.
+
+Compiler compatibility: the declarations now use NoInfer (TypeScript 5.4+); strict consumers are verified with TypeScript 7.0.2. Known Store node keys and replay state compatibility are checked more strictly than 2.15.0. See the [2.16.0 compatibility notes](changes/2.16.0.md#compatibility-and-receipt-limits).

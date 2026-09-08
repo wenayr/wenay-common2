@@ -56,7 +56,7 @@ export function createProtocolDemo(deps: ProtocolDemoDeps) {
 
     function render() {
         mode.textContent = mapSeen ? 'JSON-array RPC active' : 'negotiating…'
-        mode.dataset.state = mapSeen ? 'live' : 'connecting'
+        mode.dataset['state'] = mapSeen ? 'live' : 'connecting'
 
         clientStage.textContent = clientCaps == null
             ? 'waiting for client CAPS'

@@ -43,8 +43,8 @@ export function openFsReplayStorage<Z extends any[] = any[]>(file: string, opts:
     const maxBytes = opts.maxBytes == null ? null : positiveIntegerOption(opts.maxBytes, 1, 'openFsReplayStorage: maxBytes')
     // Prune to 3/4 of the budget, and never re-attempt before the file grows again:
     // a floor above the budget must not degrade into a full rewrite per append.
-    const pruneTarget = maxBytes == null ? null : Math.max(1, (maxBytes >> 2) * 3)
-    const pruneRegrowth = maxBytes == null ? 0 : Math.max(1, maxBytes >> 4)
+    const pruneTarget = maxBytes == null ? null : Math.max(1, Math.floor(maxBytes / 4) * 3)
+    const pruneRegrowth = maxBytes == null ? 0 : Math.max(1, Math.floor(maxBytes / 16))
 
     fs.mkdirSync(path.dirname(file), {recursive: true})
     let mem = createMemoryReplayStorage<Z>()

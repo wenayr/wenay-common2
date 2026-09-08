@@ -212,7 +212,7 @@ export function createNodeDirectory<S extends NodeDirectoryState = NodeDirectory
 
     return {
         /** Store Replay line over {nodes} — standalone only; embedded rosters ride the caller's line. */
-        api: (exposed?.api.replay ?? null) as StoreReplayRemote | null,
+        api: (exposed?.api.replay ?? null) as StoreReplayRemote<NodeDirectoryState> | null,
         control: {
             set,
             patch,
@@ -280,7 +280,7 @@ export function pickDirectoryNode(views: readonly NodeDirectoryView[], opts: Pic
 export type FollowNodeDirectoryOpts = Pick<StoreFollowerDeps<NodeDirectoryState>, 'initial' | 'staleMs' | 'expose'>
 
 /** Follow a roster line — a standalone directory's api or an authority's nodes projection. */
-export function followNodeDirectory(remote: StoreReplayRemote, opts: FollowNodeDirectoryOpts = {}) {
+export function followNodeDirectory(remote: StoreReplayRemote<NodeDirectoryState>, opts: FollowNodeDirectoryOpts = {}) {
     const follower = createStoreFollower<NodeDirectoryState>({
         remote,
         initial: opts.initial ?? {nodes: {}},
@@ -333,10 +333,10 @@ export type FollowedNodeDirectory = ReturnType<typeof followNodeDirectory>
 // eligible directory rows. Removing an offer (drain / weight<=0 / dead / gone)
 // makes the replica set leave that node and resume elsewhere by seq — lossless.
 
-export type DirectoryReplicaOffersDeps = {
+export type DirectoryReplicaOffersDeps<T extends object = any> = {
     directory: Pick<FollowedNodeDirectory, 'nodes' | 'onNodes'>
     /** Open a live session to a node (socket hub or in-process fragment). */
-    connect: (node: NodeDirectoryView) => StoreReplicaSession | Promise<StoreReplicaSession>
+    connect: (node: NodeDirectoryView) => StoreReplicaSession<T> | Promise<StoreReplicaSession<T>>
     /** Route cost per node; default prefers higher weight. Re-sampled on every directory
      *  change and on refresh(), and the replica set adopts the new price for a surviving
      *  offer — placement/balance moves speak through exactly this seam. */
@@ -350,13 +350,13 @@ export function directoryRoutePriority(view: Pick<NodeDirectoryView, 'weight'>) 
     return Math.round(1000 / Math.max(view.weight, 1e-3))
 }
 
-export function directoryReplicaOffers(deps: DirectoryReplicaOffersDeps) {
-    const source = createStoreReplicaOffers()
+export function directoryReplicaOffers<T extends object = any>(deps: DirectoryReplicaOffersDeps<T>) {
+    const source = createStoreReplicaOffers<T>()
     // connect identity must stay stable per nodeId, or every directory change would
     // bounce live sessions (setOffers reconciles by the connect reference).
-    const stable = new Map<string, {view: NodeDirectoryView, connect: StoreReplicaOffer['connect']}>()
+    const stable = new Map<string, {view: NodeDirectoryView, connect: StoreReplicaOffer<T>['connect']}>()
 
-    function offerOf(view: NodeDirectoryView): StoreReplicaOffer {
+    function offerOf(view: NodeDirectoryView): StoreReplicaOffer<T> {
         let entry = stable.get(view.nodeId)
         if (!entry) {
             const created = {
@@ -405,4 +405,4 @@ export function directoryReplicaOffers(deps: DirectoryReplicaOffersDeps) {
         },
     }
 }
-export type DirectoryReplicaOffers = ReturnType<typeof directoryReplicaOffers>
+export type DirectoryReplicaOffers<T extends object = any> = ReturnType<typeof directoryReplicaOffers<T>>

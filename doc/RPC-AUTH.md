@@ -76,6 +76,10 @@ A query string is copied into server access logs, proxy logs and `Referer`. The 
 needs to be there: `createRpcClient({token})` emits `[Pkt.HELLO, token]` before `Pkt.STRICT`, and
 `reauth(token)` re-presents it on the live socket.
 
+Server `debug: true` masks HELLO's token as `[redacted]` before logging; the resolver still receives
+the original token. The opcode and correlation id remain visible. Other application payloads are
+logged as before.
+
 ❌ **Wrong** — credentials in the URL:
 
 ```ts
@@ -428,6 +432,13 @@ Every throw out of `resolveAuth` is treated as a **transient** failure by defaul
 keeps its principal, its `routeMap` and its subscriptions, and the caller's `reauth()` simply
 resolves `{ok: false, reason}`. That is what you want when your identity provider blinks.
 
+Returning `{ack: {ok: false, ...}}` has the same transient semantics: it answers that HELLO with
+the supplied ack and leaves the current principal, admission state, stored ack, subscriptions and
+timers unchanged. Any `object` or `expiresAt` in a refused grant is ignored. The old deadline still
+expires and cuts its streams. Before the first successful grant, `gate: true` stays closed; without
+a gate the constructor's public facade stays callable. `control.grant` uses the same refusal path
+and sends an uncorrelated refusal ack; its boolean still reports whether the connection is attached.
+
 An explicit revocation is the one rejection that kills the session: it takes the full downgrade path
 (`Pkt.AUTH` `'revoked'` → stream teardown → base facade → `authAck {ok: false, state, reason}`).
 
@@ -550,6 +561,13 @@ principal. It is dropped instead — but the HELLO still receives its answer (th
 ack, correlated with its own id), so a `reauth()` in flight settles rather than hanging. Only
 revocation guards this way: two grants racing each other stay "last one resolved wins", which is
 what HELLO has always meant.
+
+**Pending admission belongs to its principal.** If `hooks.onRequest` is still pending when the
+principal is replaced, expires or is revoked, the old CALL/PIPE does not start after the hook
+resolves. Waiting calls receive `E_UNAUTHORIZED`; no-wait calls are dropped. A detached server
+starts nothing and sends nothing. This does not cancel a function or PIPE stage that already
+started; cancellation of application work remains with that application. A refused grant leaves
+the principal unchanged and therefore does not invalidate pending admission.
 
 ---
 
@@ -757,3 +775,20 @@ The auth semantics above are pinned by the harness — `npm run test:rpc`
 | *Stage 6: клиент* | one explicit-token wave, one `init`, anonymous `auth()`, `'renewed'` |
 
 If a claim on this page and the harness disagree, the harness is right and this page is a bug.
+
+## Smart-home partition example
+
+`examples/smart-home/host.ts` uses the same empty initial object and gated HELLO resolution.
+Verified claims select an explicitly hosted `home` and a `reader` or `device` role. A reader gets
+only the household replay facet; a device gets `control.record` bound to its server-checked id.
+There is no client-selected household RPC method. Grants carry the token deadline and clients
+provide fresh tokens on reconnection. The local stand is the trusted demo issuer, not a login service.
+
+`process-check.ts` checks rejection of foreign-home tokens, forged writes and forged event
+publication. The service owns the shared Listen lifetime: its remote `close` is a no-op, so one
+reader cannot close other sessions' source. Socket disconnect still removes that session's
+subscriptions. These example bindings add no library authorization API.
+
+## Node-link ownership after succession
+
+A previously authenticated node link does not retain roster-write authority after its owner demotes or closes. Register, heartbeat and goodbye check current leadership and the captured roster generation; after re-promotion the host obtains a fresh node link. Token verification still follows the rules above. Command effects across partitions additionally require [resource fencing](SCALE-SAFETY.md).

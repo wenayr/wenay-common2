@@ -3,6 +3,11 @@
 Everything here was prepared without a cluster. Once `minikube start --driver=hyperv` succeeds,
 the stand lands with the sequence below. All commands are PowerShell, from the repo root.
 
+The Hyper-V driver needs an **elevated** PowerShell (Run as Administrator): from a normal shell
+`minikube start` exits 63 with `PROVIDER_HYPERV_NOT_RUNNING: Hyper-V requires Administrator
+privileges` (observed 2026-09-03). Start the cluster elevated once; the rest of the runbook and
+`cluster-check.ts` run from any shell.
+
 ## 0. One-time: credentials (the Secret handoff)
 
 The demo leader generates the mini-node trust `token` and the scale corridor `secret` **randomly

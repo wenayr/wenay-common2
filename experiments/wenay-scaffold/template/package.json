@@ -2,8 +2,8 @@
     "name": "{{name}}",
     "private": true,
     "version": "0.1.0",
-    "//": "Incubator note: while this template lives inside the wenay-common2 repo, the .ts files import from '../../../src/...'; after graduation they import the 'wenay-common2' package below instead (each file carries a TODO(graduation) marker at its import block).",
     "scripts": {
+        "leader": "tsx leader.ts",
         "node": "tsx node.ts",
         "typecheck": "tsc --noEmit"
     },
@@ -14,7 +14,8 @@
         "express": "^5.2.1",
         "socket.io": "^4.8.3",
         "socket.io-client": "^4.8.3",
-        "wenay-common2": "^2.15.0"
+        "swagger-ui-dist": "^5.32.14",
+        "wenay-common2": "^2.16.0"
     },
     "devDependencies": {
         "@types/express": "^5.0.6",

@@ -1,0 +1,120 @@
+import express from 'express'
+import {randomBytes} from 'node:crypto'
+import type {Resource} from '../../../../src'
+import {listen} from '../../../../src/Common/events/Listen'
+import {createRpcServerAuto} from '../../../../src/Common/rcp/rpc-server-auto'
+import {createTokenCodec} from '../../../../src/server/auth-token'
+import {createHttpFacadeServer} from '../../../../src/server/httpFacadeServer'
+import {createDocumentService, DEMO_ACCOUNTS, type tAccount} from './service'
+import {page} from './page'
+import {createHostResource} from '../../resources/http-host'
+
+export async function startDocumentHost(deps: {port?: number, stepMs?: number, runner?: Resource.FileJobRunner} = {}) {
+    const transport = createHostResource({host: '127.0.0.1', port: deps.port ?? 0, socket: {transports: ['websocket']}})
+    const {app, io} = transport.resource
+    let closeService = function noService() {}
+    let closing: Promise<void> | undefined
+    function close() {
+        closing ??= Promise.resolve().then(async function closeResources() {
+            // Send a namespace disconnect before RPC cleanup can end a live replay line.
+            try { io.disconnectSockets(true) }
+            finally {
+                const stopped = transport.close()
+                try { closeService() }
+                finally { await stopped }
+            }
+        })
+        return closing
+    }
+    try {
+        const service = createDocumentService(deps)
+        closeService = service.close
+        const codec = createTokenCodec({secret: randomBytes(32).toString('hex'), ttlMs: 60_000})
+        app.use(express.json({limit: '16kb'}))
+        app.get('/', function showPage(_request, response) { response.type('html').send(page) })
+        app.post('/demo-session', function demoSession(request, response) {
+            if (!DEMO_ACCOUNTS.includes(request.body?.account)) {
+                response.status(400).json({error: 'unknown demo account'})
+                return
+            }
+            response.json({token: codec.issue({sub: request.body.account})})
+        })
+        function accountOf(request: express.Request) {
+            const verdict = codec.verify(request.headers.authorization?.replace(/^Bearer /, ''))
+            if (!verdict.ok || !DEMO_ACCOUNTS.includes(verdict.claims.sub as tAccount)) return null
+            return verdict.claims.sub as tAccount
+        }
+        for (const account of DEMO_ACCOUNTS) {
+            const fragment = service.source.principal(account)
+            const gate: express.RequestHandler = function authenticate(request, response, next) {
+                if (accountOf(request) != account) {
+                    response.status(401).json({ok: false})
+                    return
+                }
+                next()
+            }
+            createHttpFacadeServer({app, method: 'get', basePath: '/api/' + account, middleware: gate,
+                object: {snapshot: () => service.view.snapshot(account)}})
+            createHttpFacadeServer({app, method: 'post', basePath: '/api/' + account, middleware: gate,
+                object: {startUpload: fragment.startUpload, confirmUpload: fragment.confirmUpload,
+                    startJob: fragment.startJob, cancelJob: fragment.cancelJob, download: fragment.download}})
+        }
+        app.put('/bytes/:id', express.raw({type: 'application/octet-stream', limit: '64kb'}), function uploadBytes(request, response) {
+            const account = accountOf(request)
+            if (!account) {
+                response.sendStatus(401)
+                return
+            }
+            try {
+                if (!Buffer.isBuffer(request.body)) throw new Error('send application/octet-stream')
+                service.resource.control.put(account, request.params.id, request.body)
+                response.sendStatus(204)
+            } catch (error) { response.status(400).json({error: (error as Error).message}) }
+        })
+        app.get('/bytes/:id', function downloadBytes(request, response) {
+            const account = accountOf(request)
+            if (!account) {
+                response.sendStatus(401)
+                return
+            }
+            try {
+                const bytes = service.resource.source.read(account, request.params.id)
+                response.setHeader('content-disposition', 'attachment; filename="document.txt"')
+                response.type('text/plain').send(Buffer.from(bytes))
+            } catch (error) { response.status(400).json({error: (error as Error).message}) }
+        })
+        app.get('/reports/:id', function downloadReport(request, response) {
+            const account = accountOf(request)
+            if (!account) {
+                response.sendStatus(401)
+                return
+            }
+            try {
+                const report = service.view.report(account, request.params.id)
+                response.setHeader('content-disposition', 'attachment; filename="report.json"')
+                response.json(report)
+            } catch (error) { response.status(400).json({error: (error as Error).message}) }
+        })
+        io.on('connection', function connected(socket) {
+            const [gone, disconnected] = listen<[]>()
+            socket.on('disconnect', function disconnect() {
+                gone()
+                disconnected.close()
+            })
+            createRpcServerAuto({socket, socketKey: 'documents', object: {}, disconnectListen: disconnected,
+                auth: {gate: true, resolveAuth(token: unknown) {
+                    const verdict = codec.verify(token)
+                    if (!verdict.ok) throw new Error(verdict.reason)
+                    return {object: service.source.principal(verdict.claims.sub), ack: {ok: true}, expiresAt: verdict.claims.exp, renewBeforeMs: 10_000}
+                }},
+            })
+        })
+        await transport.control.listen()
+        return {url: transport.view.url(),
+            source: {token: (account: tAccount) => codec.issue({sub: account})}, close}
+    } catch (error) {
+        await close().catch(function ignoreCleanupFailure() {})
+        throw error
+    }
+}
+export type DocumentHost = Awaited<ReturnType<typeof startDocumentHost>>

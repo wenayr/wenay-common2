@@ -1,4 +1,5 @@
 import {createListen, type ListenApi} from '../events/Listen'
+import {deferImmediate} from '../core/defer-immediate'
 import {listenUpdate, listenUpdatePaths, onUpdate, reactive, isReactive, toRaw, ReactiveChange} from "./reactive";
 import {getRpcMemberState, getRpcSchemaReady, hasRpcMemberLookup} from '../events/transport-lifecycle'
 import {positiveIntegerOption} from '../positive-integer-option'
@@ -81,7 +82,7 @@ export type StoreNodeApi<T> = {
     on(cb: (value: T, ctx: StoreCtx<T>) => void, opts?: StoreSubOpts): () => void
     once(cb: (value: T, ctx: StoreCtx<T>) => void, opts?: StoreSubOpts): () => void
     update<M extends StoreMask<T>>(mask: M, opts?: StoreSubOpts): StoreSelection<T, M>
-    at<K extends PropertyKey>(key: K): StoreNode<any>
+    at<K extends PropertyKey>(key: K): StoreNode<K extends keyof NonNullable<T> ? NonNullable<T>[K] : any>
     count(): number
 }
 
@@ -154,9 +155,17 @@ type RemoteStore<T extends object> = {
     changedData?: any
 }
 
+declare const STORE_GET_STATE: unique symbol
+
+/** Type-only identity lets transport projections preserve this generic overload. */
+export type StoreGetter<T extends object> = {
+    (): T
+    <M extends StoreMask<T>>(mask: M): StorePick<T, M>
+    readonly [STORE_GET_STATE]?: T
+}
+
 export type StoreRemoteApi<T extends object> = {
-    get(): T
-    get<M extends StoreMask<T>>(mask: M): StorePick<T, M>
+    get: StoreGetter<T>
     set(path: StorePath, value: any): void
     replace(path: StorePath, value: any): void
     changed: any
@@ -169,8 +178,6 @@ export type StoreRemoteApi<T extends object> = {
 // ============================================================
 //  utilities — scheduling & paths (pure)
 // ============================================================
-
-const hasSetImmediate = typeof setImmediate == "function"
 
 // human-readable route ('data.BTC') — the PUBLIC pathString format
 function pathText(path: StorePath) {
@@ -193,7 +200,7 @@ function pathKey(path: StorePath) {
 function schedule(drain: StoreDrain | undefined, flush: () => void) {
     if (drain == null) { flush(); return }
     if (drain == "micro") { queueMicrotask(flush); return }
-    if (drain == "immediate") { (hasSetImmediate ? setImmediate : setTimeout)(flush as any, 0); return }
+    if (drain == "immediate") { deferImmediate(flush); return }
     if (typeof drain == "number") { setTimeout(flush, drain); return }
     drain(flush)
 }
@@ -276,12 +283,13 @@ function safeStorePath(path: StorePath, label = 'store path') {
 }
 
 function defineOwnValue(target: any, key: PropertyKey, value: any) {
-    const ok = Reflect.defineProperty(target, key, {
+    const descriptor = Array.isArray(toRaw(target)) && key == 'length' ? {value} : {
         configurable: true,
         enumerable: true,
         writable: true,
         value,
-    })
+    }
+    const ok = Reflect.defineProperty(target, key, descriptor)
     if (!ok) throw new TypeError(`store cannot define path key: ${String(key)}`)
 }
 
@@ -304,6 +312,7 @@ function defineSnapshotValue(target: any, key: PropertyKey, value: any) {
 
 function replaceRoot(root: any, value: any) {
     for (const k of Reflect.ownKeys(root)) {
+        if (Array.isArray(toRaw(root)) && k == 'length') continue
         if (!isObj(value) || !Object.prototype.hasOwnProperty.call(value, k)) delete root[k as any]
     }
     if (isObj(value)) {
@@ -336,18 +345,39 @@ function snapshotValue<T>(value: T, seen = new WeakMap<object, any>()): T {
     // already-created copy, not recurse forever; shared refs keep one output identity
     const old = seen.get(value)
     if (old) return old
-    if (value instanceof Date) return new Date(value.valueOf()) as T
-    if (value instanceof RegExp) return new RegExp(value.source, value.flags) as T
-    if (value instanceof ArrayBuffer) return value.slice(0) as T
+    if (value instanceof Date) {
+        const out = new Date(value.valueOf())
+        seen.set(value, out)
+        return out as T
+    }
+    if (value instanceof RegExp) {
+        const out = new RegExp(value.source, value.flags)
+        out.lastIndex = value.lastIndex
+        seen.set(value, out)
+        return out as T
+    }
+    if (value instanceof ArrayBuffer) {
+        const out = value.slice(0)
+        seen.set(value, out)
+        return out as T
+    }
     if (ArrayBuffer.isView(value)) {
         const bytes = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)
-        if (value instanceof DataView) return new DataView(bytes) as T
+        if (value instanceof DataView) {
+            const out = new DataView(bytes)
+            seen.set(value, out)
+            return out as T
+        }
         const Constructor = value.constructor as any
         if (typeof Constructor.from == 'function' && typeof Constructor.isBuffer == 'function'
             && Constructor.isBuffer(value)) {
-            return Constructor.from(new Uint8Array(bytes)) as T
+            const out = Constructor.from(new Uint8Array(bytes))
+            seen.set(value, out)
+            return out as T
         }
-        return new Constructor(bytes) as T
+        const out = new Constructor(bytes)
+        seen.set(value, out)
+        return out as T
     }
     if (value instanceof Map) {
         const out = new Map<any, any>()
@@ -362,7 +392,7 @@ function snapshotValue<T>(value: T, seen = new WeakMap<object, any>()): T {
         return out as T
     }
     const out: any = Array.isArray(value)
-        ? []
+        ? new Array(value.length)
         : Object.create(Object.getPrototypeOf(value) == null ? null : Object.prototype)
     seen.set(value, out)
     for (const k of Reflect.ownKeys(value)) {
@@ -960,8 +990,8 @@ function subscribePath<T>(store: StoreInternal<any>, path: PropertyKey[], cb: (v
     let lastValue = getAt(store._state, path)
     const drained = createDrained((value: T, ctx: StoreCtx<T>) => {
         if (done) return
-        cb(value, ctx)
         if (once) off()
+        cb(value, ctx)
     }, opts.drain)
 
     function emitNow() {
@@ -995,12 +1025,18 @@ function subscribePath<T>(store: StoreInternal<any>, path: PropertyKey[], cb: (v
     }
 
     incCount(store, path)
-    if (opts.current && lastExists) {
-        cb(lastValue, makeCtx<T>(store, path))
-        if (once) { off(); return off }
+    try {
+        if (opts.current && lastExists) {
+            const ctx = makeCtx<T>(store, path)
+            if (once) off()
+            else attach()
+            cb(lastValue, ctx)
+        } else attach()
+        return off
+    } catch (error) {
+        off()
+        throw error
     }
-    attach()
-    return off
 }
 
 // ============================================================
@@ -1022,7 +1058,9 @@ function getNode<T>(store: StoreInternal<any>, path: PropertyKey[]): StoreNode<T
         on: (cb, opts) => subscribePath<T>(store, path, cb, opts, false),
         once: (cb, opts) => subscribePath<T>(store, path, cb, opts, true),
         update: (mask: any, opts?: StoreSubOpts) => createSelection(store, path, mask, opts),
-        at: (key: PropertyKey) => getNode<any>(store, [...path, key]),
+        at<K extends PropertyKey>(key: K) {
+            return getNode<K extends keyof NonNullable<T> ? NonNullable<T>[K] : any>(store, [...path, key])
+        },
         count: () => store._counts.get(pathKey(path)) ?? 0,
     }
 
@@ -1059,9 +1097,16 @@ function createSelection<T, M>(store: StoreInternal<any>, base: PropertyKey[], m
         on(cb, opts = {}) {
             const o = {...defaults, ...opts, current: false}
             const drained = createDrained(() => cb(get(), ctx()), opts.drain ?? defaults.drain ?? "micro")
-            const offs = fullPaths.map(p => subscribePath<any>(store, p, () => drained.push(), o, false))
-            if ((opts.current ?? defaults.current)) cb(get(), ctx())
-            return () => { drained.close(); for (const off of offs) off() }
+            const offs: (() => void)[] = []
+            function closeSelection() { drained.close(); for (const off of offs) off() }
+            try {
+                for (const path of fullPaths) offs.push(subscribePath<any>(store, path, () => drained.push(), o, false))
+                if ((opts.current ?? defaults.current)) cb(get(), ctx())
+                return closeSelection
+            } catch (error) {
+                closeSelection()
+                throw error
+            }
         },
         once(cb, opts = {}) {
             // `current` may fire synchronously inside this.on, BEFORE `off` is
@@ -1080,8 +1125,15 @@ function createSelection<T, M>(store: StoreInternal<any>, base: PropertyKey[], m
                 console.warn("store: update(true).onEach fires ONCE per drain window with the WHOLE value (per selected path, not per key). For per-changed-key delivery use store.each(); for a subset — an explicit key mask.")
             }
             const o = {...defaults, ...opts}
-            const offs = fullPaths.map(p => subscribePath<any>(store, p, cb, o, false))
-            return () => { for (const off of offs) off() }
+            const offs: (() => void)[] = []
+            function closeEachSelection() { for (const off of offs) off() }
+            try {
+                for (const path of fullPaths) offs.push(subscribePath<any>(store, path, cb, o, false))
+                return closeEachSelection
+            } catch (error) {
+                closeEachSelection()
+                throw error
+            }
         },
     }
 }
@@ -1186,6 +1238,12 @@ export function createStoreMirror<T extends object>(remote: RemoteStore<T>, init
     async function sync<M extends StoreMask<T>>(mask: M, subOpts: StoreSyncOpts = {current: true}) {
         const baseMask = mask ?? true
         const report = makeReport(subOpts)
+        let closed = false
+        async function pullActiveMask(mask: any) {
+            if (closed) return
+            const snap = await remote.get(mask)
+            if (!closed) applyMask(store.state, mask, snap)
+        }
         let initializing = subOpts.current !== false
         let pendingMask: any = undefined
         // pulls are chained: a slow (stale) response can never land on top
@@ -1194,7 +1252,8 @@ export function createStoreMirror<T extends object>(remote: RemoteStore<T>, init
         const drained = createDrained(function pullQueuedStoreMask() {
             const nextMask = pendingMask === undefined ? baseMask : pendingMask
             pendingMask = undefined
-            chain = chain.then(function pullNextStoreMask() { return pull(nextMask) }).catch(report)
+            chain = chain.then(function pullNextStoreMask() { return pullActiveMask(nextMask) })
+                .catch(function reportActivePull(error) { if (!closed) report(error) })
         }, subOpts.drain)
         function queueStoreMask(nextMask: any) {
             pendingMask = pendingMask === undefined ? nextMask : mergeMasks(pendingMask, nextMask)
@@ -1221,7 +1280,7 @@ export function createStoreMirror<T extends object>(remote: RemoteStore<T>, init
             ? subscribeRemote(changedPaths, handleRemoteChangedPaths)
             : subscribeRemote(remote.changed, handleRemoteChanged)
         try {
-            if (initializing) await pull(baseMask)
+            if (initializing) await pullActiveMask(baseMask)
             initializing = false
             if (pendingMask !== undefined) drained.push()
         } catch (error) {
@@ -1230,6 +1289,9 @@ export function createStoreMirror<T extends object>(remote: RemoteStore<T>, init
             throw error
         }
         return function closeStoreSync() {
+            if (closed) return
+            closed = true
+            pendingMask = undefined
             drained.close()
             off()
         }

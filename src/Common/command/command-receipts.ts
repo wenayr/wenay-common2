@@ -35,9 +35,9 @@ export type CommandReceiptRecord = {
 /** The section shape receipts live in; a control store carries it beside other sections. */
 export type CommandReceiptsState = {receipts: Record<string, CommandReceiptRecord>}
 
-/** One key per (account, requestId); the separator cannot appear in either (JSON-safe, not a name char). */
+/** Tuple encoding keeps account/request boundaries unambiguous, including escaped characters. */
 export function commandReceiptKey(account: string, requestId: string) {
-    return account + '' + requestId
+    return JSON.stringify([account, requestId])
 }
 
 /** The slice a command host depends on; any keyed line of records satisfies it. */
@@ -62,6 +62,18 @@ export function createCommandReceipts<S extends CommandReceiptsState = CommandRe
     const owned = !deps.store
     // the section facet only ever touches .receipts; the wider control store stays the caller's
     const store: Store<CommandReceiptsState> = (deps.store as Store<CommandReceiptsState> | undefined) ?? createStore<CommandReceiptsState>({receipts: {}})
+    // Old snapshots used concatenated keys. Rebuild before publishing, without in-place moves:
+    // one record's new key can equal another record's old key.
+    const restored = store.snapshot().receipts
+    const normalized: Record<string, CommandReceiptRecord> = {}
+    let needsRekey = false
+    for (const [key, record] of Object.entries(restored)) {
+        const canonical = commandReceiptKey(record.account, record.requestId)
+        if (key != canonical) needsRekey = true
+        const previous = normalized[canonical]
+        if (!previous || record.ts >= previous.ts) normalized[canonical] = record
+    }
+    if (needsRekey) store.state.receipts = normalized
     const exposed = owned ? exposeStoreReplay(store, {
         ...deps.replay,
         describe: {...deps.replay?.describe, commandReceipts: {version: 2}},

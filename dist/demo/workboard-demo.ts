@@ -64,7 +64,7 @@ export function setupWorkboardDemo(deps: WorkboardDemoDeps) {
 
     function showMessage(text: string, tone: 'neutral' | 'success' | 'error' = 'neutral') {
         message.textContent = text
-        message.dataset.tone = tone
+        message.dataset['tone'] = tone
     }
 
     // The board already holds the newer revision by the time a rejection
@@ -79,7 +79,7 @@ export function setupWorkboardDemo(deps: WorkboardDemoDeps) {
     function renderStatus() {
         const state = client.status()
         connection.textContent = state.connection
-        connection.dataset.state = state.connection
+        connection.dataset['state'] = state.connection
         const pending = state.pending ? ` · ${state.pending} pending` : ''
         meta.textContent = `map ${state.delivery} · replay ${state.replayMode} · seq ${state.seq}${pending}`
         createButton.disabled = state.connection == 'stale' || state.pending > 0
@@ -96,7 +96,7 @@ export function setupWorkboardDemo(deps: WorkboardDemoDeps) {
     for (const status of client.statuses) {
         const section = document.createElement('section')
         section.className = 'workColumn'
-        section.dataset.status = status
+        section.dataset['status'] = status
         const heading = document.createElement('header')
         const label = document.createElement('strong')
         label.textContent = statusLabels[status]
@@ -135,7 +135,7 @@ export function setupWorkboardDemo(deps: WorkboardDemoDeps) {
         const root = document.createElement('article')
         root.className = 'workItem'
         root.draggable = true
-        root.dataset.workItemId = current.id
+        root.dataset['workItemId'] = current.id
         root.addEventListener('dragstart', function dragWorkItem(event) {
             event.dataTransfer?.setData('text/plain', current.id)
             if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
@@ -196,7 +196,7 @@ export function setupWorkboardDemo(deps: WorkboardDemoDeps) {
         }
 
         async function run(action: () => Promise<unknown>, success: string, optimisticStatus?: tWorkboardStatus) {
-            root.dataset.busy = 'true'
+            root.dataset['busy'] = 'true'
             // Optimistic presentation only: the card slides to the target column
             // right away; the authoritative replay confirms it or snaps it back.
             if (optimisticStatus) columns.get(optimisticStatus)?.items.append(root)
@@ -208,7 +208,7 @@ export function setupWorkboardDemo(deps: WorkboardDemoDeps) {
                 showMessage(friendly(error), 'error')
                 log('workboard command rejected: ' + errorText(error))
             } finally {
-                root.dataset.busy = 'false'
+                root.dataset['busy'] = 'false'
                 renderBoard()
                 renderStatus()
             }
@@ -251,8 +251,8 @@ export function setupWorkboardDemo(deps: WorkboardDemoDeps) {
         update(initial)
         return {root, update, move, current: () => current, highlight: highlightCard}
         function highlightCard() {
-            root.dataset.changed = 'true'
-            setTimeout(function clearWorkItemHighlight() { root.dataset.changed = 'false' }, 1400)
+            root.dataset['changed'] = 'true'
+            setTimeout(function clearWorkItemHighlight() { root.dataset['changed'] = 'false' }, 1400)
         }
     }
     type Card = ReturnType<typeof createCard>

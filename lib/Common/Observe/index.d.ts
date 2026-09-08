@@ -13,3 +13,4 @@ export * from "./node-health";
 export * from './node-directory';
 export * from './store-node';
 export * from './replicated-map';
+export * from './store-derive';

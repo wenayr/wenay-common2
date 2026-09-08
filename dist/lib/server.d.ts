@@ -5,4 +5,5 @@ export * from "./server/fsSpillJournal";
 export * from "./server/WebHook3";
 export * from "./server/createSignatureFunction";
 export * from './server/httpFacadeServer';
+export * from './server/httpFacadeOpenApi';
 export * from './server/auth-token';

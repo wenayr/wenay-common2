@@ -208,6 +208,7 @@ function createServer<T extends object>(
     let listenNodes: object[] = []; // the same nodes by IDENTITY — surviving set for principal change
     let strictSchema: any = {};
     let currentTarget: any = target; // active object (facade of current principal)
+    let principalEpoch = 0
 
     function buildDispatch(t: any) {
         const m: Function[] = [], cx: any[] = [], paths: string[][] = [], rm: Record<string, number> = {}, lp: string[] = [], ln: object[] = [];
@@ -690,6 +691,7 @@ function createServer<T extends object>(
         // nodes the walk never saw (noStrict subtrees) belong to neither and survive.
         const previous = listenNodes
         buildDispatch(object)
+        principalEpoch++
         const keep = new Set(listenNodes)
         // Streams of nodes that vanished from the facade must END (RPC_STOP → CB_END), else
         // client consumers wait forever on a stream this principal is no longer allowed to see.
@@ -711,15 +713,16 @@ function createServer<T extends object>(
     // unsolicited, so its MAP carries no correlation and settles no pending reauth().
     function applyGrant(r: RpcAuthGrant | null | undefined, helloId?: number) {
         if (detached) return false // this socket+key already belongs to another server
+        // Refusal answers this attempt only; the live grant still owns its deadline and streams.
+        if (r?.ack?.ok === false) {
+            sendCapsChallenge()
+            sendRaw(mapReply(r.ack, helloId))
+            return true
+        }
         clearAuthTimers() // the previous grant's deadline is void from here on
         if (r && r.object !== undefined) applyPrincipal(r.object) // new principal facade
         authAck = withGrantDeadline(r && r.ack !== undefined ? r.ack : {ok: true}, r?.expiresAt)
-        // `ok: false` is a documented way for resolveAuth to refuse WITHOUT throwing, and on a
-        // server with no `gate` it must not close the connection: downgradePrincipal below reads
-        // the same fact as `!auth?.gate`, and the two paths have to agree. Without this an
-        // ungated server that answered one reauth with {ack:{ok:false}} refused every later
-        // CALL/PIPE forever, while the principal facade from r.object was already installed.
-        authed = authAck?.ok !== false ? true : !auth?.gate
+        authed = true
         if (r && r.expiresAt != undefined) armAuthTimers(r.expiresAt, r.renewBeforeMs) // absent = no lifetime, as before
         sendMap(helloId) // principal-specific routeMap + authAck
         return true
@@ -1037,10 +1040,17 @@ function createServer<T extends object>(
             }
 
             if (hooks?.onRequest) {
+                const epoch = principalEpoch
                 const keyArr = typeof ref == "number"
                     ? methodPaths[ref] ?? []
                     : ref;
                 const allowed = await hooks.onRequest({ key: keyArr, request: rawArgsOrSteps, fnName: keyArr[keyArr.length - 1] ?? "", fn: fn as Func });
+                if (detached) return
+                // Admission belongs to the facade that supplied fn, not a later principal.
+                if (principalEpoch != epoch || !authed) {
+                    if (wait) sendError(channel, reqId, new MyError('Unauthorized', 'E_UNAUTHORIZED'))
+                    return
+                }
                 if (allowed == false) {
                     if (wait) sendError(channel, reqId, new Error("Rejected by hook"))
                     return;
@@ -1151,6 +1161,9 @@ export function createRpcServer<T extends object>({ socket, object: target, sock
     if (debug) {
         const origOn = socket.on.bind(socket);
         function debugPacket(value: any) {
+            if (Array.isArray(value) && value[0] == Pkt.HELLO) {
+                value = [value[0], '[redacted]', ...value.slice(2)]
+            }
             if (value instanceof ArrayBuffer) return `[binary ${value.byteLength} bytes]`
             if (ArrayBuffer.isView(value)) return `[binary ${value.byteLength} bytes]`
             if (typeof value != 'object') return value

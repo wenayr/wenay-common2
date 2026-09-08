@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createInProcSocketPair = createInProcSocketPair;
+exports.createLoopbackSocketPair = createLoopbackSocketPair;
 exports.createRpcInProc = createRpcInProc;
 const rpc_server_1 = require("./rpc-server");
 const rpc_server_auto_1 = require("./rpc-server-auto");
@@ -108,6 +109,54 @@ function createInProcSocketPair() {
         },
     });
     return [make(A, B), make(B, A)];
+}
+function createLoopbackSocketPair(opts = {}) {
+    const sync = opts.delivery == 'sync';
+    const A = {};
+    const B = {};
+    let online = true;
+    let dead = false;
+    function fire(handlers, event, data) {
+        for (const cb of [...(handlers[event] ?? [])])
+            cb(data);
+    }
+    const make = (mine, theirs) => ({
+        on: (e, cb) => { (mine[e] ??= []).push(cb); },
+        emit: (e, d) => {
+            if (dead || !online)
+                return;
+            const wire = cloneInProcWire(d);
+            const receivers = [...(theirs[e] ?? [])];
+            if (sync) {
+                for (const cb of receivers)
+                    cb(wire);
+                return;
+            }
+            queueMicrotask(function deliverLoopbackFrame() {
+                if (dead || !online)
+                    return;
+                for (const cb of receivers)
+                    cb(wire);
+            });
+        },
+    });
+    const client = make(A, B);
+    const server = make(B, A);
+    function kill() {
+        if (dead)
+            return false;
+        dead = true;
+        fire(A, 'disconnect', undefined);
+        fire(B, 'disconnect', undefined);
+        return true;
+    }
+    return {
+        client, server,
+        kill,
+        setOnline(value) { if (!dead)
+            online = value; },
+        online: () => online && !dead,
+    };
 }
 function createRpcInProc({ object: target, socketKey = 'rpc', listen = true, debug, hooks, limits, auth, token, throttle, maxPerListen, opt, }) {
     const [clientSocket, serverSocket] = createInProcSocketPair();

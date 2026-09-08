@@ -19,7 +19,7 @@ exports.LISTEN_DISPATCH_ERROR = Symbol.for('wenay-common2.listen.dispatchError')
 function getListenByOn(fn) { return typeof fn == 'function' ? listenByOn.get(fn) : undefined; }
 function isListenOn(fn) { return typeof fn == 'function' && listenByOn.has(fn); }
 function registerListenOn(on, api) { listenByOn.set(on, api); }
-function createListenCore(options = {}) {
+function createListenCoreLayer(options) {
     const { fast = true, onRemove, event } = options;
     const dispatchError = options[exports.LISTEN_DISPATCH_ERROR];
     const subs = new Map();
@@ -36,12 +36,12 @@ function createListenCore(options = {}) {
         }
     }
     function dispatchInitial(...args) {
-        for (const cb of subs.values())
-            dispatch(cb, args);
+        for (const entry of subs.values())
+            dispatch(entry.cb, args);
     }
     let dispatcher = dispatchInitial;
     let cached = null;
-    const getArr = () => cached ?? (cached = Array.from(subs.values()));
+    const getArr = () => cached ?? (cached = Array.from(subs.values(), entry => entry.cb));
     function rebuild() {
         cached = null;
         const size = subs.size;
@@ -50,7 +50,7 @@ function createListenCore(options = {}) {
             return;
         }
         if (size == 1) {
-            const cb = subs.values().next().value;
+            const cb = subs.values().next().value.cb;
             function dispatchOne(...args) { dispatch(cb, args); }
             dispatcher = dispatchError ? dispatchOne : cb;
             return;
@@ -84,30 +84,48 @@ function createListenCore(options = {}) {
         if (!subs.has(key))
             return;
         subs.delete(key);
-        onRemove?.(key);
         if (fast)
             rebuild();
+        onRemove?.(key);
         event?.('remove', subs.size, api);
+    }
+    function add(cb, key, admitted) {
+        const k = key ?? Symbol();
+        if (subs.has(k)) {
+            subs.delete(k);
+            if (fast)
+                rebuild();
+            onRemove?.(k);
+        }
+        const entry = { cb };
+        subs.set(k, entry);
+        if (fast)
+            rebuild();
+        try {
+            admitted?.();
+            event?.('add', subs.size, api);
+        }
+        catch (error) {
+            if (subs.get(k) === entry) {
+                try {
+                    removeOne(k);
+                }
+                catch { }
+            }
+            throw error;
+        }
+        return function off() { removeOne(k); };
     }
     const api = {
         emit: ((...args) => { dispatcher?.(...args); }),
         has: (key) => subs.has(key),
         on: ((cb, { key } = {}) => {
-            const k = key ?? Symbol();
-            if (subs.has(k)) {
-                subs.delete(k);
-                onRemove?.(k);
-            }
-            subs.set(k, cb);
-            if (fast)
-                rebuild();
-            event?.('add', subs.size, api);
-            return function off() { removeOne(k); };
+            return add(cb, key);
         }),
         off: (keyOrCallback) => {
             if (typeof keyOrCallback == 'function') {
-                for (const [key, cb] of [...subs])
-                    if (cb === keyOrCallback)
+                for (const [key, entry] of [...subs])
+                    if (entry.cb === keyOrCallback)
                         removeOne(key);
                 return;
             }
@@ -128,7 +146,10 @@ function createListenCore(options = {}) {
         keys: () => [...subs.keys()],
     };
     listenByOn.set(api.on, api);
-    return api;
+    return { listen: api, control: { add } };
+}
+function createListenCore(options = {}) {
+    return createListenCoreLayer(options).listen;
 }
 function createListen(producer, options = {}) {
     const { fast = true, event, closeOn } = options;
@@ -142,12 +163,13 @@ function createListen(producer, options = {}) {
         if (type == 'remove')
             event?.(type, count, api);
     }
-    const core = createListenCore({
+    const resource = createListenCoreLayer({
         fast,
         onRemove: forgetKey,
         [exports.LISTEN_DISPATCH_ERROR]: options[exports.LISTEN_DISPATCH_ERROR],
         event: event ? forwardRemoveEvent : undefined,
     });
+    const core = resource.listen;
     const api = {
         emit: core.emit,
         has: core.has,
@@ -179,13 +201,13 @@ function createListen(producer, options = {}) {
         },
         on: ((cb, { cbClose, key } = {}) => {
             const k = key ?? Symbol();
-            const off = core.on(cb, { key: k });
-            if (cbClose) {
-                closeHooks = closeHooks ?? new Map();
-                closeHooks.set(k, cbClose);
-            }
-            event?.('add', core.count(), api);
-            return off;
+            return resource.control.add(cb, k, function admitted() {
+                if (cbClose) {
+                    closeHooks = closeHooks ?? new Map();
+                    closeHooks.set(k, cbClose);
+                }
+                event?.('add', core.count(), api);
+            });
         }),
         off: core.off,
         once: (cb, opts = {}) => {
