@@ -22,7 +22,8 @@ function run(args, capture = false) {
 }
 
 function pack(directory) {
-    return path.join(work, JSON.parse(run([npm, 'pack', directory, '--json', '--pack-destination', work], true))[0].filename)
+    const [packed] = JSON.parse(run([npm, 'pack', directory, '--json', '--pack-destination', work], true))
+    return {file: path.join(work, packed.filename), files: packed.files.map(entry => entry.path)}
 }
 
 // The consumer smoke: the old root shape, one TF identity, and the streams CTimeSeries needs.
@@ -57,8 +58,13 @@ console.log('wenay-exchange consumer: shared TF identity, bars, history and time
 try {
     const built = JSON.parse(readFileSync(path.join(repo, 'dist', 'package.json'), 'utf8'))
     assert.ok(existsSync(path.join(here, 'lib', 'index.js')), 'build wenay-exchange first (npm run build)')
-    const core = pack(path.join(repo, 'dist'))
-    const exchange = pack(here)
+    const core = pack(path.join(repo, 'dist')).file
+    const packed = pack(here)
+    const exchange = packed.file
+    // Every packed module comes from a current source: tsc never deletes the output of a module that
+    // moved away (CParams went back to the core), so a stale lib/ file would otherwise ship.
+    const stale = packed.files.filter(file => /^lib\/.*\.js$/.test(file) && !existsSync(path.join(here, 'src', path.basename(file, '.js') + '.ts')))
+    assert.deepEqual(stale, [], 'stale build outputs would ship')
     const rootManifest = JSON.parse(readFileSync(path.join(repo, 'package.json'), 'utf8'))
     writeFileSync(path.join(work, 'package.json'), JSON.stringify({name: 'wenay-exchange-consumer', private: true}))
     run([npm, 'install', core, exchange, `@types/node@${rootManifest.devDependencies['@types/node']}`, '--ignore-scripts', '--no-audit', '--no-fund', '--package-lock=false'])

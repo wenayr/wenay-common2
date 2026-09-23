@@ -17,7 +17,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "node scripts/link-core.mjs && tsc -p tsconfig.json",
+    "build": "node scripts/link-core.mjs && node -e \"require('fs').rmSync('lib', {recursive: true, force: true})\" && tsc -p tsconfig.json",
     "test": "npm run build && tsc -p tsconfig.test.json && tsx test/bars-ticksize.spec.ts && tsx test/bytestream.spec.ts",
     "verify:consumer": "node scripts/verify-consumer.mjs",
     "release": "node ../../scripts/release-guard.mjs check && npm publish && node ../../scripts/release-guard.mjs tag"
