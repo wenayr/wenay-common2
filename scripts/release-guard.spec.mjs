@@ -2,7 +2,7 @@
 //   node scripts/release-guard.spec.mjs
 import assert from 'node:assert/strict'
 import {spawnSync} from 'node:child_process'
-import {mkdtempSync, rmSync, writeFileSync} from 'node:fs'
+import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {fileURLToPath} from 'node:url'
@@ -95,6 +95,20 @@ try {
     assert.equal(run(accepted.work, 'check').ok, true)
     assert.equal(run(accepted.work, 'tag').ok, true)
 
+    // A package published from a subdirectory (packages/wenay-exchange) gets its own tag line.
+    const sub = path.join(accepted.work, 'packages', 'sub')
+    mkdirSync(sub, {recursive: true})
+    writeFileSync(path.join(sub, 'package.json'), JSON.stringify({name: 'sub', version: '0.1.0'}))
+    assert.equal(run(accepted.work, 'stamp').ok, true)
+    git(accepted.work, 'add', '-A')
+    git(accepted.work, 'commit', '-q', '-m', 'sub 0.1.0')
+    git(accepted.work, 'push', '-q')
+    const subChecked = run(sub, 'check')
+    assert.equal(subChecked.ok, true, subChecked.text)
+    assert.equal(run(sub, 'tag').ok, true)
+    assert.equal(git(accepted.remote, 'rev-parse', 'sub-v0.1.0^{commit}'), git(accepted.work, 'rev-parse', 'HEAD'))
+    assert.equal(git(accepted.remote, 'tag', '--list', 'v0.1.0'), '')
+
     // The scratch index never disturbs the real staging area.
     writeFileSync(path.join(accepted.work, 'staged.js'), '1\n')
     git(accepted.work, 'add', 'staged.js')
@@ -102,7 +116,7 @@ try {
     assert.equal(run(accepted.work, 'stamp').ok, true)
     assert.equal(git(accepted.work, 'diff', '--cached', '--name-only'), 'staged.js')
 
-    console.log('release-guard: refusals (no stamp, uncommitted, unpushed, changed tree, foreign tag) and release path passed')
+    console.log('release-guard: refusals (no stamp, uncommitted, unpushed, changed tree, foreign tag), release path and sub-package tags passed')
 } finally {
     rmSync(root, {recursive: true, force: true})
 }

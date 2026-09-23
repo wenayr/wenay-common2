@@ -2,9 +2,10 @@
 // 2.16.1-2.21.2 reached npm from an uncommitted working tree; this guard makes that impossible.
 //   node scripts/release-guard.mjs stamp   end of release:verify: record the verified working tree
 //   node scripts/release-guard.mjs check   before npm publish: clean, pushed, HEAD == verified tree
-//   node scripts/release-guard.mjs tag     after npm publish: tag v<version> and push the tag
+//   node scripts/release-guard.mjs tag     after npm publish: tag v<version> (<name>-v<version> from a
+//                                          package subdirectory) and push the tag
 import {spawnSync} from 'node:child_process'
-import {copyFileSync, existsSync, readFileSync, rmSync, writeFileSync} from 'node:fs'
+import {copyFileSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync} from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -28,7 +29,15 @@ function fail(message) {
 // ======================================== tree identity ========================================
 
 const stampFile = () => path.resolve(gitOk(['rev-parse', '--git-path', 'wenay-release-verified.json']))
-const version = () => JSON.parse(readFileSync('package.json', 'utf8')).version
+const manifest = () => JSON.parse(readFileSync('package.json', 'utf8'))
+const version = () => manifest().version
+
+// The repository's own package tags v<version>; a package published from a subdirectory
+// (packages/wenay-exchange) tags <name>-v<version>, so the two version lines never collide.
+function tagName() {
+    const top = realpathSync.native(gitOk(['rev-parse', '--show-toplevel']))
+    return realpathSync.native('.') == top ? `v${version()}` : `${manifest().name}-v${version()}`
+}
 
 // Hash of the whole working tree as the next commit would record it (tracked + untracked, minus
 // ignored), computed in a scratch index so the real staging area is untouched.
@@ -69,15 +78,15 @@ function check() {
     const {ref, remote} = upstream()
     gitOk(['fetch', '--quiet', remote])
     if (!git(['merge-base', '--is-ancestor', 'HEAD', ref]).ok) fail(`HEAD is not pushed to ${ref}; push first`)
-    const tag = `v${version()}`
+    const tag = tagName()
     const tagged = git(['rev-parse', '-q', '--verify', `refs/tags/${tag}^{commit}`])
     if (tagged.ok && tagged.out != gitOk(['rev-parse', 'HEAD'])) fail(`tag ${tag} already marks another commit`)
-    console.log(`release-guard: ${version()} is verified, committed and pushed`)
+    console.log(`release-guard: ${manifest().name} ${version()} is verified, committed and pushed`)
 }
 
 function tag() {
-    const name = `v${version()}`
-    if (!git(['rev-parse', '-q', '--verify', `refs/tags/${name}`]).ok) gitOk(['tag', '-a', name, '-m', `Release ${version()}`])
+    const name = tagName()
+    if (!git(['rev-parse', '-q', '--verify', `refs/tags/${name}`]).ok) gitOk(['tag', '-a', name, '-m', `Release ${manifest().name} ${version()}`])
     gitOk(['push', '--quiet', upstream().remote, `refs/tags/${name}`])
     console.log(`release-guard: tagged and pushed ${name}`)
 }
