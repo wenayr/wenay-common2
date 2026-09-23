@@ -25,6 +25,7 @@ export * from "./Common/node_console";
 export * from "./Common/Time";
 export * as Math from "./Common/math/Math";
 export * as BaseTypes from "./Common/core/BaseTypes";
+export * as Params from "./Common/CParams";
 export * as Time from "./Common/Time";
 export * as Color from "./Common/Color";
 export * as Media from "./Common/media/media-index";

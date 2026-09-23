@@ -1,5 +1,5 @@
-import {const_Date, ReadonlyFull} from 'wenay-common2'
-import {deepCloneMutable, isDate} from 'wenay-common2'
+import {const_Date, ReadonlyFull} from "./core/BaseTypes";
+import {deepCloneMutable, isDate} from "./core/common";
 
 type Digit= 0|1|2|3|4|5|6|7|8|9;
 

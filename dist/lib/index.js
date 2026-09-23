@@ -36,7 +36,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Scale = exports.Command = exports.Contract = exports.Conversation = exports.Artifact = exports.Ai = exports.Resource = exports.Peer = exports.Media = exports.Replay = exports.Observe = exports.Color = exports.Time = exports.Math = void 0;
+exports.Scale = exports.Command = exports.Contract = exports.Conversation = exports.Artifact = exports.Ai = exports.Resource = exports.Peer = exports.Media = exports.Replay = exports.Observe = exports.Color = exports.Time = exports.Params = exports.Math = void 0;
 __exportStar(require("./Common/core/Decorator"), exports);
 __exportStar(require("./Common/core/BaseTypes"), exports);
 __exportStar(require("./Common/core/type"), exports);
@@ -66,7 +66,9 @@ __exportStar(require("./Common/inputAutoStep"), exports);
 __exportStar(require("./Common/node_console"), exports);
 __exportStar(require("./Common/Time"), exports);
 __exportStar(require("./toError/myThrow"), exports);
+__exportStar(require("./Common/CParams"), exports);
 exports.Math = __importStar(require("./Common/math/Math"));
+exports.Params = __importStar(require("./Common/CParams"));
 exports.Time = __importStar(require("./Common/Time"));
 exports.Color = __importStar(require("./Common/Color"));
 exports.Observe = __importStar(require("./Common/Observe"));

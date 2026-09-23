@@ -1,8 +1,8 @@
 # wenay-exchange
 
 Exchange data types that `wenay-common2` exported from its root up to 2.x: bars (OHLC), time
-series, quotes history with timeframes built on demand, history loading, strategy parameters, and
-the binary streams the series serialize to. The code is long-stable; it moved out in
+series, quotes history with timeframes built on demand, history loading, and the binary streams
+the series serialize to. The code is long-stable; it moved out in
 `wenay-common2` 3.0.0 so that package stays a transport/state library.
 
 ## Install
@@ -22,30 +22,18 @@ The names and namespaces are unchanged; only the package changes.
 
 | 2.x | 3.x |
 | --- | --- |
-| `import {Bars, Params} from 'wenay-common2'` | `import {Bars, Params} from 'wenay-exchange'` |
-| `import {Bars, Params} from 'wenay-common2/client'` | `import {Bars, Params} from 'wenay-exchange'` |
-| `import {CQuotesHistory, CParams, toValues, ...} from 'wenay-common2'` | the same names `from 'wenay-exchange'` |
+| `import {Bars} from 'wenay-common2'` | `import {Bars} from 'wenay-exchange'` |
+| `import {Bars} from 'wenay-common2/client'` | `import {Bars} from 'wenay-exchange'` |
+| `import {CQuotesHistory, ...} from 'wenay-common2'` | the same names `from 'wenay-exchange'` |
 
-`TF`, `Period` and the rest of the time API stay in `wenay-common2` (`Bars` re-exports them).
+`TF`, `Period` and the rest of the time API stay in `wenay-common2` (`Bars` re-exports them), and so
+does the generic `Params` model (`CParams`, `toValues`...), which settings editors use outside trading.
 `ByteStreamW` / `ByteStreamR` are new root exports here: `CTimeSeries.write/read` take them.
 
 ## Surface
 
 Root: the history interfaces (`IHistoryBase`), history loading (`LoadBase`), market data
-(`CQuotesHistory`...), params (`CParams`, `toValues`...), `ByteStreamW` / `ByteStreamR`, and the
-`Bars` and `Params` namespaces.
-
-### Params (`Params`, also flat)
-```
-class CParams / CParamsReadonly implements IParams
-toValues(params) -> SimpleParams                    // IParams -> plain enabled values   (alias: GetSimpleParams)
-fromValues(infos, values) -> IParams                // inverse                            (alias: mergeParamValuesToInfos)
-isSimpleParams(params) -> boolean                   // (isSimpleParams2 @deprecated)
-isParamBase(p) · isParamGroup(p) · isParamGroupOrArray(p)
-enableAllParams(params, enabled=true) -> clone
-// types: IParam (the union) + IParamBase are the entry points; the per-flavour IParamNum/IParamEnum/IParamTime*/...
-//        and *Readonly twins exist but read the union — wrap with ReadonlyFull<T> rather than the *Readonly aliases.
-```
+(`CQuotesHistory`...), `ByteStreamW` / `ByteStreamR`, and the `Bars` namespace.
 
 ### Bars (`Bars`)
 ```

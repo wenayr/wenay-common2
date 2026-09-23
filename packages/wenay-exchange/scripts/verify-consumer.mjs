@@ -28,8 +28,8 @@ function pack(directory) {
 // The consumer smoke: the old root shape, one TF identity, and the streams CTimeSeries needs.
 const consumer = `
 import assert from 'node:assert/strict'
-import {TF} from 'wenay-common2'
-import {Bars, Params, CQuotesHistory, ByteStreamR, ByteStreamW} from 'wenay-exchange'
+import {TF, Params} from 'wenay-common2'
+import {Bars, CQuotesHistory, ByteStreamR, ByteStreamW} from 'wenay-exchange'
 
 // Bars carries the core time surface by re-export: one class, so identity checks keep working.
 assert.equal(Bars.TF, TF)
@@ -48,9 +48,10 @@ assert.ok(series.write(out, 'double'))
 const back = Bars.CTimeSeries.read(new ByteStreamR(out.data), 'double')
 assert.deepEqual([...back].map(point => point.value), [...series].map(point => point.value))
 
+// Params stays in the core: it is the generic settings model (wenay-react2 edits it), not exchange data.
 const values = Params.toValues({period: {name: 'period', value: 14, range: {min: 1, max: 100, step: 1}}})
 assert.equal(values.period, 14)
-console.log('wenay-exchange consumer: shared TF identity, bars, history, time-series streams and params passed')
+console.log('wenay-exchange consumer: shared TF identity, bars, history and time-series streams passed; Params from the core')
 `
 
 try {

@@ -129,8 +129,6 @@
     "./listen": "./lib/Common/events/listen-index.js",
     "./rpc": "./lib/Common/rcp/rpc-index.js",
     "./debug-console": "./lib/debug-console.js",
-    "./lib/client": "./lib/client.js",
-    "./lib/server": "./lib/server.js",
     "./client": "./lib/client.js",
     "./server": "./lib/server.js",
     "./package.json": "./package.json",

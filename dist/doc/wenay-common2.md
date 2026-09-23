@@ -14,7 +14,7 @@
 | Entry (`wenay-common2/...`) | For | npm packages loaded at runtime |
 | --- | --- | --- |
 | root | everything cross-platform: core, async, events, RPC, time + namespaces `Observe` `Replay` `Media` `Peer` `Resource` `Ai` `Artifact` `Conversation` `Contract` `Command` `Scale` | none |
-| `client` (`lib/client`) | client subset of root: core, async, events, RPC, time; of the namespaces only `Media` | none |
+| `client` | client subset of root: core, async, events, RPC, time; of the namespaces only `Media` | none |
 | `listen` · `replay` · `observe` · `rpc` | one surface each: events, replay lines, Store/mirror, RPC | none |
 | `media` · `peer` · `resource` · `ai` · `artifact` · `conversation` · `contract` | the same-named root namespace, alone | none |
 | `debug-console` | opt-in console caller links (Node) | none |
@@ -25,13 +25,15 @@
 | `server/fs` · `server/auth` · `server/http` · `server/process` | Node adapters: fs replay storage/journals, token codec, HTTP facade + OpenAPI, one child process | none |
 | `server/blob` | immutable binary storage + Artifact storage adapter | express |
 | `server/webhook` | webhook server/client | express |
-| `server` (`lib/server`) | root + all Node adapters (compatibility facade) | express |
+| `server` | root + all Node adapters (compatibility facade) | express |
 | `https` | Caddy HTTPS manager | none |
 
 `Command` and `Scale` are root namespaces only; there is no `/command` or `/scale` subpath.
-Exchange data (`Bars`, `Params`, `CQuotesHistory`...) is the separate package `wenay-exchange` since 3.0.0;
-`TF`, `Period` and the time API stay here.
-`socket.io` / `socket.io-client` are optional peers: install them for `service/client` and `service/host`.
+Exchange data (`Bars`, `CQuotesHistory`...) is the separate package `wenay-exchange` since 3.0.0;
+`TF`, `Period`, the time API and the `Params` model stay here.
+The package has no mandatory dependency. Optional peers: `socket.io` / `socket.io-client` for `service/client`
+and `service/host`; `express` (+ `@types/express` for TypeScript) for `server`, `server/webhook`, `server/blob`,
+`service/server`, `service/host`, and `@types/express` for the types of `server/http`.
 
 Where things are: copyable apps by level and product probes → [examples/README.md](../examples/README.md);
 each example README owns its run/benchmark knobs and states its boundaries.

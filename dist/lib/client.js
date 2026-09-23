@@ -36,7 +36,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Media = exports.Color = exports.Time = exports.BaseTypes = exports.Math = void 0;
+exports.Media = exports.Color = exports.Time = exports.Params = exports.BaseTypes = exports.Math = void 0;
 __exportStar(require("./Common/core/Decorator"), exports);
 __exportStar(require("./Common/core/BaseTypes"), exports);
 __exportStar(require("./Common/core/common"), exports);
@@ -64,6 +64,7 @@ __exportStar(require("./Common/node_console"), exports);
 __exportStar(require("./Common/Time"), exports);
 exports.Math = __importStar(require("./Common/math/Math"));
 exports.BaseTypes = __importStar(require("./Common/core/BaseTypes"));
+exports.Params = __importStar(require("./Common/CParams"));
 exports.Time = __importStar(require("./Common/Time"));
 exports.Color = __importStar(require("./Common/Color"));
 exports.Media = __importStar(require("./Common/media/media-index"));

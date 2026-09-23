@@ -1,7 +1,7 @@
 {
   "name": "wenay-exchange",
   "version": "1.0.0",
-  "description": "Exchange data types moved out of wenay-common2: bars, time series, quotes history, history loading, strategy params",
+  "description": "Exchange data types moved out of wenay-common2: bars, time series, quotes history, history loading",
   "keywords": [
     "bars",
     "ohlc",
