@@ -29,6 +29,8 @@
 | `https` | Caddy HTTPS manager | axios |
 
 `Command` and `Scale` are root namespaces only; there is no `/command` or `/scale` subpath.
+Exchange data (`Bars`, `Params`, `CQuotesHistory`...) is the separate package `wenay-exchange` since 3.0.0;
+`TF`, `Period` and the time API stay here.
 `socket.io` / `socket.io-client` are optional peers: install them for `service/client` and `service/host`.
 
 Where things are: copyable apps by level and product probes → [examples/README.md](../examples/README.md);

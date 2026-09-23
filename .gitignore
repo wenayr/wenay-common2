@@ -24,3 +24,8 @@ yarn-error.log*
 /test/node_modules/
 /test/dist/
 /test/package-lock.json
+
+# Separate packages built from this repository (build output and the local core link)
+/packages/*/node_modules/
+/packages/*/lib/
+/packages/*/*.tgz

@@ -10,7 +10,7 @@ import {fileURLToPath} from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 // Repository markdown; doc/target and doc/progress are working notes and are not checked.
-const roots = ['README.md', 'CLAUDE.md', 'rpc.md', 'doc', 'examples', 'replay', 'observe', 'oracle', 'demo']
+const roots = ['README.md', 'CLAUDE.md', 'rpc.md', 'doc', 'examples', 'replay', 'observe', 'oracle', 'demo', 'packages']
 const skipped = new Set(['node_modules', 'target', 'progress', 'public'])
 
 function collect(entry, out) {

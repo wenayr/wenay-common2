@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "2.21.3",
+  "version": "3.0.0",
   "description": "Typed RPC over sockets, replayable Listen wires, reactive stores with replication and failover, peer packet mesh, media/artifact/AI/conversation runtimes",
   "keywords": [
     "rpc",
@@ -20,15 +20,17 @@
     "wenay-https": "./lib/cli/wenay-https.js"
   },
   "scripts": {
-    "test": "npm run test:rpc-guards && npm run test:doc-links && npm run test:release-guard &&npm run test:types && npm run test:spec-types && npm run test:demo-types && npm run test:console && npm run test:rpc && npm run test:rpc-flow && npm run test:rpc-markers && npm run test:rpc-inproc && npm run test:store-values && npm run test:store-external && npm run test:https && npm run test:dynamic-runtime && npm run --prefix ./test test",
+    "test": "npm run test:rpc-guards && npm run test:doc-links && npm run test:release-guard && npm run test:types && npm run test:spec-types && npm run test:demo-types && npm run test:console && npm run test:rpc && npm run test:rpc-flow && npm run test:rpc-markers && npm run test:rpc-inproc && npm run test:store-values && npm run test:store-external && npm run test:https && npm run test:dynamic-runtime && npm run --prefix ./test test && npm run test:exchange",
     "build & watch": "npm run _clearDir  &&  tsc --watch",
     "build": "npm run _clearDir  &&  tsc --build --verbose  &&  npm run _afterBuild",
     "types:generate": "tsc -p tsconfig.json --emitDeclarationOnly",
     "types:watch": "tsc -p tsconfig.json --emitDeclarationOnly --watch",
     "_afterBuild": "node copyCompiledFiles.mjs ./dist  &&  cd dist  &&  npm pkg delete scripts devDependencies private",
-    "release:verify": "npm run build  &&  npm test  &&  node scripts/run-oracles.mjs  &&  npm run test:scale-process  &&  npm run test:package  &&  npm run test:scaffold && npm run test:examples  &&  node scripts/release-guard.mjs stamp",
+    "release:verify": "npm run build  &&  npm test  &&  node scripts/run-oracles.mjs  &&  npm run test:scale-process  &&  npm run test:package  &&  npm run test:exchange-package  &&  npm run test:scaffold && npm run test:examples  &&  node scripts/release-guard.mjs stamp",
     "test:scale-process": "tsx experiments/wenay-scaffold/multiprocess-check.ts",
     "test:package": "node scripts/verify-package-consumer.mjs",
+    "test:exchange": "npm run --prefix ./packages/wenay-exchange test",
+    "test:exchange-package": "npm run --prefix ./packages/wenay-exchange verify:consumer",
     "pack": "npm run release:verify  &&  npm pack ./dist",
     "_publish": "node scripts/release-guard.mjs check  &&  npm publish ./dist  &&  node scripts/release-guard.mjs tag",
     "publish": "npm run _publish",

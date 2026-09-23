@@ -140,9 +140,6 @@ class CList<T> implements Iterable {
   get first/last · get size (=length/count) · push(v)/unshift(v) -> node · pop()/shift() -> T|undefined
   delete(valueOrNode)/deleteFirst()/deleteLast()/clear() · find(v)/findLast(v) · nodes()/reversedNodes()
 }   // immutable views: IList<T>, IListReadonly<T>, IListImmutable<T>
-
-class ByteStreamW / ByteStreamR                    // pushNumber(value, type)/readNumber(type) over NumericTypes union
-nullable(type: NumericTypes)                       // typed push*/read* (int8..uint64/float/double) stay as extended surface
 ```
 
 ## 🎀 decorators
@@ -1343,38 +1340,12 @@ Oracles: `npx tsx replay/media-socket.test.ts` checks header decode, worker sele
 shape, `replay:true`, typed no-device state in Node, and real Socket.IO binary delivery;
 `npx tsx replay/media-route.test.ts` checks all three route modes, fallback, retry, and strict direct.
 
-## 📈 exchange — params (`CParams`)
-```
-class CParams / CParamsReadonly implements IParams
-toValues(params) -> SimpleParams                    // IParams -> plain enabled values   (alias: GetSimpleParams)
-fromValues(infos, values) -> IParams                // inverse                            (alias: mergeParamValuesToInfos)
-isSimpleParams(params) -> boolean                   // (isSimpleParams2 @deprecated)
-isParamBase(p) · isParamGroup(p) · isParamGroupOrArray(p)
-enableAllParams(params, enabled=true) -> clone
-// types: IParam (the union) + IParamBase are the entry points; the per-flavour IParamNum/IParamEnum/IParamTime*/...
-//        and *Readonly twins exist but read the union — wrap with ReadonlyFull<T> rather than the *Readonly aliases.
-```
+## 📈 exchange → `wenay-exchange`
 
-## 📈 exchange — bars (`Bars`)
-```
-class OHLC · class CBar extends CBarBase (IBar)
-class CBars (IBarsImmutable) · class CBarsMutable / CBarsMutableExt (IBarsExt)
-  .push(bars|bar)        // append            (alias: Add)
-  .updateLast(bar) · .addTick(tick) · .addTicks(ticks)        (alias: AddTick/AddTicks)
-createRandomBars(tf, startTime, endTime|count, startPrice?, volatility?, tickSize?) -> CBars   // alias: CreateRandomBars
-class CTimeSeries<T=number> (ITimeseries) · CTimeSeriesReadonly<T>
-findBarsShallow(srcBars, barsToFind) -> number
-```
-
-## 📈 exchange — market data (`MarketData`)
-```
-class CQuotesHistory
-  .get(tf) -> IBarsImmutable|null                   // build-on-demand   (alias: Bars(tf))
-class CQuotesHistoryMutable / CQuotesHistoryMutable2 extends CQuotesHistory
-  .append(bars[, tf])    (alias: AddEndBars)  ·  .prepend(bars[, tf])   (alias: AddStartBars)
-  .addTicks(ticks)       (alias: AddTicks; replaces last bar)  ·  AddNewTicks (strict append-only, rare)
-  .deleteBefore(time)
-```
+Bars, time series, quotes history, history loading, strategy params and the binary streams moved to
+the separate package `wenay-exchange` in 3.0.0 with the same names (`Bars`, `Params`, `CQuotesHistory`...).
+It uses this package as a peer dependency, so `TF`/`Period` stay here and keep one identity.
+Migration rows: [NAMING_RENAMES.md](NAMING_RENAMES.md).
 
 ## 🧩 server / socket helpers
 > Focused Node entrypoints: `wenay-common2/server/fs`, `/server/auth`, `/server/http`, and

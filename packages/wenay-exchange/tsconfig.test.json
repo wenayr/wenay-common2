@@ -1,0 +1,12 @@
+{
+  // Type-checks the specs with the library options; the build never emits them.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": [
+    "./src/**/*",
+    "./test/**/*"
+  ]
+}

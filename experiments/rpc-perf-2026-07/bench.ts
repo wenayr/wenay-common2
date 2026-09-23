@@ -75,7 +75,7 @@ const UNIT_MARKER = '##UNIT##'
 // =====================================================================
 // Workload payloads — modeled on the repo's own domain records
 // =====================================================================
-// CBar in src/Exchange/Bars.ts is {time: Date, open, high, low, close, volume, tickVolume};
+// CBar (wenay-exchange, packages/wenay-exchange/src/Bars.ts) is {time: Date, open, high, low, close, volume, tickVolume};
 // CTick is {time: Date, price, volume}. Family 2 keeps the domain Date so the measured
 // bytes include what packResult really puts on the wire ($_d wrapper). Ticks carry epoch
 // milliseconds, which is what a live quote feed actually pushes.

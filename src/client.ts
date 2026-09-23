@@ -30,13 +30,10 @@ export * from "./Common/inputAutoStep";
 export * from "./Common/node_console";
 export * from "./Common/Time";
 
-
-export * from "./Common/inputAutoStep";
+// Exchange data (Bars, Params) moved to the wenay-exchange package in 3.0.0.
 
 export * as Math from "./Common/math/Math";
-export * as Bars from "./Exchange/Bars";
 export * as BaseTypes from "./Common/core/BaseTypes";
-export * as Params from "./Exchange/CParams";
 export * as Time from "./Common/Time";
 export * as Color from "./Common/Color";
 export * as Media from "./Common/media/media-index";

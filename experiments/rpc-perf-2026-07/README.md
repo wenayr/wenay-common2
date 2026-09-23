@@ -53,7 +53,7 @@ are discarded.
 | `flood` | the same tick stream with the pacing removed | the only place the callback batcher can fill a batch |
 | `burst` | 50 independent calls issued in one synchronous burst | per-frame overhead; neither direction is batched today |
 
-Record shapes are modeled on the repo's own domain (`src/Exchange/Bars.ts`):
+Record shapes are modeled on the repo's own domain (`packages/wenay-exchange/src/Bars.ts`, the wenay-exchange package since 3.0.0):
 
 - `bar` — `{time: Date, open, high, low, close, volume, tickVolume}`, the `CBar` shape. The
   `Date` is kept because that is what `packResult` really has to put on the wire.

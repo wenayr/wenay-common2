@@ -34,12 +34,9 @@ export * from "./Common/Time";
 
 export * from "./toError/myThrow";
 
-export * from "./Exchange/index";
-
+// Exchange data (Bars, Params, CQuotesHistory...) moved to the wenay-exchange package in 3.0.0.
 
 export * as Math from "./Common/math/Math";
-export * as Bars from "./Exchange/Bars";
-export * as Params from "./Exchange/CParams";
 export * as Time from "./Common/Time";
 export * as Color from "./Common/Color";
 export * as Observe from "./Common/Observe";

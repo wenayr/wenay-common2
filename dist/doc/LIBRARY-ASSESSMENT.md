@@ -5,7 +5,8 @@
 или эксплуатации распределённого кластера на разных машинах. Изменения и результаты общего
 аудита перечислены отдельно в [COMPREHENSIVE-AUDIT.md](COMPREHENSIVE-AUDIT.md).
 
-Материалы из `experiments/`, `src/`, `type-tests/` и `scripts/` доступны только в repository checkout.
+Материалы из `experiments/`, `src/`, `type-tests/`, `scripts/`, `demo/`, `oracle/`, `observe/` и `replay/`
+доступны только в repository checkout.
 Они указаны обычными путями; ссылки ведут на материалы, включённые в npm-пакет.
 
 ## Основной вывод
@@ -34,13 +35,13 @@
 | Задача | Публичный вход | Что уже собрано | Подтверждение / следующий источник |
 | --- | --- | --- | --- |
 | Локальное состояние и точечные подписки | `wenay-common2/observe` | Store, узлы, маски, snapshots, ownership подписок | [Store guide](STORE-CONSUMER-GUIDE.md), `type-tests/store-through-types.ts` (repository checkout) |
-| Словарь сущностей с доставкой изменений | `wenay-common2/observe` | Replicated Map, семантика latest/lossless, replay/checkpoint | [декларации](../lib/Common/Observe/replicated-map.d.ts), [Workboard](../replay/workboard-demo.test.ts) |
+| Словарь сущностей с доставкой изменений | `wenay-common2/observe` | Replicated Map, семантика latest/lossless, replay/checkpoint | [декларации](../lib/Common/Observe/replicated-map.d.ts), Workboard: `replay/workboard-demo.test.ts` (repository checkout) |
 | Вызовы и события через соединение | `wenay-common2/rpc`, `wenay-common2/listen` | Проекция методов/Listen, lifecycle, токены, ограничения | [RPC-AUTH](RPC-AUTH.md), `src/Common/rcp/rpc.harness.spec.ts` (repository checkout) |
-| Восстановление после разрыва | `wenay-common2/replay`, `wenay-common2/observe` | Нумерованные изменения, снимки, догоняющее чтение, смена маршрута | [consumer journey](../oracle/realsocket/store-consumer-journey.spec.ts) |
+| Восстановление после разрыва | `wenay-common2/replay`, `wenay-common2/observe` | Нумерованные изменения, снимки, догоняющее чтение, смена маршрута | consumer journey: `oracle/realsocket/store-consumer-journey.spec.ts` (repository checkout) |
 | Команды с повторным requestId | `Command` из корня пакета | Командный host, receipts, пересылка, проверка исходного токена | [command-host.d.ts](../lib/Common/command/command-host.d.ts), `experiments/wenay-scaffold/multiprocess-check.ts` (repository checkout) |
 | Одна authority, несколько читающих узлов | `Scale` из корня, `createStoreNode` из `/observe` | Authority, каталог узлов, placement, репликация, drain, failover маршрута | [scale-client.d.ts](../lib/Common/scale/scale-client.d.ts), [scale-authority.d.ts](../lib/Common/scale/scale-authority.d.ts) |
 | HTTP / файловое хранение / токены | `/server/http`, `/server/fs`, `/server/auth`, `/https` | Адаптеры готовых контрактов и серверные ресурсы | [server declarations](../lib/server.d.ts), [HTTPS guide](HTTPS-CLI.md) |
-| Прикладные потоки | `/resource`, `/ai`, `/artifact`, `/conversation` | Протоколы файловых задач, AI runs, артефактов и разговоров | [публичная карта](wenay-common2.md), [demo participant factory](../demo/server.ts) |
+| Прикладные потоки | `/resource`, `/ai`, `/artifact`, `/conversation` | Протоколы файловых задач, AI runs, артефактов и разговоров | [публичная карта](wenay-common2.md), demo participant factory: `demo/server.ts` (repository checkout) |
 | Смена реализации сервиса | `/contract` | Выбор offer, подготовка binding, lifecycle и rollback | [Contract runtime](CONTRACT-RUNTIME.md), [декларация](../lib/Common/contract/contract-runtime.d.ts) |
 
 Важная деталь для генератора кода: namespace не равен package subpath. В текущем `exports`
@@ -119,10 +120,10 @@ authority`. В [ROADMAP §6](ROADMAP.md#6-scale-tier--the-growth-path-seams-and-
 3. Собрать маленькую domain-фабрику с одним `deps` и выводимым `ReturnType`. Фасад должен
    отражать реальные аудитории. Существующий shared contract использовать через `satisfies`,
    а не переписывать список методов интерфейсом.
-4. Взять один ближайший рабочий пример: [Workboard](../replay/workboard-demo.test.ts) для
-   команд/списка сущностей, [consumer journey](../oracle/realsocket/store-consumer-journey.spec.ts)
-   для смены маршрута, `experiments/wenay-scaffold/examples/rental/service.ts` (repository checkout)
-   для правил предметной области. Копировать композицию, проверяя импорт и lifecycle каждого слоя.
+4. Взять один ближайший рабочий пример (все три — repository checkout):
+   `replay/workboard-demo.test.ts` для команд/списка сущностей,
+   `oracle/realsocket/store-consumer-journey.spec.ts` для смены маршрута,
+   `experiments/wenay-scaffold/examples/rental/service.ts` для правил предметной области. Копировать композицию, проверяя импорт и lifecycle каждого слоя.
 5. Добавлять транспорт после локальной проверки. Компилятор должен отвергать неверную команду,
    payload и результат; образец — `type-tests/demo-facade.ts` (repository checkout).
 6. Проверить приложение как настоящего потребителя пакета. В репозитории это делает
