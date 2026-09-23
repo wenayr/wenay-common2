@@ -18,7 +18,7 @@ import path from 'node:path'
 import {spawn} from 'node:child_process'
 import {connect as connectNet, isIP} from 'node:net'
 import {checkServerIdentity, connect as connectTls} from 'node:tls'
-import axios from 'axios'
+import {httpRequest} from '../http-request'
 import {sleepAsync} from '../core/common'
 import {HttpsConfig} from './https-config'
 
@@ -250,23 +250,14 @@ function inspectCertificate(config: HttpsConfig, timeoutMs = 5000) {
 }
 
 async function downloadFile(url: string, targetPath: string) {
-    const response = await axios.get<ArrayBuffer>(url, {
-        responseType: 'arraybuffer',
-        maxRedirects: 10,
-        timeout: 120000,
-    })
-    const bytes = Buffer.from(response.data)
+    const response = await httpRequest(url, {timeoutMs: 120000})
+    const bytes = Buffer.from(await response.arrayBuffer())
     await writeFile(targetPath, bytes)
     return bytes
 }
 
 async function downloadText(url: string) {
-    const response = await axios.get<string>(url, {
-        responseType: 'text',
-        maxRedirects: 10,
-        timeout: 30000,
-    })
-    return response.data
+    return (await httpRequest(url, {timeoutMs: 30000})).text()
 }
 
 async function extractArchive(

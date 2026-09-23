@@ -1,8 +1,8 @@
 import express from 'express';
 import type { Express, Request, Response } from 'express';
-import axios from 'axios';
 import * as fs from 'fs';
 import { createAsyncQueue } from "../Common/async/waitRun";
+import { httpRequest } from "../Common/http-request";
 
 const SUBSCRIBERS_FILE = './subscribers.json';
 
@@ -120,7 +120,7 @@ export const createWebhookServer = (params: params) => {
     const emit = async (tag: string, payload: any) => {
         purgeExpired();
         const valid = Array.from(subscribers.values()).filter(s => s.tag === tag);
-        await Promise.all(valid.map(s => axios.post(s.url, payload).catch(() => console.error("emit fail:", s.url))));
+        await Promise.all(valid.map(s => httpRequest(s.url, { method: 'POST', json: payload }).catch(() => console.error("emit fail:", s.url))));
     };
 
     app.post('/webHook_notify', checkAuth, async (req: Request, res: Response) => {
@@ -172,23 +172,26 @@ export const createWebhookClient = (options: WebhookClientOptions) => {
             });
         }
 
-        await axios.post(`${serverUrl}/webHook_subscribe`, { url: makeUrl(tag), tag }, { headers });
+        await httpRequest(`${serverUrl}/webHook_subscribe`, { method: 'POST', json: { url: makeUrl(tag), tag }, headers });
         activeTags.add(tag);
 
         if (autoRenew) {
             timers.set(tag, setInterval(() => {
-                axios.get(`${serverUrl}/webHook_status`, { params: { url: makeUrl(tag) }, headers }).catch(() => console.error("renew fail:", tag));
+                httpRequest(`${serverUrl}/webHook_status`, { query: { url: makeUrl(tag) }, headers }).catch(() => console.error("renew fail:", tag));
             }, renewIntervalMs));
         }
     };
 
-    const status = async (tag: string): Promise<axios.AxiosResponse<any, any, {}>> =>
-        axios.get(`${serverUrl}/webHook_status`, { params: { url: makeUrl(tag) }, headers });
+    // 2.x returned the whole AxiosResponse; callers read status and data.
+    const status = async (tag: string) => {
+        const response = await httpRequest(`${serverUrl}/webHook_status`, { query: { url: makeUrl(tag) }, headers });
+        return { status: response.status, data: await response.json() as { subscribed: boolean; expireAt?: string } };
+    };
 
     const unsubscribe = async (...tags: string[]) => {
         const arr = tags.length ? tags : [...activeTags];
         await Promise.all(arr.map(async tag => {
-            await axios.delete(`${serverUrl}/webHook_unsubscribe`, { data: { url: makeUrl(tag) }, headers }).catch(e => console.error("unsub fail:", tag, e.message));
+            await httpRequest(`${serverUrl}/webHook_unsubscribe`, { method: 'DELETE', json: { url: makeUrl(tag) }, headers }).catch(e => console.error("unsub fail:", tag, e.message));
             activeTags.delete(tag);
             // kill the timer
             const t = timers.get(tag); if (t) { clearInterval(t); timers.delete(tag); }
@@ -198,15 +201,15 @@ export const createWebhookClient = (options: WebhookClientOptions) => {
     };
 
     const getMySubscriptions = async (): Promise<Subscriber[]> =>
-        (await axios.get(`${serverUrl}/webHook_client_subscriptions`, { headers })).data;
+        await (await httpRequest(`${serverUrl}/webHook_client_subscriptions`, { headers })).json() as Subscriber[];
 
     const getAvailableTags = async (): Promise<string[]> =>
-        (await axios.get(`${serverUrl}/webHook_all_tags`, { headers })).data.tags;
+        (await (await httpRequest(`${serverUrl}/webHook_all_tags`, { headers })).json() as { tags: string[] }).tags;
 
     const tags = () => [...activeTags];
 
     const Provider = async (tag: string, payload: any) => {
-        await axios.post(`${serverUrl}/webHook_notify`, { tag, payload }, { headers });
+        await httpRequest(`${serverUrl}/webHook_notify`, { method: 'POST', json: { tag, payload }, headers });
     };
 
     const appServerReady = new Promise<void>(r => { if (!app_) app.listen(clientPort, () => r()); else r(); });
