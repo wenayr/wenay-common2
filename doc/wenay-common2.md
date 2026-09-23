@@ -31,7 +31,9 @@
 `Command` and `Scale` are root namespaces only; there is no `/command` or `/scale` subpath.
 Exchange data (`Bars`, `Params`, `CQuotesHistory`...) is the separate package `wenay-exchange` since 3.0.0;
 `TF`, `Period` and the time API stay here.
-`socket.io` / `socket.io-client` are optional peers: install them for `service/client` and `service/host`.
+The package has no mandatory dependency. Optional peers: `socket.io` / `socket.io-client` for `service/client`
+and `service/host`; `express` (+ `@types/express` for TypeScript) for `server`, `server/webhook`, `server/blob`,
+`service/server`, `service/host`, and `@types/express` for the types of `server/http`.
 
 Where things are: copyable apps by level and product probes → [examples/README.md](../examples/README.md);
 each example README owns its run/benchmark knobs and states its boundaries.

@@ -37,11 +37,6 @@
     "type": "git",
     "url": "git+https://github.com/wenayr/wenay-common2.git"
   },
-  "dependencies": {
-    "@types/express": "^5.0.6",
-    "axios": "^1.19.0",
-    "express": "^5.2.1"
-  },
   "exports": {
     ".": "./lib/index.js",
     "./observe": "./lib/Common/Observe/index.js",
@@ -74,11 +69,19 @@
     "./server/blob": "./lib/server/blob-storage.js"
   },
   "peerDependencies": {
+    "@types/express": "^5.0.6",
+    "express": "^5.2.1",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
     "swagger-ui-dist": "^5.32.14"
   },
   "peerDependenciesMeta": {
+    "@types/express": {
+      "optional": true
+    },
+    "express": {
+      "optional": true
+    },
     "socket.io": {
       "optional": true
     },

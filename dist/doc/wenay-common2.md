@@ -24,11 +24,13 @@
 | `service/host` | HTTP/WS host, mounts, process signals | express, socket.io, socket.io-client |
 | `server/fs` · `server/auth` · `server/http` · `server/process` | Node adapters: fs replay storage/journals, token codec, HTTP facade + OpenAPI, one child process | none |
 | `server/blob` | immutable binary storage + Artifact storage adapter | express |
-| `server/webhook` | webhook server/client | express, axios |
-| `server` (`lib/server`) | root + all Node adapters (compatibility facade) | express, axios |
-| `https` | Caddy HTTPS manager | axios |
+| `server/webhook` | webhook server/client | express |
+| `server` (`lib/server`) | root + all Node adapters (compatibility facade) | express |
+| `https` | Caddy HTTPS manager | none |
 
 `Command` and `Scale` are root namespaces only; there is no `/command` or `/scale` subpath.
+Exchange data (`Bars`, `Params`, `CQuotesHistory`...) is the separate package `wenay-exchange` since 3.0.0;
+`TF`, `Period` and the time API stay here.
 `socket.io` / `socket.io-client` are optional peers: install them for `service/client` and `service/host`.
 
 Where things are: copyable apps by level and product probes → [examples/README.md](../examples/README.md);

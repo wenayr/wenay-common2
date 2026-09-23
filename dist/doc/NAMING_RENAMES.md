@@ -4,6 +4,9 @@ Breaking migration: старые имена не оставляем алиаса
 
 | Было | Стало |
 | --- | --- |
+| **3.0.0 — exchange data is the separate package `wenay-exchange`** (peer: this package) | |
+| `import {Bars, Params} from 'wenay-common2'` · `from 'wenay-common2/client'` | `import {Bars, Params} from 'wenay-exchange'` |
+| `CQuotesHistory` / `CQuotesHistoryMutable*` / `CParams` / `toValues` / `fromValues` and the other `IHistoryBase`, `LoadBase`, `MarketData`, `CParams` root names | the same names from `'wenay-exchange'` (`TF`, `Period` and the time API stay here) |
 | **2.16.0 — Scale tier (breaking, before the tier's first publication)** | |
 | `createAuthority({storeId, originId, nodeId, lineId, initial, selfUrl, weight, heartbeatMs, acceptNode, meta, commands, limits, receipts, renewBeforeMs})` | `createAuthority({line: {storeId, originId, nodeId, lineId, initial}, roster: {url, weight, heartbeatMs, staleMs, acceptNode, meta}, corridor: {commands, limits, receipts}, identity: {..., renewBeforeMs}})` |
 | `authority.directory` | `authority.roster` (`api` = the nodes PROJECTION line) |

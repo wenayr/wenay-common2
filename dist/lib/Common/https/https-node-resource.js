@@ -12,7 +12,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const node_child_process_1 = require("node:child_process");
 const node_net_1 = require("node:net");
 const node_tls_1 = require("node:tls");
-const axios_1 = __importDefault(require("axios"));
+const http_request_1 = require("../http-request");
 const common_1 = require("../core/common");
 const CADDY_VERSION = '2.11.4';
 function fileExists(filePath) {
@@ -199,22 +199,13 @@ function inspectCertificate(config, timeoutMs = 5000) {
     });
 }
 async function downloadFile(url, targetPath) {
-    const response = await axios_1.default.get(url, {
-        responseType: 'arraybuffer',
-        maxRedirects: 10,
-        timeout: 120000,
-    });
-    const bytes = Buffer.from(response.data);
+    const response = await (0, http_request_1.httpRequest)(url, { timeoutMs: 120000 });
+    const bytes = Buffer.from(await response.arrayBuffer());
     await (0, promises_1.writeFile)(targetPath, bytes);
     return bytes;
 }
 async function downloadText(url) {
-    const response = await axios_1.default.get(url, {
-        responseType: 'text',
-        maxRedirects: 10,
-        timeout: 30000,
-    });
-    return response.data;
+    return (await (0, http_request_1.httpRequest)(url, { timeoutMs: 30000 })).text();
 }
 async function extractArchive(archivePath, targetDir, platform) {
     try {

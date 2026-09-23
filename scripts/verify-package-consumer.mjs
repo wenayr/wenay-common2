@@ -41,6 +41,9 @@ try {
             '@types/node': manifest.devDependencies['@types/node'],
             'socket.io': manifest.devDependencies['socket.io'],
             'socket.io-client': manifest.devDependencies['socket.io-client'],
+            // optional peers: this smoke uses the server entries, so it installs them as a server project would
+            'express': manifest.devDependencies['express'],
+            '@types/express': manifest.devDependencies['@types/express'],
         },
     }, null, 4))
     run(npm, ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--package-lock=false'], consumer)

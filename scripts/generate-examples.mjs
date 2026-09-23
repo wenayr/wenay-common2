@@ -41,7 +41,7 @@ export const EXAMPLES = {
     hosting: {
         template: false,
         files: ['service.ts', 'worker.ts', 'process-resource.ts', 'example.ts', 'check.ts', 'run.ts', 'session-resources.ts', 'public-address.ts', 'agent-orchestration.ts'],
-        dependencies: ['socket.io', 'socket.io-client'],
+        dependencies: ['express', 'socket.io', 'socket.io-client'],
         scripts: {start: 'tsx run.ts', example: 'tsx example.ts', check: 'tsx check.ts && tsx session-resources.ts && tsx public-address.ts && tsx agent-orchestration.ts', 'example:resources': 'tsx session-resources.ts', 'example:agent': 'tsx agent-orchestration.ts', 'repro:public-address': 'tsx public-address.ts', typecheck: 'tsc --noEmit'},
     },
     'smart-home': {
@@ -110,11 +110,12 @@ async function generate(name, example) {
     if (example.template == false) {
         manifest.dependencies = {'wenay-common2': manifest.dependencies['wenay-common2']}
         for (const dependency of example.dependencies ?? []) {
-            const version = library.dependencies[dependency] ?? library.devDependencies[dependency]
+            const version = library.dependencies?.[dependency] ?? library.devDependencies[dependency]
             if (!version) throw new Error(`missing example dependency: ${dependency}`)
             manifest.dependencies[dependency] = version
         }
-        delete manifest.devDependencies['@types/express']
+        // express is an optional peer of wenay-common2: an example that uses it declares its types too
+        if (!example.dependencies?.includes('express')) delete manifest.devDependencies['@types/express']
     }
     await emit('package.json', JSON.stringify(manifest, null, 4) + '\n')
     const config = JSON.parse(await fs.readFile(path.join(root, source, 'template/tsconfig.json'), 'utf8'))

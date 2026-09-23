@@ -104,17 +104,15 @@
     "type": "git",
     "url": "git+https://github.com/wenayr/wenay-common2.git"
   },
-  "dependencies": {
-    "@types/express": "^5.0.6",
-    "express": "^5.2.1"
-  },
   "devDependencies": {
     "@kubernetes/client-node": "^2.0.0",
     "@modelcontextprotocol/sdk": "1.30.0",
+    "@types/express": "^5.0.6",
     "@types/node": "^26.1.2",
     "@types/source-map-support": "^0.5.10",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.1",
+    "express": "^5.2.1",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
     "socket.io-msgpack-parser": "^3.0.2",
@@ -156,11 +154,19 @@
     "./server/blob": "./lib/server/blob-storage.js"
   },
   "peerDependencies": {
+    "@types/express": "^5.0.6",
+    "express": "^5.2.1",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
     "swagger-ui-dist": "^5.32.14"
   },
   "peerDependenciesMeta": {
+    "@types/express": {
+      "optional": true
+    },
+    "express": {
+      "optional": true
+    },
     "socket.io": {
       "optional": true
     },

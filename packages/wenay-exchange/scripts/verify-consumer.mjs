@@ -66,6 +66,8 @@ try {
     assert.equal(installed('wenay-exchange'), JSON.parse(readFileSync(path.join(here, 'package.json'), 'utf8')).version)
     // The peer resolved to the single installed core: no nested second copy.
     assert.ok(!existsSync(path.join(work, 'node_modules', 'wenay-exchange', 'node_modules', 'wenay-common2')), 'a second wenay-common2 copy was installed')
+    // A project that needs only the core downloads no server stack (express is an optional peer since 3.0.0).
+    for (const server of ['express', 'axios', 'socket.io']) assert.ok(!existsSync(path.join(work, 'node_modules', server)), `${server} was installed`)
 
     writeFileSync(path.join(work, 'consumer.ts'), consumer)
     const bars = readFileSync(path.join(here, 'test', 'bars-ticksize.spec.ts'), 'utf8')

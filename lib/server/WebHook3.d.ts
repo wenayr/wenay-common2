@@ -1,5 +1,4 @@
 import type { Express } from 'express';
-import axios from 'axios';
 interface Subscriber {
     url: string;
     tag: string;
@@ -33,7 +32,13 @@ export declare const createWebhookServer: (params: params) => {
 export declare const createWebhookClient: (options: WebhookClientOptions) => {
     connect: (tag: string, handler: (payload: any) => void) => Promise<void>;
     unsubscribe: (...tags: string[]) => Promise<void>;
-    status: (tag: string) => Promise<axios.AxiosResponse<any, any, {}>>;
+    status: (tag: string) => Promise<{
+        status: number;
+        data: {
+            subscribed: boolean;
+            expireAt?: string;
+        };
+    }>;
     tags: () => string[];
     getMySubscriptions: () => Promise<Subscriber[]>;
     getAvailableTags: () => Promise<string[]>;

@@ -14,7 +14,7 @@
         "node": ">=20.0.0"
     },
     "dependencies": {
-        "wenay-common2": "2.21.3",
+        "wenay-common2": "3.0.0",
         "socket.io": "^4.8.3",
         "socket.io-client": "^4.8.3"
     },

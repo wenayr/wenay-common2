@@ -19,8 +19,9 @@ The source of a service contract is its definition, validated with `satisfies tS
 
 `service` and `service/client` are browser-safe. Server and host imports are Node-only.
 The client requires the optional peer `socket.io-client`; the host requires `socket.io` and
-`socket.io-client`. The default REST docs page requires the optional peer `swagger-ui-dist`.
-These are the same dependencies already used by the scaffold; no new mandatory dependency is added.
+`socket.io-client`. `service/server` and `service/host` require the optional peer `express` (and
+`@types/express` for TypeScript) since 3.0.0; the package itself has no mandatory dependency.
+The default REST docs page requires the optional peer `swagger-ui-dist`. The scaffold declares all of them.
 Core server composition can be imported without Socket.IO or Swagger installed.
 
 ## Definition and descriptor
