@@ -35,7 +35,11 @@
 
 ## Living examples (shipped in the npm package)
 
-- [Copyable example projects by level](examples/README.md): [rental](examples/rental/README.md) (one service, typed client, HTTP/Swagger, serving nodes), [pizzeria](examples/pizzeria/README.md) (roles, per-audience view lines, login, the role panel), [apartments](examples/apartments/README.md) (payment intents, signed webhooks, a lock device, a durable leader) — each verified outside the repository.
+- [Copyable example projects by level](examples/README.md): [rental](examples/rental/README.md) (one service, typed client, HTTP/Swagger, serving nodes), [pizzeria](examples/pizzeria/README.md) (roles, per-audience view lines, login, the role panel), [apartments](examples/apartments/README.md) (payment intents, signed webhooks, a lock device, a durable leader) — each verified outside the repository. They import the installed package, so they run as copied.
+
+## Repository-only stands and suites
+
+These import the repository's `src/` and are not in the npm package.
 
 - [`demo/`](demo/) — runnable from a repository checkout (`npm run demo`): participant-based video rooms and
   private/group calls with speaker and grid views, an authoritative Store/replay operations board, a self-assembling replica network,
@@ -45,9 +49,8 @@
   [`doc/DEMO-HTTPS.md`](doc/DEMO-HTTPS.md).
 - [`replay/`](replay/) · [`observe/`](observe/) · [`oracle/`](oracle/) — the oracle suites CI runs on
   every push; each file doubles as a worked usage example of one subsystem.
-- The package ships readable example sources rather than installing the demo scripts as commands;
-  `wenay-https` is the separate installed server-tool entrypoint. Examples import from the repo's
-  `src/`; in application code the same API comes from
+- `wenay-https` is the separate installed server-tool entrypoint. In application code the API used
+  by these suites comes from
   `wenay-common2` / `wenay-common2/peer` / `wenay-common2/replay` / `wenay-common2/observe` /
   `wenay-common2/contract`; focused lower-level entrypoints are `wenay-common2/listen`,
   `wenay-common2/rpc`, `wenay-common2/server/fs`, `wenay-common2/server/auth`,

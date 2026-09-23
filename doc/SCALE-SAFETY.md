@@ -41,17 +41,19 @@ provide those automatically.
 
 ## Executable evidence
 
-- [scale-partition.spec.ts](../oracle/realsocket/scale-partition.spec.ts): two authority socket
+All paths below are in the repository checkout.
+
+- `oracle/realsocket/scale-partition.spec.ts`: two authority socket
   servers, a severed inter-authority link and clients still reaching both. Negative control:
   both leaders accept divergent writes. With a local fixture arbiter and atomic fixture sink,
   stale admission and an old in-flight commit are rejected; retry is deduplicated; healing
   converges the old replica onto the accepted successor.
-- [scale-authority-ownership.test.ts](../observe/scale-authority-ownership.test.ts): old node-link
+- `observe/scale-authority-ownership.test.ts`: old node-link
   registry commands are refused after demotion, re-promotion and close; external cleanup cannot
   admit new commands during authority teardown.
-- [store-replica-election-races.test.ts](../observe/store-replica-election-races.test.ts): a late
+- `observe/store-replica-election-races.test.ts`: a late
   declined election cannot overwrite an established role; canWrite closes before external cleanup.
-- `experiments/wenay-scaffold/multiprocess-check.ts` (repository checkout): one authority,
+- `experiments/wenay-scaffold/multiprocess-check.ts`: one authority,
   two serving nodes and a consumer in four processes, node death/restart and reconnect.
 
 Run the partition oracle with node --import tsx oracle/realsocket/scale-partition.spec.ts.

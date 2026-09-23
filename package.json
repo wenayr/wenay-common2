@@ -86,15 +86,10 @@
   "files": [
     "lib/**/*",
     "doc/**/*",
-    "replay/**/*",
-    "observe/**/*",
-    "oracle/**/*",
-    "demo/**/*",
     "CLAUDE.md",
     "rpc.md",
     "!doc/target/**/*",
     "!doc/progress/**/*",
-    "!demo/public/**/*",
     "!**/*.tsbuildinfo",
     "examples/**/*"
   ],

@@ -48,9 +48,10 @@ if (fs.existsSync("./doc")) {
     })
 }
 
-// living examples ship in the package (AI-readable usage): oracle suites + demo stand
-// (demo/public is a generated bundle, node_modules never belongs in a package)
-for (const dir of ["replay", "observe", "oracle", "demo", "examples"]) {
+// copyable examples ship in the package: they import the installed package, so they run as copied.
+// oracle/observe/replay/demo import the repository's src/ and stay in the repository.
+// (node_modules and generated public bundles never belong in a package)
+for (const dir of ["examples"]) {
     if (fs.existsSync(dir))
         fs.cpSync(dir, path.join(tempDir, dir), {
             recursive: true,

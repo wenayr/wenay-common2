@@ -13,7 +13,7 @@ store, a universal replay layer (`seq` + keyframe + deltas), a policy-gated rout
 connection capabilities; `ContractRuntime` binds versioned implementation capabilities without
 moving compilation or package delivery into the library. It is oracle-covered (CI on every push)
 and shipped with living examples and a runnable demo stand in the repository; the npm package
-carries its readable source.
+carries its readable compiled source, the docs and the copyable `examples/`.
 
 ## Intent (2026-07)
 

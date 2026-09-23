@@ -7,9 +7,9 @@ command interfaces at each hop.
 
 ## Verified consumer journey
 
-[`store-consumer-journey.spec.ts`](../oracle/realsocket/store-consumer-journey.spec.ts) is an executable
-example of the complete path. Run `node --import tsx oracle/realsocket/store-consumer-journey.spec.ts`
-from a repository checkout; installed copies are readable examples, not standalone commands.
+`oracle/realsocket/store-consumer-journey.spec.ts` (repository checkout) is an executable example
+of the complete path. Run `node --import tsx oracle/realsocket/store-consumer-journey.spec.ts`
+from a repository checkout; the npm package ships runnable consumer projects in `examples/` instead.
 
 1. A command factory changes a local Store; a typed node subscription observes the result.
 2. The same command map is passed to `Scale.createAuthority`. Its read/write facade types are
