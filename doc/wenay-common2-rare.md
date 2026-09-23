@@ -1960,6 +1960,420 @@ const facade = {
 // automatic snapshot mirror; send/read snapshots explicitly via facade methods.
 ```
 
+## 🔁 Observe — extended
+> Everyday Store/mirror surface → **`wenay-common2.md`** (🔁 Observe); comment-only blocks below continue signatures kept there.
+
+### Replicated map: injected store, debug hatch, wire
+```
+  // An injected store is latest-only; its root is a plain keyed object with enumerable string data properties,
+  // and every top-level key must equal keyOf(value). The facade validates before publish.
+  // debug.store is an ADVANCED writable escape hatch for diagnostics; application writes violate follower ownership.
+  // Store Replay V2 is the only batch wire and travels through the JSON-array RPC lane.
+```
+
+### Store replay line: retention and envelopes (`exposeStoreReplay`)
+```
+  // history = hard cap in ENVELOPES, so its depth in wall-clock time follows the write rate.
+  // keepMs = retention target in milliseconds: what a reconnect window is actually expressed in.
+  //   Set it when the requirement is "a client returning within N seconds must cost a journal tail,
+  //   not a keyframe" — a short window is what turns a reconnect into a full snapshot, and on a slow
+  //   link that snapshot is itself what starves the heartbeat (experiments/slow-network-2026-08).
+  //   history still wins as the hard cap; with only keepMs set the count is unbounded and memory is
+  //   rate x keepMs. replay.journalWindow() reports the window actually retained and whether the
+  //   count cap cut a keepMs target short.
+  // keepBytes = retention target in BYTES: the direct cap on journal memory (a legal history/keepMs
+  //   window can still retain many LARGE envelopes). All three bounds coexist; whichever bites first
+  //   wins. Store lines measure each envelope with the packed-V2 wire estimator (no JSON.stringify);
+  //   sizeOf overrides the measure. journalWindow() reports bytes/keepBytes/cappedByBytes.
+  // api.replay is the sole Store Replay V2 facade. There is no legacy single-patch route or negotiation.
+  // Store-owned Replay refines safe array-slot replacements to exact index patches without changing
+  // public changedPaths/listenStorePatches. Length changes and whole-array replacement stay whole-array patches.
+  // maxItems/maxBytes may split one source drain; maxDelayMs>0 may merge adjacent drains.
+  // Each resulting bounded V2 envelope owns one seq.
+  // A patch whose value itself is undefined remains represented by the V2 patch opcode.
+```
+
+### Store replay sync: start and batch hooks (`syncStoreReplay`)
+```
+  // an RPC proxy waits for MAP before starting the V2 line; plain in-process remotes stay synchronous
+  // validateBatch runs after decode and before mutation. onBatch runs once AFTER one physical envelope is applied;
+  // an onBatch throw is terminal, does not roll Store state back, and does not advance the replay seq.
+```
+
+### Chunked keyframe and snapshot test doubles
+```
+// CHUNKED KEYFRAME (doc/target/KEYFRAME-CHUNKING.md, decided v1): the max frame size becomes a
+// protocol property, not a dataset property. The wire facade serves an optional `chunks` facet —
+// {begin({budgetBytes?}) -> {snapshotId, seq, ts, total, budgetBytes, chunk0}, pull(id, i), end?} —
+// a PULL model: each chunk is an ordinary CALL response, so the heartbeat breathes between messages
+// on a slow link. Chunks are partial keyframes over DISJOINT top-level key subsets (one oversized
+// value = its own chunk, never split), all at ONE seq; the client merges and synthesizes a standard
+// keyframe event, so apply stays the existing atomic single-event path. Presence IS the capability
+// (like frame/frameLine — no Caps bit); the producer retains the encoded set 60 s / max 4 attempts,
+// an evicted pull answers null and the client FALLS BACK to the monolithic keyframe.
+// Client control: chunkedKeyframe on sync/route opts — default ON when offered, false disables,
+// {budgetBytes /* clamped 16K..4M, default 256K */, onProgress({snapshotId, received, total})} tunes.
+// Producer control: exposeStoreReplay {chunks: false} withholds the facet — the opt-out for facades
+// that OVERRIDE keyframe (validation/metering), since clients probe chunks BEFORE keyframe.
+// Test doubles: {...api, keyframe: replacement} still copies chunks, so the replacement may never run.
+// Hide it with {...api, chunks: undefined, keyframe: replacement}, or pass {chunkedKeyframe: false}
+// to followReplicatedMap(remote, opts) / syncStoreReplay(store, remote, opts). Producer fixture:
+// createReplicatedMap({...deps, replay: {...deps.replay, chunks: false}}). See STORE-CONSUMER-GUIDE.md#snapshot-test-doubles.
+// The split and the client merge are prototype-safe (an own '__proto__' data key survives), and the
+// assembler merges into an OWNED object — it never mutates the producer-retained chunk 0 in place.
+// Oracle: replay/keyframe-chunks.test.ts; measured stand: experiments/slow-network-2026-08.
+```
+
+### Lazy line: progressive fill over a very slow link
+```
+// Very slow link, merge semantics (top-level value is absolute, last write per key wins):
+// fill progressively instead of ever sending a keyframe.
+const lazy = Observe.exposeStoreLazyLine(store, {chunkBytes: 32 * 1024, windowBytes: 512 * 1024, tombstoneKeepMs: 600_000, lineId})
+const fill = Observe.syncStoreLazyLine(mirror, lazy.api, {cursor: savedCursor, onCursor: persist})
+await fill.filled                                    // promise: every key delivered at least once
+  // THERE IS NO SNAPSHOT — not of values, not even of a key list. Progress is one cursor the
+  // SUBSCRIBER holds, {lineId, key, revision} = "I have every key up to `key`, as of `revision`,
+  // on line `lineId`". lineId is what makes the claim checkable: a revision only means something
+  // inside one host lifetime, so a cursor from a restarted host is refused instead of trusted.
+  // A refused cursor comes back as {stale: true}; the subscriber then restarts the pass AND
+  // sweeps every mirror key the fresh pass never mentioned, because the host can no longer prove
+  // which keys were deleted while it was away. Resetting only the cursor would keep ghosts.
+  // A read that runs out of budget part way through what the subscriber was owed carries the
+  // part it DID reconcile as cursor.catchUp {key, revision}; the next read continues from there
+  // instead of redoing it. `filled` stays false while any of that is outstanding.
+  // The host keeps no per-subscriber state, so a reconnect RESUMES the fill instead of
+  // restarting it; persist the cursor through onCursor and hand it back to continue.
+  // Values are read AT SEND TIME: a key rewritten beyond the cursor costs zero extra bytes and
+  // still lands newest; a key changed behind the cursor is re-sent. That is all convergence
+  // needs — no frozen snapshot, no second copy, no restart when the Store changes mid-transfer.
+  // A deleted key behind the cursor travels as a tombstone; tombstoneKeepMs bounds how long
+  // that stays provable, and a cursor older than the last prune is refused with {stale: true}.
+  // Pull-based: readBytes is the rate control, so a background fill cannot queue ahead of an
+  // urgent line. Keep it ABOVE the link's bandwidth-delay product or the link idles between
+  // reads (measured: a 16 KiB budget on a 128 KiB/s x 160 ms link was latency-bound).
+  // Measured on 20 000 keys at ~1 Mbit/s: first paint 718 ms vs 11 579 ms for a keyframe, 6 %
+  // fewer bytes, 1.33x slower full convergence (experiments/store-lazy-2026-08). On a few
+  // hundred keys it is at best parity — a small keyframe is already cheap.
+  // The mirror shows a MIX of fresh and stale keys while the first pass runs: that is the
+  // trade. For an all-or-nothing transfer use createStoreReplayView instead.
+  // keys: [...] makes the line SELECTED: only those top-level keys travel, unselected churn
+  // costs nothing (no clone, no revision bump), and the cursor gains selectionId — publishing a
+  // different set makes old cursors {stale: true} and the subscriber reconciles by pass + sweep.
+  // One store can carry several lazy lines (full + per-partition selections) side by side.
+  // view: {lineId, selectionId, keys(), snapshot()}. Tombstones also expire on read, so a quiet
+  // line does not retain them; a root-swap patch from a custom source tombstones vanished keys.
+```
+
+### Selective replay view: one authoritative Store, per-selection lines
+```
+// Large selective Store: one authoritative Store, no materialized child Store per client.
+const quotesView = Observe.createStoreReplayView(quotes, {
+  keys: authorizedSymbols,                 // static/server-authorized top-level string keys
+  lineId: 'quotes:account-scope:v1',
+  history: 4096,
+  snapshot: {chunkBytes: 512 * 1024, windowBytes: 1024 * 1024}
+})
+// Expose `quotesView.resource`; clients with the same selection should share this one view instance.
+const selectedMirror = Observe.createStore<Record<string, Quote>>({})
+const selectedSync = Observe.syncStoreReplayView(selectedMirror, api.quotesView, {
+  cursor: persistedCursor                 // {lineId,selectionId,seq}; omit for the first snapshot
+})
+await selectedSync.ready
+persist(selectedSync.cursor())
+  // The view retains only a normalized key Set, one filtered V2 journal and bounded snapshot cursors.
+  // Views share one exact-path Store watcher and detach only the union of selected changed values.
+  // Unselected changes produce no clone, view seq or client fan-out. Initial data is sampled key by key:
+  // callback chunks are separated by a task turn, while each RPC read response grants the next bounded window.
+  // Plain Store values are sized without materializing a second packed/JSON/UTF-8 copy.
+  // Defaults: about 512 KiB/chunk, 1 MiB/window, 256 patches/chunk, 32 cursors, 30 s cursor TTL.
+  // The mirror remains unchanged while chunks arrive, then swaps once and applies the retained V2 tail.
+  // One selected top-level value is indivisible in V1; keep giant blobs/media on a byte-stream resource.
+quotesView.close()
+```
+
+### Route hand-off and server-side follower
+```
+Observe.syncStoreReplayRoute(mirror, remote, {label?, validateBatch?, onBatch?}) -> off & {switch(nextRemote, opts), ready, seq(), label(), active(), mode}
+  // relay/direct promotion and re-interposition: replacement route catches up by seq before the old route closes
+  // route validation/callback ordering matches syncStoreReplay; every route uses the V2 seq-space
+Observe.createStoreFollower<T>({remote, initial?, expose?, staleMs?}) -> {store, status, api, replay, ready, isStale, close}
+  // server-side mirror instance (leader -> follower -> its own clients): syncStoreReplay INTO a local store
+  //   + cascade exposeStoreReplay OVER it — `api` goes into the follower's RPC object like any store line
+  // status = a tiny reactive store {upstream: 'catching-up'|'live'|'offline'|'closed', seq, replayMode, error} — the
+  //   follower never writes into the mirrored store itself (it must stay byte-equal to the leader)
+  // commands are NOT applied locally: forward them to the leader with the END client's (account, requestId)
+  //   so idempotency receipts and ordering stay on the single leader (demo: DEMO_MIRROR_OF, doc/target plan)
+  // follower.promote() -> {store, replay, epoch}: manual failover — mirroring stops, epoch grows by 1,
+  //   the cascade journal LIVES ON, so this node's subscribers keep their line without a re-keyframe;
+  //   build the command authority OVER the same store (the demo workboard host adopts it via deps.store)
+```
+
+### Replica sets and elections
+```
+Observe.createStoreReplicaOffers(initial?) -> {control: {upsert, remove, replace, clear}, api: {list, changes}}
+Observe.createStoreReplicaSet<T>({storeId, originId, nodeId, lineId?, store?, initial?, offers?, leadership?, route?})
+  -> {control, api, close}
+  // self-assembling Store above transports: each StoreReplicaOffer is a reusable connect capability;
+  //   its session exposes {descriptor, changed?, replay, ping?} and close/onFail — RPC, WebRTC, a worker,
+  //   or an in-process edge all use the same small boundary
+  // api.fragment = the descriptor + cascading replay line to expose through RPC or another transport;
+  //   client replicas may participate with leadership.eligible:false and still serve downstream copies
+  // route choice = freshest route to the selected authority, then cumulative measured latency + priority;
+  //   hysteresis avoids jitter flaps, path rejects cycles, syncStoreReplayRoute keeps hand-off gap-free
+  // a route RE-OPENED directly into the sequence space already followed (same authority line, epoch and
+  //   leader — e.g. after a link failure or an authority restart on a durable line) resumes with
+  //   since(seq): the line serves the tail from its journal or refuses a foreign lifetime with a
+  //   keyframe; cascaded routes (a node's own line) never resume by the authority's seq
+  // leadership: epoch/leader/authority-line fork choice by default; autoPromoteMs is opt-in availability mode;
+  //   inject elect/accept/compare for quorum certificates or leases. canWrite() is LOCAL command admission; external effects also need host/resource fencing
+  // divergent writable partitions are never merged silently: the losing leader adopts the winning keyframe
+  //   and emits conflicts with localOnly/authorityOnly/same-key pairs for application recovery
+Observe.diffKeyedState(local, authority) -> {localOnly, authorityOnly, conflicts}
+  // split-brain tail after a failover rejoin: localOnly = re-apply candidates (mempool analogy),
+  //   conflicts = both sides changed one record (the epoch already chose the winner; the pair is preserved)
+```
+Replica-set oracle: `npx tsx observe/store-replica-set.test.ts`;
+real two-hop Socket.IO/RPC wire: `oracle/realsocket/store-replica-set.spec.ts`; interactive network:
+`npm run demo` → **Lab** → **Self-assembling Store replica set** (live offer/session/selected-route graph).
+
+### Node directory
+```
+Observe.createNodeDirectory({store?, now?, staleMs? /* 15s, 0 = off */, sweepMs?, initial?, replay?})
+  -> {api /* the {nodes} line, standalone only */, control: {set, patch, heartbeat, drain, undrain, remove, grace, sweep, get, snapshot, flush, close}, view: {nodes()}, store, close}
+  // the roster is the `nodes` SECTION of a Store served as a Store Replay line: standalone it owns the
+  //   store and the line; with deps.store it is a facet over a wider control store (the authority's) and
+  //   the roster travels in the SAME line as the deny list and the receipts.
+  // row = {nodeId, url, role: 'leader' | 'mirror' | 'standby', weight, draining, alive, since, meta?}
+  //   weight > 0 = accepts placements · weight <= 0 = closed · draining = leaving ·
+  //   alive = the OWNER's verdict: beats live in owner memory, a sweep every staleMs/2 flips alive
+  //   when a row was silent for staleMs, since = owner-clock ms of the last flip. A replicated write
+  //   happens when a FACT changes (alive, readers, labels...), never per beat — readers judge nothing
+  //   by their own clocks (no staleMs anywhere on the reader side). A standby is a successor-in-waiting
+  //   registered with weight 0 (discoverable by url, never placed).
+  // ONE write rule: set(row) replaces (starts alive), patch(nodeId, partial) merges (meta one level),
+  //   heartbeat(nodeId, partial?) = liveness + patch, drain/undrain = named patches, grace() re-arms every
+  //   beat (a promoted owner grants the fleet staleMs to re-home). Writes that change nothing publish nothing.
+Observe.followNodeDirectory(remote, {initial?, staleMs?, expose?}) -> {nodes(), pick(opts?), onNodes(cb), onNode(nodeId, cb, {current?}), ready, status, isStale, api, store, close}
+  // follow a roster line (a standalone directory's api or an authority's serve.browser().roster projection)
+  //   on createStoreFollower: status = the LINK's {upstream, seq, error}; api = a cascade a node may re-serve
+Observe.nodeDirectoryViews(nodesSection) · Observe.pickDirectoryNode(views, {exclude?, rng?})
+  // one pure derivation shared by the balancer AND the ops panel — balancing stays observable by construction
+Observe.directoryReplicaOffers({directory, connect, priorityOf?}) -> {api, refresh, close}
+  // bridge into createStoreReplicaSet offers: eligible rows = offers (connect identity stable per node,
+  //   or every roster change would bounce live sessions); higher weight = cheaper route by default
+  //   (Observe.directoryRoutePriority — the ONE weight→priority mapping; offset it, don't re-derive).
+  //   A directory change that alters no membership and no price publishes NOTHING — pure heartbeat
+  //   ticks cost followers no offer re-reconciliation.
+  //   drain/dead/gone REMOVES the offer -> the replica set leaves that node and resumes by seq — lossless.
+  //   Oracle: observe/node-directory.test.ts; living stand: `npm run demo` -> Lab -> Mini horizontal
+  //   scaling (spawn/drain REAL extra processes; the tick line survives every move and a hard kill)
+```
+
+### Store node: a serving node from one config object
+```
+Observe.createStoreNode<T>({line: {storeId, originId, nodeId, lineId?, initial?}, roster: {url, weight?, heartbeatMs?, graceMs?},
+    upstream: () => {replica, control, commandsByToken?, register, heartbeat, goodbye, onFail}, auth?: {verify, renewBeforeMs?}, commands?,
+    serve: {onConnection, wrap?, keys?: {read?, write?}, opt?, audience?: {reader?(defaults), principal?(who, defaults, session)}}, onLeave, log?})
+  -> {start, leave(reason), view: {nodeId, status() /* {started, leaving, rehomes, readers, seq} */}, close}
+  // serve.audience = the READ-POLICY seam: reader(defaults {replica, node, store}) shapes (or nulls) the
+  //   ungated fragment from THIS node's mirror; principal(who, defaults {whoami, commands?, store}, session)
+  //   shapes the gated facade per verified principal (session.onGone releases what it opened). Without
+  //   it the raw line is served as before. Oracle: observe/scale-audience.test.ts.
+  // forwarded commands resolve the node's CURRENT upstream link at call time: a session opened before
+  //   a re-home (leader restart) keeps working — observe/store-node-rehome-forward.test.ts.
+  // the node follows the authority's ONE control line (its own row + the deny list arrive together); when
+  //   upstream() returns a DIFFERENT link (failover, hub rotation) it re-homes: registers there and follows
+  //   THAT control line — status().rehomes counts completed moves.
+  // a serving node from ONE config object: replica line + to-upstream offer, self-registration and
+  //   heartbeat in the node directory (readers fact = the line's ACTIVE subscriber count — connected
+  //   sockets would lie, every replica-set client keeps sessions to all nodes for fork-choice), an
+  //   ungated read key + an optionally gated write key (auth.verify returns {account, expiresAt?} or
+  //   throws; {revoke: true} kills the session), token-envelope command forwarding (the node asserts
+  //   nothing), session cuts on the replicated deny-list fact, and leave on the node's OWN directory
+  //   row (drain is data — no control channel). The HOST keeps env, transports, token crypto and
+  //   process exit; they arrive as adapters through deps (doc/DYNAMIC-RUNTIME.md ownership).
+  // lifecycle discipline: a FAILED start() throws and stays retryable (nothing latched); leave()/close()
+  //   during start wins (no register, no heartbeat armed, a raced registration is goodbyed); register
+  //   carries the node's OWN {readers, pid} facts; deps.upstream is re-resolved on every replica
+  //   reconnect — return the CURRENT link, and a hard hub rotation cannot strand the node.
+  // Oracle: observe/store-node.test.ts (real RPC over an in-process loopback); living stand: the
+  //   mini nodes of the same Lab card are exactly this factory + a ~90-line process host.
+```
+
+### Command: the write corridor to one authority
+```
+// The WRITE corridor to one authority (import {Command} from 'wenay-common2'):
+Command.createCommandHost({commands: {name(ctx: {account, requestId, command}, input) {...}}, limits?: {perMinute?, budgetOf?(account) -> number /* Infinity = unlimited: the host's own principal */}, receipts?: {keepMs?, maxPerAccount?, maxTotal? /* 8192 */, line?}, now?})
+  -> {execute(account, name, requestId, input), fragment(account), forwardFragment(), names, stats, adopt(line | null), close}
+  // deduplication while the receipt is retained per (account, requestId): a duplicate — including one arriving through ANOTHER node —
+  //   answers with a CLONE of the first result (the receipt); concurrent duplicates share one in-flight run;
+  //   an error commits nothing (honest retry); receipts expire by keepMs / evict past maxPerAccount;
+  //   rate limit burns budget on new executions only — receipt answers are free. The limiter is a
+  //   genuinely ROLLING minute (createRateWindow under the hood): a boundary burst cannot double it.
+  //   Memory-flat by construction: maxTotal bounds receipts across ALL accounts, and fully-expired
+  //   departed accounts are drained (receipts, budget window and all) as other work flows.
+  // fragment(account) = per-connection facade (requestId, input); forwardFragment() = TRUSTED hop entry
+  //   (account, requestId, input) — give it only to links the application authenticated (service token).
+Command.createCommandReceipts({store?, initial?, replay?}) -> {api, control: {set, delete, snapshot, ...}, store, close}   // + commandReceiptKey(account, requestId)
+  // commandReceiptKey encodes a JSON tuple; restored embedded receipts are rekeyed from their record fields.
+  //   Previously overwritten colliding records cannot be recovered. Treat keys as opaque; do not concatenate them.
+  // the receipt space as a replicated LINE: with receipts.line the host publishes every COMMITTED receipt
+  //   (and every drop — bounds hold on the line too) and rebuilds its index from the line; adopt(line)
+  //   swaps the memory at runtime (a promoted authority adopts the line it seeded from the followed
+  //   snapshot), adopt(null) clears the index and detaches. Late work cannot modify a closed or replaced index.
+  //   Pending receipts are never published. Replication is asynchronous: even an acknowledged command
+  //   can repeat after failover if its receipt has not reached the successor. Expiry/eviction also permits
+  //   another execution. External effects require resource-side atomic deduplication/fencing.
+  //   Oracle: replay/command-receipts.test.ts.
+Command.forwardCommands({upstream /* authority forwardFragment proxy */, names}) -> {fragment(account), names}
+  // a mirror node serves the SAME (requestId, input) fragment shape as the authority — clients cannot
+  //   tell nodes apart, and a retry through a DIFFERENT node still lands on the one receipt space.
+  // Conversation/AI hosts keep their own persisted receipts; new hosts start from this primitive
+  //   (the demo workboard host and its mirror hop now run on it — no behavior change, oracle-pinned).
+  // Oracle: replay/command-host.test.ts; stand: the same Lab card — "+10 via my node" writes through the
+  //   node the tab currently reads from, "Repeat last requestId" (even after drain, via another node)
+  //   answers from the receipt and the counter does not double.
+// TWO EXPLICIT TRUST MODES for a relayed corridor:
+//   trusted-mirror — forwardCommands/forwardFragment above: the relay is authenticated by the
+//     application (service token) and ASSERTS the end client's account; the authority trusts it.
+//   end-to-end (default where the secret can be shared) — the pair below: every call carries the
+//     END client's raw token, the relay copies it opaquely, ONLY the authority resolves it.
+//     A compromised relay forges nothing; the worst it can do is replay into the receipts.
+Command.verifyCommands({host /* execute+names of a command host */, accountOf: (token) => account | Promise<account>})
+  -> {fragment() /* (token, requestId, input) per name */, names}
+  // authority entry for token-carrying hops: accountOf verifies EVERY call (codec verify + deny list +
+  //   anything else); a throw rejects the call and commits nothing. Owns NO crypto and NO token format —
+  //   transport auth of the relay itself stays in RPC auth (doc/RPC-AUTH.md), this rides inside it.
+Command.forwardCommandsByToken({upstream /* authority verifyCommands proxy */, names}) -> {fragment(token), names}
+  // relay entry: fragment(token) serves the SAME client-facing (requestId, input) shape; capture the
+  //   token where the relay's own resolveAuth verified it (the per-principal facade closure).
+  // Oracle: replay/command-token.test.ts (real createTokenCodec: signature/expiry/deny, receipt space
+  //   shared between the token hop and direct execution). Stand: the same Lab card — Login mints a codec
+  //   token, EVERY node verifies it locally (shared secret), Revoke is one replicated fact: the leader
+  //   cuts its sessions, each mini cuts its own, writes die on ALL nodes instantly; re-login resumes.
+```
+
+### Scale: the deployment triangle
+```
+// The deployment triangle assembled (import {Scale} from 'wenay-common2'):
+Scale.createAuthority<T>({
+    line: {storeId, originId, nodeId? /* 'authority' */, lineId?, initial, durable?: {storage, everyEvents?, everyMs?}},
+    roster: {url, weight? /* 1 */, heartbeatMs?, staleMs? /* 15s */, acceptNode?, meta?},
+    identity: {issue(account) -> token, verify(presented) -> {account, expiresAt?} | throw, renewBeforeMs?},
+    corridor?: {commands?, limits?, receipts?},
+    control?: {durable?: {storage, everyEvents?, everyMs?}},
+    leadership?: {role?: 'leader' | 'standby', epoch?, upstream?: () => AuthorityUpstream, autoPromoteMs?, elect?, accept?}, log?})
+  -> {line: {control, api}, roster: {control: {set, patch, heartbeat, drain, undrain, remove, get, snapshot}, api /* the nodes PROJECTION line */},
+      identity: {login, renew, revoke, mint, principal(token) /* verified {account, expiresAt?} or throw; the deny list applies */},
+      corridor: {execute, names, fragment(account), byToken()},
+      serve: {browser(account), reader(), nodeLink(linkNodeId?), connection({principal?}?)},
+  // serve.connection({principal}) = the same audience seam as createStoreNode's serve.audience.principal:
+  //   shape the gated facade per verified principal (defaults {whoami, commands, revoke, store}); the
+  //   shaper's return type flows to the wire types. identity.principal(token) is the REST relay's
+  //   verifier (a bearer → the principal). Oracle: observe/scale-audience.test.ts.
+      control: {promote(reason?)}, events: {role}, view: {role(), leaderId(), epoch(), nodes(), readers(), isRevoked(account), restored(), archive()}, start, close}
+  // inputs mirror the outputs: line = the replica coordinates (StoreLineCoordinates, declared once in
+  //   store-replica-set), roster = this process's own row + the liveness policy, corridor = the write half.
+  // line.durable = the STORAGE SEAM: the replica line on the persistence port (ReplayStorage — memory,
+  //   fs from wenay-common2/server, or the host's DB adapter; the port, never a provider). A restart
+  //   restores the state, CONTINUES the seq space and serves reconnecting followers from the journal
+  //   (since() answered, no forced keyframe); `initial` then only seeds an empty archive.
+  //   view.restored() = what the boot found ({seq, fromArchive} | null without the seam), view.archive()
+  //   = the archiver counters. `initial` is ADOPTED by the Store (no copy): give every authority its own object.
+  //   control.durable puts the CONTROL line on the same port (its own archive): receipts and the deny
+  //   list survive a solo restart, the roster is wiped on restore (rows are liveness facts of a dead
+  //   lifetime — nodes re-register); view.restored().control says what the boot found. A born leader
+  //   only; a promoted standby keeps what it followed. Without it a solo restart re-executes an
+  //   acknowledged requestId. Oracles: observe/scale-durable.test.ts, observe/scale-durable-receipts.test.ts.
+  //   close() flushes the pending Store window into the archive first (observe/scale-durable-close.test.ts).
+  //   Partition address = storeId: one authority per partition, the same
+  //   three factories; a command lives inside ONE partition (ROADMAP §6.2).
+  // Solo start = the cluster config: an authority with zero nodes serves readers itself and the cluster
+  //   client places on the leader row; a node added later takes new readers by weight, placed clients
+  //   stay sticky, a drain returns them gap-free — the consumer config never changes. Two authorities in
+  //   one process share nothing (closures over their own storeId). Oracle: observe/scale-solo.test.ts.
+  // ONE control line: roster + deny list + receipts are three SECTIONS of one store served as one Store
+  //   Replay line (nodeLink().control). Nodes and standbys follow it in ONE subscription; browsers get the
+  //   `nodes` section as a projection line (serve.browser().roster / roster.api) — never the deny list or
+  //   the receipts. Liveness is published here: roster.staleMs is the owner's verdict window.
+  // the single point of order from ONE config object: replica line + node directory + command corridor
+  //   (end-to-end verification of EVERY relayed call) + the identity lifecycle over a replicated deny
+  //   list — login lifts the ban, renew refuses revoked, revoke cuts live sessions NOW and every node
+  //   follows the same fact. identity.issue/verify are HOST adapters — no crypto and no token format here.
+  // serve.* are audience-ready RPC blocks: browser (ungated participant surface), reader (lean line),
+  //   nodeLink (trusted node link: register behind acceptNode, heartbeat merging meta at the ROSTER,
+  //   the ONE control line, token-envelope commands), connection() = the gated per-socket block {object,
+  //   auth, attach, close} implementing RPC-AUTH rules 1/3/6/7. start() = the authority's own row +
+  //   heartbeat with {readers, ...meta()}; view.readers() is the line's ACTIVE subscriber count.
+  // nodeLink identity discipline: every verb refuses the authority's own row, and nodeLink(nodeId)
+  //   BINDS the link to the node id the host authenticated (the hosts here bind to the handshake's
+  //   `node` claim) — foreign rows are refused, so a bound link cannot overwrite or delist a peer;
+  //   with a fleet-wide node token the claim itself is still trusted. register accepts the node's OWN facts {pid?, readers?}
+  //   (createStoreNode sends both), so a crash-restart resets stale load instead of inheriting it;
+  //   non-finite counts (readers/pid) sanitize to 0. See doc/RPC-AUTH.md (Rule 7).
+  // SUCCESSION (the same factory as leader or standby): leadership.role 'standby' + upstream (the CURRENT
+  //   leader's nodeLink(standbyId), host-resolved, re-resolved per reconnect) follows the replica line and
+  //   the ONE control line — roster, deny list, receipts together — and registers a 'standby' row (weight 0).
+  //   ONE leadership decision, the replica set's (fork choice / autoPromoteMs / injected elect+accept lease
+  //   seam): when it makes this process the leader, the followed control store CONTINUES as the owned line
+  //   (the follower's own promote — every section re-owned in the same instant; a follower whose link
+  //   already died hands over its last state by copy), the command host adopts the receipts section (an OLD
+  //   requestId answers its receipt only if delivered to and retained by the successor), the fleet gets a grace of staleMs before anyone is
+  //   published dead,
+  //   the dead leader's row goes, the own row flips to 'leader'. A leader that loses fork choice DEMOTES:
+  //   writes refuse ("is standby ... the leader is X"), and with an upstream it follows the winner.
+  //   A standby never auto-promotes before its FIRST follow (no epoch-1 twins at boot); control.promote()
+  //   is the operator's forced take-over. events.role fires on transitions (view.role() is the birth
+  //   role) — the HOST rewires sockets on it: a standby serves reader() only (browser/nodeLink throw).
+  //   Not owned here: transport rotation to the new leader (nodes re-home when deps.upstream() returns a
+  //   different link; browsers need the host to point them at the new url — its row is in the roster).
+  //   Oracle: observe/scale-failover.test.ts (failover, roster/deny/receipt continuity, node re-home,
+  //   demotion of a returning leader, first-follow guard, forced promote).
+Scale.createClusterClient<T>({line: {storeId, originId, nodeId, lineId?, initial}, roster /* the roster line: serve.browser().roster */,
+    connect: (view) => session /* the host owns sockets */, placement?: {label?, priorityOf?, rng?, balance?},
+    leadership?, log?})
+  -> {store, status, ready, placement: {placedNodeId(), repick()}, view: {nodes(), route(), roster()}, close}
+  // one consumer from ONE config object: followNodeDirectory + sticky weighted placement + the offers
+  //   bridge + a replica set. The pick decides WHERE to land and is NOT re-rolled on roster churn —
+  //   only when the placed node loses eligibility (drain / dead / weight<=0 / gone) or on repick();
+  //   below the placement the line always moves gap-free by seq (level 2 decides, level 3 hands off).
+  //   Opt-in balance also uses readers/weight to move toward spare capacity; default 1→2 growth
+  //   includes beneficial moves at the exact threshold, without moving a lone equal-weight reader.
+  //   createStoreNode.leave withdraws before its grace; an unanswered goodbye cannot delay host exit.
+// Scale.createStoreNode = the third corner, the SAME factory as Observe.createStoreNode above.
+// Oracles: observe/scale-authority.test.ts + observe/scale-client.test.ts (real RPC / live authority).
+```
+Ownership and partition limits: [SCALE-SAFETY.md](SCALE-SAFETY.md). Local canWrite and elect/accept do not provide automatic lease expiry or external-effect fencing. Old authority node links reject registry writes after their ownership generation ends.
+Command receipt replication is asynchronous: a crash before receipt delivery can let a successor re-execute a request — see [SCALE-SAFETY.md](SCALE-SAFETY.md#acknowledged-commands-and-receipt-delivery).
+
+### Built-in fragments on Store Replay V2
+```
+// Built-in AI/Conversation/Artifact/FileJob state fragments use Store Replay V2 and reconcile account
+// projections by changed record id, so an unrelated tenant produces no view patches.
+// Their clients expose stateMode(), which is always 'v2'.
+// Living check: `npm run demo` → Store shows `replay v2` beside its live seq.
+```
+
+### Store manager: declarative resource plan
+```
+// Declarative resource manager above mirror/replay/offline: app chooses what to start, not the store core
+Observe.managedStore.mirror({remote, initial, mask, tags?, priority?, explicitOnly?, large?, sync?})
+Observe.managedStore.replay({remote, initial, tags?, priority?, explicitOnly?, large?, syncOpts?})
+Observe.managedStore.offline({remote?, initial, storage, storageKey?, tags?, priority?, explicitOnly?, large?, syncOpts?})
+Observe.createStoreManager(resources) -> {plan(opts?), start(key, opts?), startPlanned(opts?), stop(key), stopAll(), get(key), touch(key, weight?), usage(), statusListen, handles}
+  // plan excludes explicitOnly/large by default; {includeExplicit, includeLarge} opts opt them in
+
+// configurable app-level resource plan
+const manager = Observe.createStoreManager({
+    market: Observe.managedStore.mirror({remote: api.market, initial: {data: {}, meta: {}}, mask: {data: {BTC: true}}, tags: ['bootstrap'], priority: 10}),
+    rows: Observe.managedStore.offline({remote: exposed.api.replay, initial: {}, storage: Observe.createMemoryOfflineStorage(), tags: ['grid']}),
+    video: Observe.managedStore.replay({remote: videoReplay, initial: {}, explicitOnly: true, large: true}),
+})
+await manager.startPlanned({tags: ['bootstrap']})
+manager.touch('rows', 3)               // usage can raise future plan score
+await manager.start('video', {explicit: true})
+```
+
 ## Store: compatibility of type metadata
 
 StoreGetter<T> preserves the masked/full getter overload across RPC. StoreReplayState<T>

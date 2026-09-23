@@ -200,7 +200,7 @@ asserts the account, application-authenticated link) and `end-to-end`
 the authority resolves it), end-to-end the default where the secret can be shared. `RPC-AUTH.md`
 was read before the code and is unchanged — no transport-auth surface changed; the envelope rides
 INSIDE authenticated calls and the trust modes are documented in the Command block of
-`wenay-common2.md`.
+`wenay-common2-rare.md` (Observe — extended; moved from the brief in 3.0.0).
 
 - Library: `src/Common/command/command-token.ts` — `CommandTokenFragment`,
   `verifyCommands({host, accountOf})` (authority: verify EVERY call; a throw commits nothing),
