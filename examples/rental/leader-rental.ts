@@ -41,9 +41,9 @@ async function main() {
     }
     // node processes have no Origin and pass regardless; browser stands get CORS
     // pinned to the stand's own origin (config.corsOrigins carries the env override)
-    const transport = createHostResource({port, socket: {
-        cors: {origin: corsOrigins(process.env, ['http://localhost:' + port]), methods: ['GET', 'POST']},
-    }})
+    const transport = createHostResource({port,
+        origins: () => corsOrigins(process.env, ['http://localhost:' + port]),
+    })
     const {app, io: ioServer} = transport.resource
     let closeLeader = function noLeader() {}
     let closing: Promise<void> | undefined

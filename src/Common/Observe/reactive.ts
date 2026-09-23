@@ -35,6 +35,7 @@
 
 import {createListen} from "../events/Listen";
 import {deferImmediate} from '../core/defer-immediate'
+import {isReactiveObj, prepareReactiveValue} from './reactive-value'
 import {
     REACTIVE_ARRAY_MUTATIONS,
     type ReactiveArrayMutations,
@@ -48,13 +49,6 @@ export type Opts = {drain?: Drain; depth?: number; eager?: boolean}
 type InternalOpts = Opts & {_onMutation?: (path: PropertyKey[]) => void}
 
 const NODE = Symbol('reactive.node')
-const isObj = (v: any) => v != null && typeof v == 'object'
-const isReactiveObj = (v: any) => {
-    if (!isObj(v)) return false
-    if (Array.isArray(v)) return true
-    const p = Object.getPrototypeOf(v)
-    return p == Object.prototype || p == null
-}
 
 // the only place the deferral primitive is chosen — pluggable on purpose
 function scheduler(drain: Drain): (f: Fn) => void {
@@ -175,7 +169,7 @@ export function reactive<T extends object>(root: T, opts: Opts = {}) {
         })
         eng.onMutation = onMutation
     }
-    const rootNode = makeNode(root, null, [], 0, eng)
+    const rootNode = makeNode(prepareReactiveValue(root, toRaw), null, [], 0, eng)
     if (eager) prewalk(rootNode)
     return rootNode.proxy as T
 }
@@ -198,7 +192,7 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
             if (k == NODE) return node
             if (k == 'toJSON' && Array.isArray(proxyTarget) && !Array.isArray(node.target) && node.target?.toJSON === undefined)
                 return () => node.target
-            const v = node.target[k]
+            const v = toRaw(node.target[k])
             if (isReactiveObj(v) && level < eng.depth) {
                 let kid = node.kids.get(k)
                 if (!kid) { kid = makeNode(v, node, [...node.path, k], level + 1, eng); node.kids.set(k, kid) }
@@ -208,7 +202,7 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
             return v
         },
         set(_, k, v) {
-            v = toRaw(v)                             // no reactive-in-reactive: state holds raw values only
+            v = prepareReactiveValue(v, toRaw)        // resolve nested proxies before any slot can move
             const had = Object.prototype.hasOwnProperty.call(node.target, k)
             const old = node.target[k]
             if (had && Object.is(old, v)) return true
@@ -240,7 +234,7 @@ function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: 
         defineProperty(_, k, d) {
             const had = Object.prototype.hasOwnProperty.call(node.target, k)
             const old = node.target[k]
-            const desc = 'value' in d ? {...d, value: toRaw(d.value)} : d
+            const desc = 'value' in d ? {...d, value: prepareReactiveValue(d.value, toRaw)} : d
             const ok = Reflect.defineProperty(node.target, k, desc)
             const v = node.target[k]
             if (!ok && Object.is(old, v)) return false
@@ -313,7 +307,7 @@ function bubble(from: Node, key: PropertyKey, replacedArrayBranch = false) {
 // a slot was replaced wholesale: KEEP node identity (subscribers survive), point it
 // at the new value, and propagate the fact down to existing descendant watchers.
 function rebind(node: Node, next: any) {
-    node.target = next
+    node.target = next = toRaw(next)
     if (node.subs.size || node.pathSubs.size) node.eng.dirty.add(node)
     for (const [k, kid] of [...node.kids]) {
         const cv = isReactiveObj(next) ? next[k] : undefined
@@ -407,11 +401,13 @@ function detachTruncatedChildren(node: Node) {
 }
 
 // eager: pre-wrap the whole tree to depth (full reactivity up front)
-function prewalk(node: Node) {
-    if (node.level >= node.eng.depth) return
+function prewalk(node: Node, ancestors = new WeakSet<object>()) {
+    if (node.level >= node.eng.depth || ancestors.has(node.target)) return
+    ancestors.add(node.target)
     for (const k of Reflect.ownKeys(node.target)) {
-        if (isReactiveObj(node.target[k])) { node.proxy[k]; const kid = node.kids.get(k); if (kid) prewalk(kid) }
+        if (isReactiveObj(node.target[k])) { node.proxy[k]; const kid = node.kids.get(k); if (kid) prewalk(kid, ancestors) }
     }
+    ancestors.delete(node.target)
 }
 
 // ============================================================

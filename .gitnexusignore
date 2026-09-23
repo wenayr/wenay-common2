@@ -1,0 +1,25 @@
+# Generated copies of source code
+/dist/
+/lib/
+/coverage/
+/node_modules/
+**/node_modules/
+
+# Local agent state and temporary task notes
+/.claude/
+/.codex/
+/.agents/
+/doc/progress/
+
+# First browsing profile: library implementation, without test/example hubs
+**/*.spec.*
+**/*.test.*
+/examples/
+/experiments/
+/demo/
+/observe/
+/oracle/
+/replay/
+/test/
+/type-tests/
+/scripts/

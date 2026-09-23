@@ -5,14 +5,15 @@
     "scripts": {
         "start": "tsx run.ts",
         "example": "tsx example.ts",
-        "check": "tsx http-host-check.ts && tsx host-lifecycle-check.ts && tsx concurrent-check.ts && tsx check.ts && tsx example.ts",
+        "check": "tsx http-host-check.ts && tsx host-lifecycle-check.ts && tsx concurrent-check.ts && tsx check.ts && tsx example.ts && tsx persistence-check.ts",
+        "example:persistence": "tsx persistence-check.ts",
         "typecheck": "tsc --noEmit"
     },
     "engines": {
         "node": ">=20.0.0"
     },
     "dependencies": {
-        "wenay-common2": "^2.16.0",
+        "wenay-common2": "2.21.2",
         "express": "^5.2.1",
         "socket.io": "^4.8.3",
         "socket.io-client": "^4.8.3"

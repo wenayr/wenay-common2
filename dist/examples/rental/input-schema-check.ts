@@ -3,8 +3,12 @@ import assert from 'node:assert/strict'
 import {buildInputValidate, inputJsonSchema, schemaCommand} from './input-schema'
 import {createServiceLeader, type ServiceCommandCtx, type tServiceDefinition} from './leader'
 
-const schema = {day: 'date-string', contact: {object: {email: 'string'}}} as const
-const valid = {day: '2024-02-29', contact: {email: 'test@example.invalid'}}
+const schema = {
+    day: 'date-string', contact: {object: {email: 'string'}},
+    recipe: {array: {object: {ingredientId: 'string', quantity: 'number'}}},
+    checklist: {array: {object: {title: 'string', done: 'boolean', notes: {array: 'string', optional: true}}}, optional: true},
+} as const
+const valid = {day: '2024-02-29', contact: {email: 'test@example.invalid'}, recipe: [{ingredientId: 'dough', quantity: 250}]}
 const invalidDays = ['2026-02-29', '1900-02-29', '2026-02-30', '2026-04-31', '2026-13-01', '2026-00-01', '2026-01-00', '2026-1-01', '2026-01-01T00:00:00Z']
 
 async function main() {
@@ -21,6 +25,39 @@ async function main() {
     assert.throws(function invalidArrayDay() { dates({days: ['2024-02-29', '2026-02-29']}) }, /input.days\[1\] must be an ISO day/)
     const document = inputJsonSchema(schema)
     assert.deepEqual(document.properties.day, {type: 'string', format: 'date'})
+    assert.deepEqual(document.properties.recipe, {type: 'array', items: {
+        type: 'object', properties: {ingredientId: {type: 'string'}, quantity: {type: 'number'}},
+        required: ['ingredientId', 'quantity'], additionalProperties: false,
+    }})
+    assert.deepEqual(document.properties.checklist, {type: 'array', items: {
+        type: 'object', properties: {title: {type: 'string'}, done: {type: 'boolean'}, notes: {type: 'array', items: {type: 'string'}}},
+        required: ['title', 'done'], additionalProperties: false,
+    }})
+    assert(!document.required?.includes('checklist'))
+    const invalidRecipes: [unknown, RegExp][] = [
+        [null, /input.recipe must be an array/],
+        [[null], /input.recipe\[0\] must be an object/],
+        [[undefined], /input.recipe\[0\] must be an object/],
+        [Array(1), /input.recipe\[0\] must be an object/],
+        [[{ingredientId: 'dough'}], /input.recipe\[0\].quantity is required/],
+        [[{ingredientId: 'dough', quantity: '250'}], /input.recipe\[0\].quantity must be a finite number/],
+        [[{ingredientId: 'dough', quantity: NaN}], /input.recipe\[0\].quantity must be a finite number/],
+        [[{ingredientId: 'dough', quantity: Infinity}], /input.recipe\[0\].quantity must be a finite number/],
+        [[{ingredientId: 'dough', quantity: 250, hidden: true}], /input.recipe\[0\].hidden is not a known field/],
+    ]
+    for (const [recipe, pattern] of invalidRecipes) assert.throws(() => validate({...valid, recipe}), pattern)
+    assert.doesNotThrow(() => validate({...valid, recipe: [], checklist: []}))
+    assert.doesNotThrow(() => validate({...valid, checklist: [{title: 'Prepare', done: false, notes: ['checked']}]}))
+    assert.throws(() => validate({...valid, checklist: null}), /input.checklist must be an array/)
+    assert.throws(() => validate({...valid, checklist: [undefined]}), /input.checklist\[0\] must be an object/)
+    assert.throws(() => validate({...valid, checklist: [{title: 'Prepare', done: false, notes: [3]}]}), /input.checklist\[0\].notes\[0\] must be a string/)
+    const recursive = {groups: {array: {array: {object: {kind: {enum: ['a', 'b']}, dates: {array: 'date-string'}}}}}} as const
+    buildInputValidate(recursive)({groups: [[{kind: 'a', dates: ['2024-02-29']}]]})
+    assert.throws(() => buildInputValidate(recursive)({groups: [[{kind: 'c', dates: []}]]}), /input.groups\[0\]\[0\].kind must be one of/)
+    assert.deepEqual(inputJsonSchema(recursive).properties.groups, {type: 'array', items: {type: 'array', items: {
+        type: 'object', properties: {kind: {type: 'string', enum: ['a', 'b']}, dates: {type: 'array', items: {type: 'string', format: 'date'}}},
+        required: ['kind', 'dates'], additionalProperties: false,
+    }}})
 
     type State = {result: {effects: number, day: string}}
     let domainChecks = 0
@@ -46,6 +83,10 @@ async function main() {
             await assert.rejects(leader.corridor.execute('owner', 'record', 'retry', {...valid, day}), /input.day must be an ISO day/)
         }
         await assert.rejects(leader.corridor.execute('owner', 'record', 'retry', extraField), /input.contact.secret is not a known field/)
+        for (const [recipe, pattern] of invalidRecipes) {
+            // @ts-expect-error Intentionally bypass the typed facade to test invalid runtime input.
+            await assert.rejects(leader.corridor.execute('owner', 'record', 'retry', {...valid, recipe}), pattern)
+        }
         assert.equal(domainChecks, 0)
         assert.equal(JSON.stringify(leader.view.state()), before)
         const result = await leader.corridor.execute('owner', 'record', 'retry', valid)
@@ -54,7 +95,7 @@ async function main() {
         assert.equal(domainChecks, 1)
         assert.equal(leader.view.state().result.effects, 1)
     } finally { leader.control.close() }
-    console.log('PASS input schema: real calendar days, nested/array paths, rejection before domain effects and same-ID retry')
+    console.log('PASS input schema: dates, recursive object arrays, optional fields, OpenAPI items, indexed errors, rejection before effects and same-ID retry')
 }
 
 main().catch(function failed(error) { console.error(error); process.exitCode = 1 })

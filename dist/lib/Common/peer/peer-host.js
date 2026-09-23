@@ -64,9 +64,13 @@ function createPeerHost(deps = {}) {
         presenceJoin(account);
         let connectionClosed = false;
         function publish(envelope) {
+            if (connectionClosed)
+                return false;
             return mine.push(envelope);
         }
         function publishBatch(envelopes) {
+            if (connectionClosed)
+                return false;
             return mine.pushBatch(envelopes);
         }
         function closeConnection() {

@@ -3,6 +3,8 @@ export * from "./Common/core/BaseTypes";
 export * from "./Common/core/common";
 export * from "./Common/core/MemoFunc";
 export * from "./Common/async/waitRun";
+export * from './Common/async/resource-scope';
+export * from './Common/async/reconciler';
 export * from "./Common/async/promiseProgress";
 export * from "./Common/async/createIterableObject";
 export * from "./Common/data/List";

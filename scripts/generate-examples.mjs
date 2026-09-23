@@ -27,11 +27,11 @@ export const EXAMPLES = {
     },
     'ai-support': {
         template: false,
-        files: ['provider.ts', 'service.ts', 'host.ts', 'client.ts', 'page.ts', 'run.ts', 'example.ts', 'check.ts', 'host-lifecycle-check.ts', 'concurrent-check.ts',
+        files: ['provider.ts', 'service.ts', 'host.ts', 'client.ts', 'page.ts', 'run.ts', 'example.ts', 'check.ts', 'host-lifecycle-check.ts', 'concurrent-check.ts', 'persistence.ts', 'persistence-check.ts',
             {from: '../../resources/http-host.ts', to: 'http-host.ts'},
             {from: '../../resources/http-host-check.ts', to: 'http-host-check.ts'}],
         dependencies: ['express', 'socket.io', 'socket.io-client'],
-        scripts: {start: 'tsx run.ts', example: 'tsx example.ts', check: 'tsx http-host-check.ts && tsx host-lifecycle-check.ts && tsx concurrent-check.ts && tsx check.ts && tsx example.ts', typecheck: 'tsc --noEmit'},
+        scripts: {start: 'tsx run.ts', example: 'tsx example.ts', check: 'tsx http-host-check.ts && tsx host-lifecycle-check.ts && tsx concurrent-check.ts && tsx check.ts && tsx example.ts && tsx persistence-check.ts', 'example:persistence': 'tsx persistence-check.ts', typecheck: 'tsc --noEmit'},
     },
     'small-jobs': {
         files: ['service.ts', 'leader-small-jobs.ts', 'node-small-jobs.ts', 'run.mjs', 'example.ts', 'check.ts', 'stand-check.ts',
@@ -40,8 +40,9 @@ export const EXAMPLES = {
     },
     hosting: {
         template: false,
-        files: ['service.ts', 'worker.ts', 'process-resource.ts', 'example.ts', 'check.ts', 'run.ts'],
-        scripts: {start: 'tsx run.ts', example: 'tsx example.ts', check: 'tsx check.ts', typecheck: 'tsc --noEmit'},
+        files: ['service.ts', 'worker.ts', 'process-resource.ts', 'example.ts', 'check.ts', 'run.ts', 'session-resources.ts', 'public-address.ts', 'agent-orchestration.ts'],
+        dependencies: ['socket.io', 'socket.io-client'],
+        scripts: {start: 'tsx run.ts', example: 'tsx example.ts', check: 'tsx check.ts && tsx session-resources.ts && tsx public-address.ts && tsx agent-orchestration.ts', 'example:resources': 'tsx session-resources.ts', 'example:agent': 'tsx agent-orchestration.ts', 'repro:public-address': 'tsx public-address.ts', typecheck: 'tsc --noEmit'},
     },
     'smart-home': {
         template: false,
@@ -57,8 +58,8 @@ export const EXAMPLES = {
         scripts: {start: 'node run.mjs', example: 'tsx example.ts', benchmark: 'tsx benchmark.ts', 'probe:entities': 'tsx dynamic-api-probe.ts', 'probe:http': 'tsx entity-http-probe.ts', check: 'tsx input-schema-check.ts && tsx migration-check.ts && tsx entity-probe-check.ts && tsx durable-check.ts && tsx stand-check.ts && tsx check.ts', typecheck: 'tsc --noEmit'},
     },
     pizzeria: {
-        files: ['service.ts', 'identity.ts', 'leader-pizzeria.ts', 'node-pizzeria.ts', 'account-id-check.ts'],
-        scripts: {start: 'node run.mjs', check: 'tsx account-id-check.ts && tsx check.ts', typecheck: 'tsc --noEmit'},
+        files: ['service.ts', 'identity.ts', 'leader-pizzeria.ts', 'node-pizzeria.ts', 'account-id-check.ts', 'network-check.ts'],
+        scripts: {start: 'node run.mjs', check: 'tsx account-id-check.ts && tsx check.ts && npm run test:network', 'test:network': 'tsx network-check.ts', typecheck: 'tsc --noEmit'},
     },
     apartments: {
         // the in-repo oracle IS the copy's check: it only uses package-mappable imports
@@ -104,6 +105,7 @@ async function generate(name, example) {
     manifest.name = `wenay-${name}-example`
     manifest.scripts = example.scripts
     const library = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'))
+    manifest.dependencies['wenay-common2'] = library.version
     manifest.dependencies['swagger-ui-dist'] = library.devDependencies['swagger-ui-dist']
     if (example.template == false) {
         manifest.dependencies = {'wenay-common2': manifest.dependencies['wenay-common2']}

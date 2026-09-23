@@ -516,6 +516,7 @@ export function createPeerClient<T extends object, J extends tRelayGap = 'resume
     type PeerView = ReturnType<typeof makeView>
 
     function peer(other: string): PeerView {
+        ensurePeerClientOpen()
         const existing = views.get(other)
         if (existing) return existing
         const view = makeView(other)

@@ -11,6 +11,7 @@ import path from 'node:path'
 import {fileURLToPath} from 'node:url'
 
 const name = process.argv[2]
+const published = process.argv.includes('--published')
 if (!name || !/^[a-z][a-z0-9-]*$/.test(name)) throw new Error('usage: node scripts/verify-examples.mjs <example-name>')
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const npm = process.env.npm_execpath ?? path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js')
@@ -23,11 +24,16 @@ function run(args, cwd = work) {
 }
 try {
     await fs.writeFile(path.join(work, 'package.json'), JSON.stringify({name: `${name}-package-check`, private: true}))
-    const packed = JSON.parse(run([npm, 'pack', path.join(root, 'dist'), '--json', '--pack-destination', work]))
-    assert(packed[0].files.some(file => file.path == `examples/${name}/package.json`), `examples/${name} is not packed`)
-    const archive = path.join(work, packed[0].filename)
+    const version = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8')).version
+    let archive = `wenay-common2@${version}`
+    if (!published) {
+        const packed = JSON.parse(run([npm, 'pack', path.join(root, 'dist'), '--json', '--pack-destination', work]))
+        assert(packed[0].files.some(file => file.path == `examples/${name}/package.json`), `examples/${name} is not packed`)
+        archive = path.join(work, packed[0].filename)
+    }
     // Extract the example from the actual installed package, not the checkout.
     run([npm, 'install', archive, '--ignore-scripts', '--no-audit', '--no-fund'])
+    assert.equal(JSON.parse(await fs.readFile(path.join(work, 'node_modules/wenay-common2/package.json'), 'utf8')).version, version)
     const target = path.join(work, name)
     await fs.cp(path.join(work, `node_modules/wenay-common2/examples/${name}`), target, {recursive: true})
     run([npm, 'install', archive, '--ignore-scripts', '--no-audit', '--no-fund'], target)
@@ -36,7 +42,7 @@ try {
     if (process.argv.includes('--benchmark')) console.log(run([npm, 'run', 'benchmark'], target))
     if (process.argv.includes('--entity-probe')) console.log(run([npm, 'run', 'probe:entities'], target))
     if (process.argv.includes('--http-probe')) console.log(run([npm, 'run', 'probe:http'], target))
-    console.log(`PASS installed ${name} example outside repository`)
+    console.log(`PASS ${published ? 'published npm' : 'installed tarball'} ${version} ${name} example outside repository`)
 } finally {
     const resolved = await fs.realpath(work)
     assert.equal(path.dirname(resolved), tempRoot)

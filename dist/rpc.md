@@ -7,6 +7,10 @@ Bidirectional, strongly-typed RPC protocol over sockets (Socket.IO or similar).
 **Essence:** Server exposes a nested JS object $\to$ Client receives a typed proxy.
 **Auth:** in-band tokens (`Pkt.HELLO`), see §5. Before writing any auth code read the canonical page
 **[`doc/RPC-AUTH.md`](doc/RPC-AUTH.md)** — §5 is its compressed mirror, not a substitute.
+The service scaffold adds reactive permissions, per-session role-view revocation, automatic facade
+refresh and ready-token renewal using existing RPC/replay APIs. Client `identity.permissions`,
+`identity.onToken`, `identity.onAuth` and `health` replace UI polling; replica revocation still follows
+local arrival of authority updates. See the [scaffold session contract](doc/RPC-AUTH.md#service-scaffold-live-roles-and-client-session-ownership).
 
 ---
 
@@ -229,6 +233,13 @@ await done;
 ```
 
 Compatibility names `.callback(cb)`, `.removeCallback()`, and `.unsubscribe()` still exist for old clients, but they are not the recommended API.
+
+Since 2.18.2, callback-shaped `.on(cb)` / `.callback(cb)` under a dynamic `noStrict`
+path also return an owned callable/awaitable handle. Closing it releases the physical
+subscription, so peer shutdown can immediately precede hub shutdown without unhandled
+`RPC_ABORT`. These dynamic subscriptions are never automatically replayed after
+reconnect and remain outside principal-pruning discovery; the authorization limit is
+unchanged. See [peer ownership](doc/PEER-LIFECYCLE.md).
 
 
 ### 3.5 Request Management and Debug
@@ -561,3 +572,14 @@ pinned algorithm, one expiry (`issue` / `verify`, default TTL 15 min). No JWT, n
 revocation list, no refresh flow, no identity provider — those are the application's.
 
 Node-link register/heartbeat/goodbye are bound to the authority ownership generation and refuse stale links after demotion/re-promotion/close. See [RPC-AUTH.md](doc/RPC-AUTH.md#node-link-ownership-after-succession) and [SCALE-SAFETY.md](doc/SCALE-SAFETY.md).
+Service composition is public since 2.18.0 (`service/client`, `service/server`, `service/host`).
+`identity.me()` returns account, roles, views and commands; live permissions remain a stable Store.
+See [the canonical auth page](doc/RPC-AUTH.md) and [service runtime](doc/SERVICE-RUNTIME.md).
+
+## Service resource ownership (2.19.0)
+
+Static service resources bind unique generation paths to an internal RPC scope. Invalidation
+rejects saved calls/reads, rechecks awaited admission/results, cuts ordinary and noStrict streams,
+and stops flow/replay waits independently of other consumers of a shared source. This additional
+service contract does not alter unscoped RPC teardown. See [RPC-AUTH](doc/RPC-AUTH.md) and
+[SERVICE-RESOURCES](doc/SERVICE-RESOURCES.md); custom hosts must relay the connection hooks.

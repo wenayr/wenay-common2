@@ -42,6 +42,8 @@ __exportStar(require("./Common/core/BaseTypes"), exports);
 __exportStar(require("./Common/core/common"), exports);
 __exportStar(require("./Common/core/MemoFunc"), exports);
 __exportStar(require("./Common/async/waitRun"), exports);
+__exportStar(require("./Common/async/resource-scope"), exports);
+__exportStar(require("./Common/async/reconciler"), exports);
 __exportStar(require("./Common/async/promiseProgress"), exports);
 __exportStar(require("./Common/async/createIterableObject"), exports);
 __exportStar(require("./Common/data/List"), exports);

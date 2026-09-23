@@ -1,0 +1,409 @@
+diff --git a/apps/hosting/backend/agent.ts b/apps/hosting/backend/agent.ts
+index dd99eca..d564929 100644
+--- a/apps/hosting/backend/agent.ts
++++ b/apps/hosting/backend/agent.ts
+@@ -1,163 +1,137 @@
+ import {open, mkdir, unlink, readFile, writeFile} from 'node:fs/promises'
+ import path from 'node:path'
+ import {randomUUID, randomBytes, createHash} from 'node:crypto'
++import {createResourceScope, createReconciler} from 'wenay-common2'
+ import {createServiceClient, type ServiceClientDefinition} from 'wenay-common2/service/client'
+ import {createDockerResource, DeploymentRejected} from './docker'
+ import type {HostingDefinition} from './service'
+ import {createGatewayResource} from './gateway'
+ 
+ export async function startDockerAgent(deps: {url: string, account: string, password: string, socketPath: string, directory: string, readinessMs?: number}) {
+-    await mkdir(deps.directory, {recursive: true})
+-    const lockPath = path.join(deps.directory, 'agent.lock')
+-    const lock = await open(lockPath, 'wx')
+-    await lock.writeFile(JSON.stringify({pid: process.pid, account: deps.account}))
+-    const controller = new AbortController()
+-    const definition: ServiceClientDefinition<HostingDefinition> = await fetch(deps.url+'/api/client', {signal: AbortSignal.timeout(5000)}).then(function descriptor(response) {
+-        if (!response.ok) throw new Error('control service descriptor unavailable')
+-        return response.json()
+-    }).catch(async function failed(error) {await lock.close(); await unlink(lockPath); throw error})
+-    const client = createServiceClient<HostingDefinition>({definition, url: deps.url, auth: {credentials: {account: deps.account, password: deps.password}}})
+-    async function runtime(environment: string) {
+-        const route = client.views.assignments.store.state.environments.find(item => item.id == environment)?.route
+-        const origins = route ? ['SERVICE_CORS_ORIGINS=' + new URL(route).origin, 'SERVICE_PUBLIC_URL=' + new URL(route).origin] : []
+-        const file = path.join(deps.directory, 'runtime-' + createHash('sha256').update(environment).digest('hex') + '.json')
+-        try {return [...JSON.parse(await readFile(file, 'utf8')) as string[], ...origins]}
+-        catch (error) {
+-            if ((error as NodeJS.ErrnoException).code != 'ENOENT') throw error
+-            const values = ['SERVICE_TOKEN_SECRET=' + randomBytes(32).toString('hex'), 'SERVICE_NODE_TOKEN=' + randomBytes(32).toString('hex')]
+-            await writeFile(file, JSON.stringify(values), {flag: 'wx', mode: 0o600})
+-            return [...values, ...origins]
++    const scope = createResourceScope()
++    return scope.start(async function start(signal) {
++        await mkdir(deps.directory, {recursive: true})
++        const lockPath = path.join(deps.directory, 'agent.lock')
++        const lock = await scope.resource.acquire({
++            open: () => open(lockPath, 'wx'),
++            async close(file) { try { await file.close() } finally { await unlink(lockPath) } },
++        })
++        await lock.writeFile(JSON.stringify({pid: process.pid, account: deps.account}))
++        const definition: ServiceClientDefinition<HostingDefinition> = await fetch(deps.url+'/api/client', {signal: AbortSignal.any([signal, AbortSignal.timeout(5000)])}).then(function descriptor(response) {
++            if (!response.ok) throw new Error('control service descriptor unavailable')
++            return response.json()
++        })
++        const client = createServiceClient<HostingDefinition>({definition, url: deps.url, auth: {credentials: {account: deps.account, password: deps.password}}})
++        const closeClient = scope.resource.own(client.close)
++        async function runtime(environment: string) {
++            const route = client.views.assignments.store.state.environments.find(item => item.id == environment)?.route
++            const origins = route ? ['SERVICE_CORS_ORIGINS=' + new URL(route).origin, 'SERVICE_PUBLIC_URL=' + new URL(route).origin] : []
++            const file = path.join(deps.directory, 'runtime-' + createHash('sha256').update(environment).digest('hex') + '.json')
++            try {return [...JSON.parse(await readFile(file, 'utf8')) as string[], ...origins]}
++            catch (error) {
++                if ((error as NodeJS.ErrnoException).code != 'ENOENT') throw error
++                const values = ['SERVICE_TOKEN_SECRET=' + randomBytes(32).toString('hex'), 'SERVICE_NODE_TOKEN=' + randomBytes(32).toString('hex')]
++                await writeFile(file, JSON.stringify(values), {flag: 'wx', mode: 0o600})
++                return [...values, ...origins]
++            }
+         }
+-    }
+-    const docker = createDockerResource({socketPath: deps.socketPath, owner: deps.account, readinessMs: deps.readinessMs, runtime})
+-    const gateway = createGatewayResource()
+-    let running = Promise.resolve()
+-    let busy = false
+-    let dirty = false
+-    let off = ()=>{}
+-    let closing: Promise<void> | undefined
+-    const retries = new Map<string, ReturnType<typeof setTimeout>>()
+-
+-    function retry(id: string) {
+-        if (!retries.has(id)) retries.set(id, setTimeout(function again() {retries.delete(id); schedule()}, 5000))
+-    }
++        const docker = createDockerResource({socketPath: deps.socketPath, owner: deps.account, readinessMs: deps.readinessMs, runtime})
++        const gateway = createGatewayResource()
++        const closeGateway = scope.resource.own(gateway.close)
++        function retry(id: string) { worker.control.retry(id, 5000) }
+ 
+-    async function maintainRoutes() {
+-        const ready = new Set<string>()
+-        const snapshot = client.views.assignments.store.snapshot()
+-        for (const environment of snapshot.environments.filter(item=>item.kind == 'docker')) {
+-            if (controller.signal.aborted || !client.health.state.connected) return ready
+-            try {
+-                const endpoint = await gateway.control.open(environment.id, environment.route)
+-                if (!environment.route) {
+-                    const registered = await client.commands.registerRoute('route-'+environment.id, {environment: environment.id, endpoint})
+-                    if (registered.endpoint != endpoint) throw new Error('route registration did not retain the bound address')
+-                }
+-                ready.add(environment.id)
+-                const active = snapshot.retained.find(item=>item.id == environment.activeOperation && item.status == 'succeeded')
+-                const release = snapshot.releases.find(item=>item.id == active?.release)
+-                if (!active || !release) {gateway.control.activate(environment.id, null); continue}
+-                const observed = await docker.view.observe({operation: active.id, environment: environment.id, artifact: release.artifact, workload: release.workload}, controller.signal)
+-                if (!observed || observed.endpoint != environment.endpoint) {
+-                    gateway.control.activate(environment.id, null)
++        async function maintainRoutes() {
++            const ready = new Set<string>()
++            const snapshot = client.views.assignments.store.snapshot()
++            for (const environment of snapshot.environments.filter(item=>item.kind == 'docker')) {
++                if (signal.aborted || !client.health.state.connected) return ready
++                try {
++                    const endpoint = await gateway.control.open(environment.id, environment.route)
++                    if (!environment.route) {
++                        const registered = await client.commands.registerRoute('route-'+environment.id, {environment: environment.id, endpoint})
++                        if (registered.endpoint != endpoint) throw new Error('route registration did not retain the bound address')
++                    }
++                    ready.add(environment.id)
++                    const active = snapshot.retained.find(item=>item.id == environment.activeOperation && item.status == 'succeeded')
++                    const release = snapshot.releases.find(item=>item.id == active?.release)
++                    if (!active || !release) {gateway.control.activate(environment.id, null); continue}
++                    const observed = await docker.view.observe({operation: active.id, environment: environment.id, artifact: release.artifact, workload: release.workload}, signal)
++                    if (!observed || observed.endpoint != environment.endpoint) {
++                        gateway.control.activate(environment.id, null)
++                        retry('route-'+environment.id)
++                        continue
++                    }
++                    gateway.control.activate(environment.id, {operation: active.id, endpoint: observed.endpoint})
++                    for (const old of snapshot.retained.filter(item=>item.environment == environment.id && item.id != active.id && item.id != environment.pending)) {
++                        const previous = snapshot.releases.find(item=>item.id == old.release)
++                        if (!previous) continue
++                        await gateway.control.drain(old.id)
++                        if (signal.aborted || !client.health.state.connected) return ready
++                        const current = client.views.assignments.store.state.environments.find(item=>item.id == environment.id)
++                        if (current?.activeOperation != active.id || current.pending == old.id) break
++                        await docker.control.remove({operation: old.id, environment: environment.id, artifact: previous.artifact, workload: previous.workload})
++                        await client.commands.confirmCleanup('cleanup-'+old.id, {operation: old.id})
++                    }
++                } catch (error) {
++                    if (signal.aborted) return ready
++                    console.error('Environment '+environment.id+': route or cleanup pending', error instanceof Error ? error.message : 'unknown error')
+                     retry('route-'+environment.id)
+-                    continue
+                 }
+-                gateway.control.activate(environment.id, {operation: active.id, endpoint: observed.endpoint})
+-                for (const old of snapshot.retained.filter(item=>item.environment == environment.id && item.id != active.id && item.id != environment.pending)) {
+-                    const previous = snapshot.releases.find(item=>item.id == old.release)
+-                    if (!previous) continue
+-                    await gateway.control.drain(old.id)
+-                    if (controller.signal.aborted || !client.health.state.connected) return ready
+-                    const current = client.views.assignments.store.state.environments.find(item=>item.id == environment.id)
+-                    if (current?.activeOperation != active.id || current.pending == old.id) break
+-                    await docker.control.remove({operation: old.id, environment: environment.id, artifact: previous.artifact, workload: previous.workload})
+-                    await client.commands.confirmCleanup('cleanup-'+old.id, {operation: old.id})
+-                }
+-            } catch (error) {
+-                if (controller.signal.aborted) return ready
+-                console.error('Environment '+environment.id+': route or cleanup pending', error instanceof Error ? error.message : 'unknown error')
+-                dirty = false
+-                retry('route-'+environment.id)
+             }
++            return ready
+         }
+-        return ready
+-    }
+ 
+-    async function reconcile() {
+-        if (busy || controller.signal.aborted) {dirty = true; return}
+-        busy = true
+-        try {
+-            do {
+-                dirty = false
+-                if (!client.health.state.connected) break
+-                const routes = await maintainRoutes()
+-                const snapshot = client.views.assignments.store.snapshot()
+-                for (const item of snapshot.operations ?? []) {
+-                    if (controller.signal.aborted) break
+-                    const environment = snapshot.environments.find(environment=>environment.id == item.environment)
+-                    if (environment?.kind != 'docker' || !routes.has(environment.id)) continue
+-                    const release = snapshot.releases.find(release=>release.id == item.release)
+-                    if (!release) continue
++        async function reconcile(snapshot: ReturnType<typeof client.views.assignments.store.snapshot>) {
++            if (!client.health.state.connected) return
++            const routes = await maintainRoutes()
++            for (const item of snapshot.operations ?? []) {
++                if (signal.aborted) break
++                const environment = snapshot.environments.find(environment=>environment.id == item.environment)
++                if (environment?.kind != 'docker' || !routes.has(environment.id)) continue
++                const release = snapshot.releases.find(release=>release.id == item.release)
++                if (!release) continue
++                try {
++                    const operation = item.status == 'queued' ? await client.commands.claimOperation('claim-'+item.id, {operation: item.id, revision: item.revision}) : {...item}
++                    const deployment = {operation: operation.id, environment: environment.id, artifact: release.artifact, workload: release.workload}
++                    const previousOperation = snapshot.retained.find(old => old.id == environment.activeOperation)
++                    const previousRelease = snapshot.releases.find(old => old.id == previousOperation?.release)
++                    const previous = previousOperation && previousRelease ? {operation: previousOperation.id, environment: environment.id, artifact: previousRelease.artifact, workload: previousRelease.workload} : null
+                     try {
+-                        const operation = item.status == 'queued' ? await client.commands.claimOperation('claim-'+item.id, {operation: item.id, revision: item.revision}) : {...item}
+-                        const deployment = {operation: operation.id, environment: environment.id, artifact: release.artifact, workload: release.workload}
+-                        const previousOperation = snapshot.retained.find(old => old.id == environment.activeOperation)
+-                        const previousRelease = snapshot.releases.find(old => old.id == previousOperation?.release)
+-                        const previous = previousOperation && previousRelease ? {operation: previousOperation.id, environment: environment.id, artifact: previousRelease.artifact, workload: previousRelease.workload} : null
+-                        try {
+-                            if (release.workload?.dataVersion && previous) {
+-                                gateway.control.activate(environment.id, null)
+-                                await gateway.control.drain(previous.operation)
+-                                await docker.control.remove(previous)
+-                            }
+-                            const result = await docker.control.deploy(deployment, controller.signal)
+-                            await client.commands.finishOperation('finish-'+operation.id, {operation: operation.id, revision: operation.revision, success: true, observedArtifact: result.artifact, detail: 'Ready: '+result.endpoint, endpoint: result.endpoint})
+-                        } catch (error) {
+-                            if (!(error instanceof DeploymentRejected) || controller.signal.aborted) throw error
+-                            await docker.control.remove(deployment)
+-                            const restored = release.workload?.dataVersion && previous ? await docker.control.deploy(previous, controller.signal) : null
+-                            await client.commands.finishOperation('failed-'+operation.id, {operation: operation.id, revision: operation.revision, success: false, observedArtifact: restored?.artifact ?? '', detail: error.message.slice(0, 500), ...(restored ? {endpoint: restored.endpoint} : {})})
++                        if (release.workload?.dataVersion && previous) {
++                            gateway.control.activate(environment.id, null)
++                            await gateway.control.drain(previous.operation)
++                            await docker.control.remove(previous)
+                         }
++                        const result = await docker.control.deploy(deployment, signal)
++                        await client.commands.finishOperation('finish-'+operation.id, {operation: operation.id, revision: operation.revision, success: true, observedArtifact: result.artifact, detail: 'Ready: '+result.endpoint, endpoint: result.endpoint})
+                     } catch (error) {
+-                        if (controller.signal.aborted) break
+-                        // Uncertain IO is reconciled against the same Docker name. Never report failure after a lost success reply.
+-                        console.error('Operation '+item.id+': reconciliation pending')
+-                        dirty = false
+-                        retry(item.id)
++                        if (!(error instanceof DeploymentRejected) || signal.aborted) throw error
++                        await docker.control.remove(deployment)
++                        const restored = release.workload?.dataVersion && previous ? await docker.control.deploy(previous, signal) : null
++                        await client.commands.finishOperation('failed-'+operation.id, {operation: operation.id, revision: operation.revision, success: false, observedArtifact: restored?.artifact ?? '', detail: error.message.slice(0, 500), ...(restored ? {endpoint: restored.endpoint} : {})})
+                     }
++                } catch (error) {
++                    if (signal.aborted) break
++                    // Uncertain IO is reconciled against the same Docker name. Never report failure after a lost success reply.
++                    console.error('Operation '+item.id+': reconciliation pending')
++                    retry(item.id)
+                 }
+-                await maintainRoutes()
+-            } while (dirty && !controller.signal.aborted)
+-        } finally {busy = false}
+-    }
+-
+-    function schedule() {
+-        if (busy) {dirty = true; return}
+-        running = reconcile().catch(function failed() {console.error('Agent reconciliation failed')})
+-    }
+-
+-    async function dispose() {
+-        controller.abort()
+-        off()
+-        for (const retry of retries.values()) clearTimeout(retry)
+-        await gateway.close()
+-        client.close()
+-        await running
+-        await lock.close()
+-        await unlink(lockPath)
+-    }
+-
+-    function close() {return closing ??= dispose()}
++            }
++            await maintainRoutes()
++        }
+ 
+-    try {
+         await client.ready()
+         const identity = await client.identity.me()
+         if (!identity.roles.includes('agent')) throw new Error('agent role is required')
+         await client.views.assignments.ready
+         await docker.view.version()
+-        off = client.views.assignments.store.listen().on(schedule)
+-        schedule()
+-    } catch (error) {await close(); throw error}
+-    return {close, view: {account: ()=>deps.account, instance: randomUUID()}}
++        const worker = createReconciler({signal, read: () => client.views.assignments.store.snapshot(), run: reconcile,
++            subscribe: client.views.assignments.store.listen().on,
++        })
++        // Closing IO unblocks the pass; the lock remains owned until all three settle.
++        scope.resource.parallel([worker.close, closeGateway, closeClient])
++        scope.resource.own(worker.events.errors(function failed() {console.error('Agent reconciliation failed')}))
++        worker.control.request()
++        return {close: scope.close, view: {account: ()=>deps.account, instance: randomUUID()}}
++    })
+ }
+diff --git a/apps/hosting/backend/lxd-agent.ts b/apps/hosting/backend/lxd-agent.ts
+index d616192..0c1b683 100644
+--- a/apps/hosting/backend/lxd-agent.ts
++++ b/apps/hosting/backend/lxd-agent.ts
+@@ -1,84 +1,60 @@
+ import {mkdir, open, unlink} from 'node:fs/promises'
+ import path from 'node:path'
++import {createResourceScope, createReconciler} from 'wenay-common2'
+ import {createServiceClient, type ServiceClientDefinition} from 'wenay-common2/service/client'
+ import {createLxdResource, MachineRejected} from './lxd'
+ import type {HostingDefinition} from './service'
+ 
+ export async function startLxdAgent(deps: {url: string, account: string, password: string, directory: string, socketPath: string, project: string, pool: string, network: string}) {
+-    const resource = createLxdResource({...deps, owner: deps.account})
+-    await mkdir(deps.directory, {recursive: true})
+-    const lockPath = path.join(deps.directory, 'agent.lock')
+-    const lock = await open(lockPath, 'wx')
+-    const controller = new AbortController()
+-    let client: ReturnType<typeof createServiceClient<HostingDefinition>> | undefined
+-    let off = ()=>{}
+-    let running = Promise.resolve()
+-    let busy = false
+-    let dirty = false
+-    let timer: ReturnType<typeof setTimeout> | undefined
+-    let closing: Promise<void> | undefined
+-
+-    async function reconcile() {
+-        if (!client || controller.signal.aborted || !client.health.state.connected) return
+-        busy = true
+-        try {
+-            do {
+-                dirty = false
+-                const snapshot = client.views.machineAssignments.store.snapshot()
+-                for (const item of snapshot.operations) {
+-                    if (controller.signal.aborted) return
+-                    const machine = snapshot.machines.find(machine=>machine.id == item.machine)
+-                    if (!machine) continue
+-                    try {
+-                        const operation = item.status == 'queued' ? await client.commands.claimMachineOperation('machine-claim-'+item.id, {operation: item.id, revision: item.revision}) : item
+-                        let result: Awaited<ReturnType<typeof resource.control.ensure>>
+-                        try {result = await resource.control.ensure(machine, operation.target, controller.signal)}
+-                        catch (error) {
+-                            if (!(error instanceof MachineRejected) || controller.signal.aborted) throw error
+-                            await client.commands.finishMachineOperation('machine-failed-'+item.id, {operation: item.id, revision: operation.revision, success: false, providerName: '', image: '', power: '', detail: error.message})
+-                            continue
+-                        }
+-                        await client.commands.finishMachineOperation('machine-finish-'+item.id, {operation: item.id, revision: operation.revision, success: true,
+-                            providerName: result.providerName, image: result.image, power: result.power, detail: 'Power verified; guest preparation unverified'})
+-                    } catch (error) {
+-                        if (controller.signal.aborted) return
+-                        console.error('Machine operation '+item.id+': reconciliation pending')
+-                        dirty = false
+-                        timer ??= setTimeout(function retry() {timer = undefined; schedule()}, 5000)
++    const scope = createResourceScope()
++    return scope.start(async function start(signal) {
++        const resource = createLxdResource({...deps, owner: deps.account})
++        await mkdir(deps.directory, {recursive: true})
++        const lockPath = path.join(deps.directory, 'agent.lock')
++        const lock = await scope.resource.acquire({
++            open: () => open(lockPath, 'wx'),
++            async close(file) { try { await file.close() } finally { await unlink(lockPath) } },
++        })
++        async function reconcile(snapshot: ReturnType<typeof client.views.machineAssignments.store.snapshot>) {
++            if (signal.aborted || !client.health.state.connected) return
++            for (const item of snapshot.operations) {
++                if (signal.aborted) return
++                const machine = snapshot.machines.find(machine=>machine.id == item.machine)
++                if (!machine) continue
++                try {
++                    const operation = item.status == 'queued' ? await client.commands.claimMachineOperation('machine-claim-'+item.id, {operation: item.id, revision: item.revision}) : item
++                    let result: Awaited<ReturnType<typeof resource.control.ensure>>
++                    try {result = await resource.control.ensure(machine, operation.target, signal)}
++                    catch (error) {
++                        if (!(error instanceof MachineRejected) || signal.aborted) throw error
++                        await client.commands.finishMachineOperation('machine-failed-'+item.id, {operation: item.id, revision: operation.revision, success: false, providerName: '', image: '', power: '', detail: error.message})
++                        continue
+                     }
++                    await client.commands.finishMachineOperation('machine-finish-'+item.id, {operation: item.id, revision: operation.revision, success: true,
++                        providerName: result.providerName, image: result.image, power: result.power, detail: 'Power verified; guest preparation unverified'})
++                } catch (error) {
++                    if (signal.aborted) return
++                    console.error('Machine operation '+item.id+': reconciliation pending')
++                    worker.control.retry('assignments', 5000)
+                 }
+-            } while (dirty && !controller.signal.aborted)
+-        } finally {busy = false}
+-    }
+-
+-    function schedule() {
+-        if (busy) {dirty = true; return}
+-        running = reconcile().catch(function failed() {console.error('LXD reconciliation failed')})
+-    }
+-
+-    async function dispose() {
+-        controller.abort()
+-        off()
+-        if (timer) clearTimeout(timer)
+-        client?.close()
+-        await running
+-        await lock.close()
+-        await unlink(lockPath)
+-    }
+-
+-    function close() {return closing ??= dispose()}
++            }
++        }
+ 
+-    try {
+         await lock.writeFile(JSON.stringify({pid: process.pid, account: deps.account}))
+-        const response = await fetch(deps.url+'/api/client', {signal: AbortSignal.timeout(5000)})
++        const response = await fetch(deps.url+'/api/client', {signal: AbortSignal.any([signal, AbortSignal.timeout(5000)])})
+         if (!response.ok) throw new Error('control service descriptor unavailable')
+         const definition: ServiceClientDefinition<HostingDefinition> = await response.json()
+-        client = createServiceClient({definition, url: deps.url, auth: {credentials: {account: deps.account, password: deps.password}}})
++        const client = createServiceClient({definition, url: deps.url, auth: {credentials: {account: deps.account, password: deps.password}}})
++        const closeClient = scope.resource.own(client.close)
+         await client.ready()
+         if (!(await client.identity.me()).roles.includes('agent')) throw new Error('agent role is required')
+         await client.views.machineAssignments.ready
+-        off = client.views.machineAssignments.store.listen().on(schedule)
+-        schedule()
+-    } catch (error) {await close(); throw error}
+-    return {close, view: {account: ()=>deps.account}}
++        const worker = createReconciler({signal, read: () => client.views.machineAssignments.store.snapshot(), run: reconcile,
++            subscribe: client.views.machineAssignments.store.listen().on,
++        })
++        scope.resource.parallel([worker.close, closeClient])
++        scope.resource.own(worker.events.errors(function failed() {console.error('LXD reconciliation failed')}))
++        worker.control.request()
++        return {close: scope.close, view: {account: ()=>deps.account}}
++    })
+ }

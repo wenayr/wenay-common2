@@ -11,17 +11,9 @@ exports.listenUpdate = listenUpdate;
 exports.listenUpdatePaths = listenUpdatePaths;
 const Listen_1 = require("../events/Listen");
 const defer_immediate_1 = require("../core/defer-immediate");
+const reactive_value_1 = require("./reactive-value");
 const observe_private_1 = require("./observe-private");
 const NODE = Symbol('reactive.node');
-const isObj = (v) => v != null && typeof v == 'object';
-const isReactiveObj = (v) => {
-    if (!isObj(v))
-        return false;
-    if (Array.isArray(v))
-        return true;
-    const p = Object.getPrototypeOf(v);
-    return p == Object.prototype || p == null;
-};
 function scheduler(drain) {
     if (drain == 'micro')
         return f => queueMicrotask(f);
@@ -114,7 +106,7 @@ function reactive(root, opts = {}) {
         });
         eng.onMutation = onMutation;
     }
-    const rootNode = makeNode(root, null, [], 0, eng);
+    const rootNode = makeNode((0, reactive_value_1.prepareReactiveValue)(root, toRaw), null, [], 0, eng);
     if (eager)
         prewalk(rootNode);
     return rootNode.proxy;
@@ -137,8 +129,8 @@ function makeNode(target, parent, path, level, eng) {
                 return node;
             if (k == 'toJSON' && Array.isArray(proxyTarget) && !Array.isArray(node.target) && node.target?.toJSON === undefined)
                 return () => node.target;
-            const v = node.target[k];
-            if (isReactiveObj(v) && level < eng.depth) {
+            const v = toRaw(node.target[k]);
+            if ((0, reactive_value_1.isReactiveObj)(v) && level < eng.depth) {
                 let kid = node.kids.get(k);
                 if (!kid) {
                     kid = makeNode(v, node, [...node.path, k], level + 1, eng);
@@ -151,7 +143,7 @@ function makeNode(target, parent, path, level, eng) {
             return v;
         },
         set(_, k, v) {
-            v = toRaw(v);
+            v = (0, reactive_value_1.prepareReactiveValue)(v, toRaw);
             const had = Object.prototype.hasOwnProperty.call(node.target, k);
             const old = node.target[k];
             if (had && Object.is(old, v))
@@ -188,7 +180,7 @@ function makeNode(target, parent, path, level, eng) {
         defineProperty(_, k, d) {
             const had = Object.prototype.hasOwnProperty.call(node.target, k);
             const old = node.target[k];
-            const desc = 'value' in d ? { ...d, value: toRaw(d.value) } : d;
+            const desc = 'value' in d ? { ...d, value: (0, reactive_value_1.prepareReactiveValue)(d.value, toRaw) } : d;
             const ok = Reflect.defineProperty(node.target, k, desc);
             const v = node.target[k];
             if (!ok && Object.is(old, v))
@@ -205,7 +197,7 @@ function makeNode(target, parent, path, level, eng) {
                     detachTruncatedChildren(node);
                 const kid = node.kids.get(k);
                 if (kid) {
-                    if (isReactiveObj(v))
+                    if ((0, reactive_value_1.isReactiveObj)(v))
                         rebind(kid, v);
                     else {
                         node.kids.delete(k);
@@ -278,12 +270,12 @@ function bubble(from, key, replacedArrayBranch = false) {
     eng.schedule();
 }
 function rebind(node, next) {
-    node.target = next;
+    node.target = next = toRaw(next);
     if (node.subs.size || node.pathSubs.size)
         node.eng.dirty.add(node);
     for (const [k, kid] of [...node.kids]) {
-        const cv = isReactiveObj(next) ? next[k] : undefined;
-        if (isReactiveObj(cv))
+        const cv = (0, reactive_value_1.isReactiveObj)(next) ? next[k] : undefined;
+        if ((0, reactive_value_1.isReactiveObj)(cv))
             rebind(kid, cv);
         else {
             node.kids.delete(k);
@@ -380,17 +372,19 @@ function detachTruncatedChildren(node) {
         detachTree(child);
     }
 }
-function prewalk(node) {
-    if (node.level >= node.eng.depth)
+function prewalk(node, ancestors = new WeakSet()) {
+    if (node.level >= node.eng.depth || ancestors.has(node.target))
         return;
+    ancestors.add(node.target);
     for (const k of Reflect.ownKeys(node.target)) {
-        if (isReactiveObj(node.target[k])) {
+        if ((0, reactive_value_1.isReactiveObj)(node.target[k])) {
             node.proxy[k];
             const kid = node.kids.get(k);
             if (kid)
-                prewalk(kid);
+                prewalk(kid, ancestors);
         }
     }
+    ancestors.delete(node.target);
 }
 function isReactive(p) {
     const node = p && p[NODE];

@@ -5,14 +5,19 @@
     "scripts": {
         "start": "tsx run.ts",
         "example": "tsx example.ts",
-        "check": "tsx check.ts",
+        "check": "tsx check.ts && tsx session-resources.ts && tsx public-address.ts && tsx agent-orchestration.ts",
+        "example:resources": "tsx session-resources.ts",
+        "example:agent": "tsx agent-orchestration.ts",
+        "repro:public-address": "tsx public-address.ts",
         "typecheck": "tsc --noEmit"
     },
     "engines": {
         "node": ">=20.0.0"
     },
     "dependencies": {
-        "wenay-common2": "^2.16.0"
+        "wenay-common2": "2.21.2",
+        "socket.io": "^4.8.3",
+        "socket.io-client": "^4.8.3"
     },
     "devDependencies": {
         "@types/node": "^26.1.2",

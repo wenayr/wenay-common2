@@ -495,10 +495,12 @@ export function createAuthority<T extends Record<string, any>, Cmds extends tCom
      *  A standby serves no node link: it owns no lines (serve reader() there). */
     function nodeLink(linkNodeId?: string) {
         const owned = requireRoster('serve node link')
+        const ownerEpoch = replica.api.status.state.epoch
         const controlApi = control.api('serve node link')
         function requireNodeRow(raw: unknown, verb: string) {
             requireLeading('node link ' + verb)
-            if (owned != roster) throw new Error('node link expired: authority ownership changed')
+            // Store notifications may coalesce a fast demotion/promotion; the epoch cannot.
+            if (owned != roster || ownerEpoch != replica.api.status.state.epoch) throw new Error('node link expired: authority ownership changed')
             const id = String(raw ?? '')
             if (!id) throw new Error('node link ' + verb + ' needs a nodeId')
             if (id == nodeId) throw new Error('node link refused: ' + id + ' is the authority row')

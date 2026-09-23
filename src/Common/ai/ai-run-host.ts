@@ -17,6 +17,8 @@ import {
 import {listen as createListenPair} from '../events/Listen'
 import {exposeReplay} from '../events/replay-wire'
 import {replayListen} from '../events/replay-listen'
+import {compareDeepValues} from '../core/deep-equal'
+import {restoreAiRunCheckpoint, type AiRunCheckpoint, type AiRunPersistencePort, type AiRunRecoveryRecord} from './ai-run-persistence'
 
 export type AiRunState = 'queued' | 'running' | 'waiting_input' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled'
 export type AiApprovalState = 'pending' | 'approved' | 'rejected' | 'cancelled'
@@ -52,6 +54,8 @@ export type AiRun = {
     error?: string
     createdAt: number
     updatedAt: number
+    /** The old runner is gone. Only an explicit server recovery may resume or settle this run. */
+    recovery?: {from: AiRunState}
 }
 
 export type AiRunApproval = {
@@ -65,7 +69,7 @@ export type AiRunApproval = {
     updatedAt: number
 }
 
-/** Request metadata is public to authorized viewers; the supplied value stays only in the runner call. */
+/** Request metadata is public; supplied values stay in the runner and the server-only checkpoint. */
 export type AiRunInput = {
     id: string
     runId: string
@@ -140,12 +144,14 @@ export type AiRunRunner = {
         report: (next: AiRunReport) => void
         emit: (event: AiRunLiveEvent) => void
         artifact: (artifact: AiArtifactInput) => AiArtifact | undefined
-        requestApproval: (request: {kind: string, label: string, data?: unknown}) => Promise<'approved' | 'rejected'>
-        waitForInput: (request: {label: string, schema?: unknown}) => Promise<unknown>
+        requestApproval: (request: {id?: string, kind: string, label: string, data?: unknown}) => Promise<'approved' | 'rejected'>
+        waitForInput: (request: {id?: string, label: string, schema?: unknown}) => Promise<unknown>
         cancelled: () => boolean
     }): AiRunOutput | void | Promise<AiRunOutput | void>
     /** Optional provider abort. The host still ignores late reports and results unconditionally. */
     cancel?(input: {run: AiRun, reason?: string}): void | Promise<void>
+    /** Explicit recovery only. Reconcile provider identity before continuing; run() is never replayed. */
+    recover?(input: Parameters<AiRunRunner['run']>[0] & {checkpoint: AiRunRecoveryRecord}): AiRunOutput | void | Promise<AiRunOutput | void>
 }
 
 export type AiRunPolicy = {
@@ -159,6 +165,8 @@ export type AiRunPolicy = {
 
 export type AiRunHostDeps = {
     runner: AiRunRunner
+    initial?: AiRunCheckpoint
+    persistence?: AiRunPersistencePort
     capabilities?: AiCapability[]
     policy?: AiRunPolicy
     id?: () => string
@@ -168,7 +176,7 @@ export type AiRunHostDeps = {
 }
 
 type AiRunView = {
-    refresh: (change: StoreChange) => void
+    refresh: (change?: StoreChange) => void
     close: () => void
 }
 
@@ -202,6 +210,7 @@ function copyRun(run: AiRun): AiRun {
         resourceIds: [...run.resourceIds],
         artifacts: run.artifacts.map(copyArtifact),
         usage: copyUsage(run.usage),
+        ...(run.recovery ? {recovery: {...run.recovery}} : {}),
         ...(run.result !== undefined ? {result: cloneStoreProjectionValue(run.result)} : {}),
     }
 }
@@ -228,15 +237,85 @@ export function createAiRunHost(deps: AiRunHostDeps) {
     const {runner, policy, history, drain, now = Date.now} = deps
     const capabilities = [...(deps.capabilities ?? [])]
     let nextId = 0
-    const makeId = deps.id ?? function defaultId() { return 'ai-' + (++nextId) }
-    const store = createStore<AiRunStore>({runs: {}, approvals: {}, inputs: {}}, drain !== undefined ? {drain} : {})
+    const initial = restoreAiRunCheckpoint(deps.initial)
+    let committed = cloneStoreProjectionValue(initial)
+    const store = createStore<AiRunStore>(initial.store, drain !== undefined ? {drain} : {})
+    const requests = initial.requests
+    const inputValues = initial.inputValues
+    let revision = initial.revision
+    const usedIds = new Set([...Object.keys(initial.store.runs), ...Object.keys(initial.store.approvals), ...Object.keys(initial.store.inputs),
+        ...Object.values(initial.store.runs).flatMap(run => run.artifacts.map(artifact => artifact.id))])
+    function makeId() {
+        let id: string
+        if (deps.id) id = deps.id()
+        else do { id = 'ai-' + (++nextId) } while (usedIds.has(id))
+        if (!id || usedIds.has(id)) throw new Error('AI run id must be unique')
+        usedIds.add(id)
+        return id
+    }
     const views = new Set<AiRunView>()
     const requestIds = new Map<string, string>()
     const cancelled = new Set<string>()
     const approvalWaiters = new Map<string, PendingWaiter>()
     const inputWaiters = new Map<string, PendingWaiter>()
     const [emitEvent, eventLine] = createListenPair<[AiRunEvent]>()
+    const [emitPersistenceError, persistenceErrors] = createListenPair<[unknown]>()
     let closed = false
+    let persistenceFailure: unknown
+    let persistenceFailed = false
+    let committing = false
+    for (const run of Object.values(store.state.runs)) {
+        requestIds.set(commandReceiptKey(run.owner, run.requestId), run.id)
+        if (!terminal(run.state)) run.recovery = {from: run.recovery?.from ?? run.state}
+    }
+
+    function requireOpen() {
+        if (closed) throw new Error('AI run host closed')
+        if (persistenceFailed) throw new Error('AI persistence failed; reopen from durable storage before continuing', {cause: persistenceFailure})
+        if (committing) throw new Error('AI persistence must not reenter its host')
+    }
+
+    function snapshot(): AiRunCheckpoint {
+        return {version: 1, revision, store: store.snapshot(), requests: cloneStoreProjectionValue(requests), inputValues: cloneStoreProjectionValue(inputValues)}
+    }
+
+    function checkpoint() {
+        requireOpen()
+        if (!deps.persistence) return
+        committing = true
+        try {
+            const next = snapshot()
+            next.revision++
+            const result: unknown = deps.persistence.commit(cloneStoreProjectionValue(next))
+            if (result && typeof (result as PromiseLike<unknown>).then == 'function') {
+                void Promise.resolve(result).catch(function observedInvalidAsyncPort() {})
+                throw new Error('AI persistence commit must be synchronous')
+            }
+            revision = next.revision
+            committed = next
+        } catch (error) {
+            persistenceFailed = true
+            persistenceFailure = error
+            store.replace(cloneStoreProjectionValue(committed.store))
+            for (const key of Object.keys(requests)) delete requests[key]
+            Object.assign(requests, cloneStoreProjectionValue(committed.requests))
+            for (const key of Object.keys(inputValues)) delete inputValues[key]
+            Object.assign(inputValues, cloneStoreProjectionValue(committed.inputValues))
+            for (const run of Object.values(store.state.runs)) {
+                if (!terminal(run.state)) {
+                    run.recovery = {from: run.state}
+                    requestProviderCancel(run, 'AI persistence failed')
+                }
+            }
+            for (const waiter of [...approvalWaiters.values(), ...inputWaiters.values()]) waiter.reject(new Error('AI persistence failed'))
+            approvalWaiters.clear()
+            inputWaiters.clear()
+            for (const view of views) view.refresh()
+            emitPersistenceError(error)
+            throw error
+        } finally { committing = false }
+        for (const view of views) view.refresh()
+    }
 
     // === Business policy ===
 
@@ -249,6 +328,7 @@ export function createAiRunHost(deps: AiRunHostDeps) {
     }
 
     function requireRun(account: string, runId: string, action: string) {
+        requireOpen()
         const run = store.state.runs[runId]
         if (!run || !writable(account, run)) throw new Error('AI run ' + action + ': forbidden or missing')
         return run
@@ -281,7 +361,7 @@ export function createAiRunHost(deps: AiRunHostDeps) {
     }
 
     function refreshViews(change: StoreChange) {
-        if (closed) return
+        if (closed || deps.persistence) return
         for (const view of views) view.refresh(change)
     }
 
@@ -329,9 +409,9 @@ export function createAiRunHost(deps: AiRunHostDeps) {
             for (const approval of Object.values(approvals)) if (approval.runId == id) refreshApproval(approval.id)
             for (const input of Object.values(inputs)) if (input.runId == id) refreshInput(input.id)
         }
-        function refreshProjection(change: StoreChange) {
+        function refreshProjection(change?: StoreChange) {
             // A custom policy may close over tenant membership outside the changed record.
-            if (policy?.canRead) { reconcileStoreProjection(state, project(account)); return }
+            if (!change || policy?.canRead) { reconcileStoreProjection(state, project(account)); return }
             const changed = collectStoreProjectionChanges(change, ['runs', 'approvals', 'inputs'])
             if (!changed) { reconcileStoreProjection(state, project(account)); return }
             for (const id of changed.get('runs') ?? []) refreshRun(String(id))
@@ -366,19 +446,20 @@ export function createAiRunHost(deps: AiRunHostDeps) {
     }
 
     function active(run: AiRun | undefined) {
-        return !!run && !closed && !cancelled.has(run.id) && !terminal(run.state)
+        return !!run && !closed && !persistenceFailed && !run.recovery && !cancelled.has(run.id) && !terminal(run.state)
     }
 
     function emitRunEvent(event: Exclude<AiRunEvent, {type: 'sync'}>) {
         const run = store.state.runs[event.runId]
         if (!run || closed) return
+        if (!['text.delta', 'notice', 'tool.call', 'tool.result'].includes(event.type)) checkpoint()
         // Replay/event consumers own their message, never the authority's
         // retained result, descriptor or policy-visible Store value.
         emitEvent(cloneStoreProjectionValue(event) as Exclude<AiRunEvent, {type: 'sync'}>)
     }
 
     function refreshWaitingState(run: AiRun) {
-        if (terminal(run.state)) return
+        if (terminal(run.state) || run.recovery) return
         const waitingApproval = Object.values(store.state.approvals).some(approval => approval.runId == run.id && approval.state == 'pending')
         const waitingInput = Object.values(store.state.inputs).some(input => input.runId == run.id && input.state == 'waiting')
         const next: AiRunState = waitingApproval ? 'waiting_approval' : waitingInput ? 'waiting_input' : 'running'
@@ -447,13 +528,19 @@ export function createAiRunHost(deps: AiRunHostDeps) {
         return copyArtifact(artifact)
     }
 
-    function requestApproval(runId: string, request: {kind: string, label: string, data?: unknown}) {
+    function requestApproval(runId: string, request: {id?: string, kind: string, label: string, data?: unknown}) {
         const run = store.state.runs[runId]
         if (!active(run)) return Promise.reject(new Error('AI run approval: run is not active'))
         if (!request || typeof request.kind != 'string' || !request.kind.trim()) return Promise.reject(new Error('AI run approval: kind is required'))
         if (typeof request.label != 'string' || !request.label.trim()) return Promise.reject(new Error('AI run approval: label is required'))
+        const previous = request.id ? store.state.approvals[request.id] : undefined
+        if (request.id && (!previous || previous.runId != runId || previous.kind != request.kind || previous.label != request.label
+            || !compareDeepValues(previous.data, request.data))) return Promise.reject(new Error('AI approval recovery: request mismatch'))
+        if (previous?.state == 'approved' || previous?.state == 'rejected') return Promise.resolve(previous.state)
+        if (previous?.state == 'cancelled') return Promise.reject(new Error('AI approval cancelled'))
+        if (previous && approvalWaiters.has(previous.id)) return Promise.reject(new Error('AI approval already has a waiter'))
         const createdAt = now()
-        const approval: AiRunApproval = {
+        const approval: AiRunApproval = previous ?? {
             id: makeId(), runId, kind: request.kind, label: request.label, state: 'pending', createdAt, updatedAt: createdAt,
             ...(request.data !== undefined ? {data: cloneStoreProjectionValue(request.data)} : {}),
         }
@@ -462,18 +549,25 @@ export function createAiRunHost(deps: AiRunHostDeps) {
         const waiting = new Promise<'approved' | 'rejected'>(function waitForApproval(resolve, reject) {
             approvalWaiters.set(approval.id, {resolve, reject})
         })
+        void waiting.catch(function observedOwnedWaiter() {})
         // Direct and in-process consumers may answer from the event callback itself.
         // Register first so that synchronous resolution cannot outrun the waiter.
         emitRunEvent({runId, type: 'approval.requested', approval: copyApproval(approval)})
         return waiting
     }
 
-    function waitForInput(runId: string, request: {label: string, schema?: unknown}) {
+    function waitForInput(runId: string, request: {id?: string, label: string, schema?: unknown}) {
         const run = store.state.runs[runId]
         if (!active(run)) return Promise.reject(new Error('AI run input: run is not active'))
         if (!request || typeof request.label != 'string' || !request.label.trim()) return Promise.reject(new Error('AI run input: label is required'))
+        const previous = request.id ? store.state.inputs[request.id] : undefined
+        if (request.id && (!previous || previous.runId != runId || previous.label != request.label
+            || !compareDeepValues(previous.schema, request.schema))) return Promise.reject(new Error('AI input recovery: request mismatch'))
+        if (previous?.state == 'provided') return Promise.resolve(cloneStoreProjectionValue(inputValues[previous.id]))
+        if (previous?.state == 'cancelled') return Promise.reject(new Error('AI input cancelled'))
+        if (previous && inputWaiters.has(previous.id)) return Promise.reject(new Error('AI input already has a waiter'))
         const createdAt = now()
-        const input: AiRunInput = {
+        const input: AiRunInput = previous ?? {
             id: makeId(), runId, label: request.label, state: 'waiting', createdAt, updatedAt: createdAt,
             ...(request.schema !== undefined ? {schema: cloneStoreProjectionValue(request.schema)} : {}),
         }
@@ -482,28 +576,31 @@ export function createAiRunHost(deps: AiRunHostDeps) {
         const waiting = new Promise<unknown>(function waitForProvidedInput(resolve, reject) {
             inputWaiters.set(input.id, {resolve, reject})
         })
+        void waiting.catch(function observedOwnedWaiter() {})
         emitRunEvent({runId, type: 'input.requested', input: copyInput(input)})
         return waiting
     }
 
-    async function executeRun(runId: string, request: AiRunRequest) {
+    async function executeRun(runId: string, request: AiRunRequest, recovery?: AiRunRecoveryRecord) {
         const run = store.state.runs[runId]
         if (!active(run)) return
-        run.state = 'running'
-        touchRun(run)
-        emitRunEvent({runId, type: 'started'})
         try {
-            const output = await runner.run({
+            run.state = 'running'
+            touchRun(run)
+            emitRunEvent({runId, type: 'started'})
+            if (!active(run)) return
+            const context: Parameters<AiRunRunner['run']>[0] = {
                 run: copyRun(run),
-                input: request.input,
+                input: cloneStoreProjectionValue(request.input),
                 resourceIds: [...run.resourceIds],
                 report: next => reportRun(runId, next),
                 emit: event => emitLiveEvent(runId, event),
                 artifact: artifact => addArtifact(runId, artifact),
                 requestApproval: approval => requestApproval(runId, approval),
                 waitForInput: input => waitForInput(runId, input),
-                cancelled: () => cancelled.has(runId) || closed,
-            })
+                cancelled: () => !active(store.state.runs[runId]),
+            }
+            const output = await (recovery ? runner.recover!({...context, checkpoint: recovery}) : runner.run(context))
             const current = store.state.runs[runId]
             if (!active(current)) return
             cancelPendingWaiters(current, 'AI run completed before its response arrived')
@@ -515,7 +612,7 @@ export function createAiRunHost(deps: AiRunHostDeps) {
             emitRunEvent({runId, type: 'completed', ...(current.result !== undefined ? {result: current.result} : {}), ...(current.usage ? {usage: copyUsage(current.usage)!} : {})})
         } catch (error) {
             const current = store.state.runs[runId]
-            if (!current || cancelled.has(runId) || closed || current.state == 'cancelled') return
+            if (!active(current)) return
             cancelPendingWaiters(current, 'AI run failed before its response arrived')
             current.state = 'failed'
             current.error = errorText(error)
@@ -531,7 +628,7 @@ export function createAiRunHost(deps: AiRunHostDeps) {
     }
 
     function createRun(account: string, request: AiRunRequest) {
-        if (closed) throw new Error('AI run host closed')
+        requireOpen()
         if (!request || typeof request.requestId != 'string' || !request.requestId.trim()) throw new Error('AI run create: requestId is required')
         if (typeof request.kind != 'string' || !request.kind.trim()) throw new Error('AI run create: kind is required')
         if (policy?.canCreate && !policy.canCreate(account, request)) throw new Error('AI run create: forbidden')
@@ -539,7 +636,13 @@ export function createAiRunHost(deps: AiRunHostDeps) {
         const previous = requestIds.get(requestKey)
         if (previous) {
             const existing = store.state.runs[previous]
-            if (existing) return copyRun(existing)
+            if (existing) {
+                if ((deps.persistence || deps.initial) && !compareDeepValues(requests[previous], {...request, resourceIds: [...(request.resourceIds ?? [])]})) {
+                    throw new Error('AI run create: requestId reused with different input')
+                }
+                if (!readable(account, existing)) throw new Error('AI run create: forbidden')
+                return copyRun(existing)
+            }
         }
         if (capabilities.length && !capabilities.some(capability => capability.kind == request.kind)) {
             throw new Error('AI run create: unsupported kind ' + request.kind)
@@ -551,9 +654,11 @@ export function createAiRunHost(deps: AiRunHostDeps) {
             createdAt, updatedAt: createdAt,
         }
         requestIds.set(requestKey, run.id)
+        requests[run.id] = cloneStoreProjectionValue({...request, resourceIds: [...(request.resourceIds ?? [])]})
         store.state.runs[run.id] = run
-        void executeRun(run.id, request)
-        return copyRun(run)
+        checkpoint()
+        void executeRun(run.id, requests[run.id]).catch(function executionPersistenceFailed() { /* The persistence facet retains the failure and fences this host. */ })
+        return copyRun(store.state.runs[run.id])
     }
 
     function cancelRun(account: string, runId: string, reason?: string) {
@@ -562,6 +667,7 @@ export function createAiRunHost(deps: AiRunHostDeps) {
         cancelled.add(run.id)
         cancelPendingWaiters(run, reason ?? 'AI run cancelled')
         run.state = 'cancelled'
+        delete run.recovery
         run.message = reason ?? 'cancelled'
         touchRun(run)
         emitRunEvent({runId: run.id, type: 'cancelled', ...(reason ? {reason} : {})})
@@ -570,11 +676,13 @@ export function createAiRunHost(deps: AiRunHostDeps) {
     }
 
     function resolveApproval(account: string, approvalId: string, decision: 'approved' | 'rejected') {
+        requireOpen()
         const approval = store.state.approvals[approvalId]
         const run = approval && store.state.runs[approval.runId]
         if (!approval || !run || !writable(account, run)) throw new Error('AI approval resolve: forbidden or missing')
         if (decision != 'approved' && decision != 'rejected') throw new Error('AI approval resolve: invalid decision')
         if (approval.state != 'pending') return copyApproval(approval)
+        if (terminal(run.state)) throw new Error('AI approval resolve: run is terminal')
         approval.state = decision
         touchApproval(approval)
         refreshWaitingState(run)
@@ -585,10 +693,16 @@ export function createAiRunHost(deps: AiRunHostDeps) {
     }
 
     function provideInput(account: string, inputId: string, value: unknown) {
+        requireOpen()
         const input = store.state.inputs[inputId]
         const run = input && store.state.runs[input.runId]
         if (!input || !run || !writable(account, run)) throw new Error('AI input provide: forbidden or missing')
-        if (input.state != 'waiting') return copyInput(input)
+        if (input.state != 'waiting') {
+            if (input.state == 'provided' && !compareDeepValues(inputValues[input.id], value)) throw new Error('AI input provide: value mismatch')
+            return copyInput(input)
+        }
+        if (terminal(run.state)) throw new Error('AI input provide: run is terminal')
+        inputValues[input.id] = cloneStoreProjectionValue(value)
         input.state = 'provided'
         touchInput(input)
         refreshWaitingState(run)
@@ -598,20 +712,73 @@ export function createAiRunHost(deps: AiRunHostDeps) {
         return copyInput(input)
     }
 
+    // === Server recovery: no automatic replay of provider work ===
+
+    function recoveryRecord(run: AiRun): AiRunRecoveryRecord {
+        return {run: copyRun(run), request: cloneStoreProjectionValue(requests[run.id]),
+            approvals: Object.values(store.state.approvals).filter(approval => approval.runId == run.id).map(copyApproval),
+            inputs: Object.values(store.state.inputs).filter(input => input.runId == run.id).map(function suppliedInput(input) {
+                return {...copyInput(input), ...(input.state == 'provided' ? {value: cloneStoreProjectionValue(inputValues[input.id])} : {})}
+            }),
+        }
+    }
+
+    function requireRecovery(runId: string) {
+        requireOpen()
+        const run = store.state.runs[runId]
+        if (!run?.recovery) throw new Error('AI recovery: run does not require recovery')
+        if (!writable(run.owner, run) || (policy?.canCreate && !policy.canCreate(run.owner, requests[runId]))) {
+            throw new Error('AI recovery: current owner or resources are forbidden')
+        }
+        return run
+    }
+
+    async function resume(runId: string) {
+        const run = requireRecovery(runId)
+        if (!runner.recover) throw new Error('AI recovery: runner.recover is required; run is never replayed')
+        const recovery = recoveryRecord(run)
+        delete run.recovery
+        await executeRun(runId, requests[runId], recovery)
+        requireOpen()
+        return copyRun(store.state.runs[runId])
+    }
+
+    function settle(runId: string, outcome: {state: 'completed', output?: AiRunOutput} | {state: 'failed', error: string}) {
+        const run = requireRecovery(runId)
+        cancelPendingWaiters(run, 'AI run reconciled by the server')
+        delete run.recovery
+        run.state = outcome.state
+        touchRun(run)
+        if (outcome.state == 'completed') {
+            run.progress = 1
+            if (outcome.output?.result !== undefined) run.result = cloneStoreProjectionValue(outcome.output.result)
+            if (outcome.output?.usage !== undefined) run.usage = copyUsage(outcome.output.usage)
+            emitRunEvent({runId, type: 'completed', result: run.result, usage: run.usage})
+        } else {
+            run.error = outcome.error
+            emitRunEvent({runId, type: 'failed', error: outcome.error})
+        }
+        return copyRun(run)
+    }
+
     function connection(account: string) {
         if (closed) throw new Error('AI run host closed')
         const {view, stateReplay, events} = createView(account)
         views.add(view)
         let connectionClosed = false
+        function requireConnection() {
+            if (connectionClosed) throw new Error('AI run connection closed')
+            requireOpen()
+        }
         return {
             fragment: {
                 capabilities: getCapabilities,
                 state: stateReplay.api.replay,
                 events: exposeReplay<[AiRunEvent]>(events),
-                createRun: (request: AiRunRequest) => createRun(account, request),
-                cancelRun: (runId: string, reason?: string) => cancelRun(account, runId, reason),
-                resolveApproval: (approvalId: string, decision: 'approved' | 'rejected') => resolveApproval(account, approvalId, decision),
-                provideInput: (inputId: string, value: unknown) => provideInput(account, inputId, value),
+                createRun(request: AiRunRequest) { requireConnection(); return createRun(account, request) },
+                cancelRun(runId: string, reason?: string) { requireConnection(); return cancelRun(account, runId, reason) },
+                resolveApproval(approvalId: string, decision: 'approved' | 'rejected') { requireConnection(); return resolveApproval(account, approvalId, decision) },
+                provideInput(inputId: string, value: unknown) { requireConnection(); return provideInput(account, inputId, value) },
             },
             close() {
                 if (connectionClosed) return
@@ -625,6 +792,13 @@ export function createAiRunHost(deps: AiRunHostDeps) {
         connection,
         /** Server-only authority. Expose only the account-filtered `connection(account).fragment`. */
         store,
+        /** Never expose these server facets over a client RPC connection. */
+        persistence: {snapshot, errors: persistenceErrors, error: () => persistenceFailure},
+        recovery: {
+            pending: () => Object.values(store.state.runs).filter(run => !!run.recovery).map(recoveryRecord),
+            resume,
+            settle,
+        },
         close() {
             if (closed) return
             closed = true
@@ -638,6 +812,7 @@ export function createAiRunHost(deps: AiRunHostDeps) {
             inputWaiters.clear()
             for (const view of Array.from(views)) view.close()
             eventLine.close()
+            persistenceErrors.close()
             cancelled.clear()
         },
     }

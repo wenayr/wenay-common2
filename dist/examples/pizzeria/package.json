@@ -4,7 +4,8 @@
     "version": "0.1.0",
     "scripts": {
         "start": "node run.mjs",
-        "check": "tsx account-id-check.ts && tsx check.ts",
+        "check": "tsx account-id-check.ts && tsx check.ts && npm run test:network",
+        "test:network": "tsx network-check.ts",
         "typecheck": "tsc --noEmit"
     },
     "engines": {
@@ -15,7 +16,7 @@
         "socket.io": "^4.8.3",
         "socket.io-client": "^4.8.3",
         "swagger-ui-dist": "^5.32.14",
-        "wenay-common2": "^2.16.0"
+        "wenay-common2": "2.21.2"
     },
     "devDependencies": {
         "@types/express": "^5.0.6",

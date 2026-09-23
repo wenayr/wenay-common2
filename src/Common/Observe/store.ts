@@ -1,6 +1,7 @@
 import {createListen, type ListenApi} from '../events/Listen'
 import {deferImmediate} from '../core/defer-immediate'
 import {listenUpdate, listenUpdatePaths, onUpdate, reactive, isReactive, toRaw, ReactiveChange} from "./reactive";
+import {prepareReactiveValue} from './reactive-value'
 import {getRpcMemberState, getRpcSchemaReady, hasRpcMemberLookup} from '../events/transport-lifecycle'
 import {positiveIntegerOption} from '../positive-integer-option'
 import {rpcResultWireMetricsFast} from '../rcp/rpc-wire-size'
@@ -311,6 +312,7 @@ function defineSnapshotValue(target: any, key: PropertyKey, value: any) {
 }
 
 function replaceRoot(root: any, value: any) {
+    value = prepareReactiveValue(value, toRaw)
     for (const k of Reflect.ownKeys(root)) {
         if (Array.isArray(toRaw(root)) && k == 'length') continue
         if (!isObj(value) || !Object.prototype.hasOwnProperty.call(value, k)) delete root[k as any]

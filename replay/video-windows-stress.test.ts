@@ -289,10 +289,10 @@ function createVideoWindow(deps: {
     async function close() {
         if (disposed) return
         disposed = true
-        // Dynamic noStrict owner paths are resolved after the initial MAP, so their
-        // direct on() result is the pending stream Promise. The node-level teardown
-        // remains removeCallback(), which closes both consumers deterministically.
-        await remote.removeCallback()
+        // Each window owns its local consumers, even when RPC shares their wire call.
+        rawHandle()
+        view.off()
+        await rawHandle
     }
 
     return {
@@ -316,7 +316,8 @@ function createVideoWindow(deps: {
         dispose() {
             if (disposed) return
             disposed = true
-            void Promise.resolve(remote.removeCallback()).catch(function ignoreClosedRemote() {})
+            rawHandle()
+            view.off()
         },
     }
 }
@@ -393,9 +394,9 @@ async function main() {
         ok(windows.length == 10, 'ten independent synthetic video windows are attached')
 
         await waitFor('video callback subscriptions', function callbackSubscriptionsReady() {
-            return windows.every(window => server.media.watchOf(window.watcher)[window.owner][window.line].count() == 2)
+            return windows.every(window => server.media.watchOf(window.watcher)[window.owner][window.line].count() == 1)
         })
-        ok(true, 'each remote path has exactly its two requested callback consumers: raw + canvas')
+        ok(true, 'raw and canvas consumers share one physical subscription per remote path')
 
         const burst: Promise<void>[] = []
         for (let seq = 1; seq <= CORE_FRAMES; seq++) {
@@ -513,7 +514,7 @@ async function main() {
         rememberLine(server.media.watchOf('camera-viewer')['camera-bot'].cam)
         rememberLine(server.media.lines('camera-bot').cam)
         await waitFor('camera source viewer subscription', function sourceViewerReady() {
-            return server.media.watchOf('camera-viewer')['camera-bot'].cam.count() == 2
+            return server.media.watchOf('camera-viewer')['camera-bot'].cam.count() == 1
         })
 
         let capturedSeq = 0
@@ -607,8 +608,8 @@ async function main() {
         rememberLine(server.media.watchOf('blue-a')['blue-b'].cam)
         rememberLine(server.media.watchOf('blue-a')['blue-b'].screen)
         await waitFor('fresh publisher subscriptions', function freshSubscriptionsReady() {
-            return server.media.watchOf('blue-a')['blue-b'].cam.count() == 2
-                && server.media.watchOf('blue-a')['blue-b'].screen.count() == 2
+            return server.media.watchOf('blue-a')['blue-b'].cam.count() == 1
+                && server.media.watchOf('blue-a')['blue-b'].screen.count() == 1
         })
         await Promise.all([
             publish('blue-b', 'cam', 1, LARGE_FRAME_BYTES),
@@ -640,9 +641,18 @@ async function main() {
         })
         const spectatorFiltered = rememberLine(server.media.watchOf('spectator-red')['red-c'].cam)
         await waitFor('bounded spectator subscriptions', function spectatorReady() {
-            return spectatorFiltered.count() == 8 && redCSource.count() == sourceListenersBefore + 1
+            return spectatorFiltered.count() == 1 && redCSource.count() == sourceListenersBefore + 1
         })
-        ok(true, 'four windows allocate exactly eight requested callbacks and one filtered source forwarder')
+        ok(true, 'four windows share one wire subscription and one filtered source forwarder')
+
+        await spectatorWindows[0].close()
+        const closedWindowCount = spectatorWindows[0].rawSeq.length
+        await publish('red-c', 'cam', CORE_FRAMES + 10, 96 * 1024)
+        await waitFor('remaining local consumers stay live', function survivingWindowsReceive() {
+            return spectatorWindows.slice(1).every(window => window.rawSeq.at(-1) == CORE_FRAMES + 10)
+        })
+        ok(spectatorFiltered.count() == 1 && spectatorWindows[0].rawSeq.length == closedWindowCount,
+            'closing one duplicate window preserves delivery to the other three')
 
         connections.get('spectator-red')!.close()
         connections.delete('spectator-red')

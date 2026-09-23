@@ -1437,7 +1437,11 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             if (!transport.api.connected()) return sendCallWire(path, wireArgs, wait)
             // exactly: server declared address as Listen (Pkt.MAP[3]);
             // fallback for old server — heuristic by route shape `*.callback(fn)`/`*.on(fn)`
-            const isListen = declaredListens ? declaredListens.has(rpcPathKey(path.slice(0, -1))) : true;
+            // Dynamic subtrees cannot enumerate Listen addresses. Use the legacy
+            // callback-shaped contract there, but never replay them after reconnect.
+            const isListen = declaredListens
+                ? declaredListens.has(rpcPathKey(path.slice(0, -1))) || resolveStrictTarget(path.slice(0, -1)) == 'dynamic'
+                : true
             if (isListen) return subscribeShared(path, wireArgs);
         }
         return sendCallWire(path, wireArgs, wait);

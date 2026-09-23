@@ -300,6 +300,7 @@ function createAudioSource(opts = {}) {
     let recorder = null;
     let pcmPacketizer = null;
     let seq = 0;
+    let offTracks = () => { };
     let generation = 0;
     function emitPcm(samples, sampleRate, channels, frames) {
         const codec = opts.format == 'float32' ? 'float32' : 'pcm16';
@@ -315,40 +316,50 @@ function createAudioSource(opts = {}) {
             nSamples: frames,
         }, payload), seq);
     }
-    async function startPcm(nextStream) {
+    async function startPcm(nextStream, run) {
         const AudioContextCtor = globalThis.AudioContext ?? globalThis.webkitAudioContext;
         if (!AudioContextCtor)
             throw new Error('AudioContext is not available');
         shell.stats.execution = 'main';
         audioCtx = new AudioContextCtor(opts.sampleRate ? { sampleRate: opts.sampleRate } : undefined);
+        const context = audioCtx;
         mediaNode = audioCtx.createMediaStreamSource(nextStream);
+        const sourceNode = mediaNode;
         if (opts.worklet != false && audioCtx.audioWorklet && globalThis.Blob && globalThis.URL) {
-            pcmPacketizer = createPcmPacketizer((0, positive_integer_option_1.positiveIntegerOption)(opts.packetMs, 20, 'media audio packetMs'), emitPcm);
+            pcmPacketizer = createPcmPacketizer((0, positive_integer_option_1.positiveIntegerOption)(opts.packetMs, 20, 'media audio packetMs'), function emitCurrentPcm(...args) { if (run == generation)
+                emitPcm(...args); });
+            const packetizer = pcmPacketizer;
             const blob = new globalThis.Blob([audioWorkletCode()], { type: 'text/javascript' });
             const url = globalThis.URL.createObjectURL(blob);
             try {
-                await audioCtx.audioWorklet.addModule(url);
+                await context.audioWorklet.addModule(url);
             }
             finally {
                 globalThis.URL.revokeObjectURL(url);
             }
+            if (run != generation)
+                return;
             const AudioWorkletNodeCtor = globalThis.AudioWorkletNode;
-            workletNode = new AudioWorkletNodeCtor(audioCtx, 'wenay-common2-pcm', {
+            workletNode = new AudioWorkletNodeCtor(context, 'wenay-common2-pcm', {
                 numberOfInputs: 1,
                 numberOfOutputs: 0,
                 channelCount: opts.channels ?? 1,
             });
             shell.stats.execution = 'audio-worklet';
             workletNode.port.onmessage = function onWorkletSamples(ev) {
+                if (run != generation)
+                    return;
                 const data = ev.data ?? {};
-                pcmPacketizer.push(data.samples, data.sampleRate ?? audioCtx.sampleRate, data.channels ?? 1, data.frames ?? 0);
+                packetizer.push(data.samples, data.sampleRate ?? context.sampleRate, data.channels ?? 1, data.frames ?? 0);
             };
-            mediaNode.connect(workletNode);
+            sourceNode.connect(workletNode);
             return;
         }
         const channels = opts.channels ?? 1;
         const processor = audioCtx.createScriptProcessor(opts.bufferSize ?? 2048, channels, channels);
         processor.onaudioprocess = function onAudioProcess(ev) {
+            if (run != generation)
+                return;
             const input = ev.inputBuffer;
             const frames = input.length;
             const buffers = [];
@@ -364,7 +375,7 @@ function createAudioSource(opts = {}) {
         processor.connect(audioCtx.destination);
         workletNode = processor;
     }
-    function startRecord(nextStream) {
+    function startRecord(nextStream, run) {
         const Recorder = globalThis.MediaRecorder;
         if (!Recorder)
             throw new Error('MediaRecorder is not available');
@@ -372,26 +383,59 @@ function createAudioSource(opts = {}) {
         recorder = new Recorder(nextStream, Recorder.isTypeSupported?.(mimeType) ? { mimeType } : undefined);
         shell.stats.execution = 'media-recorder';
         recorder.ondataavailable = async function onRecordChunk(ev) {
-            if (!ev.data || ev.data.size == 0)
-                return;
-            const payload = new Uint8Array(await ev.data.arrayBuffer());
-            shell.emitFrame(encodeMediaFrame({
-                kind: 'audio-record',
-                codec: 'webm-opus',
-                seq: ++seq,
-                tMono: nowMono(),
-            }, payload), seq);
+            try {
+                if (run != generation || !ev.data || ev.data.size == 0)
+                    return;
+                const payload = new Uint8Array(await ev.data.arrayBuffer());
+                if (run != generation)
+                    return;
+                shell.emitFrame(encodeMediaFrame({
+                    kind: 'audio-record',
+                    codec: 'webm-opus',
+                    seq: ++seq,
+                    tMono: nowMono(),
+                }, payload), seq);
+            }
+            catch (error) {
+                failRun(run, error);
+            }
         };
+        recorder.onerror = function recordingFailed(event) { failRun(run, event.error ?? event); };
+        recorder.onstop = function recordingEnded() { if (run == generation)
+            stop(); };
         recorder.start(opts.recordTimesliceMs ?? 1000);
+    }
+    function failRun(run, error) {
+        if (run != generation)
+            return;
+        stop();
+        shell.setState(stateFromMediaError(error), error);
     }
     function stop() {
         generation++;
-        recorder?.stop?.();
+        offTracks();
+        offTracks = () => { };
+        if (recorder) {
+            recorder.ondataavailable = null;
+            recorder.onerror = null;
+            recorder.onstop = null;
+            try {
+                recorder.stop?.();
+            }
+            catch { }
+        }
         recorder = null;
         pcmPacketizer = null;
+        if (workletNode?.port)
+            workletNode.port.onmessage = null;
+        if (workletNode)
+            workletNode.onaudioprocess = null;
         workletNode?.disconnect?.();
         mediaNode?.disconnect?.();
-        audioCtx?.close?.();
+        try {
+            void Promise.resolve(audioCtx?.close?.()).catch(function alreadyClosed() { });
+        }
+        catch { }
         stopTracks(stream);
         stream = null;
         audioCtx = null;
@@ -400,6 +444,7 @@ function createAudioSource(opts = {}) {
         shell.setState('idle');
     }
     async function start() {
+        let run = generation;
         try {
             ensureSocketTransport(transport);
             if (!opts.stream && !hasGetUserMedia()) {
@@ -407,7 +452,7 @@ function createAudioSource(opts = {}) {
                 return shell.state;
             }
             stop();
-            const run = generation;
+            run = generation;
             shell.setState('requesting');
             shell.stats.startedAt = nowMono();
             const constraints = { audio: { deviceId: deviceId ? { exact: deviceId } : undefined, channelCount: opts.channels, sampleRate: opts.sampleRate } };
@@ -417,21 +462,24 @@ function createAudioSource(opts = {}) {
                 return shell.state;
             }
             stream = nextStream;
+            const tracks = nextStream.getTracks?.() ?? [];
+            function trackEnded() { if (run == generation)
+                stop(); }
+            for (const track of tracks)
+                track.addEventListener?.('ended', trackEnded);
+            offTracks = function detachTracks() { for (const track of tracks)
+                track.removeEventListener?.('ended', trackEnded); };
             if (opts.mode == 'record')
-                startRecord(stream);
+                startRecord(stream, run);
             else
-                await startPcm(stream);
-            if (run != generation) {
-                stop();
+                await startPcm(stream, run);
+            if (run != generation)
                 return shell.state;
-            }
             shell.setState('live');
             return shell.state;
         }
         catch (e) {
-            stopTracks(stream);
-            stream = null;
-            shell.setState(stateFromMediaError(e), e);
+            failRun(run, e);
             return shell.state;
         }
     }
@@ -441,7 +489,7 @@ function createAudioSource(opts = {}) {
         getStats: () => ({ ...shell.stats }),
         setDevice: async (id) => {
             deviceId = id;
-            return shell.state == 'live' ? start() : shell.state;
+            return shell.state == 'live' || shell.state == 'requesting' ? start() : shell.state;
         },
         listDevices: () => listDevices('audio'),
         get state() { return shell.state; },

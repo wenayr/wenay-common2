@@ -1,8 +1,19 @@
 # wenay-common2 — BRIEF cheat sheet (notation)
 
+Observe parent/array replacement accepts nested reactive values, including spread/slice
+history updates, since 2.21.2. Inputs resolve to raw values before path proxies rebind;
+same-path subscriptions survive. A proxy in an immutable data property is refused with
+`TypeError`; `cloneStoreValue(input)` supplies a detached mutable input. See
+[replacement and ownership boundaries](STORE-CONSUMER-GUIDE.md#replacing-a-parent-while-retaining-nested-reactive-values).
+
+Local async ownership: `createResourceScope({signal?, closeTimeoutMs?})` owns resources
+and ordered cleanup; `createReconciler({read, run, subscribe?, signal?})` coalesces
+notifications into serial fresh-snapshot passes. Root and `/client` exports.
+See [ownership, retries and close guarantees](ASYNC-OWNERSHIP.md).
+
 Copyable application: [rental stand](../examples/rental/README.md), with a small `example.ts`,
 typed commands, Store, HTTP/Swagger and optional serving nodes. Uses installed package exports.
-Rental and document-processing share a private scaffold HTTP host for startup and bounded shutdown.
+Rental and document-processing share the public service HTTP host for startup and bounded shutdown.
 Document shutdown disconnects clients before closing their replay sources; restart needs a fresh session.
 Rental optionally persists data and receipts with SERVICE_DATA_DIR plus stable identity secrets;
 see its README for stopped backup/restore and single-writer limits.
@@ -330,7 +341,9 @@ ticks2.journalWindow()   // {entries, oldestSeq, head, ageMs, bytes, historyLimi
 const sub = replaySubscribe(l.ticks, v => {}, {since: saved, onSeq: s => saved = s})  // catch-up + live; no uncovered loss/dups (a producer frame/keyframe may jump raw seq)
 const sub2 = replaySubscribe(c.math.func.ticks, v => {})  // replay members project on func/strict directly — no cast needed
 const routed = replayRouteSubscribe(l.ticks, v => {}, {label: 'relay'})
-await routed.switch(nextRemoteTicks, {label: 'direct'})  // relay/direct hand-off: old route closes after catch-up
+await routed.switch(nextRemoteTicks, {label: 'direct'})  // same logical line/seq space: old route closes after catch-up
+// Independent endpoint/session projections need a fresh keyframe, even with the same view name:
+await routed.switch(otherProjection, {reset: true, since: -1})  // also applies to syncStoreReplayRoute; Store identity stays
 await l.ticks.frame(mySeq)                                // pull at YOUR pace (50ms timer etc.) — server condenses via the line's frame lambda
 // full guide + examples → rpc.md; frame model / lag policies → 🎞️ recipe below and rare docs
 // authorization (gate, principal facades, token lifecycle, teardown limits) → doc/RPC-AUTH.md
@@ -428,6 +441,10 @@ waits, cancellation and ACL projections. It complements `Resource` — pass reso
 Copyable `examples/ai-support` starts a support drafting page with a labelled local template
 provider (no model/key), account separation, progress and cancellation. Its checks reconnect the
 same client Store to a living host; this does not restore tasks after host process restart.
+Since 2.20.0, optional `initial` plus a synchronous atomic `persistence.commit` checkpoint port
+restore runs, receipts and private inputs. Restored active runs require explicit server recovery;
+the provider is never automatically replayed. `examples/ai-support` includes
+`npm run example:persistence`. Contract: [AI-RUN-PERSISTENCE.md](AI-RUN-PERSISTENCE.md).
 The shared private HTTP resource also verifies live-client shutdown and cancellation of active work.
 Concurrent support checks cover isolated failure/cancellation while healthy sibling runs complete.
 
@@ -621,6 +638,8 @@ Those new instances, device credentials and command receipts are also checked af
 ```
 // SERVER — next to your legacy object:
 const host = Peer.createPeerHost({authorize?, history?})   // authorize(env) = server-side canExposeEndpoint
+// Since 2.18.2 connection.close() terminally stops publish/batch/signal, including pending authorization.
+// peerClient.close(); hub.close() needs no delay. Ownership and dynamic RPC limits: PEER-LIFECYCLE.md.
 io.on('connection', socket => {
     const peer = host.connection(accountOf(socket))        // per-account signal port + relay journal
     createRpcServerAuto({socket, socketKey, object: {...legacyObject, peer: peer.fragment}, disconnectListen})
@@ -844,6 +863,10 @@ Observe.syncStoreReplay(mirror, remote /*{line, since, keyframe, frame?, chunks?
 // {budgetBytes /* clamped 16K..4M, default 256K */, onProgress({snapshotId, received, total})} tunes.
 // Producer control: exposeStoreReplay {chunks: false} withholds the facet — the opt-out for facades
 // that OVERRIDE keyframe (validation/metering), since clients probe chunks BEFORE keyframe.
+// Test doubles: {...api, keyframe: replacement} still copies chunks, so the replacement may never run.
+// Hide it with {...api, chunks: undefined, keyframe: replacement}, or pass {chunkedKeyframe: false}
+// to followReplicatedMap(remote, opts) / syncStoreReplay(store, remote, opts). Producer fixture:
+// createReplicatedMap({...deps, replay: {...deps.replay, chunks: false}}). See STORE-CONSUMER-GUIDE.md#snapshot-test-doubles.
 // The split and the client merge are prototype-safe (an own '__proto__' data key survives), and the
 // assembler merges into an OWNED object — it never mutates the producer-retained chunk 0 in place.
 // Oracle: replay/keyframe-chunks.test.ts; measured stand: experiments/slow-network-2026-08.
@@ -1401,12 +1424,40 @@ Store get() и get(mask) сохраняют результат через RPC fu
 проходит через replay, follower, replica sessions и cluster connector; Store node сохраняет
 карту пересылаемых команд. node.at(key) выводит тип известного ключа.
 Пример и ограничения: [STORE-CONSUMER-GUIDE.md](STORE-CONSUMER-GUIDE.md).
+Там же показано, как живой `state` и отдельный `snapshot()` ведут себя через `await`:
+снимок фиксирует расчёт, но не заменяет проверку актуальной операции перед внешним действием.
 
 Ownership and partition limits: [SCALE-SAFETY.md](SCALE-SAFETY.md). Local canWrite and elect/accept do not provide automatic lease expiry or external-effect fencing. Old authority node links reject registry writes after their ownership generation ends.
 
 The repository scaffold generator now produces a standalone service using public package entrypoints. Its external tarball, strict typecheck and multiprocess command/reconnect journey are verified by npm run test:scaffold. See [project assessment](LIBRARY-ASSESSMENT.md).
 Scaffold `date-string` inputs require a real calendar day in YYYY-MM-DD form, validated before command effects.
+The scaffold client exposes stable `identity.permissions` and `health` Stores, plus
+`identity.onToken.on(cb)` / `identity.onAuth.on(cb)`. Role changes refresh the pruned facade and
+clear/restore existing view Stores without UI polling; ready tokens renew through authority.
+Guarded per-session role projections enforce revocation on the serving replica, including shared
+content. Deploy updated access/client templates together; [session contract and partition limits](RPC-AUTH.md#service-scaffold-live-roles-and-client-session-ownership).
 Failed scaffold startup migrations close the allocated authority and preserve the original error.
 Migration results are cloned before applying changes, so unreadable results cannot first delete old fields.
 
 Compiler compatibility: the declarations now use NoInfer (TypeScript 5.4+); strict consumers are verified with TypeScript 7.0.2. Known Store node keys and replay state compatibility are checked more strictly than 2.15.0. See the [2.16.0 compatibility notes](changes/2.16.0.md#compatibility-and-receipt-limits).
+# Public service composition (2.18.0)
+
+Patch 2.18.1 extends the existing `schemaCommand` DSL with recursive array items, including
+`{array: {object: {...}}}`. Inference, validation and OpenAPI agree; optional array fields still
+contain required elements. Details: [SERVICE-RUNTIME.md](SERVICE-RUNTIME.md).
+
+`service` exports the definition/schema contract and `describeService`; `service/client` exports the
+typed resource controller `client.resources.open(name)` since 2.19.0: stable status Store, a
+fresh remote per generation, role/reconnect invalidation and bounded cleanup. Static factories
+are declared in `definition.resources` and run on authority. Contract and counter/peer example:
+[SERVICE-RESOURCES.md](SERVICE-RESOURCES.md). The client also exports the
+typed browser client with stable views/permissions/health. `service/server` composes authority,
+node, access and REST. `service/host` owns HTTP/WS, shared origins, mount disposal and optional
+process signals. `server/process` owns one child; `server/blob` supplies immutable binary IO and an
+Artifact storage adapter. Details and migration: [SERVICE-RUNTIME.md](SERVICE-RUNTIME.md).
+Since 2.20.0, hosts accept `publicUrl` / `SERVICE_PUBLIC_URL` separately from their local listener;
+see [SERVICE-PUBLIC-ADDRESS.md](SERVICE-PUBLIC-ADDRESS.md) for proxy/NAT and CORS configuration.
+
+Media capture `stop()` cuts pending/final callbacks from that start. A later recording receives
+only its own callbacks; audio device/permission/worklet races are generation-checked. This does
+not flush a final recording blob. Replay history explicitly retained before stop remains history.

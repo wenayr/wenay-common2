@@ -66,6 +66,10 @@ is the durable read model and is correct after `ready` regardless of whether a c
 original run, even after a new socket connection. Normal RPC calls reject on a disconnect and are never
 blindly reissued, because a retry could charge a model or run a tool twice. The product decides to retry;
 the host makes that retry safe.
+In-memory receipts survive connections, not process loss. Optional checkpoints and explicit
+provider recovery are defined in [AI-RUN-PERSISTENCE.md](AI-RUN-PERSISTENCE.md). In checkpoint
+mode, reusing a key with a changed input, kind or resourceIds rejects. Legacy in-memory
+receipts continue to return the first run.
 
 State transitions are:
 
@@ -109,6 +113,8 @@ the common library.
   Store and event lines. Defaults are owner-only; `AiRunPolicy` extends create/read/write checks.
 - Raw `input` and the raw value passed to `provideInput` are never placed in Store. Only input-request
   metadata is shared with authorized viewers.
+  With persistence enabled these values are retained in the private server checkpoint. Never put
+  `host.persistence` or `host.recovery` on the RPC facade.
 - File bytes, storage keys, presigned URLs, model credentials, traces and raw chain-of-thought do not
   enter RPC/Store/events. A tool resolves a resource id on the server through its own policy-bound
   storage adapter.

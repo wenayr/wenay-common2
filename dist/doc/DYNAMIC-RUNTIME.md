@@ -3,6 +3,12 @@
 Status: canonical architecture plus an internal, non-exported first vertical slice. This document
 does not add a public package API or authorize execution of arbitrary downloaded code.
 
+Since 2.18.0, `server/process` publishes the small direct-child IO resource used by the hosting
+example, and `service/host` publishes the static definition-driven HTTP/WS host lifecycle.
+`server/blob` supplies immutable bytes and an existing Artifact storage-port adapter. These do not
+load or activate modules, schedule clusters, establish artifact trust or change the deployment
+ownership below. Their boundaries are documented in [SERVICE-RUNTIME.md](SERVICE-RUNTIME.md).
+
 Copyable product probe: `examples/hosting` uses the public Contract runtime with bundled trusted
 child HTTP applications. It demonstrates stable gateway URLs, health-checked updates, lease drain
 and rollback. It introduces no new artifact loader, sandbox, network control API or cloud provisioner.

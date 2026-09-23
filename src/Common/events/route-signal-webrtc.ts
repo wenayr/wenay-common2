@@ -58,16 +58,22 @@ export function createSignalHub(deps: {authorize?: (env: SignalEnvelope) => bool
     // Several browser tabs may share one account. Keep registration order and route
     // to the newest live port; when it closes, the previous port becomes active again.
     const ports = new Map<string, Array<(env: SignalEnvelope) => void>>()
+    const registrations = new Set<() => void>()
+    let closed = false
 
     function register(account: string) {
+        if (closed) throw new Error('signal hub closed')
+        let portClosed = false
         const [emit, signals] = listen<[SignalEnvelope]>()
         const accountPorts = ports.get(account) ?? []
         accountPorts.push(emit)
         ports.set(account, accountPorts)
 
         async function send(env: SignalEnvelope) {
+            if (closed || portClosed) return false
             if (env == null || env.from != account) return false // spoofing cut off at entry
             if (authorize && !(await authorize(env))) return false
+            if (closed || portClosed) return false
             const targets = ports.get(env.to)
             const target = targets?.[targets.length - 1]
             if (!target) return false
@@ -76,6 +82,9 @@ export function createSignalHub(deps: {authorize?: (env: SignalEnvelope) => bool
         }
 
         function close() {
+            if (portClosed) return
+            portClosed = true
+            registrations.delete(close)
             const accountPorts = ports.get(account)
             if (accountPorts) {
                 const i = accountPorts.indexOf(emit)
@@ -85,6 +94,7 @@ export function createSignalHub(deps: {authorize?: (env: SignalEnvelope) => bool
             signals.close()
         }
 
+        registrations.add(close)
         return {account, send, signals, close}
     }
 
@@ -101,6 +111,9 @@ export function createSignalHub(deps: {authorize?: (env: SignalEnvelope) => bool
         revoke,
         accounts: () => Array.from(ports.keys()),
         close() {
+            if (closed) return
+            closed = true
+            for (const closePort of [...registrations]) closePort()
             ports.clear()
         },
     }

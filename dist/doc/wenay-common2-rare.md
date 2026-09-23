@@ -1,5 +1,29 @@
 # wenay-common2 — EXTENDED cheat sheet (notation)
 
+Observe admission (2.21.2): nested proxy values in plain data containers are unwrapped
+before parent/array/root rebinding. The path proxy remains stable, while its target
+never becomes that proxy itself. Initial values and property definitions share this
+boundary. Raw aliases remain local aliases; eager initialization terminates on local
+cycles. A non-writable, non-configurable slot containing a proxy throws `TypeError`
+before admission; use `cloneStoreValue` for immutable carriers. See the
+[full input/path contract](STORE-CONSUMER-GUIDE.md#replacing-a-parent-while-retaining-nested-reactive-values).
+
+Snapshot test doubles: `{...api, keyframe: replacement}` retains the optional `chunks`
+facet, which snapshot readers prefer. Hide `chunks` or set `chunkedKeyframe: false`
+on `followReplicatedMap` / `syncStoreReplay` to exercise the replacement. Producer
+fixtures can set `createReplicatedMap`'s `replay.chunks: false`. See
+[consumer guidance](STORE-CONSUMER-GUIDE.md#snapshot-test-doubles).
+
+Async ownership (root and `/client`, since 2.21.0):
+`createResourceScope` → `resource.{own,acquire,parallel}`, `start`, shared `close`,
+`settled`, `signal`, `events.errors`. Reverse admission order; independent groups
+explicit. Optional close deadline rejects `ResourceCloseTimeoutError` while actual
+cleanup continues. `createReconciler` → `control.{request,retry,cancelRetry,idle}`,
+`events.errors`, `view.error`, `signal`, shared `close`/`settled`. Inject `read`/`run`
+and optional `subscribe`; fresh read per serial pass, one pending notification,
+caller-chosen keyed retry timers. Full contracts and consumer migration:
+[ASYNC-OWNERSHIP.md](ASYNC-OWNERSHIP.md).
+
 The [rental example](../examples/rental/README.md) ships its own client and host composition.
 It demonstrates one authority and optional reader processes, including endpoint restart recovery.
 It defaults to memory; SERVICE_DATA_DIR enables the existing business/control archives and requires
@@ -738,7 +762,7 @@ library gives two seams and the scaffold turns them into data in the domain modu
   node) and `exposeStoreReplay` serves the projection as its own replay line; `allow: 'public'`
   views replace the raw line on the ungated key, so a browser never receives what a projection drops
   (secrets, contacts). `project` receives the principal: "my orders" is one view, one line per
-  session (`shared: true` = one line per process). The seams: `createStoreNode({serve: {audience}})`
+  session (`shared: true` ignores the principal for content, while retaining a session access boundary). The seams: `createStoreNode({serve: {audience}})`
   and `createAuthority.serve.connection({principal})`.
 - **One generic panel.** `/panel` (template/panel.ts) logs in through `/api/<name>/login`, asks
   `/me` what this principal may read and call, polls the readable views and posts commands — the
@@ -752,10 +776,32 @@ Start with `examples/smart-home/example.ts` (`npm start`) for the ordinary read/
 path. It waits separately for command acknowledgement and Store delivery and closes every resource.
 `npm run check` additionally exercises lifecycle and recovery failures.
 
-The scaffold `createServiceClient` owns its pending connections too: `close()` prevents late
+The public service `createServiceClient` owns its pending connections too: `close()` prevents late
 roster/login completions from installing a session or view. Closing a view before its first
 snapshot rejects that view's `ready`; retrieving it again from an open client creates a fresh
 handle. Initial login belongs to the hub token provider and is not called twice by the wrapper.
+
+The service client also exposes `identity.permissions: Store<{account, roles, views, commands}>`,
+`identity.onToken.on(cb)`, `identity.onAuth.on(cb)` and `health: Store<{connected, nodeId, url}>`.
+`ready()` includes the first permissions snapshot for authenticated sessions. After a live role change,
+the client clears denied mirrors, refreshes the pruned RPC facade and restores newly permitted views
+in the same Store objects. Views opened before permission wait for their first permitted keyframe;
+`ready` is one-shot and is not a fresh authorization promise after every change. Bind permissions
+as well as view data. `health.connected` describes the client endpoint, not the upstream authority.
+
+Ready tokens renew through authority; credentials are used only for initial login. A supplied `login`
+callback remains the external issuer. `onToken` reports token acquisition (also available as a factory
+callback); `onAuth` reports the scale hub's renewal/expiry/revocation outcomes. Renew failure never
+silently turns credential login into lifting a ban. Deploy matching service server/client versions
+together to remove UI polling/recreation and duplicate token/health adapters. Since 2.18.0 these are
+public `service/client` and `service/server` exports, also re-exported by scaffold paths. Existing command input/result
+inference and caller-owned request IDs remain unchanged; commands are not silently retried by the scaffold.
+
+Role views recompute on every local batch, including access changes outside their declared `keys`.
+Protected `shared` content now costs one guarded projection per session; public lines remain shared.
+The local replica must receive a revocation before enforcing it. Partitioned nodes may serve old
+authorized data until updates or token expiry; this supplies no global revocation deadline.
+See [the canonical session contract](RPC-AUTH.md#service-scaffold-live-roles-and-client-session-ownership).
 
 `examples/small-jobs` uses this client without another product session layer. Its role-scoped
 projections and synchronous commands demonstrate competing assignments and acceptance. Object IDs
@@ -817,20 +863,34 @@ scaffold self-check). Tracking falls out: every verified event is a command, so 
 the archive and the host's `ledger` view, applied or not.
 
 ### Recipe: a client from the definition — login, placement, views, commands
-`template/client.ts` `createServiceClient({definition, url, auth?, placement?})` is what a front
+`service/client` `createServiceClient({definition, url, auth?, placement?})` is what a front
 end, a device or a job needs, typed from the same definition the leader runs: `auth` is a token,
 the definition's login form (the leader mints and renews through its identity port) or a product's
 own provider; placement follows the leader's roster (`followNodeDirectory` + `pickDirectoryNode`,
 serving nodes by weight, the leader alone on day 1) and re-places when the endpoint dies; each
 `views.<name>` is ONE stable mirror Store over `syncStoreReplayRoute` — a view line is a plain
 replay line (no replica descriptor, so no replica-set fork choice), and on re-placement the route
-switches to the new endpoint's line while the object a UI is bound to stays; `commands.<name>` go
+switches with `{reset: true, since: -1}` to the new endpoint/session's keyframe while the object a UI is bound to stays; `commands.<name>` go
 through the current endpoint (a node forwards, the leader executes). The lock device of
 `examples/apartments` composes this client with its own deadline, actuator and outcome-report rules.
 Transport replay cannot decide whether an old physical action is still appropriate. The example
 checks command deadlines at the service boundary and again at the device, and validates cached
 keypad dates locally. A lost report acknowledgement must not trigger another motor action.
 An acknowledged software report is not independent evidence that a physical door opened.
+
+Endpoint readiness (including token acquisition and RPC handshake) is bounded to 5 seconds per
+candidate. A placement wave tries each candidate at most once and falls back to an eligible authority
+when serving nodes fail. Failed serving endpoints are excluded for 15 seconds, or until their URL
+changes or the roster removes/makes them ineligible; there is no cooldown timer. Authority is retryable
+on the next wave so archive restarts can recover. Closing the client closes its pending hub and clears
+readiness/retry timers. Commands are never silently retried. These are scaffold policies, not replay
+mechanism changes. The generated pizzeria, rental, apartments and small-jobs clients share this fix.
+`examples/pizzeria` includes `npm run test:network`: real process crashes, the same `myOrders` Store,
+fallback after all serving nodes die, and authority restart with both data and control archives,
+checking original receipts and fresh updates. `oracle/realsocket/scaffold-client-lifecycle.spec.ts`
+also checks stale candidates that accept sockets but never answer RPC, close during readiness and
+withdrawal of a pending candidate. Since 2.18.0 active clients observe directory eligibility changes;
+use authority drain before stopping selected nodes, or the Node host's graceful close/IPC shutdown.
 
 The apartment and rental `run.mjs` stands share concurrent requests to restart the same process.
 Closing fences replacement creation and waits for owned children and pending replacements; their
@@ -891,7 +951,7 @@ upload → confirm → AI progress/result → download path; production code sup
 port. Oracle: `replay/file-job.test.ts` (real Socket.IO/RPC, owner ACL, progress, result, cancel).
 
 Copyable `examples/document-processing` separates owner-checked HTTP bytes from FileJob metadata.
-Its `http-host.ts` is generated from the same private scaffold resource as rental: it owns
+Its `http-host.ts` re-exports the same public `service/host` resource as rental: it owns
 HTTP/Socket.IO startup and bounded shutdown, while routes and authorization stay in the product.
 The document host explicitly disconnects clients before ending replay sources on shutdown.
 This server-issued disconnect stops automatic reconnect; a restarted in-memory host needs a fresh
@@ -903,7 +963,7 @@ in-memory work. Neither distributed workers nor durable task recovery are claime
 
 ## 🤖 AI — provider-neutral run protocol
 
-`Ai.createAiRunHost({runner, capabilities?, policy?, id?, now?, history?, drain?})` adds a generic
+`Ai.createAiRunHost({runner, initial?, persistence?, capabilities?, policy?, id?, now?, history?, drain?})` adds a generic
 model/tool workflow beside existing RPC keys. It is intentionally not an SDK for a particular model:
 the application runner chooses a provider, prompt, tool implementations, persistence and billing;
 the host owns safe lifecycle semantics on the socket boundary.
@@ -940,7 +1000,7 @@ const run = await client.createRun({requestId, kind: 'assistant', input: {prompt
 The fragment exposes `capabilities()`, `state` (account-filtered Store patch replay), `events`
 (account-filtered semantic replay), `createRun`, `cancelRun`, `resolveApproval`, and `provideInput`.
 `AiRunStore` has `{runs, approvals, inputs}`; raw values supplied to `provideInput` are resolved into
-the runner only and are not written to Store. Default `AiRunPolicy` is owner-only;
+the runner and a server-only checkpoint, not the shared Store. Default `AiRunPolicy` is owner-only;
 `canCreate`/`canRead`/`canWrite` add tenant, quota or delegated-access policy.
 
 Event contract:
@@ -959,6 +1019,15 @@ input/approval waits, calls optional `runner.cancel`, and ignores every later re
 Request identity includes the account with unambiguous tuple encoding. Synchronous exceptions and
 rejected promises from provider cancellation cannot interrupt local cancellation or host cleanup.
 This is a local lifecycle guarantee; cancellation does not prove that an external provider stopped billing.
+
+Since 2.20.0, `AiRunCheckpoint` and synchronous `AiRunPersistencePort.commit` add an optional
+durable boundary without changing synchronous command return types. A write failure fences the
+host; `host.persistence.errors/error()` retains diagnostics. Initial requests rebuild the owner-scoped
+receipt index; mismatched input rejects. Nonterminal restores carry `run.recovery.from` and do not
+change legacy in-memory first-request-wins receipts. Restored work does not
+execute automatically. Server `recovery.pending/resume/settle` requires explicit provider reconciliation;
+`runner.recover` can reuse retained approval/input IDs and answers. Never expose these private facets.
+Contract, failure policy and installed archive example: [AI-RUN-PERSISTENCE.md](AI-RUN-PERSISTENCE.md).
 
 `examples/ai-support` composes this host with a runner, authenticated RPC, an HTTP adapter and a
 small browser page. The default provider uses deterministic templates, requires no key and performs
@@ -1196,6 +1265,11 @@ Audio source:
 - AudioWorklet's 128-sample render quanta are aggregated into `packetMs` (default 20ms) PCM frames
   before Listen/RPC publication, reducing packet and playback-node pressure without changing samples.
 - `mode:'record'` uses `MediaRecorder` chunks (`webm-opus`) for record/upload flows, not live STT.
+- `stop()` detaches recorder/PCM/track callbacks and discards in-flight/final chunks. No final-blob
+  completion is promised. Errors from a superseded grant, blob conversion or worklet load cannot
+  stop or mark the next start as failed. `setDevice` supersedes an active permission request too.
+  Unsubscribing removes that listener; release capture with `stop()` on owner/unmount cleanup.
+  Explicit replay history of already emitted frames is retained; create a new source for a fresh journal.
 - `getStats().rms` gives a VU-meter signal; permission denied/no device returns typed state, not a thrown public failure.
 
 Video source:
@@ -1454,6 +1528,9 @@ Contract:
 - JSON/RPC transports should use JSON-safe path keys for push channels; `Symbol` paths are local-only even though the in-memory store can address them.
 - Dirty paths are facts about changed object routes: add key, delete key, or deep set. Array mutation dirties the whole array branch; no public splice/index diff is promised.
 - `snapshot()`/`update().get()` walk raw targets (`toRaw`), so a snapshot of a cold store creates no lazy reactive nodes.
+  A retained `state` reference stays live across `await`; a snapshot's nested arrays stay detached.
+  See [the asynchronous pass example](STORE-CONSUMER-GUIDE.md#a-reconciliation-pass-across-await)
+  for operation-identity rechecks and the limits of external IO.
 - `cloneStoreValue(value)` exposes that detached Store snapshot clone for boundary adapters; it preserves cycles, rich values and binary views.
   Sparse array length/holes and repeated rich-value identities survive within one clone. Separate binary views
   own detached byte ranges; shared backing-buffer identity is not retained. Replicated mutable state must use
@@ -1516,7 +1593,9 @@ exposeReplay(replay)  <->  replaySubscribe(remote, cb, {since?, onSeq?, staleMs?
   // low-level onBatch) is terminal through onError and leaves off.seq() at the preceding coordinate. onBatch runs
   // after Store application, so its own exception does not roll the already-applied state back.
 replayRouteSubscribe(remote, cb, {label?, since?, onSeq?, onError?, onRoute?}) -> off & {ready, switch(nextRemote, {label?, since?, reset?, policy?, hint?}), seq(), label(), active()}
-  // transport hand-off helper: old route remains live, replacement subscribes+catches up from seq, then old closes; overlap is seq-deduped. Use for relay -> direct and direct -> relay over any ordered ReplayRemote.
+  // Same logical line/seq space: old route remains live, replacement catches up from seq, then old closes; overlap is seq-deduped (relay -> direct -> relay).
+  // Independent process/session projections: switch(nextRemote, {reset:true, since:-1}) requests a fresh keyframe and permits a lower seq.
+  // A shared view name or equal state does not imply shared sequence coordinates. syncStoreReplayRoute preserves the destination Store object in both cases.
   // DELIVERY CONTRACT (guaranteed, not best-effort): the subscriber's cb sees ONE uniform stream —
   //   first delivery = the snapshot (keyframe as an event of the SAME type; store: root patch),
   //   then only strictly-newer events, seq-ascending and deduped. A raw seq jump is valid only when a
@@ -1630,6 +1709,7 @@ Peer.createPatchRelayJournal({history?, gap?: 'resume'|'sacred'}) -> {push(env),
   //   resync() = call after transport reconnect: compares relay seq() with the local line, repairs the
   //   gap without waiting for the next write. Oracle: replay/peer-repair.test.ts (full gap matrix).
   // The full SDK on top (createPeerHost/createPeerClient) is most-used surface -> wenay-common2.md.
+  // Terminal connection/client shutdown and dynamic RPC subscription ownership (2.18.2): PEER-LIFECYCLE.md.
   // Host fragment also carries `presence` (>= 1.0.74): {list() -> string[], changes: Listen<{account,
   //   online}>} — refcounted per account (several connections = one identity), edges on 0<->1 only.
   //   changes is a PLAIN Listen (no replay journal): subscribe FIRST, then list(), to close the race.
@@ -1908,7 +1988,7 @@ See [STORE-CONSUMER-GUIDE.md](STORE-CONSUMER-GUIDE.md).
 Ownership and partition limits: [SCALE-SAFETY.md](SCALE-SAFETY.md). Local canWrite and elect/accept do not provide automatic lease expiry or external-effect fencing. Old authority node links reject registry writes after their ownership generation ends.
 
 Generated scaffold projects use Node16 module resolution and public entrypoints, including the root Scale/Command namespaces; a namespace does not imply a /scale or /command package subpath. Generation is available from the repository incubator, not a published generator CLI.
-The private input-schema validator rejects calendar rollover (such as February 29 in a non-leap
+The public service input-schema validator rejects calendar rollover (such as February 29 in a non-leap
 year) and unknown nested fields before domain validation/apply. Rental's installed check also
 verifies that rejected input leaves no effect and permits a corrected retry with the same request ID.
 Startup archive migration runs against a snapshot. A missing or throwing migration closes the
@@ -1919,3 +1999,29 @@ are changed. A throwing result getter leaves old business data available for a c
 later mutation of the callback's returned object cannot change the adopted state.
 
 Compiler compatibility and receipt-delivery failure windows are recorded in [2.16.0](changes/2.16.0.md#compatibility-and-receipt-limits). NoInfer requires TypeScript 5.4 or newer; the strict tested compiler is 7.0.2.
+# Service runtime and Node adapters (2.18.0)
+
+SC1 v1 (2.19.0): resource factories receive verified principal, server session/resource IDs and
+AbortSignal. Authority invalidation cuts saved RPC paths, async admission/results, ordinary and
+dynamic streams, flow waits and replay gates without closing unrelated scopes. Options bound
+opening/cleanup; original errors use `leader.resources.errors`, safe errors use controller status.
+`leader.control.close()` returns resource cleanup completion. Exact types, custom-host hook
+ownership, lifecycle matrix and migration: [SERVICE-RESOURCES.md](SERVICE-RESOURCES.md).
+
+Authority node links also retain their leadership epoch: a fast demotion/promotion cannot
+reactivate an old roster-writing link when Store notifications coalesce the intermediate role.
+
+In 2.18.1, `tArrayItemSpec` recursively accepts scalar, enum, object and array values. Array fields
+retain optionality; positions cannot be optional/undefined. `buildInputValidate` checks nested
+objects with indexed paths and rejects unknown fields, null and non-finite numbers. `inputJsonSchema`
+recursively emits `items` including required properties and `additionalProperties: false`.
+
+Public entrypoints `service`, `service/client`, `service/server`, `service/host`, `server/process`
+and `server/blob` replace the copied service scaffold implementation. [SERVICE-RUNTIME.md](SERVICE-RUNTIME.md)
+documents descriptor inference/JSON boundaries, extended `identity.me()`, drain and IPC shutdown,
+mount ownership/timeouts, HTTP/WS CORS, optional peers, process failures and immutable binary storage
+with explicit Artifact retention. Existing replay/RPC/Scale semantics remain unchanged.
+Host `publicUrl` and `SERVICE_PUBLIC_URL` (2.20.0) control roster addresses independently of local
+`url`, bind `host`/`SERVICE_HOST` and `SERVICE_PORT`. They never trust incoming forwarded headers or
+widen origins. A separate public origin is required per eligible node; `SERVICE_UPSTREAM` remains
+the node-link address. See [SERVICE-PUBLIC-ADDRESS.md](SERVICE-PUBLIC-ADDRESS.md).

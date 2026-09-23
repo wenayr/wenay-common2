@@ -1,0 +1,130 @@
+import assert from 'node:assert/strict'
+import {createProcessResource} from '../../../../src/server/process-resource'
+import {mkdtemp, realpath, rm} from 'node:fs/promises'
+import {tmpdir} from 'node:os'
+import path from 'node:path'
+import {setTimeout as delay} from 'node:timers/promises'
+import {createServiceClient} from '../../template/client'
+import {DEMO_LOGINS, serviceDefinition} from './service'
+
+async function until(label: string, check: () => boolean, timeoutMs = 20_000) {
+    const deadline = Date.now() + timeoutMs
+    while (!check()) {
+        assert(Date.now() < deadline, 'timeout: ' + label)
+        await delay(20)
+    }
+}
+
+async function main() {
+    const temp = await realpath(tmpdir())
+    const work = await mkdtemp(path.join(temp, 'pizzeria-network-'))
+    const stops: (() => Promise<void>)[] = []
+    const clients: ReturnType<typeof createServiceClient<typeof serviceDefinition>>[] = []
+    const env = {
+        ...process.env, SERVICE_DATA_DIR: work,
+        SERVICE_NODE_TOKEN: 'pizzeria-network-node-secret', SERVICE_TOKEN_SECRET: 'pizzeria-network-token-secret',
+    }
+    // Use the shipped process entrypoints; SIGKILL gives the roster no goodbye.
+    async function boot(script: string, settings: Record<string, string>, pattern: RegExp) {
+        let graceful = false
+        const child = createProcessResource({command: process.execPath,
+            args: ['--import', 'tsx', path.join(__dirname, script)],
+            env: {...env, ...settings}, ipc: true, startTimeoutMs: 20_000, tailChars: 24_000,
+            ready(fact) { if (fact.type != 'message') return pattern.exec(fact.tail)?.[1] },
+            shutdown(process) {
+                if (graceful && process.connected) process.send('shutdown', function sent(error) { if (error) process.kill('SIGKILL') })
+                else process.kill('SIGKILL')
+            },
+        })
+        function stop() { return child.close() }
+        stops.push(stop)
+        return {url: await child.ready, stop, shutdown() { graceful = true; return child.close() }}
+    }
+    function bootLeader(port = '0') {
+        return boot('leader-pizzeria.ts', {SERVICE_PORT: port}, /leader listening on (http:\/\/localhost:\d+)/)
+    }
+    function bootNode(id: string, url: string) {
+        return boot('node-pizzeria.ts', {SERVICE_PORT: '0', SERVICE_UPSTREAM: url, SERVICE_NODE_ID: id}, /serving at (http:\/\/localhost:\d+)/)
+    }
+    function connect(url: string) {
+        const client = createServiceClient({definition: serviceDefinition, url,
+            auth: {credentials: {account: 'alice', password: DEMO_LOGINS.alice}}, placement: {rng: () => 0},
+        })
+        clients.push(client)
+        return client
+    }
+    async function authorityOrders(url: string, token: string) {
+        const response = await fetch(url + '/api/pizzeria/views/myOrders', {
+            headers: {authorization: 'Bearer ' + token}, signal: AbortSignal.timeout(5000),
+        })
+        const result = await response.json()
+        assert.equal(result.ok, true)
+        return result.value
+    }
+    try {
+        const authority = await bootLeader()
+        const first = await bootNode('node-a', authority.url)
+        const second = await bootNode('node-b', authority.url)
+        const client = connect(authority.url)
+        const mine = client.views.myOrders
+        const store = mine.store
+        await mine.ready
+        assert.equal(client.view.endpoint()?.nodeId, 'node-a')
+        const input = {items: ['margherita'], address: '12 Elm St'}
+        const placed = await client.commands.placeOrder('network-place', input)
+        await until('placed order in original mirror', () => store.state.orders[placed.id]?.state == 'placed')
+        // Advance the old projection well beyond a newly created session's sequence.
+        for (let index = 0; index < 4; index++) await client.commands.placeOrder('advance-' + index, input)
+        await until('old projection advanced', () => Object.keys(store.state.orders).length == 5)
+        await first.stop()
+        await until('replacement node', () => client.view.endpoint()?.nodeId == 'node-b')
+        const cancelled = await client.commands.cancelOrder('network-cancel', {orderId: placed.id})
+        await until('cancel reaches SAME mirror after node failure', () => store.state.orders[placed.id]?.state == 'cancelled')
+        assert.equal(client.views.myOrders.store, store)
+        assert.deepEqual(store.snapshot(), await authorityOrders(authority.url, client.identity.token()!))
+
+        // Both nodes die while the roster still advertises them. The alternate is also dead.
+        const restartedNode = await bootNode('node-a', authority.url)
+        await until('restarted candidate in roster', () => client.view.roster().some(row => row.nodeId == 'node-a' && row.url == restartedNode.url && row.eligible))
+        await Promise.all([restartedNode.stop(), second.stop()])
+        await until('fallback to authority', () => client.view.endpoint()?.role == 'leader')
+        const after = await client.commands.placeOrder('after-all-nodes', input)
+        await until('authority continues the original mirror', () => store.state.orders[after.id]?.state == 'placed')
+        assert.equal(client.views.myOrders.store, store)
+        assert.deepEqual(store.snapshot(), await authorityOrders(authority.url, client.identity.token()!))
+
+        // Planned shutdown uses IPC on Windows too: withdraw before closing the serving socket.
+        const plannedA = await bootNode('planned-a', authority.url)
+        const plannedB = await bootNode('planned-b', authority.url)
+        await until('planned nodes registered', () => client.view.roster().filter(row => row.nodeId.startsWith('planned-') && row.eligible).length == 2)
+        client.control.repick()
+        await client.ready()
+        assert(client.view.endpoint()?.nodeId.startsWith('planned-'))
+        await Promise.all([plannedA.shutdown(), plannedB.shutdown()])
+        await until('planned scale to zero uses authority', () => client.view.endpoint()?.role == 'leader', 3000)
+        assert(!client.view.roster().some(row => row.nodeId.startsWith('planned-') && row.eligible))
+
+        const expected = store.snapshot()
+        await authority.stop()
+        const restored = await bootLeader(new URL(authority.url).port)
+        await until('same client reconnects to restarted authority', () => client.view.endpoint()?.role == 'leader')
+        // Receipts must return their ORIGINAL replies, even though the order is now cancelled.
+        assert.deepEqual(await client.commands.placeOrder('network-place', input), placed)
+        assert.deepEqual(await client.commands.cancelOrder('network-cancel', {orderId: placed.id}), cancelled)
+        assert.deepEqual(await authorityOrders(restored.url, client.identity.token()!), expected)
+        const resumed = await client.commands.placeOrder('after-restart', input)
+        await until('restarted authority updates same mirror', () => store.state.orders[resumed.id]?.state == 'placed')
+        assert.equal(client.views.myOrders.store, store)
+        assert.deepEqual(store.snapshot(), await authorityOrders(restored.url, client.identity.token()!))
+        console.log('PASS pizzeria network: stable Store, one/all node crashes, authority archive restart, original receipts and continuing updates')
+    } finally {
+        for (const client of clients) client.close()
+        await Promise.all(stops.map(stop => stop()))
+        const resolved = await realpath(work)
+        assert.equal(path.dirname(resolved), temp)
+        assert(path.basename(resolved).startsWith('pizzeria-network-'))
+        await rm(resolved, {recursive: true, force: true, maxRetries: 3, retryDelay: 100})
+    }
+}
+
+void main().catch(function failed(error) { console.error(error); process.exitCode = 1 })

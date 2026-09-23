@@ -17,6 +17,8 @@ import {
 } from './rpc-callback-batch'
 import { rpcFlowClosedError, type RpcFlowOpts, type tRpcFlowGate } from './rpc-flow'
 import { MyError } from "../../toError/myThrow";
+import {rpcScopeFor, transformRpcScoped, type RpcScope} from './rpc-scope'
+import {createRpcDeadline} from './rpc-deadline'
 
 type Func = (...args: any[]) => any;
 
@@ -163,10 +165,10 @@ function createServer<T extends object>(
     // subscriptions) — remember where every copy came from. Never travels on wire.
     const listenNodeOrigin = new WeakMap<object, object>();
 
-    function transformTree(obj: any): any {
+    function transformTree(obj: any, path: string[] = []): any {
         let current = obj;
         if (hooks?.resolveTransform && !isNoStrict(current)) {
-            current = hooks.resolveTransform(current);
+            current = transformRpcScoped(hooks, current, rpcScopeFor(hooks, path));
         }
         if (current == null || typeof current != "object" || isNoStrict(current)) return current;
         const out: any = {};
@@ -177,8 +179,8 @@ function createServer<T extends object>(
             if (isNoStrict(v)) { out[k] = v; continue; }
             // functions also pass through resolveTransform: bare `on` function (registered by WeakMap)
             // becomes Listen wrapper; normal function returned as-is → previous behavior.
-            out[k] = typeof v == "function" ? (hooks?.resolveTransform ? hooks.resolveTransform(v) : v)
-                : v != null && typeof v == "object" ? transformTree(v) : v;
+            out[k] = typeof v == "function" ? transformRpcScoped(hooks, v, rpcScopeFor(hooks, [...path, k]))
+                : v != null && typeof v == "object" ? transformTree(v, [...path, k]) : v;
         }
         return out;
     }
@@ -373,6 +375,7 @@ function createServer<T extends object>(
         pollMs: number
         timer: ReturnType<typeof setInterval> | null
         gate: tRpcFlowGate
+        forgetScope?: () => void
     }
 
     const flows = new Map<number, tServerFlow>()
@@ -438,6 +441,7 @@ function createServer<T extends object>(
         const flow = flows.get(cbId)
         if (!flow) return
         flows.delete(cbId)
+        flow.forgetScope?.()
         flow.closedReason = reason
         if (flow.timer) { clearInterval(flow.timer); flow.timer = null }
         const waiters = flow.waiters
@@ -451,9 +455,10 @@ function createServer<T extends object>(
 
     // The unpack hook: every wire callback wrapper gets an opener, flowCallback() may never
     // call it — and then nothing here exists for that stream. Zero cost when unused.
-    function createFlowHost(channel: tSendChannel, settleScope?: Set<number>) {
+    function createFlowHost(channel: tSendChannel, settleScope?: Set<number>, resourceScope?: RpcScope) {
         return function flowHostForCallback(cbId: number) {
             return function openFlow(opts?: RpcFlowOpts): tRpcFlowGate {
+                resourceScope?.check()
                 const existing = flows.get(cbId)
                 if (existing) return existing.gate
                 const window = Number.isSafeInteger(opts?.window) && opts!.window! > 0 ? opts!.window! : 32
@@ -489,6 +494,7 @@ function createServer<T extends object>(
                 }
                 if (detached) { flow.closedReason = 'detached'; return flow.gate }
                 flows.set(cbId, flow)
+                flow.forgetScope = resourceScope?.own(function closeScopedFlow() { closeFlow(cbId, 'resource closed') })
                 settleScope?.add(cbId)
                 // The declaration rides the ORDERED callback queue: the client counts exactly
                 // the frames that follow it, which is exactly what sendCb counts here.
@@ -625,7 +631,6 @@ function createServer<T extends object>(
     const DEFAULT_RENEW_BEFORE_MS = 30_000
     // setTimeout keeps the delay in a signed 32-bit int: a larger one fires IMMEDIATELY (and
     // warns), so a month-long token would read as already expired. Long waits go in chunks.
-    const MAX_TIMER_MS = 2_147_483_647
     let expiringTimer: ReturnType<typeof startAuthTimer> | null = null
     let expiryTimer: ReturnType<typeof startAuthTimer> | null = null
 
@@ -653,14 +658,7 @@ function createServer<T extends object>(
     // Waits for an ABSOLUTE instant, in chunks setTimeout can actually hold.
     // unref: a token deadline must not by itself hold the process alive.
     function startAuthTimer(at: number, fn: () => void) {
-        let timer: any = null
-        function armChunk() {
-            const left = at - Date.now()
-            timer = left > MAX_TIMER_MS ? setTimeout(armChunk, MAX_TIMER_MS) : setTimeout(fn, Math.max(left, 0))
-            timer.unref?.()
-        }
-        armChunk()
-        return {cancel: () => clearTimeout(timer)}
+        return createRpcDeadline({at, fire: fn, unref: true})
     }
 
     function armAuthTimers(expiresAt: number, renewBeforeMs?: number) {
@@ -997,7 +995,10 @@ function createServer<T extends object>(
         // instead of waiting for acks that can no longer come. No-wait calls keep their
         // streams: a subscription's lifetime ends at endCallback, not at settle.
         const settleScope = wait ? new Set<number>() : undefined
+        let resourceScope: RpcScope | undefined
         try {
+            resourceScope = rpcScopeFor(hooks, typeof ref == 'number' ? methodPaths[ref] ?? [] : ref)
+            resourceScope?.check()
             let fn: Function | undefined, ctx: any;
 
             if (typeof ref == "number") {
@@ -1023,7 +1024,7 @@ function createServer<T extends object>(
                         const seg = ref[i];
                         if (curr == null || typeof curr !== "object" || !reachableMember(curr, seg, dynamic)) { curr = undefined; break; }
                         curr = curr[seg];
-                        if (hooks?.resolveTransform && !isNoStrict(curr)) curr = hooks.resolveTransform(curr);
+                        if (hooks?.resolveTransform && !isNoStrict(curr)) curr = transformRpcScoped(hooks, curr, resourceScope);
                         if (isNoStrict(curr)) dynamic = true;
                     }
                     const last = ref[ref.length - 1];
@@ -1046,6 +1047,7 @@ function createServer<T extends object>(
                     : ref;
                 const allowed = await hooks.onRequest({ key: keyArr, request: rawArgsOrSteps, fnName: keyArr[keyArr.length - 1] ?? "", fn: fn as Func });
                 if (detached) return
+                resourceScope?.check()
                 // Admission belongs to the facade that supplied fn, not a later principal.
                 if (principalEpoch != epoch || !authed) {
                     if (wait) sendError(channel, reqId, new MyError('Unauthorized', 'E_UNAUTHORIZED'))
@@ -1063,6 +1065,7 @@ function createServer<T extends object>(
                 let current: any = fn.bind(ctx);
 
                 for (let i = 0; i < steps.length; i++) {
+                    resourceScope?.check()
                     const step = steps[i];
 
                     if (current && typeof current === "object" && current[IS_RPC_PIPE]) {
@@ -1074,6 +1077,7 @@ function createServer<T extends object>(
                     if (current && typeof current.then === "function") {
                         current = await current;
                     }
+                    resourceScope?.check()
 
                     if (step.type === 'get') {
                         if (current == null) throw new Error(`Cannot read property '${step.prop}' of ${current}`);
@@ -1083,10 +1087,10 @@ function createServer<T extends object>(
                         // like in CALL: else Date/Map/BigInt in callback args perish on JSON transport
                         const stepArgs = unpack(
                             step.args,
-                            (id, args) => sendCb(channel, id, args),
+                            (id, args) => { if (!resourceScope || resourceScope.active()) sendCb(channel, id, args) },
                             id => sendCbEnd(channel, id),
                             lim,
-                            createFlowHost(channel, settleScope),
+                            createFlowHost(channel, settleScope, resourceScope),
                         )
                         current = current(...stepArgs);
                     }
@@ -1095,23 +1099,26 @@ function createServer<T extends object>(
                 if (current && typeof current.then === "function") {
                     current = await current;
                 }
+                resourceScope?.check()
                 if (wait) sendResult(channel, reqId, current)
 
             } else {
                 // --- STANDARD CALL LOGIC ---
                 const args = unpack(
                     rawArgsOrSteps,
-                    (id, values) => sendCb(channel, id, values),
+                    (id, values) => { if (!resourceScope || resourceScope.active()) sendCb(channel, id, values) },
                     id => sendCbEnd(channel, id),
                     lim,
-                    createFlowHost(channel, settleScope),
+                    createFlowHost(channel, settleScope, resourceScope),
                 )
+                resourceScope?.check()
                 const res = await fn.apply(ctx, args);
+                resourceScope?.check()
                 if (wait) sendResult(channel, reqId, res)
             }
 
         } catch (e) {
-            if (wait) sendError(channel, reqId, e)
+            if (wait) sendError(channel, reqId, resourceScope && !resourceScope.active() ? resourceScope.error() : e)
         } finally {
             if (settleScope) for (const id of settleScope) closeFlow(id, 'settled')
         }

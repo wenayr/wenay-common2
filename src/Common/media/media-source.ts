@@ -77,6 +77,7 @@ export type MediaStats = {
 
 export type MediaSourceControl = {
     start(): Promise<MediaSourceState>
+    /** Synchronous capture boundary: pending/final callbacks from this start are discarded. */
     stop(): void
     getStats(): MediaStats
     setDevice(id: string): Promise<MediaSourceState>
@@ -423,11 +424,7 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
     let recorder: any = null
     let pcmPacketizer: ReturnType<typeof createPcmPacketizer> | null = null
     let seq = 0
-    // Same guard the video source carries. stop() runs synchronously BEFORE the await on
-    // getUserMedia, so a second start() cannot cancel the first: both resolve and overwrite
-    // the shared stream/audioCtx/workletNode, and the first set is then unreachable but still
-    // running — the microphone light stays on and its worklet keeps pushing PCM into the same
-    // shell. A double click, or setDevice() while the first grant is pending, is enough.
+    let offTracks = () => {}
     let generation = 0
 
     function emitPcm(samples: Float32Array, sampleRate: number, channels: number, frames: number) {
@@ -445,46 +442,52 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
         }, payload), seq)
     }
 
-    async function startPcm(nextStream: any) {
+    async function startPcm(nextStream: any, run: number) {
         const AudioContextCtor = (globalThis as any).AudioContext ?? (globalThis as any).webkitAudioContext
         if (!AudioContextCtor) throw new Error('AudioContext is not available')
         shell.stats.execution = 'main'
         audioCtx = new AudioContextCtor(opts.sampleRate ? {sampleRate: opts.sampleRate} : undefined)
+        const context = audioCtx
         mediaNode = audioCtx.createMediaStreamSource(nextStream)
+        const sourceNode = mediaNode
         if (opts.worklet != false && audioCtx.audioWorklet && (globalThis as any).Blob && (globalThis as any).URL) {
             pcmPacketizer = createPcmPacketizer(
                 positiveIntegerOption(opts.packetMs, 20, 'media audio packetMs'),
-                emitPcm,
+                function emitCurrentPcm(...args) { if (run == generation) emitPcm(...args) },
             )
+            const packetizer = pcmPacketizer
             const blob = new (globalThis as any).Blob([audioWorkletCode()], {type: 'text/javascript'})
             const url = (globalThis as any).URL.createObjectURL(blob)
             try {
-                await audioCtx.audioWorklet.addModule(url)
+                await context.audioWorklet.addModule(url)
             } finally {
                 (globalThis as any).URL.revokeObjectURL(url)
             }
+            if (run != generation) return
             const AudioWorkletNodeCtor = (globalThis as any).AudioWorkletNode
-            workletNode = new AudioWorkletNodeCtor(audioCtx, 'wenay-common2-pcm', {
+            workletNode = new AudioWorkletNodeCtor(context, 'wenay-common2-pcm', {
                 numberOfInputs: 1,
                 numberOfOutputs: 0,
                 channelCount: opts.channels ?? 1,
             })
             shell.stats.execution = 'audio-worklet'
             workletNode.port.onmessage = function onWorkletSamples(ev: any) {
+                if (run != generation) return
                 const data = ev.data ?? {}
-                pcmPacketizer!.push(
+                packetizer.push(
                     data.samples as Float32Array,
-                    data.sampleRate ?? audioCtx.sampleRate,
+                    data.sampleRate ?? context.sampleRate,
                     data.channels ?? 1,
                     data.frames ?? 0,
                 )
             }
-            mediaNode.connect(workletNode)
+            sourceNode.connect(workletNode)
             return
         }
         const channels = opts.channels ?? 1
         const processor = audioCtx.createScriptProcessor(opts.bufferSize ?? 2048, channels, channels)
         processor.onaudioprocess = function onAudioProcess(ev: any) {
+            if (run != generation) return
             const input = ev.inputBuffer
             const frames = input.length
             const buffers: Float32Array[] = []
@@ -498,33 +501,54 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
         workletNode = processor
     }
 
-    function startRecord(nextStream: any) {
+    function startRecord(nextStream: any, run: number) {
         const Recorder = (globalThis as any).MediaRecorder
         if (!Recorder) throw new Error('MediaRecorder is not available')
         const mimeType = opts.recordMimeType ?? 'audio/webm;codecs=opus'
         recorder = new Recorder(nextStream, Recorder.isTypeSupported?.(mimeType) ? {mimeType} : undefined)
         shell.stats.execution = 'media-recorder'
         recorder.ondataavailable = async function onRecordChunk(ev: any) {
-            if (!ev.data || ev.data.size == 0) return
-            const payload = new Uint8Array(await ev.data.arrayBuffer())
-            shell.emitFrame(encodeMediaFrame({
-                kind: 'audio-record',
-                codec: 'webm-opus',
-                seq: ++seq,
-                tMono: nowMono(),
-            }, payload), seq)
+            try {
+                if (run != generation || !ev.data || ev.data.size == 0) return
+                const payload = new Uint8Array(await ev.data.arrayBuffer())
+                if (run != generation) return
+                shell.emitFrame(encodeMediaFrame({
+                    kind: 'audio-record',
+                    codec: 'webm-opus',
+                    seq: ++seq,
+                    tMono: nowMono(),
+                }, payload), seq)
+            } catch (error) { failRun(run, error) }
         }
+        recorder.onerror = function recordingFailed(event: any) { failRun(run, event.error ?? event) }
+        recorder.onstop = function recordingEnded() { if (run == generation) stop() }
         recorder.start(opts.recordTimesliceMs ?? 1000)
+    }
+
+    function failRun(run: number, error: unknown) {
+        if (run != generation) return
+        stop()
+        shell.setState(stateFromMediaError(error), error)
     }
 
     function stop() {
         generation++
-        recorder?.stop?.()
+        offTracks()
+        offTracks = () => {}
+        if (recorder) {
+            recorder.ondataavailable = null
+            recorder.onerror = null
+            recorder.onstop = null
+            try { recorder.stop?.() } catch { /* A browser may have stopped the recorder already. */ }
+        }
         recorder = null
         pcmPacketizer = null
+        if (workletNode?.port) workletNode.port.onmessage = null
+        if (workletNode) workletNode.onaudioprocess = null
         workletNode?.disconnect?.()
         mediaNode?.disconnect?.()
-        audioCtx?.close?.()
+        // AudioContext.close is asynchronous even though the source boundary is synchronous.
+        try { void Promise.resolve(audioCtx?.close?.()).catch(function alreadyClosed() {}) } catch {}
         stopTracks(stream)
         stream = null
         audioCtx = null
@@ -534,6 +558,7 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
     }
 
     async function start() {
+        let run = generation
         try {
             ensureSocketTransport(transport)
             if (!opts.stream && !hasGetUserMedia()) {
@@ -541,7 +566,7 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
                 return shell.state
             }
             stop()
-            const run = generation
+            run = generation
             shell.setState('requesting')
             shell.stats.startedAt = nowMono()
             const constraints: any = {audio: {deviceId: deviceId ? {exact: deviceId} : undefined, channelCount: opts.channels, sampleRate: opts.sampleRate}}
@@ -551,17 +576,17 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
             const nextStream = await resolveMediaStream(opts.stream, () => (globalThis as any).navigator.mediaDevices.getUserMedia(constraints))
             if (run != generation) { stopTracks(nextStream); return shell.state }
             stream = nextStream
-            if (opts.mode == 'record') startRecord(stream)
-            else await startPcm(stream)
-            // startPcm awaits the worklet module: the same race reopens here, and by now the
-            // context and node are already wired to this stream, so stop() undoes them.
-            if (run != generation) { stop(); return shell.state }
+            const tracks: any[] = nextStream.getTracks?.() ?? []
+            function trackEnded() { if (run == generation) stop() }
+            for (const track of tracks) track.addEventListener?.('ended', trackEnded)
+            offTracks = function detachTracks() { for (const track of tracks) track.removeEventListener?.('ended', trackEnded) }
+            if (opts.mode == 'record') startRecord(stream, run)
+            else await startPcm(stream, run)
+            if (run != generation) return shell.state
             shell.setState('live')
             return shell.state
         } catch (e) {
-            stopTracks(stream)
-            stream = null
-            shell.setState(stateFromMediaError(e), e)
+            failRun(run, e)
             return shell.state
         }
     }
@@ -572,7 +597,7 @@ export function createAudioSource(opts: AudioSourceOpts = {}): MediaSource {
         getStats: () => ({...shell.stats}),
         setDevice: async (id: string) => {
             deviceId = id
-            return shell.state == 'live' ? start() : shell.state
+            return shell.state == 'live' || shell.state == 'requesting' ? start() : shell.state
         },
         listDevices: () => listDevices('audio'),
         get state() { return shell.state },
@@ -960,4 +985,3 @@ export function createVideoSource(opts: VideoSourceOpts = {}): MediaSource {
     }
     return attachControl([shell.emit, shell.listenApi] as const, control)
 }
-

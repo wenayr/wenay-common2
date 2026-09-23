@@ -376,6 +376,15 @@ webListen(api).alerts.on(render)              // Listen subscription attempts ar
 
 ## Rule 5 — a privilege decrease cuts streams
 
+**Service resource scopes (2.19.0).** Static service resources add an internal ownership binding
+to the existing RPC dispatcher and subscription registry. A revoked resource ID rejects saved
+paths, rechecks after awaited admission/results and stops its ordinary **and `noStrict`** streams,
+flow waits and replay gates. Shared Listen sources keep independent scope owners. The access cut
+precedes disposal; transmitted data and prior external effects cannot be recalled. This is an
+additional service-resource guarantee, not a change to the unscoped declaration-based rule below.
+Custom service hosts must relay the resource connection's hooks. See
+[SERVICE-RESOURCES.md](SERVICE-RESOURCES.md) for identities, timeout/error ownership and lifecycle.
+
 Facades of different principals deliberately share **one** Listen node per identity, so a re-auth
 that keeps a node keeps its subscribers. A re-auth to a **narrower** principal is different: the
 nodes the old facade declared and the new one does not are torn down. Each dropped subscriber first
@@ -710,6 +719,12 @@ type tTokenFailure = 'malformed' | 'signature' | 'expired'
 
 These are known and deliberate. Design around them rather than assuming they will change.
 
+Since 2.18.2, callback-shaped subscriptions under dynamic `noStrict` paths also return
+owned callable/awaitable unsubscribe handles. They remain non-recoverable across a
+transport generation change and remain outside principal-pruning discovery. The peer
+shutdown fix does not widen the authorization guarantees below; see
+[PEER-LIFECYCLE.md](PEER-LIFECYCLE.md).
+
 - **`noStrict` subtrees are never torn down.** A Listen inside `noStrict(...)` is invisible to the
   schema walk, so it is in neither `keep` nor `drop` and survives every principal change. Keep a
   revocable node declared (Rule 5).
@@ -789,6 +804,59 @@ publication. The service owns the shared Listen lifetime: its remote `close` is 
 reader cannot close other sessions' source. Socket disconnect still removes that session's
 subscriptions. These example bindings add no library authorization API.
 
+## Service scaffold: live roles and client session ownership
+
+Since 2.18.0 this composition is public through `wenay-common2/service/client` and
+`wenay-common2/service/server`; old generated paths re-export it. `identity.me()` now includes
+`views` and `commands` alongside `account`/`roles`, checks session liveness and reads current local
+rights. The stable permissions Store carries the same facts. Descriptors publish only names/allow
+lists and preserve inferred types; they carry no seed state or credentials. Host CORS/IPC cleanup
+and binary storage authorization are described in [SERVICE-RUNTIME.md](SERVICE-RUNTIME.md).
+
+The generated `access.ts` serves an authenticated `permissions` replay facet with
+`{account, roles, views, commands}`. `me()` reads current local roles. On every source batch,
+role projections recheck those roles; a denied projection becomes `{}` and stops carrying private
+changes. This also applies to `shared: true`: content ignores the principal, but each session owns
+its guarded line. Only public lines are shared across sessions. Role projections cannot use `keys`
+to skip access changes outside the projected data. Journal/keyframe calls through old references
+check current access, and saved command functions check it before forwarding. Authority still checks
+every command at execution. No cooperation from the UI is required to stop revoked reads.
+
+`createServiceClient` follows that permissions line into a stable `identity.permissions` Store.
+Permission changes trigger a bounded `hub.reauth()` to rebuild the pruned facade, then reattach
+the existing view Stores. Removed role views are cleared and their subscriptions stopped; returning
+roles restore those same handles without login or UI polling. A view's `ready` resolves after its
+first permitted keyframe; a never-permitted view waits for permission or rejects when closed.
+Session resources are reused on same-account reauth and released on account replacement/disconnect.
+If an external issuer renews into another account, the client reloads permissions from a fresh
+keyframe, clears the previous account's private mirrors and adopts the new verified identity.
+
+`auth: {token}` seeds the first connection; subsequent renewal uses the authority's existing
+identity facade. `auth: {credentials}` uses credentials only for initial login, then the same renewal
+port. Failed renewal does not automatically log in and lift an account ban. `auth: {login}` delegates
+renewal to the supplied issuer. `identity.onToken.on(cb)` (or `deps.onToken`) reports newly acquired
+tokens; this is acquisition, not a server grant acknowledgement. `identity.onAuth.on(cb)` relays
+the scale hub's auth events, including `renewed`, `renewFailed`, `expired` and `revoked`. The last
+two clear private mirrors and current permissions. `health` is a stable Store of
+`{connected, nodeId, url}` for the client endpoint, not proof of current authority reachability.
+Closing cancels pending endpoint/permissions readiness, role refresh, retry timers and subscriptions;
+late issuer replies cannot update a closed client.
+
+Revocation is local-replica ordered, not globally instantaneous: a serving node must first apply the
+authority's role/deny-list update. During a partition it may serve its last authorized snapshot until
+the update arrives or the token expires. Renewal requires the authority (or the explicit issuer);
+this change provides no cross-node revocation deadline or lease. A disconnected client may retain its
+last snapshot; consult health as well as permissions. Security-critical deployments need a host
+policy for stale replicas. See [SCALE-SAFETY.md](SCALE-SAFETY.md).
+
+Proof: `oracle/regression/scaffold-access.spec.ts`, `oracle/realsocket/scaffold-session.spec.ts`
+and `oracle/realsocket/scaffold-client-lifecycle.spec.ts`. The low-level RPC/replay contracts are unchanged.
+
 ## Node-link ownership after succession
+
+AI checkpoint/recovery facets (2.20.0) are server-only and contain private inputs. Expose only
+`createAiRunHost(...).connection(verifiedAccount).fragment`; close it with the authorized session.
+Recovery rechecks current owner/resource policy and never derives rights from archived claims.
+See [AI-RUN-PERSISTENCE.md](AI-RUN-PERSISTENCE.md). No RPC token or wire authorization rule changes.
 
 A previously authenticated node link does not retain roster-write authority after its owner demotes or closes. Register, heartbeat and goodbye check current leadership and the captured roster generation; after re-promotion the host obtains a fresh node link. Token verification still follows the rules above. Command effects across partitions additionally require [resource fencing](SCALE-SAFETY.md).

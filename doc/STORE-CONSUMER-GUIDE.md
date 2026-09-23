@@ -69,7 +69,107 @@ and mask inference, ordinary RPC results and authority command names/inputs/resu
 negative compiler assertions. `demo/mini-scale-demo.ts` uses source-derived facade types rather
 than `r<any>`; mirror commands live under the actual `miniScale` wrapper.
 
+## Snapshot test doubles
+
+Since 2.16, a snapshot reader tries the optional `chunks.begin/pull` facet before
+`keyframe()`. `createReplicatedMap().api` offers that facet by default. A test double
+such as `{...catalog.api, async keyframe() { ... }}` therefore retains another snapshot
+path: successful chunk assembly bypasses the replacement `keyframe`, including its
+delay, counter or injected error. A test waiting for that replacement can time out even
+though the mirror is already ready.
+
+When the test intends to intercept `keyframe`, hide `chunks` on the double:
+
+```ts
+// catalog, started and gate belong to the test fixture.
+const delayedCatalog = {
+    ...catalog.api,
+    chunks: undefined,
+    async keyframe() {
+        started = true
+        await gate
+        return catalog.api.keyframe()
+    },
+}
+```
+
+Alternatively, keep the facet and pass `{chunkedKeyframe: false}` to
+`followReplicatedMap(remote, options)` or `syncStoreReplay(store, remote, options)`.
+If the fixture creates the producer, use `createReplicatedMap({...deps, replay:
+{...deps.replay, chunks: false}})`; the underlying Store producer supports
+`exposeStoreReplay(store, {chunks: false})` as well. These existing controls select the
+monolithic snapshot path; they do not change how that path reports errors. If the test
+is about chunk transfer itself, intercept `chunks` rather than disabling it.
+
 ## State and subscription rules
+
+### A reconciliation pass across `await`
+
+`state` remains live even when saved in a local variable. Use `snapshot()` when a
+calculation needs one detached input, including its nested arrays:
+
+```ts
+import {createStore} from 'wenay-common2/observe'
+
+const store = createStore({worker: {activeOperation: 'op-1', pending: ['op-1']}})
+const live = store.state
+const snapshot = store.snapshot()
+const nextUpdate = Promise.resolve().then(function updateDuringIo() {
+    store.state.worker.pending.push('op-2')
+    store.state.worker.activeOperation = 'op-2'
+})
+await nextUpdate
+
+live.worker.pending                       // ['op-1', 'op-2']
+live.worker.activeOperation               // 'op-2'
+snapshot.worker.pending                   // ['op-1']
+snapshot.worker.activeOperation           // 'op-1'
+```
+
+Use the snapshot to calculate a candidate action. Before a destructive external
+operation, recheck the live operation identity, relevant revision and cancellation
+state; if they changed, discard that candidate and schedule a fresh pass. A local
+recheck still cannot make external IO atomic with a Store update. A snapshot supplies
+neither a transaction across `await` nor distributed ownership/fencing.
+
+### Replacing a parent while retaining nested reactive values
+
+Since 2.21.2, assignment resolves Observe proxies in the incoming plain-object/array
+graph **before** rebinding any destination path. This includes `state` assignment,
+property definitions, `store.replace`/node replacement and initial Store input.
+For example, ordinary history maintenance needs no per-item copying workaround:
+
+```ts
+store.state.article = {
+    title: 'second',
+    history: [...store.state.article.history, {title: 'first'}].slice(-20),
+}
+store.state.article.history[0].title = 'updated'
+```
+
+Proxy identity belongs to a **path**, not to an entity. A captured proxy and its
+subscriptions survive replacement at the same path. After moving an element to another
+branch or shifting array indices, obtain the element through its new path; a previously
+captured index proxy does not follow the entity. Values placed in a replacement resolve
+to their current raw objects before any of those paths change, including sibling swaps.
+
+Admission adopts the supplied containers; it does not deep-clone the whole graph.
+Nested Observe proxies in own data properties are replaced with their raw targets,
+preserving descriptors, sparse arrays, null prototypes and ordinary repeated raw
+references. Accessors retain their behavior and rich values remain opaque leaves.
+The walk is iterative and cycle-aware; locally cyclic values remain supported by
+`snapshot()` and do not loop during eager initialization. Wire formats still impose
+their own data/serialization constraints, and cross-branch graph identity is not a
+replication guarantee, as described below.
+
+If an incoming **non-writable, non-configurable** data property contains a proxy,
+admission throws a descriptive `TypeError` before changing the destination or the
+submitted graph. It cannot replace that slot in place. Pass a detached mutable value
+from `cloneStoreValue(input)` if a frozen wrapper must be reused as input. Plain frozen
+data containing no proxies does not require this conversion. Mutations of external raw
+references still bypass Store ownership and notifications.
+
+### Surface contracts
 
 | Surface | Contract |
 | --- | --- |

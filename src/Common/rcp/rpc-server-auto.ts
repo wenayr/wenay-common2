@@ -5,6 +5,7 @@ import { createRpcServer, type PromiseServerHooks, type RpcLimits, type RpcServe
 import {DeepSocketListen} from "./listen-deep";
 import {SocketTmpl, IS_RPC_LISTEN, RPC_STOP} from "./rpc-protocol";
 import {rpcEndCallback} from './rpc-walk'
+import {currentRpcScope, inheritRpcScopes, type RpcScope} from './rpc-scope'
 import {
     getRpcReplayWireSource,
     type RpcReplayWireSource,
@@ -61,6 +62,16 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
     // the old server subscription isn't removed and continues sending events. To CHANGE visibility
     // of the stream on the client — reconnect (dispose+reconnect), not reauth on live socket.
     const cache = new WeakMap<object, ReturnType<typeof listenSocket>>();
+    const scopeKeys = new WeakMap<object, WeakMap<RpcScope, object>>()
+    function ownedKey(parent: object) {
+        const scope = currentRpcScope(rpcHooks)
+        if (!scope) return parent
+        let keys = scopeKeys.get(parent)
+        if (!keys) { keys = new WeakMap(); scopeKeys.set(parent, keys) }
+        let key = keys.get(scope)
+        if (!key) { key = {}; keys.set(scope, key) }
+        return key
+    }
     // WeakMap can't be iterated — we keep a parallel ITERABLE registry of nodes with ACTIVE
     // subscribers, ONLY for stats/ceiling. Key — same node identity as in cache.
     // Registry FILLS LAZILY in subscribe() (not in getListenSocket): resolveTransform calls
@@ -108,31 +119,44 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         // replay lines can't be throttled: dropped envelope = silent gap in seq,
         // so their nodes are created with explicit {throttle: undefined}
         const nodeThrottle = nodeOpt ? nodeOpt.throttle : throttle;
-        let result = cache.get(parent);
+        const scope = currentRpcScope(rpcHooks)
+        const owner = ownedKey(parent)
+        let result = cache.get(owner);
         if (!result) {
             const subs = new Map<Function, ReturnType<typeof listenSocket>>();
             function subscribe(z: any, opts?: RpcListenSubscribeOpts) {
+                scope?.check()
                 if (typeof z !== "function") return Promise.reject(new TypeError("Listen callback expects a function"));
                 // Opt-in ceiling per node: extra subscriber is silently ignored — stream for it
                 // doesn't start, server subscription isn't created. Without option branch not taken.
                 if (maxPerListen != null && subs.size >= maxPerListen) return Promise.resolve();
                 // lazy (re-)registration of node on REAL subscription — survives drain→re-sub
-                if (!registry.has(parent)) registry.set(parent, { subs });
+                if (!registry.has(owner)) registry.set(owner, { subs });
                 subs.get(z)?.off();
                 const w = listenSocket(parent, { closeOn: disconnectListen, throttle: nodeThrottle });
                 subs.set(z, w);
+                const forget = scope?.own(function closeScopedSubscription() {
+                    try { rpcEndCallback(z) }
+                    finally {
+                        w.off()
+                        subs.delete(z)
+                        if (!subs.size) registry.delete(owner)
+                    }
+                })
                 const done = w.on(z, opts);
                 done.then(() => {
+                    forget?.()
                     if (subs.get(z) == w) subs.delete(z);
-                    if (subs.size == 0) registry.delete(parent); // node emptied — remove from stats() count
+                    if (subs.size == 0) registry.delete(owner); // node emptied — remove from stats() count
                 });
                 return done;
             }
             // once — one-time subscription: first event → CB, then RPC_STOP→CB_END and off.
             function subscribeOnce(z: any, opts?: RpcListenSubscribeOpts) {
+                scope?.check()
                 if (typeof z !== "function") return Promise.reject(new TypeError("Listen once expects a function"));
                 if (maxPerListen != null && subs.size >= maxPerListen) return Promise.resolve();
-                if (!registry.has(parent)) registry.set(parent, { subs });
+                if (!registry.has(owner)) registry.set(owner, { subs });
                 subs.get(z)?.off();
                 const w = listenSocket(parent, { closeOn: disconnectListen, throttle: nodeThrottle });
                 let fired = false;
@@ -148,21 +172,29 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                     }
                 };
                 subs.set(z, w);
+                const forget = scope?.own(function closeScopedOnce() {
+                    try { rpcEndCallback(z) }
+                    finally {
+                        w.off()
+                        subs.delete(z)
+                        if (!subs.size) registry.delete(owner)
+                    }
+                })
                 const done = w.on(oneShot, opts);
-                done.then(() => { if (subs.get(z) == w) subs.delete(z); if (subs.size == 0) registry.delete(parent); });
+                done.then(() => { forget?.(); if (subs.get(z) == w) subs.delete(z); if (subs.size == 0) registry.delete(owner); });
                 return done;
             }
             function unsubscribeAll() {
                 subs.forEach(w => w.off());
                 subs.clear();
-                registry.delete(parent); // node torn down — remove from registry
+                registry.delete(owner); // node torn down — remove from registry
                 return true;
             }
             // close — close entire Listen source (full teardown; affects ALL node consumers).
-            result = { on: subscribe, off: unsubscribeAll, callback: subscribe, removeCallback: unsubscribeAll, once: subscribeOnce, close: () => (parent as any).close?.() };
+            result = { on: subscribe, off: unsubscribeAll, callback: subscribe, removeCallback: unsubscribeAll, once: subscribeOnce, close: () => scope ? unsubscribeAll() : (parent as any).close?.() };
             (result as any)[IS_RPC_LISTEN] = true; // server will declare node address in Pkt.MAP
-            cache.set(parent, result);
-            sourceByNode.set(result, parent);
+            cache.set(owner, result);
+            sourceByNode.set(result, owner);
         }
         return result;
     }
@@ -210,6 +242,8 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
     }
 
     function gatedLineNode(source: ReplayGateSource) {
+        const resourceScope = currentRpcScope(rpcHooks)
+        let forgetScope: (() => void) | undefined
         const { pending: pendingOpt, highWater = Infinity, lowWater = 0, pollMs = 25 } = replayOpts ?? {};
         const pending = pendingOpt ?? (() => (socket as any)?.conn?.writeBuffer?.length ?? 0);
         // personal envelope line of this connection behind the gates
@@ -249,6 +283,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         function close() {
             if (closed) return;
             closed = true;
+            forgetScope?.()
             stopSource();
             gateClosers.delete(close);
             out.close();
@@ -256,6 +291,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         // loud rejection to THIS subscriber (sacred line + eviction): stream end
         // (RPC_STOP → CB_END on client), no silent loss
         function fail(e: any) {
+            forgetScope?.()
             if (debug) console.error("[rpc replay gate] frame recovery failed:", e);
             const emitStop = !closed;
             closed = true;
@@ -297,6 +333,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
             out.emit(ev);
         }
         gateClosers.add(close);
+        forgetScope = resourceScope?.own(close)
         hookGateTeardown();
         return getListenSocket(out, disconnectListen, { throttle: undefined });
     }
@@ -330,7 +367,8 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
     // merged node under same key; cache by line identity (like cache of regular Listen)
     const replayCache = new WeakMap<object, any>();
     function getReplayExpose(parent: any) {
-        let node = replayCache.get(parent);
+        const owner = ownedKey(parent)
+        let node = replayCache.get(owner);
         if (node) return node;
         const legacy = getListenSocket(parent, disconnectListen); // legacy surface as-is (including throttle)
         const lineNode = getListenSocket(parent.line, disconnectListen, { throttle: undefined });
@@ -347,13 +385,14 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
             frame: (seq: number, hint?: unknown) => lineFrame(parent, seq, hint),
         };
         node[IS_RPC_LISTEN] = true; // server will declare node address in Pkt.MAP (legacy subscription)
-        replayCache.set(parent, node);
-        sourceByNode.set(node, parent); // merged surface: legacy subscriptions live on `parent`
+        replayCache.set(owner, node);
+        sourceByNode.set(node, owner); // merged surface belongs to this scope
         return node;
     }
 
     function getReplayWireExpose(parent: any, source: RpcReplayWireSource) {
-        let node = replayCache.get(parent)
+        const owner = ownedKey(parent)
+        let node = replayCache.get(owner)
         if (node) return node
         const lineNode = getListenSocket(parent.line, disconnectListen, {throttle: undefined})
         const frameLineNode = replayOpts?.highWater != null
@@ -364,7 +403,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
             line: lineNode,
             frameLine: frameLineNode,
         }
-        replayCache.set(parent, node)
+        replayCache.set(owner, node)
         return node
     }
 
@@ -380,9 +419,7 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         })),
     };
 
-    const core = createRpcServer({
-        socket, object: target as any, socketKey: key, debug, limits, auth, opt,
-        hooks: {
+    const rpcHooks = inheritRpcScopes(hooks, {
             ...hooks,
             onDispose: () => { closeAllGates(); unsubscribeAllActive(); hooks?.onDispose?.(); },
             // Principal changed: cut exactly the streams the new principal may no longer see.
@@ -402,7 +439,10 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                 }
                 return obj;
             },
-        } as any,
+        })
+    const core = createRpcServer({
+        socket, object: target as any, socketKey: key, debug, limits, auth, opt,
+        hooks: rpcHooks,
     });
 
     // additive: previously void, then { api }. Old calls (harness x3, test.ts) ignore the return.

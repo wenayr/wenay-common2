@@ -2,6 +2,10 @@
 
 Completed migrations and released work are recorded in `doc/changes/`, not repeated here.
 
+Service session resources and hosting-agent ownership proposals (SC1/H1/H2), with the
+checked public primitives and unresolved contracts, are recorded in the source checkout
+at `doc/target/SERVICE-SESSION-OWNERSHIP.md`. They are not shipped APIs.
+
 ## Current Store/RPC default
 
 Use Store Replay V2 over the ordinary JSON-array RPC lane. `api.replay` is the only Store replay

@@ -39,6 +39,8 @@ try {
         dependencies: {
             'wenay-common2': `file:./${packed[0].filename}`,
             '@types/node': manifest.devDependencies['@types/node'],
+            'socket.io': manifest.devDependencies['socket.io'],
+            'socket.io-client': manifest.devDependencies['socket.io-client'],
         },
     }, null, 4))
     run(npm, ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--package-lock=false'], consumer)
@@ -70,11 +72,19 @@ import {listen, Observe, Scale} from 'wenay-common2'
 import {listen as clientListen, createRpcClientHub} from 'wenay-common2/client'
 import {createStore} from 'wenay-common2/observe'
 import {createRpcClient} from 'wenay-common2/rpc'
+import {createPeerHost} from 'wenay-common2/peer'
 import {openFsReplayStorage} from 'wenay-common2/server/fs'
 import {createTokenCodec} from 'wenay-common2/server/auth'
 import {createHttpFacadeServer} from 'wenay-common2/server/http'
 
 const store = createStore({count: 0})
+const peerHost = createPeerHost()
+const peerConnection = peerHost.connection('consumer')
+peerConnection.close()
+assert.equal(peerConnection.fragment.publish({seq: 0, ts: 0, event: [{path: [], exists: true, value: {count: 1}}]}), false)
+assert.equal(peerConnection.fragment.publishBatch([]), false)
+assert.equal(await peerConnection.fragment.signal.send({type: 'ice', from: 'consumer', to: 'other', pair: 'consumer-other'}), false)
+peerHost.close()
 const [emit, changes] = listen<[number]>()
 const off = changes.on(function updateCount(value) { store.state.count = value })
 emit(7)
@@ -89,7 +99,40 @@ for (const value of [Scale.createClusterClient, createRpcClientHub, createRpcCli
 console.log('ESM consumer: named exports and runtime passed')
 `)
     // Re-export the full browser surface so tree shaking cannot hide an incompatible member.
-    writeFileSync(path.join(consumer, 'browser.ts'), `export * from 'wenay-common2/client'\n`)
+    writeFileSync(path.join(consumer, 'browser.ts'), `export * from 'wenay-common2/client'\nexport * from 'wenay-common2/service'\nexport * from 'wenay-common2/service/client'\n`)
+    const serviceTypes = readFileSync(path.join(root, 'type-tests', 'service-runtime.ts'), 'utf8')
+        .replaceAll('../src/service/client', 'wenay-common2/service/client')
+        .replaceAll('../src/service', 'wenay-common2/service')
+    writeFileSync(path.join(consumer, 'service-types.ts'), serviceTypes)
+    const arrayTypes = readFileSync(path.join(root, 'type-tests', 'service-schema-object-arrays.ts'), 'utf8')
+        .replaceAll('../src/service/client', 'wenay-common2/service/client')
+        .replaceAll('../src/service', 'wenay-common2/service')
+    writeFileSync(path.join(consumer, 'service-array-types.ts'), arrayTypes)
+    const resourceTypes = readFileSync(path.join(root, 'type-tests', 'service-resources.ts'), 'utf8')
+        .replaceAll('../src/service/client', 'wenay-common2/service/client')
+        .replaceAll('../src/service', 'wenay-common2/service')
+        .replaceAll('../src/Common/events/Listen', 'wenay-common2/listen')
+    writeFileSync(path.join(consumer, 'service-resource-types.ts'), resourceTypes)
+    const persistenceTypes = readFileSync(path.join(root, 'type-tests', 'ai-run-persistence.ts'), 'utf8')
+        .replaceAll('../src/Common/ai/ai-index', 'wenay-common2/ai')
+        .replaceAll('../src/service/host', 'wenay-common2/service/host')
+    writeFileSync(path.join(consumer, 'ai-persistence-types.ts'), persistenceTypes)
+    const ownershipTypes = readFileSync(path.join(root, 'type-tests', 'async-ownership.ts'), 'utf8')
+        .replaceAll('../src/client', 'wenay-common2/client')
+        .replaceAll('../src', 'wenay-common2')
+    writeFileSync(path.join(consumer, 'async-ownership-types.ts'), ownershipTypes)
+    writeFileSync(path.join(consumer, 'service-server.cjs'), `
+const assert = require('node:assert/strict')
+const {describeService, createServiceLeader, schemaCommand} = require('wenay-common2/service/server')
+const definition = {name: 'isolated', storeId: 'isolated', originId: 'isolated', initial: {secret: 'MUST_NOT_LEAK'}, commands: {ping: {apply() { return 1 }}}}
+const descriptor = describeService(definition)
+assert.deepEqual(JSON.parse(JSON.stringify(descriptor)), {name: 'isolated', commands: {ping: null}, views: {}})
+const leader = createServiceLeader({definition, selfUrl: () => 'http://localhost'})
+leader.control.close()
+assert.equal(typeof schemaCommand, 'function')
+assert.equal(typeof require('wenay-common2/server/process').createProcessResource, 'function')
+assert.equal(typeof require('wenay-common2/server/blob').createLocalBlobStorage, 'function')
+`)
     writeFileSync(path.join(consumer, 'type-flow.ts'), `
 import {Observe, createRpcClient, type SocketTmpl} from 'wenay-common2'
 declare const socket: SocketTmpl
@@ -128,11 +171,12 @@ void checkPublicTypeFlow
             types: ['node'],
             outDir: 'output',
         },
-        files: ['test.ts', 'esm.mts', 'browser.ts', 'type-flow.ts'],
+        files: ['test.ts', 'esm.mts', 'browser.ts', 'type-flow.ts', 'service-types.ts', 'service-array-types.ts', 'service-resource-types.ts', 'ai-persistence-types.ts', 'async-ownership-types.ts'],
     }, null, 4))
     run(path.join(root, 'node_modules', 'typescript', 'bin', 'tsc'), ['-p', 'tsconfig.json'], consumer)
     run(path.join(consumer, 'output', 'test.js'), [], consumer)
     run(path.join(consumer, 'output', 'esm.mjs'), [], consumer)
+    run(path.join(consumer, 'service-server.cjs'), [], consumer)
     run(path.join(root, 'node_modules', 'esbuild', 'bin', 'esbuild'), [
         'browser.ts', '--bundle', '--platform=browser', '--format=esm', '--outfile=browser.js',
     ], consumer)

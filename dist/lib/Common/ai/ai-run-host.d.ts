@@ -1,4 +1,5 @@
 import { StoreDrain } from '../Observe/store';
+import { type AiRunCheckpoint, type AiRunPersistencePort, type AiRunRecoveryRecord } from './ai-run-persistence';
 export type AiRunState = 'queued' | 'running' | 'waiting_input' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled';
 export type AiApprovalState = 'pending' | 'approved' | 'rejected' | 'cancelled';
 export type AiInputState = 'waiting' | 'provided' | 'cancelled';
@@ -29,6 +30,9 @@ export type AiRun = {
     error?: string;
     createdAt: number;
     updatedAt: number;
+    recovery?: {
+        from: AiRunState;
+    };
 };
 export type AiRunApproval = {
     id: string;
@@ -144,11 +148,13 @@ export type AiRunRunner = {
         emit: (event: AiRunLiveEvent) => void;
         artifact: (artifact: AiArtifactInput) => AiArtifact | undefined;
         requestApproval: (request: {
+            id?: string;
             kind: string;
             label: string;
             data?: unknown;
         }) => Promise<'approved' | 'rejected'>;
         waitForInput: (request: {
+            id?: string;
             label: string;
             schema?: unknown;
         }) => Promise<unknown>;
@@ -158,6 +164,9 @@ export type AiRunRunner = {
         run: AiRun;
         reason?: string;
     }): void | Promise<void>;
+    recover?(input: Parameters<AiRunRunner['run']>[0] & {
+        checkpoint: AiRunRecoveryRecord;
+    }): AiRunOutput | void | Promise<AiRunOutput | void>;
 };
 export type AiRunPolicy = {
     canRead?: (account: string, run: AiRun) => boolean;
@@ -166,6 +175,8 @@ export type AiRunPolicy = {
 };
 export type AiRunHostDeps = {
     runner: AiRunRunner;
+    initial?: AiRunCheckpoint;
+    persistence?: AiRunPersistencePort;
     capabilities?: AiCapability[];
     policy?: AiRunPolicy;
     id?: () => string;
@@ -221,9 +232,9 @@ export declare function createAiRunHost(deps: AiRunHostDeps): {
                 line: import("../Observe").StoreReplayLineLocal;
             })) & import("../Observe").StoreReplayState<AiRunStore>;
             events: import("../events/replay-wire").ReplayExpose<[AiRunEvent]>;
-            createRun: (request: AiRunRequest) => AiRun;
-            cancelRun: (runId: string, reason?: string) => AiRun;
-            resolveApproval: (approvalId: string, decision: 'approved' | 'rejected') => {
+            createRun(request: AiRunRequest): AiRun;
+            cancelRun(runId: string, reason?: string): AiRun;
+            resolveApproval(approvalId: string, decision: 'approved' | 'rejected'): {
                 id: string;
                 runId: string;
                 kind: string;
@@ -233,7 +244,7 @@ export declare function createAiRunHost(deps: AiRunHostDeps): {
                 createdAt: number;
                 updatedAt: number;
             };
-            provideInput: (inputId: string, value: unknown) => {
+            provideInput(inputId: string, value: unknown): {
                 id: string;
                 runId: string;
                 label: string;
@@ -246,6 +257,22 @@ export declare function createAiRunHost(deps: AiRunHostDeps): {
         close(): void;
     };
     store: import("../Observe").Store<AiRunStore>;
+    persistence: {
+        snapshot: () => AiRunCheckpoint;
+        errors: import("../..").ListenApi<[unknown]>;
+        error: () => unknown;
+    };
+    recovery: {
+        pending: () => AiRunRecoveryRecord[];
+        resume: (runId: string) => Promise<AiRun>;
+        settle: (runId: string, outcome: {
+            state: 'completed';
+            output?: AiRunOutput;
+        } | {
+            state: 'failed';
+            error: string;
+        }) => AiRun;
+    };
     close(): void;
 };
 export type AiRunHost = ReturnType<typeof createAiRunHost>;

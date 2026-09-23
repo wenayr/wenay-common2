@@ -7,9 +7,27 @@ const listen_socket_1 = require("./listen-socket");
 const rpc_server_1 = require("./rpc-server");
 const rpc_protocol_1 = require("./rpc-protocol");
 const rpc_walk_1 = require("./rpc-walk");
+const rpc_scope_1 = require("./rpc-scope");
 const replay_rpc_wire_1 = require("../events/replay-rpc-wire");
 function createRpcServerAuto({ socket, object: target, socketKey: key, debug, hooks, disconnectListen, limits, auth, maxPerListen, throttle, opt, replay = "auto", replayOpts }) {
     const cache = new WeakMap();
+    const scopeKeys = new WeakMap();
+    function ownedKey(parent) {
+        const scope = (0, rpc_scope_1.currentRpcScope)(rpcHooks);
+        if (!scope)
+            return parent;
+        let keys = scopeKeys.get(parent);
+        if (!keys) {
+            keys = new WeakMap();
+            scopeKeys.set(parent, keys);
+        }
+        let key = keys.get(scope);
+        if (!key) {
+            key = {};
+            keys.set(scope, key);
+        }
+        return key;
+    }
     const registry = new Map();
     const sourceByNode = new WeakMap();
     function unsubscribeAllActive() {
@@ -40,35 +58,51 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
     }
     function getListenSocket(parent, disconnectListen, nodeOpt) {
         const nodeThrottle = nodeOpt ? nodeOpt.throttle : throttle;
-        let result = cache.get(parent);
+        const scope = (0, rpc_scope_1.currentRpcScope)(rpcHooks);
+        const owner = ownedKey(parent);
+        let result = cache.get(owner);
         if (!result) {
             const subs = new Map();
             function subscribe(z, opts) {
+                scope?.check();
                 if (typeof z !== "function")
                     return Promise.reject(new TypeError("Listen callback expects a function"));
                 if (maxPerListen != null && subs.size >= maxPerListen)
                     return Promise.resolve();
-                if (!registry.has(parent))
-                    registry.set(parent, { subs });
+                if (!registry.has(owner))
+                    registry.set(owner, { subs });
                 subs.get(z)?.off();
                 const w = (0, listen_socket_1.listenSocket)(parent, { closeOn: disconnectListen, throttle: nodeThrottle });
                 subs.set(z, w);
+                const forget = scope?.own(function closeScopedSubscription() {
+                    try {
+                        (0, rpc_walk_1.rpcEndCallback)(z);
+                    }
+                    finally {
+                        w.off();
+                        subs.delete(z);
+                        if (!subs.size)
+                            registry.delete(owner);
+                    }
+                });
                 const done = w.on(z, opts);
                 done.then(() => {
+                    forget?.();
                     if (subs.get(z) == w)
                         subs.delete(z);
                     if (subs.size == 0)
-                        registry.delete(parent);
+                        registry.delete(owner);
                 });
                 return done;
             }
             function subscribeOnce(z, opts) {
+                scope?.check();
                 if (typeof z !== "function")
                     return Promise.reject(new TypeError("Listen once expects a function"));
                 if (maxPerListen != null && subs.size >= maxPerListen)
                     return Promise.resolve();
-                if (!registry.has(parent))
-                    registry.set(parent, { subs });
+                if (!registry.has(owner))
+                    registry.set(owner, { subs });
                 subs.get(z)?.off();
                 const w = (0, listen_socket_1.listenSocket)(parent, { closeOn: disconnectListen, throttle: nodeThrottle });
                 let fired = false;
@@ -85,22 +119,33 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
                     }
                 };
                 subs.set(z, w);
+                const forget = scope?.own(function closeScopedOnce() {
+                    try {
+                        (0, rpc_walk_1.rpcEndCallback)(z);
+                    }
+                    finally {
+                        w.off();
+                        subs.delete(z);
+                        if (!subs.size)
+                            registry.delete(owner);
+                    }
+                });
                 const done = w.on(oneShot, opts);
-                done.then(() => { if (subs.get(z) == w)
+                done.then(() => { forget?.(); if (subs.get(z) == w)
                     subs.delete(z); if (subs.size == 0)
-                    registry.delete(parent); });
+                    registry.delete(owner); });
                 return done;
             }
             function unsubscribeAll() {
                 subs.forEach(w => w.off());
                 subs.clear();
-                registry.delete(parent);
+                registry.delete(owner);
                 return true;
             }
-            result = { on: subscribe, off: unsubscribeAll, callback: subscribe, removeCallback: unsubscribeAll, once: subscribeOnce, close: () => parent.close?.() };
+            result = { on: subscribe, off: unsubscribeAll, callback: subscribe, removeCallback: unsubscribeAll, once: subscribeOnce, close: () => scope ? unsubscribeAll() : parent.close?.() };
             result[rpc_protocol_1.IS_RPC_LISTEN] = true;
-            cache.set(parent, result);
-            sourceByNode.set(result, parent);
+            cache.set(owner, result);
+            sourceByNode.set(result, owner);
         }
         return result;
     }
@@ -137,6 +182,8 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
         disconnectListen.on(closeAllGates);
     }
     function gatedLineNode(source) {
+        const resourceScope = (0, rpc_scope_1.currentRpcScope)(rpcHooks);
+        let forgetScope;
         const { pending: pendingOpt, highWater = Infinity, lowWater = 0, pollMs = 25 } = replayOpts ?? {};
         const pending = pendingOpt ?? (() => socket?.conn?.writeBuffer?.length ?? 0);
         const out = (0, Listen_1.createListen)(function holdReplayGateOutput() { }, {
@@ -184,11 +231,13 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
             if (closed)
                 return;
             closed = true;
+            forgetScope?.();
             stopSource();
             gateClosers.delete(close);
             out.close();
         }
         function fail(e) {
+            forgetScope?.();
             if (debug)
                 console.error("[rpc replay gate] frame recovery failed:", e);
             const emitStop = !closed;
@@ -245,6 +294,7 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
             out.emit(ev);
         }
         gateClosers.add(close);
+        forgetScope = resourceScope?.own(close);
         hookGateTeardown();
         return getListenSocket(out, disconnectListen, { throttle: undefined });
     }
@@ -276,7 +326,8 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
     }
     const replayCache = new WeakMap();
     function getReplayExpose(parent) {
-        let node = replayCache.get(parent);
+        const owner = ownedKey(parent);
+        let node = replayCache.get(owner);
         if (node)
             return node;
         const legacy = getListenSocket(parent, disconnectListen);
@@ -293,12 +344,13 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
             frame: (seq, hint) => lineFrame(parent, seq, hint),
         };
         node[rpc_protocol_1.IS_RPC_LISTEN] = true;
-        replayCache.set(parent, node);
-        sourceByNode.set(node, parent);
+        replayCache.set(owner, node);
+        sourceByNode.set(node, owner);
         return node;
     }
     function getReplayWireExpose(parent, source) {
-        let node = replayCache.get(parent);
+        const owner = ownedKey(parent);
+        let node = replayCache.get(owner);
         if (node)
             return node;
         const lineNode = getListenSocket(parent.line, disconnectListen, { throttle: undefined });
@@ -310,7 +362,7 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
             line: lineNode,
             frameLine: frameLineNode,
         };
-        replayCache.set(parent, node);
+        replayCache.set(owner, node);
         return node;
     }
     const api = {
@@ -319,27 +371,28 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
             consumers: e.subs.size,
         })),
     };
+    const rpcHooks = (0, rpc_scope_1.inheritRpcScopes)(hooks, {
+        ...hooks,
+        onDispose: () => { closeAllGates(); unsubscribeAllActive(); hooks?.onDispose?.(); },
+        onPrincipalChange: (ctx) => { unsubscribeUnreachable(ctx); hooks?.onPrincipalChange?.(ctx); },
+        resolveTransform: (obj) => {
+            if (isReplayNode(obj))
+                return getReplayExpose(obj);
+            const replayWireSource = replay == false ? undefined : (0, replay_rpc_wire_1.getRpcReplayWireSource)(obj);
+            if (replayWireSource)
+                return getReplayWireExpose(obj, replayWireSource);
+            if ((0, Listen_1.isListenCallback)(obj))
+                return getListenSocket(obj, disconnectListen);
+            if ((0, Listen_1.isListenOn)(obj)) {
+                const byOn = (0, Listen_1.getListenByOn)(obj);
+                return isReplayNode(byOn) ? getReplayExpose(byOn) : getListenSocket(byOn, disconnectListen);
+            }
+            return obj;
+        },
+    });
     const core = (0, rpc_server_1.createRpcServer)({
         socket, object: target, socketKey: key, debug, limits, auth, opt,
-        hooks: {
-            ...hooks,
-            onDispose: () => { closeAllGates(); unsubscribeAllActive(); hooks?.onDispose?.(); },
-            onPrincipalChange: (ctx) => { unsubscribeUnreachable(ctx); hooks?.onPrincipalChange?.(ctx); },
-            resolveTransform: (obj) => {
-                if (isReplayNode(obj))
-                    return getReplayExpose(obj);
-                const replayWireSource = replay == false ? undefined : (0, replay_rpc_wire_1.getRpcReplayWireSource)(obj);
-                if (replayWireSource)
-                    return getReplayWireExpose(obj, replayWireSource);
-                if ((0, Listen_1.isListenCallback)(obj))
-                    return getListenSocket(obj, disconnectListen);
-                if ((0, Listen_1.isListenOn)(obj)) {
-                    const byOn = (0, Listen_1.getListenByOn)(obj);
-                    return isReplayNode(byOn) ? getReplayExpose(byOn) : getListenSocket(byOn, disconnectListen);
-                }
-                return obj;
-            },
-        },
+        hooks: rpcHooks,
     });
     return { ...core, api };
 }

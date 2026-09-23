@@ -105,9 +105,11 @@ export function createPeerHost(deps: PeerHostDeps = {}) {
         presenceJoin(account)
         let connectionClosed = false
         function publish(envelope: PatchEnvelope) {
+            if (connectionClosed) return false
             return mine.push(envelope)
         }
         function publishBatch(envelopes: PatchEnvelope[]) {
+            if (connectionClosed) return false
             return mine.pushBatch(envelopes)
         }
         function closeConnection() {
