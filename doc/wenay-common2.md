@@ -1,36 +1,38 @@
 # wenay-common2 — BRIEF cheat sheet (notation)
 
-Observe parent/array replacement accepts nested reactive values, including spread/slice
-history updates, since 2.21.2. Inputs resolve to raw values before path proxies rebind;
-same-path subscriptions survive. A proxy in an immutable data property is refused with
-`TypeError`; `cloneStoreValue(input)` supplies a detached mutable input. See
-[replacement and ownership boundaries](STORE-CONSUMER-GUIDE.md#replacing-a-parent-while-retaining-nested-reactive-values).
-
-Local async ownership: `createResourceScope({signal?, closeTimeoutMs?})` owns resources
-and ordered cleanup; `createReconciler({read, run, subscribe?, signal?})` coalesces
-notifications into serial fresh-snapshot passes. Root and `/client` exports.
-See [ownership, retries and close guarantees](ASYNC-OWNERSHIP.md).
-
-Copyable application: [rental stand](../examples/rental/README.md), with a small `example.ts`,
-typed commands, Store, HTTP/Swagger and optional serving nodes. Uses installed package exports.
-Rental and document-processing share the public service HTTP host for startup and bounded shutdown.
-Document shutdown disconnects clients before closing their replay sources; restart needs a fresh session.
-Rental optionally persists data and receipts with SERVICE_DATA_DIR plus stable identity secrets;
-see its README for stopped backup/restore and single-writer limits.
-Its optional `npm run benchmark` measures a fixed local read workload separately from correctness checks.
-RENTAL_BENCHMARK_MS selects a bounded sustained phase; no setting retains the 600-request mode.
-RENTAL_BENCHMARK_GENERATORS=compare compares one/two fresh local load processes with matched connections and total concurrency.
-Rental's `npm run probe:entities` compares local entity facade costs; it is an experimental example, not a package API.
-Its optional `npm run probe:http` separately measures fixed versus per-entity HTTP route costs.
-
 > Root import: `import { ... } from "wenay-common2"`.
-> Node runtime: `>=20`.
+> Node runtime: `>=20`. TypeScript consumers: `>=5.4` (declarations use `NoInfer`); strict consumers are verified with TypeScript 7.0.2.
 > Notation: `name(args: types) -> ret  // note`. Types are shown where they decide a correct call (callback shape,
 > overloads, return). Short names are **canonical**; removed old names are listed in `NAMING_RENAMES.md`.
 > Full surface → **`wenay-common2-rare.md`**. Code style → `CLAUDE.md`. Full RPC guide → `rpc.md`.
 > RPC authorization → **[`RPC-AUTH.md`](RPC-AUTH.md)** (canonical; read before writing auth code).
 > Installed-project Caddy HTTPS management → **[`HTTPS-CLI.md`](HTTPS-CLI.md)**. Public raw-IP/hostname
 > demo, certificate issuance, router ports, and diagnostics → **[`DEMO-HTTPS.md`](DEMO-HTTPS.md)**.
+
+## 🗺️ Entrypoints
+
+| Entry (`wenay-common2/...`) | For | npm packages loaded at runtime |
+| --- | --- | --- |
+| root | everything cross-platform: core, async, events, RPC, time + namespaces `Observe` `Replay` `Media` `Peer` `Resource` `Ai` `Artifact` `Conversation` `Contract` `Command` `Scale` | none |
+| `client` (`lib/client`) | client subset of root: core, async, events, RPC, time; of the namespaces only `Media` | none |
+| `listen` · `replay` · `observe` · `rpc` | one surface each: events, replay lines, Store/mirror, RPC | none |
+| `media` · `peer` · `resource` · `ai` · `artifact` · `conversation` · `contract` | the same-named root namespace, alone | none |
+| `debug-console` | opt-in console caller links (Node) | none |
+| `service` | service definition/schema contract, `schemaCommand`, `describeService` | none |
+| `service/client` | typed service client | socket.io-client |
+| `service/server` | authority + node + access + REST composition | express |
+| `service/host` | HTTP/WS host, mounts, process signals | express, socket.io, socket.io-client |
+| `server/fs` · `server/auth` · `server/http` · `server/process` | Node adapters: fs replay storage/journals, token codec, HTTP facade + OpenAPI, one child process | none |
+| `server/blob` | immutable binary storage + Artifact storage adapter | express |
+| `server/webhook` | webhook server/client | express, axios |
+| `server` (`lib/server`) | root + all Node adapters (compatibility facade) | express, axios |
+| `https` | Caddy HTTPS manager | axios |
+
+`Command` and `Scale` are root namespaces only; there is no `/command` or `/scale` subpath.
+`socket.io` / `socket.io-client` are optional peers: install them for `service/client` and `service/host`.
+
+Where things are: copyable apps by level and product probes → [examples/README.md](../examples/README.md);
+each example README owns its run/benchmark knobs and states its boundaries.
 
 ## 🔐 HTTPS manager (server-only)
 
@@ -115,7 +117,15 @@ promiseProgress<T>(arr: (Promise<T> | (() => Promise<T>))[]) -> {
   onOk(cb), onError(cb), all() -> Promise<any[]>, allSettled(), items(), stats() -> { ok: number, error: number, count: number } }
   // factory entries start on .all()/.allSettled()/items() (once); .all() rejects like Promise.all — read aggregate progress via stats()
 // alias: enhancedWaitRun->createThrottle · createTaskQueue->createReadyGate(.setReady->.ready) · createAsyncQueue.enqueue->add · .getQueueSize->size
+
+// local async ownership (root and /client exports)
+createResourceScope({signal?, closeTimeoutMs?}?) -> {resource: {own, acquire, parallel}, start(work), signal, close, settled, events: {errors}}
+  // owns resources and ordered cleanup
+createReconciler<T>({read, run(snapshot, {signal, retry}), subscribe?, signal?, closeTimeoutMs?})
+    -> {control: {request, retry, cancelRetry, idle}, events: {errors}, view: {error}, signal, close, settled}
+  // coalesces notifications into serial fresh-snapshot passes
 ```
+Ownership, retries and close guarantees → [ASYNC-OWNERSHIP.md](ASYNC-OWNERSHIP.md).
 
 ## 🧰 core — clone / compare
 ```
@@ -356,6 +366,9 @@ import { Media } from "wenay-common2"        // or: import * as Media from "wena
 Media.createAudioSource({format?: 'int16'|'float32', mode?: 'pcm'|'record', packetMs? = 20, replay?}) -> [emit, listen] & control
 Media.createVideoSource({fps? = 3, codec? = 'jpeg', quality?, replay?}) -> [emit, listen] & control  // fps:0 = unpaced maximum
 control: start() -> Promise<'idle'|'requesting'|'live'|'denied'|'no-device'|'error'> · stop() · getStats() · setDevice(id) · listDevices() · state
+  // stop() cuts pending/final callbacks from that start: a later recording receives only its own callbacks
+  //   (audio device/permission/worklet races are generation-checked). stop() does not flush a final
+  //   recording blob; replay history explicitly retained before stop remains history.
 Media.encodeMediaFrame(meta, payload) / Media.decodeMediaFrame(frame)     // one Uint8Array = 40-byte fixed header + raw payload
 
 // viewer/publisher one-liners (the demo stand is built on these):
@@ -774,6 +787,11 @@ opts: { drain?: "immediate"|"micro"|number|((flush)=>void), depth?, eager? }
 Observe.createStore<T extends object>(initial, opts?) -> Store<T>
 store.state                                                   // reactive data object; write normally
 store.node.path.to.leaf.get()/snapshot()/replace(v)           // set(v) is a deprecated alias of replace(v)
+  // parent/array replacement (state assignment or replace) accepts nested reactive values, including
+  //   spread/slice history updates: inputs resolve to raw values before path proxies rebind; same-path
+  //   subscriptions survive. A proxy in an immutable data property is refused with TypeError;
+  //   cloneStoreValue(input) supplies a detached mutable input. Replacement and ownership boundaries:
+  //   STORE-CONSUMER-GUIDE.md#replacing-a-parent-while-retaining-nested-reactive-values
 store.node.path.to.leaf.on((value, ctx) => {}, {current?, drain?, key?}) -> off
 store.node.path.to.leaf.once(cb, opts?) -> off
 store.update(mask, opts?) -> selection                         // typed selected snapshot
@@ -1280,6 +1298,18 @@ Replica-set oracle: `npx tsx observe/store-replica-set.test.ts`;
 real two-hop Socket.IO/RPC wire: `oracle/realsocket/store-replica-set.spec.ts`; interactive network:
 `npm run demo` → **Lab** → **Self-assembling Store replica set** (live offer/session/selected-route graph).
 
+Ownership and partition limits: [SCALE-SAFETY.md](SCALE-SAFETY.md). Local canWrite and elect/accept do not provide automatic lease expiry or external-effect fencing. Old authority node links reject registry writes after their ownership generation ends.
+Command receipt replication is asynchronous: a crash before receipt delivery can let a successor re-execute a request — see [SCALE-SAFETY.md](SCALE-SAFETY.md#acknowledged-commands-and-receipt-delivery).
+
+## Store: end-to-end types
+
+Store get() и get(mask) сохраняют результат через RPC func, strict и pipe. Тип состояния
+проходит через replay, follower, replica sessions и cluster connector; Store node сохраняет
+карту пересылаемых команд. node.at(key) выводит тип известного ключа.
+Пример и ограничения: [STORE-CONSUMER-GUIDE.md](STORE-CONSUMER-GUIDE.md).
+Там же показано, как живой `state` и отдельный `snapshot()` ведут себя через `await`:
+снимок фиксирует расчёт, но не заменяет проверку актуальной операции перед внешним действием.
+
 ## 🎞️ Fast ticks vs slow client — replay lines + server-owned lag gate (recipe)
 > The problem: the producer emits faster than a bad link drains. Naive streaming grows an unbounded
 > outgoing queue per slow client. The replay stack solves it with ONE mental model — the FRAME:
@@ -1418,46 +1448,31 @@ Observe.exposeStoreReplay(store, {describe: {schema: 'v2', originId: 'n1'}})   /
 Replay.readReplayDescriptor(remote) -> Promise<object | null>                  // null on older servers
 ```
 
-## Store: сквозные типы
+## 🧱 Service composition
+> `wenay-common2/service` · `/service/client` · `/service/server` · `/service/host` · `/server/process` · `/server/blob`.
+> Details and migration → [SERVICE-RUNTIME.md](SERVICE-RUNTIME.md).
 
-Store get() и get(mask) сохраняют результат через RPC func, strict и pipe. Тип состояния
-проходит через replay, follower, replica sessions и cluster connector; Store node сохраняет
-карту пересылаемых команд. node.at(key) выводит тип известного ключа.
-Пример и ограничения: [STORE-CONSUMER-GUIDE.md](STORE-CONSUMER-GUIDE.md).
-Там же показано, как живой `state` и отдельный `snapshot()` ведут себя через `await`:
-снимок фиксирует расчёт, но не заменяет проверку актуальной операции перед внешним действием.
+- `service` — the definition/schema contract and `describeService`. The `schemaCommand` DSL accepts
+  recursive array items, including `{array: {object: {...}}}`; inference, validation and OpenAPI agree,
+  and optional array fields still contain required elements.
+- `service/client` — the typed browser client with stable views/permissions/health, and the typed
+  resource controller `client.resources.open(name)`: stable status Store, a fresh remote per generation,
+  role/reconnect invalidation and bounded cleanup. Static factories are declared in `definition.resources`
+  and run on authority. Contract and counter/peer example: [SERVICE-RESOURCES.md](SERVICE-RESOURCES.md).
+- `service/server` — composes authority, node, access and REST.
+- `service/host` — owns HTTP/WS, shared origins, mount disposal and optional process signals. Hosts accept
+  `publicUrl` / `SERVICE_PUBLIC_URL` separately from their local listener; proxy/NAT and CORS
+  configuration: [SERVICE-PUBLIC-ADDRESS.md](SERVICE-PUBLIC-ADDRESS.md).
+- `server/process` owns one child; `server/blob` supplies immutable binary IO and an Artifact storage adapter.
 
-Ownership and partition limits: [SCALE-SAFETY.md](SCALE-SAFETY.md). Local canWrite and elect/accept do not provide automatic lease expiry or external-effect fencing. Old authority node links reject registry writes after their ownership generation ends.
-
-The repository scaffold generator now produces a standalone service using public package entrypoints. Its external tarball, strict typecheck and multiprocess command/reconnect journey are verified by npm run test:scaffold. See [project assessment](LIBRARY-ASSESSMENT.md).
-Scaffold `date-string` inputs require a real calendar day in YYYY-MM-DD form, validated before command effects.
-The scaffold client exposes stable `identity.permissions` and `health` Stores, plus
-`identity.onToken.on(cb)` / `identity.onAuth.on(cb)`. Role changes refresh the pruned facade and
-clear/restore existing view Stores without UI polling; ready tokens renew through authority.
-Guarded per-session role projections enforce revocation on the serving replica, including shared
-content. Deploy updated access/client templates together; [session contract and partition limits](RPC-AUTH.md#service-scaffold-live-roles-and-client-session-ownership).
-Failed scaffold startup migrations close the allocated authority and preserve the original error.
-Migration results are cloned before applying changes, so unreadable results cannot first delete old fields.
-
-Compiler compatibility: the declarations now use NoInfer (TypeScript 5.4+); strict consumers are verified with TypeScript 7.0.2. Known Store node keys and replay state compatibility are checked more strictly than 2.15.0. See the [2.16.0 compatibility notes](changes/2.16.0.md#compatibility-and-receipt-limits).
-# Public service composition (2.18.0)
-
-Patch 2.18.1 extends the existing `schemaCommand` DSL with recursive array items, including
-`{array: {object: {...}}}`. Inference, validation and OpenAPI agree; optional array fields still
-contain required elements. Details: [SERVICE-RUNTIME.md](SERVICE-RUNTIME.md).
-
-`service` exports the definition/schema contract and `describeService`; `service/client` exports the
-typed resource controller `client.resources.open(name)` since 2.19.0: stable status Store, a
-fresh remote per generation, role/reconnect invalidation and bounded cleanup. Static factories
-are declared in `definition.resources` and run on authority. Contract and counter/peer example:
-[SERVICE-RESOURCES.md](SERVICE-RESOURCES.md). The client also exports the
-typed browser client with stable views/permissions/health. `service/server` composes authority,
-node, access and REST. `service/host` owns HTTP/WS, shared origins, mount disposal and optional
-process signals. `server/process` owns one child; `server/blob` supplies immutable binary IO and an
-Artifact storage adapter. Details and migration: [SERVICE-RUNTIME.md](SERVICE-RUNTIME.md).
-Since 2.20.0, hosts accept `publicUrl` / `SERVICE_PUBLIC_URL` separately from their local listener;
-see [SERVICE-PUBLIC-ADDRESS.md](SERVICE-PUBLIC-ADDRESS.md) for proxy/NAT and CORS configuration.
-
-Media capture `stop()` cuts pending/final callbacks from that start. A later recording receives
-only its own callbacks; audio device/permission/worklet races are generation-checked. This does
-not flush a final recording blob. Replay history explicitly retained before stop remains history.
+Scaffold: the repository generator produces a standalone service using public package entrypoints. Its
+external tarball, strict typecheck and multiprocess command/reconnect journey are verified by
+`npm run test:scaffold`. See [project assessment](LIBRARY-ASSESSMENT.md).
+- `date-string` inputs require a real calendar day in YYYY-MM-DD form, validated before command effects.
+- The scaffold client exposes stable `identity.permissions` and `health` Stores, plus
+  `identity.onToken.on(cb)` / `identity.onAuth.on(cb)`. Role changes refresh the pruned facade and
+  clear/restore existing view Stores without UI polling; ready tokens renew through authority.
+- Guarded per-session role projections enforce revocation on the serving replica, including shared
+  content. Deploy updated access/client templates together; [session contract and partition limits](RPC-AUTH.md#service-scaffold-live-roles-and-client-session-ownership).
+- Failed startup migrations close the allocated authority and preserve the original error. Migration
+  results are cloned before applying changes, so unreadable results cannot first delete old fields.

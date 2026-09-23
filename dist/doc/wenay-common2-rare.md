@@ -1998,7 +1998,10 @@ Migration output is fully cloned with the existing Store value utility before ar
 are changed. A throwing result getter leaves old business data available for a corrected retry;
 later mutation of the callback's returned object cannot change the adopted state.
 
-Compiler compatibility and receipt-delivery failure windows are recorded in [2.16.0](changes/2.16.0.md#compatibility-and-receipt-limits). NoInfer requires TypeScript 5.4 or newer; the strict tested compiler is 7.0.2.
+Compiler compatibility: declarations use NoInfer, so TypeScript 5.4 or newer is required; the strict
+tested compiler is 7.0.2. Receipt replication is asynchronous, so a crash before receipt delivery can
+let a successor execute a request again; the failure windows are in
+[SCALE-SAFETY.md](SCALE-SAFETY.md#acknowledged-commands-and-receipt-delivery).
 # Service runtime and Node adapters (2.18.0)
 
 SC1 v1 (2.19.0): resource factories receive verified principal, server session/resource IDs and
