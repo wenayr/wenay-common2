@@ -154,3 +154,6 @@ Use these rules by default — no need to ask.
 - Release flow: bump the version, run `npm run release:verify`, commit everything it produced (`lib/` and
   `dist/` included) and push, then `npm run publish`. `scripts/release-guard.mjs` refuses a tree that is
   uncommitted, unpushed or different from the verified one, and tags `v<version>` after publishing.
+- `packages/wenay-exchange` is a separate npm package (peer: this one). `release:verify` tests it too;
+  publish it after this package with `npm run --prefix packages/wenay-exchange release` (tag
+  `wenay-exchange-v<version>`).

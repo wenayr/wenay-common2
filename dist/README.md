@@ -31,6 +31,8 @@
   [`conditional roadmap`](doc/ROADMAP.md)
 - Naming migrations: [`doc/NAMING_RENAMES.md`](doc/NAMING_RENAMES.md)
 - Recent changes: [`doc/changes/`](doc/changes/)
+- Exchange data (bars, quotes history) since 3.0.0: the separate package
+  [`wenay-exchange`](packages/wenay-exchange/README.md)
 - Project rules for AI/code maintenance: [`CLAUDE.md`](CLAUDE.md)
 
 ## Living examples (shipped in the npm package)
