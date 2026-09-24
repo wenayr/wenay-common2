@@ -6,6 +6,7 @@ import {io} from 'socket.io-client'
 import {createRpcClient} from '../../src/Common/rcp/rpc-client'
 import {createServiceLeaderHost} from '../../src/service/host'
 import type {tServiceDefinition} from '../../src/service'
+import {runOracle} from '../run-oracle'
 
 // Spy on the constant-time primitive: timing itself is not measurable reliably over loopback.
 const nodeCrypto = require('node:crypto') as typeof import('node:crypto')
@@ -69,4 +70,4 @@ async function main() {
     else console.log('PASS service node token: constant-time string comparison on the node link')
 }
 
-main().catch(function crashed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

@@ -6,6 +6,7 @@ import {createServer} from 'node:http'
 import express from 'express'
 import {createLocalBlobStorage, createBlobHttpRouter, createBlobArtifactStorage} from '../../src/server/blob-storage'
 import {createArtifactHost} from '../../src/Common/artifact/artifact-host'
+import {runOracle} from '../run-oracle'
 
 async function main() {
     const temp = await realpath(tmpdir())
@@ -76,4 +77,4 @@ async function main() {
         await rm(resolved, {recursive: true, force: true})
     }
 }
-void main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

@@ -6,6 +6,7 @@ import {io} from 'socket.io-client'
 import {createRpcClientHub} from '../../src/Common/rcp/rpc-clientHub'
 import {createServiceLeaderHost} from '../../src/service/host'
 import type {tServiceDefinition} from '../../src/service'
+import {runOracle} from '../run-oracle'
 
 type State = {roles: Record<string, string[]>, passwords: Record<string, string>, vault: string}
 const initial: State = {roles: {owner: ['owner']}, passwords: {alice: 'alice-pass'}, vault: 'sealed'}
@@ -132,4 +133,4 @@ async function main() {
     else console.log('PASS service leader identity: no client-named mint, no anonymous unrevoke, renew and credential login intact')
 }
 
-main().catch(function crashed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

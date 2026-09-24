@@ -8,6 +8,7 @@ import {createStore} from '../../src/Common/Observe/store'
 import {exposeStoreReplay} from '../../src/Common/Observe/store-replay'
 import {createServiceClient} from '../../experiments/wenay-scaffold/template/client'
 import type {tServiceDefinition} from '../../experiments/wenay-scaffold/template/leader'
+import {runOracle} from '../run-oracle'
 
 const definition = {
     name: 'lifecycle', storeId: 'lifecycle', originId: 'leader', initial: {value: 1}, commands: {},
@@ -233,4 +234,4 @@ async function main() {
     console.log('client lifecycle: 7 real-socket scenarios passed')
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

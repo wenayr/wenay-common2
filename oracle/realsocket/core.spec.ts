@@ -1,5 +1,6 @@
 // REAL-SOCKET core: CALL + rich-type round-trip both ways. Port 4101.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
+import {runOracle} from '../run-oracle'
 
 const PORT = 4101
 
@@ -20,7 +21,7 @@ function makeObject() {
     }
 }
 
-async function main() {
+async function runChecks() {
     const {check, done} = makeChecker('core')
     const srv = await startRealServer({port: PORT, makeObject})
     const cli = await startRealClient<ReturnType<typeof makeObject>>({port: PORT})
@@ -46,4 +47,8 @@ async function main() {
     process.exit(done() === 0 ? 0 : 1)
 }
 
-main().catch(e => { console.error(e); process.exit(2) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(2) })
+}
+
+runOracle(main)

@@ -8,6 +8,7 @@ import assert from 'node:assert/strict'
 import http from 'node:http'
 import type {AddressInfo} from 'node:net'
 import {httpRequest, HttpStatusError} from '../../src/Common/http-request'
+import {runOracle} from '../run-oracle'
 
 const binary = Buffer.from(Array.from({length: 256}, (_, i) => i))
 
@@ -29,7 +30,7 @@ const server = http.createServer(function route(req, res) {
     })
 })
 
-async function main() {
+async function runChecks() {
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
     try {
@@ -64,7 +65,11 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) {
-    console.error('FAIL http-request:', error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function failed(error) {
+        console.error('FAIL http-request:', error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

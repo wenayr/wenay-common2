@@ -4,6 +4,7 @@ import {io} from 'socket.io-client'
 import {createServiceLeaderHost, createServiceNodeHost, runLeaderProcess} from '../../src/service/host'
 import {createServiceClient} from '../../src/service/client'
 import {describeService, type tServiceDefinition} from '../../src/service'
+import {runOracle} from '../run-oracle'
 
 const definition = {
     name: 'host-test', storeId: 'host-test', originId: 'host-test', initial: {count: 0},
@@ -125,4 +126,4 @@ async function main() {
     assert.equal(process.listenerCount('SIGTERM'), signalCount)
     console.log('PASS public service host: HTTP/WS origins, drain/restart, stable Store, idempotent cleanup, failed bind, cancelled mount, signals')
 }
-void main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

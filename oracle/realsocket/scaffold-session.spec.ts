@@ -10,6 +10,7 @@ import {createTokenCodec} from '../../src/server/auth-token'
 import {createServiceLeader, type tServiceDefinition} from '../../experiments/wenay-scaffold/template/leader'
 import {createServiceNode} from '../../experiments/wenay-scaffold/template/node'
 import {createServiceClient} from '../../experiments/wenay-scaffold/template/client'
+import {runOracle} from '../run-oracle'
 
 type State = {roles: Record<string, string[]>, inventory: {flour: number}}
 const definition = {
@@ -204,4 +205,4 @@ async function main() {
     }
 }
 
-void main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

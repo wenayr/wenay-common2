@@ -5,6 +5,7 @@ import {createPeerHost, createPeerClient, type PatchEnvelope} from '../../src/Co
 import {createRpcServerAuto, createRpcClientHub} from '../../src/Common/rcp/rpc-index'
 import {createHostResource} from '../../src/service/host'
 import {createServiceLeader} from '../../src/service/server'
+import {runOracle} from '../run-oracle'
 const definition = {
     name: 'peer-test',
     storeId: 'peer-test',
@@ -166,8 +167,5 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runOracle(main)
 
