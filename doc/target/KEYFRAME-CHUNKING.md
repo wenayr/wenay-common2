@@ -47,8 +47,10 @@ snapshot cursor = (lineId, snapshotId, index, total, seq)
 ```
 
 - `lineId` already exists and scopes everything to one replay line.
-- `snapshotId` is minted by the producer per attempt. A chunk whose `snapshotId` is not the one the
-  receiver is assembling is discarded, which is what makes an abandoned attempt harmless.
+- `snapshotId` names one retained snapshot (since 3.1.0): attempts beginning at the same journal head
+  with the same budget share it and its chunks; each begin answers its own `ts`. A chunk whose
+  `snapshotId` is not the one the receiver is assembling is discarded, which is what makes an
+  abandoned attempt harmless.
 - `seq` is the journal sequence the snapshot was taken at — the same number `since(seq)` already
   speaks. Every chunk of one snapshot carries the same `seq`, so the tail resumes from exactly one
   point regardless of how many chunks were involved.
@@ -120,9 +122,11 @@ This must be additive or it is not shippable:
    envelopes keep flowing on the line and the existing queue-and-drain behavior covers assembly
    unchanged — the same way it already covers the monolithic keyframe await. The pull rhythm is
    precisely what lets the heartbeat breathe between messages on a slow link.
-4. **The producer pins the ENCODED chunk set, briefly.** `begin()` snapshots and splits once,
-   retains the encoded chunks under a `snapshotId` with a TTL (60 s, refreshed by every pull) and
-   an LRU cap of 4 concurrent snapshots per line. An evicted/expired attempt answers `null` to the
+4. **The producer pins the ENCODED chunk set, briefly.** `begin()` snapshots and splits once per
+   journal head and budget, retains the encoded chunks under one `snapshotId` with a reader count and
+   a TTL (60 s, refreshed by begin and pull) and an LRU cap of 4 distinct snapshots per line; `end()`
+   releases one reader (since 3.1.0; before, each attempt took its own snapshot and a reconnect storm
+   fell back to monolithic keyframes). An evicted/expired attempt answers `null` to the
    next pull; the client falls back to the monolithic keyframe (or a fresh `begin`). "Sent bytes +
    tail from `seq`" is thereby never relied on in a weakened form, and an abandoned attempt costs
    only its retention window.
