@@ -80,14 +80,10 @@ export const createWebhookServer = (params: params) => {
         next();
     };
 
-    // every subscriber url is http://<its client ip>...: count by exact hostname, not by prefix
-    const subscribersOf = (ip: string) => {
-        let count = 0;
-        subscribers.forEach(s => { if (new URL(s.url).hostname === ip) count++; });
-        return count;
-    };
-
-    const clientAddr = (req: Request) => 'http://' + normalizeIP(req.ip ?? '127.0.0.1');
+    // every subscriber url is http://<its client ip>...: match the hostname exactly, never by prefix
+    // (a prefix would give 127.0.0.1 the subscriptions of 127.0.0.10)
+    const ownedBy = (ip: string) => Array.from(subscribers.values()).filter(s => new URL(s.url).hostname === ip);
+    const subscribersOf = (ip: string) => ownedBy(ip).length;
 
     const purgeExpired = () => {
         const now = Date.now();
@@ -146,8 +142,7 @@ export const createWebhookServer = (params: params) => {
 
     app.get('/webHook_client_subscriptions', checkAuth, (req: Request, res: Response) => {
         purgeExpired();
-        const addr = clientAddr(req);
-        res.json(Array.from(subscribers.values()).filter(s => s.url.startsWith(addr)));
+        res.json(ownedBy(normalizeIP(req.ip ?? '127.0.0.1')));
     });
 
     app.get('/webHook_all_tags', checkAuth, (_req: Request, res: Response) => {
