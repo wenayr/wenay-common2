@@ -3,6 +3,8 @@
 // modules, rewritten to public package imports. Focused probes opt out of the
 // service template. Hand-authored files of a copy
 // (README.md, run.mjs, check.ts, rental/benchmark.ts) are not generated and not checked here.
+// Every async entrypoint of a copy's `check` chain, generated or hand-authored, must end through
+// runCheck (run-check.ts): both modes refuse one that does not.
 //   node scripts/generate-examples.mjs           regenerate every example
 //   node scripts/generate-examples.mjs --check   fail when a copy is stale
 import {promises as fs} from 'node:fs'
@@ -125,5 +127,42 @@ async function generate(name, example) {
     await emit('tsconfig.json', JSON.stringify(config, null, 4) + '\n')
 }
 
+// =====================================================================
+//  Check entrypoints end through runCheck
+// =====================================================================
+
+// The files one script of a copy runs: its `tsx <file>` steps, following `npm run <script>`. An
+// unknown step is an error, so a new kind of step cannot slip past the guard check.
+function scriptFiles(name, scripts, script) {
+    if (!scripts[script]) throw new Error(`example ${name}: no script ${script}`)
+    return scripts[script].split('&&').flatMap(function step(part) {
+        const words = part.trim().split(/\s+/)
+        if (words.length == 2 && words[0] == 'tsx') return [words[1]]
+        if (words.length == 3 && words[0] == 'npm' && words[1] == 'run') return scriptFiles(name, scripts, words[2])
+        throw new Error(`example ${name}: cannot follow the check step "${part.trim()}"`)
+    })
+}
+
+// Ended with a bare main().catch(...), an async entrypoint exits 0 when an await can never settle
+// (its later assertions unrun) and never exits when one hangs with a socket open; a synchronous
+// script fails by throwing. Comments are dropped first: mentioning runCheck is not ending through it.
+async function unguardedEntrypoints(name, example) {
+    const unguarded = []
+    for (const file of new Set(scriptFiles(name, example.scripts, 'check'))) {
+        const code = (await fs.readFile(path.join(root, 'examples', name, file), 'utf8')).replace(/(^|\s)\/\/.*$/gm, '$1')
+        const async = /\bawait\b|\.then\(/.test(code)
+        const guarded = /from '\.\/run-check'/.test(code) && /\brunCheck\(/.test(code)
+        if (async && !guarded) unguarded.push(`examples/${name}/${file}`)
+    }
+    return unguarded
+}
+
 for (const [name, example] of Object.entries(EXAMPLES)) await generate(name, example)
+const unguarded = []
+for (const [name, example] of Object.entries(EXAMPLES)) unguarded.push(...await unguardedEntrypoints(name, example))
+if (unguarded.length) {
+    console.error('Example check entrypoints that can exit 0 without finishing or hang forever — end them through runCheck (run-check.ts):')
+    for (const file of unguarded) console.error('  ' + file)
+    process.exit(1)
+}
 console.log(check ? 'Example sources match' : 'Generated ' + Object.keys(EXAMPLES).map(name => 'examples/' + name).join(', '))

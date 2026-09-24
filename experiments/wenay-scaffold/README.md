@@ -137,7 +137,8 @@ substitution.
 public package imports); `npm run test:examples` installs each copy from the packed tarball
 outside the repository and runs its typecheck and check. Every async entrypoint of a copy's check
 chain ends through `runCheck` (`resources/run-check.ts`, shipped into each copy as `run-check.ts`),
-so a stalled await fails instead of exiting 0 and a hang fails at the deadline.
+so a stalled await fails instead of exiting 0 and a hang fails at the deadline; the generator
+refuses an entrypoint that does not.
 
 ## examples/rental — the step 7c example stand
 
