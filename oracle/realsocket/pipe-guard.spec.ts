@@ -194,7 +194,7 @@ async function startMsgpackPair(port: number) {
     const httpServer = createServer(app)
     const ioServer = new SocketIOServer(httpServer, {maxHttpBufferSize: 1e8, parser: msgpackParser as any})
     ioServer.on('connection', socket => {
-        const [disconnect, disconnectListen] = createListenPair()
+        const [disconnect, disconnectListen] = createListenPair<[]>()
         socket.on('disconnect', () => disconnect())
         const adapter = {
             emit: (key: string, data: any) => socket.emit(key, data),

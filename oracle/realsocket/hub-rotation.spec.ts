@@ -39,7 +39,7 @@ async function main() {
     const ioServer = new SocketIOServer(httpServer)
     const [emitTick, tickLine] = replayListen<[number]>({history: 32})
     ioServer.on('connection', function serveHubPeer(socket) {
-        const [gone, goneListen] = createListenPair()
+        const [gone, goneListen] = createListenPair<[]>()
         socket.on('disconnect', function hubPeerGone() { gone() })
         createRpcServerAuto({
             socket,

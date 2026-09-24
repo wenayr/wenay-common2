@@ -2,7 +2,7 @@
 
 import {ArtifactStore, createArtifactHost} from '../src/Common/artifact/artifact-host'
 import {createArtifactMirror} from '../src/Common/artifact/artifact-mirror'
-import {createStore, listenStorePatches} from '../src/Common/Observe/store'
+import {createStore, listenStorePatches, type StorePatch} from '../src/Common/Observe/store'
 import {reconcileStoreProjection, reconcileStoreProjectionRecord} from '../src/Common/Observe/store-projection'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {syncStoreReplay} from '../src/Common/Observe/store-replay'
@@ -23,8 +23,10 @@ async function drainTurn() {
 async function runChecks() {
     console.log('\n[store-projection-batch] silent unrelated views + compact visible bursts')
 
-    const projected = createStore({items: {a: {value: 1}}, flags: {ready: {value: true}}}, {drain: 'micro'})
-    const batches: any[][] = []
+    // records keyed by id: the reconcile below adds `b` to `items`
+    const projected = createStore<{items: Record<string, {value: number}>, flags: Record<string, {value: boolean}>}>(
+        {items: {a: {value: 1}}, flags: {ready: {value: true}}}, {drain: 'micro'})
+    const batches: (readonly StorePatch[])[] = []
     const offProjected = listenStorePatches(projected).on(function rememberProjectionBatch(patches) { batches.push(patches) })
     const equalWrites = reconcileStoreProjection(projected, {items: {a: {value: 1}}, flags: {ready: {value: true}}})
     await flushReactive(projected.state)

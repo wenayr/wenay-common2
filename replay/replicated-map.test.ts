@@ -644,7 +644,7 @@ async function runChecks() {
 
         const producer = createReplicatedMap<string>({keyOf: primitiveKey, delivery: 'lossless'})
         const batches: ReplicatedMapChange<string>[] = []
-        const batchSnapshots: Record<string, string>[] = []
+        const batchSnapshots: ReturnType<FollowedReplicatedMap<string>['snapshot']>[] = []
         let follower!: FollowedReplicatedMap<string>
         follower = followReplicatedMap(producer.api, {
             delivery: 'lossless',

@@ -1,7 +1,7 @@
 // Run:
 //   npx tsx observe/store-mirror.example.ts
 
-import {createStore, createStoreMirror, exposeStore} from './store'
+import {createStore, createStoreMirror, exposeStore, type StoreMask, type StorePick} from './store'
 import {flushReactive} from './reactive'
 
 type SymbolRef = {exchange: string; category: string; symbol: string}
@@ -32,13 +32,14 @@ async function main() {
     // API shape: get/set/replace + changed + changedPaths.
     // Over RPC the frontend receives the same shape from the SDK client.
     const exposed = exposeStore(backend)
-    const api = {
-        ...exposed,
-        get(mask?: any) {
-            console.log('pull', JSON.stringify(mask))
-            return exposed.get(mask)
-        },
+    // A logging proxy keeps the getter's own overloads: a pull is the full state or a masked pick.
+    function loggedGet(): StrategyStore
+    function loggedGet<M extends StoreMask<StrategyStore>>(mask: M): StorePick<StrategyStore, M>
+    function loggedGet(mask?: StoreMask<StrategyStore>): unknown {
+        console.log('pull', JSON.stringify(mask))
+        return mask ? exposed.get(mask) : exposed.get()
     }
+    const api = {...exposed, get: loggedGet}
 
     // Frontend: local mirror. UI subscribes locally, not to the network stream.
     const mirror = createStoreMirror<StrategyStore>(api, {strategies: {}}, {drain: 'micro'})

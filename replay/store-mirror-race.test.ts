@@ -16,7 +16,7 @@ function ok(condition: any, message: string) {
 type State = {row: {value: number}}
 
 function delayFirstGet(api: ReturnType<typeof exposeStore<State>>) {
-    let release = function releaseNotReady() { throw new Error('get was not started') }
+    let release: () => void = function releaseNotReady() { throw new Error('get was not started') }
     let calls = 0
     return {
         remote: {

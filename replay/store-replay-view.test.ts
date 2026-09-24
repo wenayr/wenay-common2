@@ -432,7 +432,7 @@ async function main() {
         try {
             await sync.ready
             await settleStores(mirror)
-            const expected = {...initial.rows, F0000: row(10_000)}
+            const expected: Record<string, Row> = {...initial.rows, F0000: row(10_000)}
             delete expected.F0079
             ok(injected, 'a selected mutation is injected between snapshot pages')
             ok(openedBase < sync.seq(), 'handoff applies journal events newer than the snapshot base')

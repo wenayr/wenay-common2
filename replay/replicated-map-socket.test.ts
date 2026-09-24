@@ -206,7 +206,7 @@ async function runChecks() {
         ok((producer.api.line as any).count() == 0,
             'Store Replay V2 gate stays detached before the follower subscribes')
         const batches: ReplicatedMapChange<Item>[] = []
-        const snapshots: Record<string, Item>[] = []
+        const snapshots: ReturnType<FollowedReplicatedMap<Item>['snapshot']>[] = []
 
         follower = followReplicatedMap(remote, {
             onBatch(change) {

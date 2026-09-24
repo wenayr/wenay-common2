@@ -15,7 +15,8 @@ function same(value: unknown, firstBinaryIndex = 0) {
     )
 }
 
-const unsafe: Record<string, unknown> = {safe: 1}
+// `constructor` is declared: on a bare index signature it would resolve to Object's Function member
+const unsafe: {[key: string]: unknown, constructor?: unknown} = {safe: 1}
 Object.defineProperty(unsafe, '__proto__', {
     configurable: true,
     enumerable: true,

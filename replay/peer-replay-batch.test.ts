@@ -236,7 +236,7 @@ async function runChecks() {
                     return new Uint8Array((nextPseudoRandom() % 191) + index + 1)
                 }),
                 omitted: i % 3 == 0 ? undefined : i,
-                rich: new Map([['i', i], ['at', new Date(i * 1000)]]),
+                rich: new Map<string, number | Date>([['i', i], ['at', new Date(i * 1000)]]),
                 text: 'Ж'.repeat(nextPseudoRandom() % 2600),
             })
         }

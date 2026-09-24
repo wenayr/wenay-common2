@@ -61,7 +61,7 @@ async function startRealServer(object: object) {
 
     ioServer.on('connection', socket => {
         console.log('  [server] client connected')
-        const [disconnect, disconnectListen] = createListenPair()
+        const [disconnect, disconnectListen] = createListenPair<[]>()
         socket.on('disconnect', () => disconnect())
         createRpcServerAuto({
             socket: {
