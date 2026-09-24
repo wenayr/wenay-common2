@@ -8,7 +8,6 @@ import {
     ReplicatedMapCheckpoint, ReplicatedMapRemote, ReplicatedMapStatus, StorePatch, toRaw,
 } from '../src/Common/Observe'
 import {createTransportLifecycle, RPC_TRANSPORT_LIFECYCLE} from '../src/Common/events/transport-lifecycle'
-import * as storeProjection from '../src/Common/Observe/store-projection'
 import {decodeStoreReplayBatchV2, encodeStoreReplayBatchV2} from '../src/Common/Observe/store-replay-codec'
 
 // =====================================================================
@@ -88,6 +87,38 @@ async function settle(follower: FollowedReplicatedMap<any>) {
 function threw(action: () => void) {
     try { action(); return false }
     catch { return true }
+}
+
+function callerNames(below: Function, depth: number) {
+    const format = Error.prepareStackTrace
+    const limit = Error.stackTraceLimit
+    Error.prepareStackTrace = function keepCallSites(_error, sites) { return sites }
+    Error.stackTraceLimit = depth
+    try {
+        const holder: {stack?: unknown} = {}
+        Error.captureStackTrace(holder, below)
+        return (holder.stack as NodeJS.CallSite[]).map(site => site.getFunctionName())
+    } finally {
+        Error.prepareStackTrace = format
+        Error.stackTraceLimit = limit
+    }
+}
+
+// Counts cloneStoreProjectionValue calls on objects: each enumerates its root once through
+// snapshotValue <- cloneStoreValue; nested values recurse deeper, Store admission and the replay
+// journal walk without it. Replacing the export instead is inert under tsx, where an imported
+// namespace is a getter-only view of the module.
+function countProjectionClones() {
+    const nativeOwnKeys = Reflect.ownKeys
+    const probe = {
+        clones: 0,
+        stop() { (Reflect as any).ownKeys = nativeOwnKeys },
+    }
+    ;(Reflect as any).ownKeys = function countProjectionCloneRoot(target: object) {
+        if (callerNames(countProjectionCloneRoot, 3)[2] == 'cloneStoreProjectionValue') probe.clones++
+        return nativeOwnKeys(target)
+    }
+    return probe
 }
 
 function createSwitchableMapRemote<V>(initial: ReplicatedMapRemote<V>) {
@@ -410,16 +441,11 @@ async function main() {
         const follower = followReplicatedMap(manual.remote)
         await follower.ready
 
-        const originalClone = storeProjection.cloneStoreProjectionValue
-        let projectedClones = 0
-        ;(storeProjection as any).cloneStoreProjectionValue = function countReplicatedMapProjectionClone<T>(value: T) {
-            projectedClones++
-            return originalClone(value)
-        }
+        const projection = countProjectionClones()
         try {
             manual.emit([{path: ['A'], exists: true, value: row('A', 1)}])
             await settle(follower)
-            ok(projectedClones == 0,
+            ok(projection.clones == 0,
                 'a follower with no batch/key consumers skips public change and key value cloning')
 
             const batches: ReplicatedMapChange<Row>[] = []
@@ -427,11 +453,11 @@ async function main() {
             ok(batches.length == 0, 'a late batch subscriber receives no historical projection')
             manual.emit([{path: ['B'], exists: true, value: row('B', 2)}])
             await settle(follower)
-            ok(projectedClones == 1 && batches.length == 1 && batches[0].set[0][0] == 'B',
+            ok(projection.clones == 1 && batches.length == 1 && batches[0].set[0][0] == 'B',
                 'an active batch subscriber enables one detached projection for the next envelope')
             offBatch()
 
-            projectedClones = 0
+            projection.clones = 0
             const keyValues: Row[] = []
             const offKey = follower.onKey('C', function collectLateKey(value, ctx) {
                 if (ctx.exists) keyValues.push(value!)
@@ -439,11 +465,11 @@ async function main() {
             ok(keyValues.length == 0, 'a late key subscriber receives no historical key notification by default')
             manual.emit([{path: ['C'], exists: true, value: row('C', 3)}])
             await settle(follower)
-            ok(projectedClones == 1 && keyValues.length == 1 && keyValues[0].n == 3,
+            ok(projection.clones == 1 && keyValues.length == 1 && keyValues[0].n == 3,
                 'an active key subscriber enables one detached value projection for its next change')
             offKey()
         } finally {
-            ;(storeProjection as any).cloneStoreProjectionValue = originalClone
+            projection.stop()
             follower.close()
         }
     })
@@ -470,15 +496,10 @@ async function main() {
         })
         let published = 0
         const offLine = producer.api.line.on(function countPublishedSnapshotDelta() { published++ })
-        const originalClone = storeProjection.cloneStoreProjectionValue
-        let projectedClones = 0
-        ;(storeProjection as any).cloneStoreProjectionValue = function countSnapshotProjectionClone<T>(value: T) {
-            projectedClones++
-            return originalClone(value)
-        }
+        const projection = countProjectionClones()
         try {
             producer.control.replaceAll(freshSnapshot())
-            ok(projectedClones == 0 && published == 0,
+            ok(projection.clones == 0 && published == 0,
                 'a fresh 500-key deep-equal snapshot performs no projection clones or replay writes')
 
             for (const changedCount of [20, 40, 50]) {
@@ -486,18 +507,18 @@ async function main() {
                     const keyIndex = (index * 37 + changedCount * 11) % size
                     revisions[keyIndex]++
                 }
-                projectedClones = 0
+                projection.clones = 0
                 published = 0
                 const next = freshSnapshot()
                 producer.control.replaceAll(next)
 
-                ok(projectedClones == changedCount * 2 && published == 1,
+                ok(projection.clones == changedCount * 2 && published == 1,
                     `a fresh 500-key snapshot with ${changedCount} changes clones only Store/wire values `
                     + `and publishes exactly ${changedCount} patches`)
                 next[0].quote.bid = -1
             }
         } finally {
-            ;(storeProjection as any).cloneStoreProjectionValue = originalClone
+            projection.stop()
             offLine()
             producer.control.close()
         }
