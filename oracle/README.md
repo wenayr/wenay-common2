@@ -12,6 +12,12 @@ these folders ships in the npm package.
   oracle as green while its later checks never ran (`replay/replicated-map.test.ts` hid ten failing
   checks that way). `runOracle` makes an unsettled or thrown `main()` exit 1 and keeps an explicit
   `process.exit(code)`. Files that use `node:test` report through that runner instead.
+- **Oracles are type-checked.** tsx strips types without checking them, so `npm test` runs
+  `npm run test:oracle-types` (`tsconfig.oracles.json`): the library's compiler options over
+  `observe/`, `replay/` and `oracle/`, except that Store state and RPC facades may be read by name
+  (`noPropertyAccessFromIndexSignature` off, as in the examples). Before it, 138 errors had
+  accumulated unseen, and two hid vacuous checks: a decode failure passing for a materialization
+  failure, and an `await` on a property that did not exist.
 - Under tsx an `import * as ns` object is a getter-only view: replacing `ns.fn` in a test is silently
   ignored, so a spy installed that way counts nothing. Count through a real seam (a hook, a probe
   argument, a call-site marker) and pair a count with a negative control.
