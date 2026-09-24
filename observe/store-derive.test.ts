@@ -15,6 +15,7 @@ import {applyStorePatches, createStore, listenStorePatches, type StorePatch} fro
 import {deriveStore, storeDiffPatches} from '../src/Common/Observe/store-derive'
 import {exposeStoreReplay} from '../src/Common/Observe/store-replay'
 import {createStoreFollower} from '../src/Common/Observe/store-follower'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -38,7 +39,7 @@ type State = {
     counter: number
 }
 
-async function main() {
+async function runChecks() {
     // ============== the diff, as a pure function ==============
     {
         const a = {orders: {o1: {state: 'placed', lines: ['a', 'b']}, o2: {state: 'ready'}}, n: 1}
@@ -153,7 +154,11 @@ async function main() {
     process.exit(fails ? 1 : 0)
 }
 
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exit(2)
-})
+async function main() {
+    await runChecks().catch(function fatal(error) {
+        console.error(error)
+        process.exit(2)
+    })
+}
+
+runOracle(main)

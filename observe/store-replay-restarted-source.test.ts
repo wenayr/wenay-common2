@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {createStore} from '../src/Common/Observe/store'
 import {exposeStoreReplay, syncStoreReplay} from '../src/Common/Observe/store-replay'
 import {createTransportLifecycle, RPC_TRANSPORT_LIFECYCLE} from '../src/Common/events/transport-lifecycle'
+import {runOracle} from '../oracle/run-oracle'
 
 async function checkCatchUp(reset: boolean) {
     const lifecycle = createTransportLifecycle(true)
@@ -53,7 +54,4 @@ async function main() {
     console.log('PASS restarted store source: anchored resume rejects a lower head; explicit reset accepts its snapshot')
 }
 
-main().catch(function failed(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runOracle(main)

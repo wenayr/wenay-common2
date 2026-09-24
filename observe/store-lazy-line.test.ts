@@ -13,6 +13,7 @@ import {
     type StoreLazyChunkV1,
     type StoreLazyCursor,
 } from '../src/Common/Observe/store-lazy-line'
+import {runOracle} from '../oracle/run-oracle'
 
 type Quote = {bid: number}
 
@@ -679,7 +680,4 @@ async function main() {
     console.log('\nstore lazy line: all checks passed')
 }
 
-void main().catch(function fatal(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runOracle(main)

@@ -1,5 +1,6 @@
 import {createStore, createStoreMirror, exposeStore} from './store'
 import {flushReactive} from './reactive'
+import {runOracle} from '../oracle/run-oracle'
 
 type Market = {
     data: { BTC?: number; ETH?: number; SOL?: number }
@@ -10,7 +11,7 @@ let fails = 0
 const ok = (c: any, m: string) => { if (!c) { fails++; console.log('  FAIL', m) } else console.log('  OK  ', m) }
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
-async function main() {
+async function runChecks() {
     console.log('\n[store] primitive node current/on/once')
     {
         const store = createStore<Market>({data: {BTC: 1, ETH: 2}, meta: {status: 'ok'}}, {drain: 'micro'})
@@ -337,4 +338,8 @@ async function main() {
     process.exit(fails == 0 ? 0 : 1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

@@ -8,6 +8,7 @@ import {
     managedStore,
 } from '../src/Common/Observe'
 import {isNoStrict, noStrict} from '../src/Common/rcp/rpc-dynamic'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -27,7 +28,7 @@ type Rows = {
     rows: Record<string, {qty: number}>
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[store-manager] plan gates and mirror sync')
     {
         const server = createStore<Market>({data: {BTC: 1, ETH: 2}, meta: {status: 'ok'}}, {drain: 'micro'})
@@ -157,4 +158,8 @@ async function main() {
     process.exit(fails == 0 ? 0 : 1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

@@ -24,6 +24,7 @@ import {createRpcClient} from '../src/Common/rcp/rpc-client'
 import {createLoopbackSocketPair} from '../src/Common/rcp/rpc-inproc'
 import type {SocketTmpl} from '../src/Common/rcp/rpc-protocol'
 import {listen} from '../src/Common/events/Listen'
+import {runOracle} from '../oracle/run-oracle'
 
 type TickState = Record<string, {id: string, value: number}>
 
@@ -48,7 +49,7 @@ function parseToken(presented: unknown) {
     return {account: text.slice(4)}
 }
 
-async function main() {
+async function runChecks() {
     // ============== the authority: one line, one command host, two successive LINKS to it ==============
     const authority = createStoreReplicaSet<TickState>({
         storeId: 'rehome-line', originId: 'rehome-origin', nodeId: 'authority', lineId: 'authority-line',
@@ -145,7 +146,11 @@ async function main() {
     process.exit(fails ? 1 : 0)
 }
 
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exit(2)
-})
+async function main() {
+    await runChecks().catch(function fatal(error) {
+        console.error(error)
+        process.exit(2)
+    })
+}
+
+runOracle(main)

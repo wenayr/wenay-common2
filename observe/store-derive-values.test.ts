@@ -3,6 +3,7 @@ import {storeDiffPatches, deriveStore} from '../src/Common/Observe/store-derive'
 import {createStore} from '../src/Common/Observe/store'
 import {exposeStoreReplay} from '../src/Common/Observe/store-replay'
 import {createStoreFollower} from '../src/Common/Observe/store-follower'
+import {runOracle} from '../oracle/run-oracle'
 
 async function until(check: () => boolean) {
     const deadline = Date.now() + 3000
@@ -45,7 +46,4 @@ async function main() {
     console.log('PASS exact telemetry values through diff, projection and replay follower')
 }
 
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runOracle(main)

@@ -4,6 +4,7 @@ import {
     StoreReplicaOffer,
     StoreReplicaSet,
 } from '../src/Common/Observe/store-replica-set'
+import {runOracle} from '../oracle/run-oracle'
 
 type Item = {id: string, value: number, owner: string}
 type State = Record<string, Item>
@@ -89,7 +90,7 @@ function createNode(nodeId: string, initialRole: 'leader' | 'follower', epoch = 
     })
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[store-replica-set] dynamic offers and latency route choice')
     const a = createNode('a', 'leader')
     a.control.store.state.seed = {id: 'seed', value: 1, owner: 'a'}
@@ -228,7 +229,11 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exit(2)
-})
+async function main() {
+    await runChecks().catch(function fatal(error) {
+        console.error(error)
+        process.exit(2)
+    })
+}
+
+runOracle(main)

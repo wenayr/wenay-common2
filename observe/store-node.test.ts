@@ -21,6 +21,7 @@ import {exposeStoreReplay} from '../src/Common/Observe/store-replay'
 import {createStoreFollower} from '../src/Common/Observe/store-follower'
 import {createStoreReplicaSet} from '../src/Common/Observe/store-replica-set'
 import {createStoreNode, type StoreNodeRevocation} from '../src/Common/Observe/store-node'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -295,4 +296,4 @@ async function main() {
     if (fails) process.exitCode = 1
     setTimeout(function exitNow() { process.exit(fails ? 1 : 0) }, 100)
 }
-void main()
+runOracle(main)

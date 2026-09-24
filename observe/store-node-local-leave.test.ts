@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {setTimeout as delay} from 'node:timers/promises'
 import {createAuthority} from '../src/Common/scale/scale-authority'
 import {createStoreNode} from '../src/Common/Observe/store-node'
+import {runOracle} from '../oracle/run-oracle'
 
 async function main() {
     const authority = createAuthority({
@@ -69,4 +70,4 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)
