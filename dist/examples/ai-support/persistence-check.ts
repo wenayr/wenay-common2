@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os'
 import path from 'node:path'
 import {Ai} from 'wenay-common2'
 import {openAiCheckpoint} from './persistence'
+import {runCheck} from './run-check'
 
 async function main() {
     const directory = mkdtempSync(path.join(tmpdir(), 'ai-checkpoint-'))
@@ -54,4 +55,4 @@ async function main() {
         rmSync(directory, {recursive: true, force: true})
     }
 }
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

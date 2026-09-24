@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import {spawn} from 'node:child_process'
 import {createRentalClient, type RentalClient} from './rental-client'
+import {runCheck} from './run-check'
 
 // Compile-only checks: the consumer type must originate in the domain factory.
 function typeContract(client: RentalClient) {
@@ -89,4 +90,4 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

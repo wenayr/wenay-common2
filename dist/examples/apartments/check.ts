@@ -16,6 +16,7 @@
 import {runLockDevice} from './device-lock'
 import {signSettlement} from './payments'
 import {DEMO_LOGINS} from './service'
+import {runCheck} from './run-check'
 
 let fails = 0
 let step = 0
@@ -250,9 +251,7 @@ async function main() {
     process.exitCode = fails ? 1 : 0
 }
 
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exitCode = 2
-})
+// past the 180 s watchdog above, which stops the stand's processes before it exits
+runCheck(main, 200_000)
 
 

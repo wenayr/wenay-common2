@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os'
 import path from 'node:path'
 import {createTokenCodec} from 'wenay-common2/server/auth'
 import type {RentalBooking} from './service'
+import {runCheck} from './run-check'
 
 async function check() {
     const temp = await realpath(tmpdir())
@@ -114,7 +115,4 @@ async function check() {
     }
 }
 
-void check().catch(function failed(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runCheck(check)

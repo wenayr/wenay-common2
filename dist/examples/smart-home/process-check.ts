@@ -5,6 +5,7 @@ import {createRpcClientHub} from 'wenay-common2/rpc'
 import {createHomeReader, createHomeDevice} from './client'
 import {startHomeStand} from './stand'
 import type {ReaderFacade, DeviceFacade} from './host'
+import {runCheck} from './run-check'
 
 async function until(check: () => boolean | Promise<boolean>, message: string) {
     const deadline = Date.now() + 12_000
@@ -126,7 +127,4 @@ async function main() {
     }
 }
 
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runCheck(main)

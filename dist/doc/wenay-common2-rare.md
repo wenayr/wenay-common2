@@ -1962,6 +1962,8 @@ onUpdate(node, cb)->off
 onUpdatePaths(node, cb)->off            // cb({paths}); paths are relative to subscribed node
 flushReactive(node)->Promise<void>
 toRaw(node)->raw value                  // current raw target behind the proxy; creates no lazy nodes
+                                        // each branch read through the proxy leaves one lazy node
+                                        // (~200 B on V8) while its slot lives; toRaw/snapshot create none
 listenUpdate(node)->Listen<void>        // RPC bridge: createRpcServerAuto recognizes it
 listenUpdatePaths(node)->Listen<{paths: PropertyKey[][]}>
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {mkdtemp, realpath, rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import path from 'node:path'
+import {runCheck} from './run-check'
 
 async function main() {
     const {startStand} = await import('./run.mjs')
@@ -62,7 +63,4 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runCheck(main)

@@ -556,6 +556,8 @@ control.grant({ object: facadeFor(claims), ack: { ok: true }, expiresAt });   //
 an expired token produces: `Pkt.AUTH` first, then the Listen nodes the base facade no longer declares
 end with `RPC_STOP`/`CB_END`, then a `Pkt.MAP` with `authAck {ok:false, state, reason}`; gated calls
 reject with `E_UNAUTHORIZED` again. Only the state name differs (`"revoked"` vs `"expired"`).
+Notice and downgrade are separate packets (over long-polling, separate responses): treat the
+session as downgraded once `auth()` answers `ok: false`, not on the `Pkt.AUTH` notice alone.
 
 `grant` is the HELLO success path without the question — same facade/ack/deadline/timers, but
 uncorrelated, so it can never settle a pending `reauth()` (and emits no `"renewed"`, §5.2). Both are

@@ -5,6 +5,7 @@ import {setImmediate as nextTurn} from 'node:timers/promises'
 import {createMemoryReplayStorage} from 'wenay-common2/replay'
 import type {StorePatch} from 'wenay-common2/observe'
 import {createServiceLeader, type tServiceDefinition} from './leader'
+import {runCheck} from './run-check'
 
 type State = {record: {value: number}}
 const definition = {
@@ -85,4 +86,4 @@ async function main() {
     console.log('PASS migration: failed callback/result preserves archive and releases timers; detached retry migrates once')
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

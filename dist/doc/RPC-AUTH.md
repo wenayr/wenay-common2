@@ -563,6 +563,12 @@ torn down with `RPC_STOP` → `CB_END`, then a `Pkt.MAP` with `authAck {ok: fals
 the constructor object's schema. Gated calls reject with `E_UNAUTHORIZED` again. **Only the state
 name differs**: `'revoked'` instead of `'expired'`.
 
+The notice and the downgrade are separate packets. Over Socket.IO long-polling they can land in
+different poll responses, so between them the client still holds the old facade: decide that a
+session is gone, or read the facade, once `auth()` answers `{ok: false, ...}`, not on the
+`Pkt.AUTH` notice alone. The stand's Service tokens panel waits this way
+(`demo/service-token-client.ts`, repository checkout).
+
 **`grant` is the HELLO success path without the question.** Step-up finished elsewhere, admin
 impersonation, a token your app server renewed itself — facade, `ack`, `expiresAt` and the timers
 behave exactly as if a HELLO had carried it. It is deliberately **uncorrelated**: it answers no
@@ -858,6 +864,14 @@ bind only an authenticated account. Proof: `oracle/realsocket/service-leader-ide
 (repository checkout).
 If an external issuer renews into another account, the client reloads permissions from a fresh
 keyframe, clears the previous account's private mirrors and adopts the new verified identity.
+
+Living stand (repository checkout): `npm run demo` → **Lab** → **Service tokens** runs this rule on
+real `createServiceLeader` instances mounted on the stand's own Socket.IO server, one sandbox per
+browser tab, and names the layer that decided every step. A handshake naming `owner` finds
+`identity: {renew}` and a gated key that stays anonymous; the stand's HTTP login checks the demo
+credentials, then calls `leader.identity.login(account)`; a definition with `access.login` mints from
+credentials over RPC; `leader.control.revoke` cuts the live session and renewal is refused. Oracle:
+`oracle/realsocket/service-token-stand.spec.ts`.
 
 `auth: {token}` seeds the first connection; subsequent renewal uses the authority's existing
 identity facade. `auth: {credentials}` uses credentials only for initial login, then the same renewal

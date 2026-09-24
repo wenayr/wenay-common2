@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "description": "Typed RPC over sockets, replayable Listen wires, reactive stores with replication and failover, peer packet mesh, media/artifact/AI/conversation runtimes",
   "keywords": [
     "rpc",

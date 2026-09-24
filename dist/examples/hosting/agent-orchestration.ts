@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict'
 import {setImmediate as flushTurn} from 'node:timers/promises'
 import {createResourceScope, createReconciler, Observe} from 'wenay-common2'
+import {runCheck} from './run-check'
 
 // External operations stay in the application's injected resource.
 async function startAgent(deps: {apply: (ids: string[], signal: AbortSignal) => Promise<void>}) {
@@ -55,4 +56,4 @@ async function main() {
     console.log('PASS hosting agent ownership and coalescing over fresh Store snapshots')
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

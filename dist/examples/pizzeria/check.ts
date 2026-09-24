@@ -7,6 +7,7 @@ import {io} from 'socket.io-client'
 import {createStoreFollower} from 'wenay-common2/observe'
 import {createRpcClient} from 'wenay-common2/rpc'
 import {DEMO_LOGINS} from './service'
+import {runCheck} from './run-check'
 
 async function waitFor(what: string, check: () => boolean) {
     const deadline = Date.now() + 10_000
@@ -135,9 +136,6 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runCheck(main)
 
 

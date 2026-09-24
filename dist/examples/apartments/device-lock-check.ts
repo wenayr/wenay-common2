@@ -6,6 +6,7 @@ import {createStore} from 'wenay-common2/observe'
 import {runLeaderProcess} from './leader'
 import {serviceDefinition, DEMO_LOGINS} from './service'
 import {runLockDevice, type LockDeviceClient} from './device-lock'
+import {runCheck} from './run-check'
 
 async function until(label: string, predicate: () => boolean) {
     const deadline = Date.now() + 6000
@@ -166,7 +167,4 @@ if (process.argv.includes('--fixture')) fixtureHost().catch(function failed(erro
     console.error(error)
     process.exit(1)
 })
-else main().catch(function failed(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+else runCheck(main)
