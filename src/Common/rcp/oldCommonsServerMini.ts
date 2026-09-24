@@ -1,3 +1,13 @@
+import { isSafeKey } from "./rpc-limits";
+
+// Resolve one path key as an OWN member only (never the prototype chain), and refuse the keys
+// isSafeKey bans (__proto__/constructor/prototype). doc/RPC-AUTH.md Rule 3: the v2 server's rule,
+// applied here so the legacy path cannot walk from `target` to Object.prototype.__defineSetter__.
+const ownMember = (obj: any, k: string) =>
+    typeof k === "string" && isSafeKey(k)
+    && obj != null && typeof obj === "object"
+    && Object.prototype.hasOwnProperty.call(obj, k);
+
 type Socket = { emit: (e: string, p: any) => any; on: (e: string, cb: (d: any) => any) => any };
 export type RequestScreener<T> = { key: string[]; callbacksId?: string[]; request: any[] };
 type Obj = { [k: string]: any };
@@ -48,9 +58,18 @@ export function promiseServer<T extends Obj>(
                 return;
             }
             const { key, request } = msg.data!;
-            let curr = target, fnName = "";
+            // Own-member resolution: descend only into keys `target` actually owns, and stop at
+            // the first own function. An unsafe or non-own segment leaves `fn` undefined and falls
+            // through to the "not a function" answer — no prototype walk, no raw property access.
+            let curr: any = target, fnName = "";
+            let resolvable = true;
             try {
-                for (const k of key) { fnName = k; if (typeof curr[fnName] === "function") break; curr = curr[fnName]; }
+                for (const k of key) {
+                    fnName = k;
+                    if (!ownMember(curr, k)) { resolvable = false; break; }
+                    if (typeof curr[k] === "function") break;
+                    curr = curr[k];
+                }
             } catch (e) {
                 const err = serializeError(e);
                 try { await hooks?.onInvalid?.({ reason: "resolve_error", key, request, error: err, msg }); }
@@ -59,7 +78,7 @@ export function promiseServer<T extends Obj>(
                 console.error({ error: err, key, arguments: request });
                 return;
             }
-            if (typeof curr[fnName] === "function") {
+            if (resolvable && ownMember(curr, fnName) && typeof curr[fnName] === "function") {
                 const fn = curr[fnName];
                 if (hooks?.onRequest) {
                     try {
