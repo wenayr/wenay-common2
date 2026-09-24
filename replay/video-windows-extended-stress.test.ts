@@ -24,6 +24,7 @@ import type {MediaFrameCodec} from '../src/Common/media/media-source'
 import {createMediaRelay} from '../src/Common/peer/peer-media-relay'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
+import {runOracle} from '../oracle/run-oracle'
 
 type tParticipant = {account: string, room: string}
 type tDimensions = {width: number, height: number}
@@ -464,7 +465,7 @@ function strictlyIncreasing(values: readonly number[]) {
     return true
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[video-windows-extended-stress] bounded 100+ MiB fan-out and reconnect matrix')
     const startedAt = Date.now()
     const memory = createMemoryMeter()
@@ -531,10 +532,12 @@ async function main() {
         return {source, filtered}
     }
 
+    // Since 2.21.2 a watcher's raw and canvas consumers share one physical RPC subscription
+    // (video-windows-stress.test.ts counts the same way): one listener per distinct wire call.
     async function waitForSubscriptions(
         label: string,
         lines: ReturnType<typeof generationLines>,
-        callbackCounts = WATCHERS.map(function defaultCallbackCount() { return 2 }),
+        callbackCounts = WATCHERS.map(function defaultCallbackCount() { return 1 }),
     ) {
         await waitFor(label, function subscriptionsReady() {
             return lines.source.count() == WATCHERS.length
@@ -667,7 +670,8 @@ async function main() {
         })
         allWindows.push(currentWindow)
         const bulkWithCurrent = [...bulkWindows, currentWindow]
-        await waitForSubscriptions('current:true extra consumers', bulkLines, [4, 2, 2])
+        // current:true is a distinct wire call (one more subscription); its canvas shares the plain one
+        await waitForSubscriptions('current:true extra consumers', bulkLines, [2, 1, 1])
         await waitFor('current:true latest raw frame', function currentRawReady() {
             return currentWindow.rawSeq[0] == latestSeq
         })
@@ -767,7 +771,11 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function extendedVideoStressFailed(error) {
-    console.error(error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function extendedVideoStressFailed(error) {
+        console.error(error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)
