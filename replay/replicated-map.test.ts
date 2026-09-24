@@ -1023,17 +1023,17 @@ async function main() {
     })
 
     await section('remote validation precedes mutation and producer close tears lines down', async function remoteValidationAndClose() {
+        // A fresh follower (seq -1) catches up through keyframe(); since() is read only from a
+        // cursor. The envelope is a V2 wire tuple, so a rejection comes from map validation
+        // rather than from the envelope decoder.
+        function firstEnvelope(patch: StorePatch) {
+            return encodeStoreReplayBatchV2({seq: 0, ts: 1, event: [[patch]]})
+        }
         const malformedErrors: unknown[] = []
         const malformedRemote = {
             line: {on() { return function offMalformedLine() {} }},
-            since() {
-                return [{
-                    seq: 0,
-                    ts: 1,
-                    event: [{path: [123], exists: true, value: row('BAD', 1)}] as [StorePatch],
-                }]
-            },
-            keyframe() { return null },
+            since() { return null },
+            keyframe() { return firstEnvelope({path: [123], exists: true, value: row('BAD', 1)}) },
             frame() { return null },
             describe() {
                 return {replicatedMap: {version: 1 as const, delivery: 'latest' as const, lineId: 'malformed'}}
@@ -1044,6 +1044,7 @@ async function main() {
         })
         await malformed.ready
         ok(malformed.status().state == 'error' && malformedErrors.length == 1
+            && String(malformedErrors[0]).includes('replicated map key must be a string')
             && malformed.seq() == -1 && json(malformed.snapshot()) == '{}',
         'a malformed map patch is rejected before Store mutation and cannot advance seq')
         malformed.close()
@@ -1057,20 +1058,20 @@ async function main() {
             writable: true,
             value: row('HIDDEN', 1),
         })
-        for (const [label, root] of [
-            ['symbol', symbolRoot],
-            ['non-enumerable', nonEnumerableRoot],
-            ['non-plain', new Date(0)],
+        for (const [label, root, reason] of [
+            ['symbol', symbolRoot, 'accepts only string keys'],
+            ['non-enumerable', nonEnumerableRoot, 'accepts only enumerable data keys'],
+            ['non-plain', new Date(0), 'must be a plain keyed object'],
         ] as const) {
             const hiddenRootRemote = {
                 ...malformedRemote,
-                since() {
-                    return [{seq: 0, ts: 1, event: [{path: [], exists: true, value: root}] as [StorePatch]}]
-                },
+                keyframe() { return firstEnvelope({path: [], exists: true, value: root}) },
             } as ReplicatedMapRemote<Row>
             const hiddenRootFollower = followReplicatedMap(hiddenRootRemote)
             await hiddenRootFollower.ready
-            ok(hiddenRootFollower.status().state == 'error' && hiddenRootFollower.seq() == -1
+            ok(hiddenRootFollower.status().state == 'error'
+                && String(hiddenRootFollower.status().error).includes(reason)
+                && hiddenRootFollower.seq() == -1
                 && Reflect.ownKeys(hiddenRootFollower.snapshot()).length == 0,
             `a root ${label} key is rejected before materialization`)
             hiddenRootFollower.close()
@@ -1080,13 +1081,7 @@ async function main() {
         let customValidationSawCleanStore = false
         const policyRemote = {
             ...malformedRemote,
-            since() {
-                return [{
-                    seq: 0,
-                    ts: 1,
-                    event: [{path: ['BLOCKED'], exists: true, value: row('BLOCKED', 1)}] as [StorePatch],
-                }]
-            },
+            keyframe() { return firstEnvelope({path: ['BLOCKED'], exists: true, value: row('BLOCKED', 1)}) },
         } as ReplicatedMapRemote<Row>
         const policyFollower = followReplicatedMap(policyRemote, {
             validateBatch(_patches, store) {
