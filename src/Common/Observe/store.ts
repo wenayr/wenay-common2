@@ -137,6 +137,10 @@ type StoreNodeEntry = {
     parentKey?: PropertyKey
     children: Map<PropertyKey, StoreNodeEntry>
     proxy?: StoreNode<any>
+    /** Unsubscribed leaf read on a missing path: prunable although no write reaches it. */
+    phantom: boolean
+    /** Phantoms in this subtree, self included: a sweep skips subtrees without one. */
+    phantoms: number
 }
 
 type StoreInternal<T extends object> = Store<T> & {
@@ -900,6 +904,14 @@ function makeCtx<T>(store: StoreInternal<any>, path: PropertyKey[]): StoreCtx<T>
     }
 }
 
+// A write re-checks its own subtree. Every other entry keeps its retention except a
+// phantom, so the ancestors of a write sweep only the subtrees that hold one.
+function markPhantom(entry: StoreNodeEntry, phantom: boolean) {
+    if (entry.phantom == phantom) return
+    entry.phantom = phantom
+    for (let cur: StoreNodeEntry | undefined = entry; cur; cur = cur.parent) cur.phantoms += phantom ? 1 : -1
+}
+
 function getNodeEntry(store: StoreInternal<any>, path: StorePath): StoreNodeEntry {
     const k = pathKey(path)
     const cached = store._nodeCache.get(k)
@@ -912,10 +924,16 @@ function getNodeEntry(store: StoreInternal<any>, path: StorePath): StoreNodeEntr
         parent,
         parentKey: path[path.length - 1],
         children: new Map<PropertyKey, StoreNodeEntry>(),
+        phantom: false,
+        phantoms: 0,
     }
     store._nodeCache.set(k, entry)
-    if (parent) parent.children.set(entry.parentKey!, entry)
-    else store._nodeRoot = entry
+    if (parent) {
+        parent.children.set(entry.parentKey!, entry)
+        // A parent with a child is released by that child's removal, not by a sweep.
+        markPhantom(parent, false)
+        if (!readRawAt(store._state, path).exists) markPhantom(entry, true)
+    } else store._nodeRoot = entry
     refreshNodePruner(store)
     return entry
 }
@@ -933,17 +951,31 @@ function cachedNodeEntry(store: StoreInternal<any>, path: StorePath) {
 function removeNodeEntry(store: StoreInternal<any>, entry: StoreNodeEntry) {
     if (entry.path.length == 0) return
     for (const child of [...entry.children.values()]) removeNodeEntry(store, child)
+    markPhantom(entry, false)
     entry.parent?.children.delete(entry.parentKey!)
     store._nodeCache.delete(entry.key)
 }
 
-function pruneNodeEntry(store: StoreInternal<any>, entry: StoreNodeEntry, exists: boolean, value: any) {
+function pruneNodeEntry(store: StoreInternal<any>, entry: StoreNodeEntry, exists: boolean, value: any, phantomsOnly = false) {
+    if (exists) markPhantom(entry, false)
     for (const [key, child] of [...entry.children]) {
+        if (phantomsOnly && child.phantoms == 0) continue
         const childExists = exists && isObj(value) && key in value
         const childValue = childExists ? toRaw((value as any)[key as any]) : undefined
-        if (!pruneNodeEntry(store, child, childExists, childValue)) removeNodeEntry(store, child)
+        if (!pruneNodeEntry(store, child, childExists, childValue, phantomsOnly)) removeNodeEntry(store, child)
     }
     return entry.path.length == 0 || exists || (store._counts.get(entry.key) ?? 0) > 0 || entry.children.size > 0
+}
+
+// Walking every cached sibling here made each write O(siblings) on a flat map with
+// per-key node entries; without phantoms below, the ancestor's own facts decide.
+function pruneAncestorEntry(store: StoreInternal<any>, entry: StoreNodeEntry) {
+    if (entry.phantoms == 0) {
+        return entry.children.size > 0 || (store._counts.get(entry.key) ?? 0) > 0
+            || readRawAt(store._state, entry.path).exists
+    }
+    const current = readRawAt(store._state, entry.path)
+    return pruneNodeEntry(store, entry, current.exists, current.value, true)
 }
 
 function pruneCachedPath(store: StoreInternal<any>, path: StorePath) {
@@ -954,8 +986,7 @@ function pruneCachedPath(store: StoreInternal<any>, path: StorePath) {
 
     let parent = entry.parent
     while (parent && parent.path.length) {
-        const currentParent = readRawAt(store._state, parent.path)
-        if (pruneNodeEntry(store, parent, currentParent.exists, currentParent.value)) break
+        if (pruneAncestorEntry(store, parent)) break
         const next = parent.parent
         removeNodeEntry(store, parent)
         parent = next
@@ -973,7 +1004,8 @@ function refreshNodePruner(store: StoreInternal<any>) {
 
 function incCount(store: StoreInternal<any>, path: StorePath) {
     const k = pathKey(path)
-    getNodeEntry(store, path)
+    // A subscribed entry is released by its own last off(), never by a sweep.
+    markPhantom(getNodeEntry(store, path), false)
     store._counts.set(k, (store._counts.get(k) ?? 0) + 1)
 }
 
