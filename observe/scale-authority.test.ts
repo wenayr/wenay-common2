@@ -16,6 +16,7 @@ import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 import {createLoopbackSocketPair} from '../src/Common/rcp/rpc-inproc'
 import {createStoreFollower} from '../src/Common/Observe/store-follower'
 import {createAuthority} from '../src/Common/scale/scale-authority'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -261,4 +262,4 @@ async function main() {
     if (fails) process.exitCode = 1
     setTimeout(function exitNow() { process.exit(fails ? 1 : 0) }, 100)
 }
-void main()
+runOracle(main)

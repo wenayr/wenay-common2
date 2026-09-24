@@ -9,6 +9,7 @@ import {replayListen} from '../src/Common/events/replay-listen'
 import {createStore} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {exposeStoreReplay} from '../src/Common/Observe/store-replay'
+import {runOracle} from '../oracle/run-oracle'
 
 let clock = 1_000
 const now = () => clock
@@ -218,7 +219,4 @@ async function main() {
     console.log('\nreplay journal retention: all checks passed')
 }
 
-void main().catch(function fatal(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runOracle(main)

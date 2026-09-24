@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {reactive, toRaw, isReactive, onUpdate, flushReactive} from '../src/Common/Observe'
+import {runOracle} from '../oracle/run-oracle'
 
 async function main() {
     for (const eager of [false, true]) {
@@ -88,4 +89,4 @@ async function main() {
     console.log('PASS reactive admission: retained identities, initial/descriptor input, deep/cyclic/shared graphs, immutable-slot refusal')
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

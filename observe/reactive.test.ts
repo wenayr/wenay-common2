@@ -4,6 +4,7 @@
 // ============================================================
 
 import {reactive, onUpdate, onUpdatePaths, flushReactive, listenUpdate, listenUpdatePaths, toRaw} from './reactive'
+import {runOracle} from '../oracle/run-oracle'
 
 type Fn = () => void
 let fails = 0
@@ -15,7 +16,7 @@ const manual = {drain: (f: Fn) => { pending = f }}
 const flush = () => { const f = pending; pending = null; if (f) f() }
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
-async function main() {
+async function runChecks() {
     console.log('\n[1] plain + nested read/write')
     {
         const s = reactive({price: 0, a: {b: {c: 1}}}, manual)
@@ -328,4 +329,8 @@ async function main() {
     process.exit(fails == 0 ? 0 : 1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

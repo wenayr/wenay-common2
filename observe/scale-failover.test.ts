@@ -15,6 +15,7 @@
 import {listen} from '../src/Common/events/Listen'
 import {createAuthority, type AuthorityUpstream} from '../src/Common/scale/scale-authority'
 import {createStoreNode} from '../src/Common/Observe/store-node'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -55,7 +56,7 @@ function linkTo(authority: ReturnType<typeof createAuthority<TickState, Cmds>>, 
     return {upstream, link, fail}
 }
 
-async function main() {
+async function runChecks() {
     let applied = 0
     const commands: Cmds = {
         add(ctx, input) {
@@ -175,4 +176,8 @@ async function main() {
     process.exit(fails ? 1 : 0)
 }
 
-main().catch(function crashed(error) { console.error(error); process.exit(1) })
+async function main() {
+    await runChecks().catch(function crashed(error) { console.error(error); process.exit(1) })
+}
+
+runOracle(main)

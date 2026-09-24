@@ -1,9 +1,10 @@
 import {listen as createListenPair, listenStore} from '../src/Common/events/Listen'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (c: any, m: string) => { if (!c) { fails++; console.log('  FAIL', m) } else console.log('  OK  ', m) }
 
-async function main() {
+async function runChecks() {
     console.log('\n[listen-store] base listen is a pure event list')
     {
         const [emit, listen] = createListenPair<[number]>()
@@ -85,4 +86,8 @@ async function main() {
     process.exit(fails == 0 ? 0 : 1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

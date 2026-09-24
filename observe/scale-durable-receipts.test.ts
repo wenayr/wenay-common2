@@ -14,6 +14,7 @@
 
 import {createAuthority} from '../src/Common/scale/scale-authority'
 import {createMemoryReplayStorage} from '../src/Common/events/replay-history'
+import {runOracle} from '../oracle/run-oracle'
 
 type State = {counter: {value: number}}
 
@@ -44,7 +45,7 @@ function boot(line: ReturnType<typeof createMemoryReplayStorage>, control: Retur
     return authority
 }
 
-async function main() {
+async function runChecks() {
     // ============== the seam: receipts and the deny list survive a solo restart ==============
     const line = createMemoryReplayStorage()
     const control = createMemoryReplayStorage()
@@ -91,7 +92,11 @@ async function main() {
     process.exit(fails ? 1 : 0)
 }
 
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exit(2)
-})
+async function main() {
+    await runChecks().catch(function fatal(error) {
+        console.error(error)
+        process.exit(2)
+    })
+}
+
+runOracle(main)

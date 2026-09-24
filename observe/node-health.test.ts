@@ -14,6 +14,7 @@ import {flushReactive} from '../src/Common/Observe/reactive'
 import {exposeStoreReplay, syncStoreReplay} from '../src/Common/Observe/store-replay'
 import {ReplayRemote} from '../src/Common/events/replay-wire'
 import {StorePatch} from '../src/Common/Observe/store'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -23,7 +24,7 @@ const ok = (condition: any, message: string) => {
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 const json = (v: any) => JSON.stringify(v)
 
-async function main() {
+async function runChecks() {
     let t = 5000
     let seq = 7
     const health = createNodeHealth({node: 'n1', now: () => t})
@@ -59,4 +60,9 @@ async function main() {
     console.log(fails ? `node-health: ${fails} FAILED` : 'node-health: ALL GREEN')
     process.exit(fails ? 1 : 0)
 }
-main().catch(e => { console.error(e); process.exit(2) })
+
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(2) })
+}
+
+runOracle(main)
