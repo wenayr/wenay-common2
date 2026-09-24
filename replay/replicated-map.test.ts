@@ -11,12 +11,51 @@ import {createTransportLifecycle, RPC_TRANSPORT_LIFECYCLE} from '../src/Common/e
 import * as storeProjection from '../src/Common/Observe/store-projection'
 import {decodeStoreReplayBatchV2, encodeStoreReplayBatchV2} from '../src/Common/Observe/store-replay-codec'
 
+// =====================================================================
+// harness: a failed check, a throwing section and a section that never
+// settles all end in a non-zero exit
+// =====================================================================
+
+const SECTION_TIMEOUT_MS = 10_000
+
 let fails = 0
+let sectionsStarted = 0
+let sectionsCompleted = 0
+let currentSection = '(before the first section)'
+let finished = false
 
 function ok(condition: any, message: string) {
     if (!condition) { fails++; console.log('  FAIL', message) }
     else console.log('  OK  ', message)
 }
+
+async function section(name: string, body: () => Promise<void>) {
+    console.log(`\n[replicated-map] ${name}`)
+    currentSection = name
+    sectionsStarted++
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // A held promise with no pending timer drains the event loop and ends the process with
+    // exit code 0 mid-file; this timer keeps the loop alive and turns the stall into a failure.
+    const stalled = new Promise<'stalled'>(function armSectionTimeout(resolve) {
+        timer = setTimeout(resolve, SECTION_TIMEOUT_MS, 'stalled')
+    })
+    try {
+        const outcome = await Promise.race([body().then(() => 'done' as const), stalled])
+        if (outcome == 'stalled') ok(false, `section did not complete within ${SECTION_TIMEOUT_MS} ms`)
+        else sectionsCompleted++
+    } catch (error) {
+        ok(false, `section threw: ${error instanceof Error ? error.stack : String(error)}`)
+    } finally {
+        clearTimeout(timer)
+    }
+}
+
+process.on('exit', function failUnfinishedRun(code) {
+    if (finished) return
+    console.log(`\nFAIL the run ended before main() finished, during section "${currentSection}" `
+        + `(${sectionsCompleted} of ${sectionsStarted} started sections completed)`)
+    process.exitCode = code || 1
+})
 
 function json(value: any) {
     return JSON.stringify(value)
@@ -144,8 +183,7 @@ function createManualMapRemote<V>(delivery: 'latest' | 'lossless' = 'latest') {
 }
 
 async function main() {
-    console.log('\n[replicated-map] wide null-prototype keyframe')
-    {
+    await section('wide null-prototype keyframe', async function wideNullPrototypeKeyframe() {
         const initial = Array.from({length: 1_500}, function createWideRow(_, index) {
             return row('K' + index, index)
         })
@@ -169,10 +207,9 @@ async function main() {
 
         follower.close()
         producer.control.close()
-    }
+    })
 
-    console.log('\n[replicated-map] latest delivery, keys and lifecycle')
-    {
+    await section('latest delivery, keys and lifecycle', async function latestDeliveryKeysLifecycle() {
         const producer = createReplicatedMap<Value>({
             keyOf,
             initial: [row('A', 0), row('B', 0)],
@@ -320,10 +357,9 @@ async function main() {
         producer.control.close()
         ok(threw(function mutateClosedProducer() { producer.control.set(row('A', 200)) }),
             'producer close is idempotent and rejects later mutation')
-    }
+    })
 
-    console.log('\n[replicated-map] latest hot paths keep ownership and stay cold without consumers')
-    {
+    await section('latest hot paths keep ownership and stay cold without consumers', async function latestHotPathsStayCold() {
         type ProbeRow = Row & {payload: number[]}
         function probeRow(id: string, n: number, read: () => void): ProbeRow {
             const value = {id, n} as ProbeRow
@@ -410,10 +446,9 @@ async function main() {
             ;(storeProjection as any).cloneStoreProjectionValue = originalClone
             follower.close()
         }
-    }
+    })
 
-    console.log('\n[replicated-map] latest full snapshots publish only semantic deltas')
-    {
+    await section('latest full snapshots publish only semantic deltas', async function latestSnapshotSemanticDeltas() {
         type SnapshotRow = Row & {quote: {bid: number, ask: number}}
         const size = 500
         const revisions = Array.from({length: size}, function initialRevision() { return 0 })
@@ -468,10 +503,9 @@ async function main() {
         }
         ok(producer.control.get('S0')?.quote.bid != -1,
             'full-snapshot inputs stay detached after selective reconciliation')
-    }
+    })
 
-    console.log('\n[replicated-map] latest key tracking scans only root reseeds')
-    {
+    await section('latest key tracking scans only root reseeds', async function latestKeyTrackingScans() {
         const manual = createManualMapRemote<Row>()
         const follower = followReplicatedMap(manual.remote)
         await follower.ready
@@ -517,10 +551,9 @@ async function main() {
             ;(Reflect as any).ownKeys = nativeOwnKeys
             follower.close()
         }
-    }
+    })
 
-    console.log('\n[replicated-map] latest compares rich and binary values without false equality')
-    {
+    await section('latest compares rich and binary values without false equality', async function latestRichValueEquality() {
         type RichRow = {id: string, bytes: ArrayBuffer, pattern: RegExp}
         function richRow(byte: number, pattern: RegExp): RichRow {
             return {id: 'RICH', bytes: new Uint8Array([byte]).buffer, pattern}
@@ -580,10 +613,9 @@ async function main() {
         'latest does not collapse cyclic values with different graph topology')
         cycleFollower.close()
         cycleProducer.control.close()
-    }
+    })
 
-    console.log('\n[replicated-map] lossless duplicate ordering')
-    {
+    await section('lossless duplicate ordering', async function losslessDuplicateOrdering() {
         function primitiveKey(value: string) {
             return value.slice(0, 1)
         }
@@ -623,10 +655,9 @@ async function main() {
 
         follower.close()
         producer.control.close()
-    }
+    })
 
-    console.log('\n[replicated-map] delayed batch keeps snapshot and seq atomic')
-    {
+    await section('delayed batch keeps snapshot and seq atomic', async function delayedBatchAtomicSeq() {
         const producer = createReplicatedMap<Row>({
             keyOf(value) { return value.id },
             delivery: 'lossless',
@@ -648,10 +679,9 @@ async function main() {
         'catch-up flushes delayed patches before keyframe, so one set is delivered exactly once at its committed seq')
         follower.close()
         producer.control.close()
-    }
+    })
 
-    console.log('\n[replicated-map] latest retry and injected Store observation')
-    {
+    await section('latest retry and injected Store observation', async function latestRetryInjectedStore() {
         let failPrecommit = true
         const producer = createReplicatedMap<Row>({
             keyOf(value) { return value.id },
@@ -785,10 +815,9 @@ async function main() {
         'wire consumers receive detached patches and cannot mutate the retained journal or authority')
         offWire()
         isolated.control.close()
-    }
+    })
 
-    console.log('\n[replicated-map] lossless history gap is strict')
-    {
+    await section('lossless history gap is strict', async function losslessHistoryGap() {
         const producer = createReplicatedMap<string>({
             keyOf(value) { return value.slice(0, 1) },
             delivery: 'lossless',
@@ -818,10 +847,9 @@ async function main() {
 
         follower.close()
         producer.control.close()
-    }
+    })
 
-    console.log('\n[replicated-map] lossless cursor line mismatch is terminal')
-    {
+    await section('lossless cursor line mismatch is terminal', async function losslessCursorLineMismatch() {
         const producer = createReplicatedMap<string>({
             keyOf(value) { return value.slice(0, 1) },
             delivery: 'lossless',
@@ -843,10 +871,9 @@ async function main() {
 
         foreign.close()
         producer.control.close()
-    }
+    })
 
-    console.log('\n[replicated-map] checkpoint binds snapshot, line and replay coordinates')
-    {
+    await section('checkpoint binds snapshot, line and replay coordinates', async function checkpointCoordinates() {
         const atomicProducer = createReplicatedMap<Row>({
             keyOf(value) { return value.id },
             delivery: 'lossless',
@@ -912,10 +939,9 @@ async function main() {
         reset.close()
         replacement.control.close()
         producer.control.close()
-    }
+    })
 
-    console.log('\n[replicated-map] initial negotiation follows transport generations and authority identity')
-    {
+    await section('initial negotiation follows transport generations and authority identity', async function initialNegotiation() {
         const raceA = createReplicatedMap<Row>({
             keyOf(value) { return value.id }, initial: [row('A', 1)], delivery: 'lossless', lineId: 'race-A',
         })
@@ -965,10 +991,9 @@ async function main() {
         'a late descriptor failure from an old transport generation is retried instead of becoming terminal')
         generationFollower.close()
         generationProducer.control.close()
-    }
+    })
 
-    console.log('\n[replicated-map] remote validation precedes mutation and producer close tears lines down')
-    {
+    await section('remote validation precedes mutation and producer close tears lines down', async function remoteValidationAndClose() {
         const malformedErrors: unknown[] = []
         const malformedRemote = {
             line: {on() { return function offMalformedLine() {} }},
@@ -1072,10 +1097,9 @@ async function main() {
         ok(wireLine.count() == 0 && follower.status().state == 'error',
             'producer close cascades through encoded replay lines and ends the follower subscription')
         follower.close()
-    }
+    })
 
-    console.log('\n[replicated-map] reconnect validates the producer line identity')
-    {
+    await section('reconnect validates the producer line identity', async function reconnectLineIdentity() {
         const latestA = createReplicatedMap<Row>({
             keyOf(value) { return value.id },
             initial: [row('A', 1)],
@@ -1130,10 +1154,9 @@ async function main() {
         losslessRoute.close()
         losslessA.control.close()
         losslessB.control.close()
-    }
+    })
 
-    console.log('\n[replicated-map] descriptorless Store Replay V2 remote')
-    {
+    await section('descriptorless Store Replay V2 remote', async function descriptorlessV2Remote() {
         const source = createStore<Record<string, Row>>({OLD: row('OLD', 1)})
         const exposed = exposeStoreReplay(source)
         const batches: ReplicatedMapChange<Row>[] = []
@@ -1167,8 +1190,11 @@ async function main() {
 
         follower.close()
         exposed.close()
-    }
+    })
 
+    ok(sectionsCompleted == sectionsStarted,
+        `${sectionsCompleted} of ${sectionsStarted} sections completed`)
+    finished = true
     console.log(fails ? `\n${fails} failed` : '\nall passed')
     if (fails) process.exit(1)
 }
