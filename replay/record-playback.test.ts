@@ -17,6 +17,7 @@ import {archiveReplay} from '../src/Common/events/replay-history'
 import {createJsonlReplayWriter, loadJsonlReplay} from '../src/Common/events/replay-record'
 import {StoreReplayRemote} from '../src/Common/Observe/store-replay'
 import {StorePatch} from '../src/Common/Observe/store'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -70,4 +71,8 @@ async function main() {
     console.log(fails ? `record-playback: ${fails} FAILED` : 'record-playback: ALL GREEN')
     process.exit(fails ? 1 : 0)
 }
-main().catch(e => { console.error(e); process.exit(2) })
+async function mainGuarded() {
+    await main().catch(e => { console.error(e); process.exit(2) })
+}
+
+runOracle(mainGuarded)

@@ -58,15 +58,16 @@ export function playbackStoreReplay<T extends object>(
             const gap = Math.max(0, tail[index].ts - ev.ts) / speed
             const wait = maxStepMs != null ? Math.min(gap, maxStepMs) : gap
             if (wait > 0 && Number.isFinite(wait)) {
+                // ref'd on purpose: `done` depends on this timer, and an idle process must not exit
+                // (0) mid-playback under `await playback.done`; close() clears it
                 timer = setTimeout(step, wait)
-                timer.unref?.()
                 return
             }
         }
         finish()
     }
     if (speed == Infinity || !tail.length) step()
-    else { timer = setTimeout(step, 0); timer.unref?.() }
+    else timer = setTimeout(step, 0)
     return {
         /** The playback store — read/subscribe as usual. */
         store,
