@@ -32,7 +32,8 @@
 // sibling, not a replacement.
 
 import {rpcResultWireMetricsFast} from '../rcp/rpc-wire-size'
-import {listenStorePatches, type Store, type StorePatch} from './store'
+import {cloneStoreValue, listenStorePatches, type Store, type StorePatch} from './store'
+import {toRaw} from './reactive'
 import {normalizeStoreSelectionKeys, storeSelectionId} from './store-selection'
 
 // =====================================================================
@@ -283,9 +284,11 @@ export function exposeStoreLazyLine<T extends object>(store: Store<T>, opts: Sto
 
     /** Current value of one key, or the absent marker when it is gone. */
     function currentValue(key: string) {
-        const state = store.state as Record<string, unknown>
+        const state = toRaw(store.state) as Record<string, unknown>
+        // Detached like store-replay-view's samples: a live proxy handed to an in-process
+        // mirror would make it adopt the host's raw object.
         return Object.prototype.hasOwnProperty.call(state, key)
-            ? {exists: true as const, value: state[key]}
+            ? {exists: true as const, value: cloneStoreValue(state[key])}
             : {exists: false as const, value: undefined}
     }
 
