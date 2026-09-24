@@ -2,6 +2,7 @@ import { idPool } from "../id-pool";
 import { isSafeKey, PayloadLimitError, type RpcLimits } from "./rpc-limits";
 import { RPC_STOP } from "./rpc-protocol";
 import { registerRpcFlowHost, type RpcFlowOpts, type tRpcFlowGate } from "./rpc-flow";
+import { setRpcCallbackId } from "./rpc-internal";
 
 const FN_MARKER     = "$_f";
 const DATE_MARKER   = "$_d";
@@ -251,14 +252,6 @@ export function packResult(value: any, rows?: tRowCodec, onReserved?: tReservedK
 }
 
 const _stopRegistry = new WeakMap<Function, () => void>();
-// Wire callback wrapper → the id it was created for. Lets a subscription host address ONE
-// subscriber (a specific callback id) instead of tearing down a whole Listen node.
-const _idRegistry = new WeakMap<Function, number>();
-
-/** The wire callback id a wrapper was created for, or undefined for a plain function. */
-export function rpcCallbackId(fn: Function): number | undefined {
-    return _idRegistry.get(fn);
-}
 
 export function createRpcCallbackWrapper({
     id,
@@ -281,7 +274,7 @@ export function createRpcCallbackWrapper({
         sender(id, args)
     }
     _stopRegistry.set(rpcCallbackWrapper, function endRpcCallbackWrapper() { onEnd(id) })
-    _idRegistry.set(rpcCallbackWrapper, id)
+    setRpcCallbackId(rpcCallbackWrapper, id)
     return rpcCallbackWrapper
 }
 

@@ -4,8 +4,8 @@ import { listenSocket, type RpcListenSubscribeOpts } from "./listen-socket";
 import { createRpcServer, type PromiseServerHooks, type RpcLimits, type RpcServerAuth, type RpcOpt, type RpcPrincipalChange } from "./rpc-server";
 import {DeepSocketListen} from "./listen-deep";
 import {SocketTmpl, IS_RPC_LISTEN, RPC_STOP} from "./rpc-protocol";
-import {rpcEndCallback, rpcCallbackId} from './rpc-walk'
-import {coreDetachOf} from './rpc-internal'
+import {rpcEndCallback} from './rpc-walk'
+import {coreDetachOf, rpcCallbackId} from './rpc-internal'
 import {currentRpcScope, inheritRpcScopes, type RpcScope} from './rpc-scope'
 import {
     getRpcReplayWireSource,

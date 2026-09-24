@@ -6,7 +6,7 @@ import { Pkt, type SocketTmpl } from "./rpc-protocol";
 import { promiseServer } from "./oldCommonsServerMini";
 import { isNoStrict } from "./rpc-dynamic";
 import { isSafeKey } from "./rpc-limits";
-import { rpcCallbackId } from "./rpc-walk";
+import { rpcCallbackId } from "./rpc-internal";
 
 type ListenCallbackBase<T extends any[] = any[]> = ReturnType<typeof createListen<T>>;
 

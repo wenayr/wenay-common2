@@ -15,3 +15,17 @@ export function registerCoreDetach(server: object, detach: () => void) {
 export function coreDetachOf(server: object) {
     return coreDetachRegistry.get(server)
 }
+
+// A wire callback wrapper → the id it was created for. Kept here (not on the public rpc-walk
+// surface) so a subscription host can address ONE subscriber by callback id.
+const cbIdRegistry = new WeakMap<Function, number>()
+
+/** rpc-walk records the id every callback wrapper was created for. */
+export function setRpcCallbackId(fn: Function, id: number) {
+    cbIdRegistry.set(fn, id)
+}
+
+/** The wire callback id a wrapper was created for, or undefined for a plain function. */
+export function rpcCallbackId(fn: Function): number | undefined {
+    return cbIdRegistry.get(fn)
+}
