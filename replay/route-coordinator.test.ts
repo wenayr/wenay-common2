@@ -9,6 +9,7 @@ import {replayListen} from '../src/Common/events/replay-index'
 import {createStore, applyStorePatch, applyStorePatches, StorePatch} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {exposeStoreReplay} from '../src/Common/Observe/store-replay'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -112,7 +113,7 @@ function makeFakeNet<Z extends any[]>(replay: any) {
 
 type World = {units: Record<string, {hp: number, x: number}>, tick: number}
 
-async function main() {
+async function runChecks() {
     console.log('\n[route-coordinator] policy gates: direct is never attempted on denial')
     {
         let state = 0
@@ -358,4 +359,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

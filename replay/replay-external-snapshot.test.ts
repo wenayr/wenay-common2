@@ -3,6 +3,7 @@ import {
     RPC_TRANSPORT_LIFECYCLE,
     createTransportLifecycle,
 } from '../src/Common/events/transport-lifecycle'
+import {runOracle} from '../oracle/run-oracle'
 
 let failures = 0
 
@@ -332,4 +333,4 @@ async function main() {
     console.log('\nAll replay external snapshot assertions passed')
 }
 
-void main()
+runOracle(main)

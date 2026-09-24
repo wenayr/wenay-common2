@@ -3,6 +3,7 @@ import {
     RPC_MEMBER_LOOKUP,
     RPC_SCHEMA_READY,
 } from '../src/Common/events/transport-lifecycle'
+import {runOracle} from '../oracle/run-oracle'
 
 type tRemoteDeps = Pick<ReplayRemote<[number]>, 'since' | 'keyframe'> & {
     frame?: ReplayRemote<[number]>['frame']
@@ -793,4 +794,4 @@ async function main() {
     console.log('\nAll replay subscribe option assertions passed')
 }
 
-void main()
+runOracle(main)

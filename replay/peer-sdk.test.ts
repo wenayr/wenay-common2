@@ -13,6 +13,7 @@ import {flushReactive} from '../src/Common/Observe/reactive'
 import {createPeerClient, createPeerHost} from '../src/Common/peer/peer-index'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -112,7 +113,7 @@ function createFakeRtcNet() {
 
 type World = {cursor: {x: number, y: number}, name?: string}
 
-async function main() {
+async function runChecks() {
     console.log('\n[peer-sdk] two accounts, real socket, legacy keys alongside')
 
     const rtcNet = createFakeRtcNet()
@@ -225,4 +226,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

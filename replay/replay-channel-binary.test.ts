@@ -7,6 +7,7 @@ import {
 } from '../src/Common/events/replay-channel'
 import {replayListen} from '../src/Common/events/replay-listen'
 import {channelFromDataChannel, RtcDataChannel} from '../src/Common/events/route-signal-webrtc'
+import {runOracle} from '../oracle/run-oracle'
 
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
@@ -550,7 +551,7 @@ function testWebRtcBinaryAdapter() {
     assert.ok(sent[0] instanceof Uint8Array)
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[replay-channel-binary] negotiated exact binary protocol')
     await testNewPeersUseExactBinaryMessages()
     console.log('  OK   rich live values, requests, responses, snapshots and JSON fallback')
@@ -579,7 +580,11 @@ async function main() {
     console.log('\nall passed')
 }
 
-main().catch(function fail(error) {
-    console.error(error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function fail(error) {
+        console.error(error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

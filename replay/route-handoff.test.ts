@@ -2,6 +2,7 @@ import {replayListen, ReplayRemote, replayRouteSubscribe} from '../src/Common/ev
 import {createStore, StorePatch} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {exposeStoreReplay, syncStoreReplayRoute} from '../src/Common/Observe/store-replay'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -49,7 +50,7 @@ type World = {
     tick: number
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[route-handoff] generic replay relay <-> direct promotion')
     {
         let state = 0
@@ -147,4 +148,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

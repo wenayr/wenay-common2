@@ -14,6 +14,7 @@ import {listen} from '../src/Common/events/Listen'
 import {rpcMemberAvailable} from '../src/Common/events/transport-lifecycle'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 
@@ -172,7 +173,7 @@ async function startServer(
     }
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[replicated-map-socket] RPC facade, batch and reconnect')
     const producer = createReplicatedMap<Item>({
         keyOf(value) { return value.id },
@@ -315,7 +316,11 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function replicatedMapSocketOracleFailed(error) {
-    console.error(error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function replicatedMapSocketOracleFailed(error) {
+        console.error(error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

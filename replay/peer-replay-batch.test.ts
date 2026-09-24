@@ -17,6 +17,7 @@ import {
     peerPublishBatchBytes,
     splitPeerPublishEnvelopes,
 } from '../src/Common/peer/peer-publish-batch'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -120,7 +121,7 @@ function messageType(raw: string) {
     return JSON.parse(raw).t
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[peer-replay-batch] relay validates a batch before committing it')
     {
         const journal = createPatchRelayJournal({history: 32})
@@ -776,4 +777,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(error => { console.error(error); process.exit(1) })
+async function main() {
+    await runChecks().catch(error => { console.error(error); process.exit(1) })
+}
+
+runOracle(main)

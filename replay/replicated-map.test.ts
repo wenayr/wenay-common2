@@ -9,6 +9,7 @@ import {
 } from '../src/Common/Observe'
 import {createTransportLifecycle, RPC_TRANSPORT_LIFECYCLE} from '../src/Common/events/transport-lifecycle'
 import {decodeStoreReplayBatchV2, encodeStoreReplayBatchV2} from '../src/Common/Observe/store-replay-codec'
+import {runOracle} from '../oracle/run-oracle'
 
 // =====================================================================
 // harness: a failed check, a throwing section and a section that never
@@ -213,7 +214,7 @@ function createManualMapRemote<V>(delivery: 'latest' | 'lossless' = 'latest') {
     return {remote, emit}
 }
 
-async function main() {
+async function runChecks() {
     await section('wide null-prototype keyframe', async function wideNullPrototypeKeyframe() {
         const initial = Array.from({length: 1_500}, function createWideRow(_, index) {
             return row('K' + index, index)
@@ -1223,7 +1224,11 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function replicatedMapOracleFailed(error) {
-    console.error(error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function replicatedMapOracleFailed(error) {
+        console.error(error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

@@ -1,5 +1,6 @@
 import {replayListen, withReplayListen, ReplayEvent} from '../src/Common/events/replay-index'
 import {createListen, getListenByOn, isListenOn} from '../src/Common/events/Listen'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -235,4 +236,4 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main()
+runOracle(main)
