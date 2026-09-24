@@ -142,6 +142,8 @@ type StoreNodeEntry = {
     phantom: boolean
     /** Phantoms in this subtree, self included: a sweep skips subtrees without one. */
     phantoms: number
+    /** Store write stamp of the last write to exactly this path. */
+    written: number
 }
 
 type StoreInternal<T extends object> = Store<T> & {
@@ -150,6 +152,8 @@ type StoreInternal<T extends object> = Store<T> & {
     _nodeRoot?: StoreNodeEntry
     _counts: Map<string, number>
     _reactiveOpts: StoreReactiveOpts
+    /** Last write stamp handed to a cached entry. */
+    _writes: number
 }
 
 type RemoteStore<T extends object> = {
@@ -905,6 +909,19 @@ function sameLeaf(a: any, b: any, ae: boolean, be: boolean) {
     return Object.is(a, b)
 }
 
+// An own accessor on the path computes the leaf without any write to it.
+function dataOnlyPath(root: any, path: StorePath) {
+    let cur = toRaw(root)
+    for (const k of path) {
+        if (!isObj(cur)) return true
+        const descriptor = Object.getOwnPropertyDescriptor(cur, k)
+        if (!descriptor) return true
+        if (!('value' in descriptor)) return false
+        cur = toRaw(descriptor.value)
+    }
+    return true
+}
+
 function makeCtx<T>(store: StoreInternal<any>, path: PropertyKey[]): StoreCtx<T> {
     return {
         store,
@@ -937,6 +954,7 @@ function getNodeEntry(store: StoreInternal<any>, path: StorePath): StoreNodeEntr
         children: new Map<PropertyKey, StoreNodeEntry>(),
         phantom: false,
         phantoms: 0,
+        written: 0,
     }
     store._nodeCache.set(k, entry)
     if (parent) {
@@ -955,6 +973,22 @@ function cachedNodeEntry(store: StoreInternal<any>, path: StorePath) {
     for (const key of path) {
         entry = entry.children.get(key)
         if (!entry) return undefined
+    }
+    return entry
+}
+
+// Mutation paths carry the engine's string keys; a node path may have cached the numeric
+// form of the same key (at(1)), which pathKey treats as the same path.
+function writtenNodeEntry(store: StoreInternal<any>, path: StorePath) {
+    let entry = store._nodeRoot
+    for (const key of path) {
+        if (!entry) return undefined
+        let child = entry.children.get(key)
+        if (!child && typeof key == 'string') {
+            const index = Number(key)
+            if (String(index) == key) child = entry.children.get(index)
+        }
+        entry = child
     }
     return entry
 }
@@ -1007,7 +1041,9 @@ function pruneCachedPath(store: StoreInternal<any>, path: StorePath) {
 
 function refreshNodePruner(store: StoreInternal<any>) {
     if (store._nodeCache.size > 1) {
-        store._reactiveOpts._onMutation ??= function pruneStoreNodeCache(path) {
+        store._reactiveOpts._onMutation ??= function stampAndPruneStoreNodeCache(path) {
+            const written = writtenNodeEntry(store, path)
+            if (written) written.written = ++store._writes
             pruneCachedPath(store, path)
         }
     } else store._reactiveOpts._onMutation = undefined
@@ -1015,9 +1051,11 @@ function refreshNodePruner(store: StoreInternal<any>) {
 
 function incCount(store: StoreInternal<any>, path: StorePath) {
     const k = pathKey(path)
+    const entry = getNodeEntry(store, path)
     // A subscribed entry is released by its own last off(), never by a sweep.
-    markPhantom(getNodeEntry(store, path), false)
+    markPhantom(entry, false)
     store._counts.set(k, (store._counts.get(k) ?? 0) + 1)
+    return entry
 }
 
 function decCount(store: StoreInternal<any>, path: StorePath) {
@@ -1043,12 +1081,26 @@ function subscribePath<T>(store: StoreInternal<any>, path: PropertyKey[], cb: (v
         drained.push(getAt(store._state, path), makeCtx<T>(store, path))
     }
 
+    // Every write under the watched ancestor wakes a leaf, one wake per sibling. A leaf
+    // of plain data is unchanged, and its ancestor still attached, until a write stamps
+    // its own path or one of its prefixes; until then the checks below return untouched.
+    function writtenSinceRead() {
+        if (!dataOnly) return true
+        for (let cur: StoreNodeEntry | undefined = entry; cur; cur = cur.parent) {
+            if (cur.written > readAt) return true
+        }
+        return false
+    }
+
     function attach() {
         offUpdate?.()
         const target = watchTarget(store._state, path)
         offUpdate = onUpdate(target, () => {
+            if (target !== lastValue && !isReactive(lastValue) && !writtenSinceRead()) return
             const exists = hasAt(store._state, path)
             const value = getAt(store._state, path)
+            readAt = store._writes
+            dataOnly = dataOnlyPath(store._state, path)
             const valueIsObject = isReactive(value)
             const watchedSelf = target === value
             if (!valueIsObject && !watchedSelf && sameLeaf(lastValue, value, lastExists, exists)) {
@@ -1074,7 +1126,10 @@ function subscribePath<T>(store: StoreInternal<any>, path: PropertyKey[], cb: (v
         decCount(store, path)
     }
 
-    incCount(store, path)
+    // The entry chain stays cached while this subscription counts on it.
+    const entry = incCount(store, path)
+    let readAt = store._writes
+    let dataOnly = dataOnlyPath(store._state, path)
     try {
         if (opts.current && lastExists) {
             const ctx = makeCtx<T>(store, path)
@@ -1201,6 +1256,7 @@ export function createStore<T extends object>(initial: T, opts: Parameters<typeo
         _nodeCache: new Map<string, StoreNodeEntry>(),
         _counts: new Map<string, number>(),
         _reactiveOpts: reactiveOpts,
+        _writes: 0,
         state,
         get node(): StoreNode<T> { return getNode<T>(store, []) },
         get: () => state,
