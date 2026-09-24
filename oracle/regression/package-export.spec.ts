@@ -170,7 +170,7 @@ test("package.json exports './https' and the installed CLI", () => {
     const packageJson = requireFromSpec(resolve(rootDir, 'package.json'))
     assertEq(packageJson.exports?.['./https'], './lib/Common/https/https-index.js',
         "package.json exports['./https']")
-    assertEq(packageJson.bin?.['wenay-https'], './lib/cli/wenay-https.js',
+    assertEq(packageJson.bin?.['wenay-https'], 'lib/cli/wenay-https.js',
         "package.json bin['wenay-https']")
     assertHttpsApi('src/Common/https', srcHttps)
 
@@ -264,7 +264,7 @@ test('dist package artifacts include HTTPS API, declarations, and CLI when dist 
     const distCliPath = resolve(distDir, 'lib/cli/wenay-https.js')
     assertEq(distPackageJson.exports?.['./https'], './lib/Common/https/https-index.js',
         "dist package exports['./https']")
-    assertEq(distPackageJson.bin?.['wenay-https'], './lib/cli/wenay-https.js',
+    assertEq(distPackageJson.bin?.['wenay-https'], 'lib/cli/wenay-https.js',
         "dist package bin['wenay-https']")
     assert(existsSync(distHttpsPath), 'dist HTTPS JavaScript artifact is present')
     assert(existsSync(distHttpsDts), 'dist HTTPS declaration artifact is present')
