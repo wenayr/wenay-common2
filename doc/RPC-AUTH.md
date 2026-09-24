@@ -563,6 +563,12 @@ torn down with `RPC_STOP` → `CB_END`, then a `Pkt.MAP` with `authAck {ok: fals
 the constructor object's schema. Gated calls reject with `E_UNAUTHORIZED` again. **Only the state
 name differs**: `'revoked'` instead of `'expired'`.
 
+The notice and the downgrade are separate packets. Over Socket.IO long-polling they can land in
+different poll responses, so between them the client still holds the old facade: decide that a
+session is gone, or read the facade, once `auth()` answers `{ok: false, ...}`, not on the
+`Pkt.AUTH` notice alone. The stand's Service tokens panel waits this way
+(`demo/service-token-client.ts`, repository checkout).
+
 **`grant` is the HELLO success path without the question.** Step-up finished elsewhere, admin
 impersonation, a token your app server renewed itself — facade, `ack`, `expiresAt` and the timers
 behave exactly as if a HELLO had carried it. It is deliberately **uncorrelated**: it answers no
