@@ -988,6 +988,10 @@ async function main() {
         const generationLifecycle = createTransportLifecycle(true)
         let descriptorCalls = 0
         let rejectOldDescriptor = function rejectOldDescriptorLater(_error: unknown) {}
+        let oldDescriptorSent = function oldDescriptorSentLater() {}
+        const oldDescriptorInFlight = new Promise<void>(function waitForOldDescriptor(resolve) {
+            oldDescriptorSent = resolve
+        })
         const generationRemote = {
             line: generationProducer.api.line,
             since(seq: number) { return generationProducer.api.since(seq) },
@@ -998,11 +1002,15 @@ async function main() {
                 if (descriptorCalls > 1) return generationProducer.api.describe()
                 return new Promise<never>(function holdOldDescriptor(_resolve, reject) {
                     rejectOldDescriptor = reject
+                    oldDescriptorSent()
                 })
             },
         } as ReplicatedMapRemote<Row>
         Object.defineProperty(generationRemote, RPC_TRANSPORT_LIFECYCLE, {value: generationLifecycle.api})
         const generationFollower = followReplicatedMap(generationRemote)
+        // readReplayDescriptor awaits schema readiness before describe(), so the request leaves
+        // only after construction returns; failing it any earlier would fail nothing.
+        await oldDescriptorInFlight
         generationLifecycle.control.disconnect('descriptor generation changed')
         generationLifecycle.control.connect()
         rejectOldDescriptor(new Error('old generation failed late'))
