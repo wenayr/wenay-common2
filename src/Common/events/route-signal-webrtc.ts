@@ -177,9 +177,16 @@ export function channelFromDataChannel(dc: RtcDataChannel): ReplayMessageChannel
     }
     dc.onclose = fireClose
     dc.onerror = fireClose // for replay-wire, channel error == line end, loud via onClose
+    // Past 'open' a datachannel throws InvalidStateError on send until its close
+    // event arrives; that death is reported once, through onClose, not per send.
+    function sendWhileOpen(data: string | Uint8Array) {
+        const state = (dc as RtcDataChannel & {readyState?: string}).readyState
+        if (state == 'closing' || state == 'closed') return
+        dc.send(data)
+    }
     return {
-        send: data => dc.send(data),
-        sendBinary: data => dc.send(data),
+        send: sendWhileOpen,
+        sendBinary: sendWhileOpen,
         onMessage: cb => { msgCbs.add(cb); return () => msgCbs.delete(cb) },
         onBinaryMessage: cb => { binaryCbs.add(cb); return () => binaryCbs.delete(cb) },
         onClose: cb => { closeCbs.add(cb); return () => closeCbs.delete(cb) },

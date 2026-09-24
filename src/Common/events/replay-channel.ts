@@ -177,19 +177,28 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
         return stringifyMessage(item.value) ?? 'null'
     }
 
-    function sendJsonLive(items: LiveItem[]) {
+    // An item that cannot be encoded, or a packet the transport refuses, is recorded
+    // in failures and skipped: the rest of the micro-batch still goes out.
+    function sendJsonLive(items: LiveItem[], failures: unknown[]) {
         let encoded: string[] = []
         let bytes = REPLAY_LIVE_BATCH_OVERHEAD
 
         function flushJsonBatch() {
             if (!encoded.length) return
-            channel.send(REPLAY_LIVE_BATCH_PREFIX + encoded.join(',') + REPLAY_LIVE_BATCH_SUFFIX)
+            const batch = REPLAY_LIVE_BATCH_PREFIX + encoded.join(',') + REPLAY_LIVE_BATCH_SUFFIX
             encoded = []
             bytes = REPLAY_LIVE_BATCH_OVERHEAD
+            try { channel.send(batch) }
+            catch (error) { failures.push(error) }
         }
 
         for (const item of items) {
-            const value = encodedLiveItem(item)
+            let value: string
+            try { value = encodedLiveItem(item) }
+            catch (error) {
+                failures.push(error)
+                continue
+            }
             const valueBytes = item.encoded != null ? item.bytes : utf8ByteLength(value)
             const separator = encoded.length ? 1 : 0
             if (encoded.length && (encoded.length >= REPLAY_LIVE_BATCH_MAX_ITEMS ||
@@ -231,7 +240,7 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
         channel.send(stringifyMessage(message))
     }
 
-    function sendBinaryLive(items: LiveItem[]) {
+    function sendBinaryLive(items: LiveItem[], failures: unknown[]) {
         const packet = [
             REPLAY_BINARY_MESSAGE.EVENTS,
             items.map(item => item.value),
@@ -240,24 +249,25 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
         if (!prepared) {
             if (items.length > 1) {
                 const middle = Math.ceil(items.length / 2)
-                sendBinaryLive(items.slice(0, middle))
-                sendBinaryLive(items.slice(middle))
+                sendBinaryLive(items.slice(0, middle), failures)
+                sendBinaryLive(items.slice(middle), failures)
                 return
             }
-            sendJsonLive(items)
+            sendJsonLive(items, failures)
             return
         }
         if (prepared.wire.byteLength > REPLAY_LIVE_BATCH_MAX_BYTES && items.length > 1) {
             prepared.rollback()
             const middle = Math.ceil(items.length / 2)
-            sendBinaryLive(items.slice(0, middle))
-            sendBinaryLive(items.slice(middle))
+            sendBinaryLive(items.slice(0, middle), failures)
+            sendBinaryLive(items.slice(middle), failures)
             return
         }
-        sendPreparedBinary(prepared)
+        try { sendPreparedBinary(prepared) }
+        catch (error) { failures.push(error) }
     }
 
-    function flushLiveQueue() {
+    function drainLiveQueue(failures: unknown[]) {
         if (closed || !liveQueue.length) return
         const queue = liveQueue
         liveQueue = []
@@ -268,16 +278,32 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
             let end = at + 1
             while (end < queue.length && queue[end].binary == binary) end++
             const items = queue.slice(at, end)
-            if (binary) sendBinaryLive(items)
-            else sendJsonLive(items)
+            if (binary) sendBinaryLive(items, failures)
+            else sendJsonLive(items, failures)
             at = end
         }
+    }
+
+    function liveFailure(failures: unknown[]) {
+        return failures.length == 1
+            ? failures[0]
+            : new AggregateError(failures, 'Multiple replay channel live sends failed')
+    }
+
+    /** Attempts every queued item, then throws whatever failed. */
+    function flushLiveQueue() {
+        const failures: unknown[] = []
+        drainLiveQueue(failures)
+        if (failures.length) throw liveFailure(failures)
     }
 
     function createLiveItem(ev: any): LiveItem {
         if (binaryEnabled && snapshotEncoder && snapshotDecoder) {
             try {
-                const wire = snapshotEncoder.encode(ev)
+                // Snapshot the event inside the smallest packet it can travel in: the
+                // depth and work budgets it passes here are then exactly the ones the
+                // batch packet meets at flush, two levels deeper than a bare event.
+                const wire = snapshotEncoder.encode([REPLAY_BINARY_MESSAGE.EVENTS, [ev]])
                 return {
                     binary: true,
                     // The bytes were produced one line above by our own encoder and have not
@@ -286,7 +312,7 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
                     // input that cannot be hostile. decodeTrusted keeps the limits and drops
                     // exactly that; it also pairs with trustReplayBinaryLeaf, which lets the
                     // re-encode below skip re-enumerating binary leaves.
-                    value: snapshotDecoder.decodeTrusted(wire),
+                    value: (snapshotDecoder.decodeTrusted(wire) as [number, [any]])[1][0],
                     bytes: wire.byteLength,
                 }
             } catch {
@@ -307,22 +333,30 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
             return
         }
         const item = createLiveItem(ev)
+        // The emitter is on the stack: failures of a size-triggered flush reach it
+        // as in the unbatched path, but only after this item is queued.
+        const failures: unknown[] = []
         const separator = liveQueue.length ? 1 : 0
         if (liveQueue.length && (liveQueue.length >= REPLAY_LIVE_BATCH_MAX_ITEMS ||
-            liveQueueBytes + separator + item.bytes > REPLAY_LIVE_BATCH_MAX_BYTES)) flushLiveQueue()
+            liveQueueBytes + separator + item.bytes > REPLAY_LIVE_BATCH_MAX_BYTES)) drainLiveQueue(failures)
         const nextSeparator = liveQueue.length ? 1 : 0
         liveQueue.push(item)
         liveQueueBytes += nextSeparator + item.bytes
         if (liveQueue.length >= REPLAY_LIVE_BATCH_MAX_ITEMS || liveQueueBytes >= REPLAY_LIVE_BATCH_MAX_BYTES) {
-            flushLiveQueue()
-            return
+            drainLiveQueue(failures)
+        } else if (!liveScheduled) {
+            liveScheduled = true
+            queueMicrotask(function flushReplayChannelMicroBatch() {
+                liveScheduled = false
+                const late: unknown[] = []
+                drainLiveQueue(late)
+                if (!late.length) return
+                // No emitter is on the stack any more: rethrow on a timer, as the replay line does.
+                const failure = liveFailure(late)
+                setTimeout(function rethrowReplayChannelLiveFailure() { throw failure }, 0)
+            })
         }
-        if (liveScheduled) return
-        liveScheduled = true
-        queueMicrotask(function flushReplayChannelMicroBatch() {
-            liveScheduled = false
-            flushLiveQueue()
-        })
+        if (failures.length) throw liveFailure(failures)
     }
 
     async function readFrame(seq: number, hint: unknown) {
