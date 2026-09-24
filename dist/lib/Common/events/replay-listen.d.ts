@@ -71,7 +71,7 @@ export declare function withReplayListen<T>(base: ListenApi<T>, options?: Replay
     once: (cb: Listener<NormalizeTuple<T>>, opts?: {
         key?: key;
         current?: ListenCurrent<NormalizeTuple<T>> | undefined;
-    }) => () => void;
+    }) => import("./Listen").ListenOff;
 };
 export type ListenReplayApi<T> = ReturnType<typeof withReplayListen<T>>;
 export type ReplayListenUseOptions<T> = ListenOptions<T> & ReplayListenOptions<NormalizeTuple<T>>;
@@ -110,6 +110,6 @@ export declare function replayListen<T>(options?: ReplayListenUseOptions<T>): re
     once: (cb: Listener<NormalizeTuple<T>>, opts?: {
         key?: key;
         current?: ListenCurrent<NormalizeTuple<T>> | undefined;
-    }) => () => void;
+    }) => import("./Listen").ListenOff;
 }];
 export {};

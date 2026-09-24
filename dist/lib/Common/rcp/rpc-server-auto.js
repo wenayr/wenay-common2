@@ -7,6 +7,7 @@ const listen_socket_1 = require("./listen-socket");
 const rpc_server_1 = require("./rpc-server");
 const rpc_protocol_1 = require("./rpc-protocol");
 const rpc_walk_1 = require("./rpc-walk");
+const rpc_internal_1 = require("./rpc-internal");
 const rpc_scope_1 = require("./rpc-scope");
 const replay_rpc_wire_1 = require("../events/replay-rpc-wire");
 function createRpcServerAuto({ socket, object: target, socketKey: key, debug, hooks, disconnectListen, limits, auth, maxPerListen, throttle, opt, replay = "auto", replayOpts }) {
@@ -63,6 +64,19 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
         let result = cache.get(owner);
         if (!result) {
             const subs = new Map();
+            const byCbId = new Map();
+            function indexSubscriber(z, w) {
+                subs.set(z, w);
+                const cbId = (0, rpc_internal_1.rpcCallbackId)(z);
+                if (cbId != undefined)
+                    byCbId.set(cbId, z);
+            }
+            function forgetSubscriber(z) {
+                subs.delete(z);
+                const cbId = (0, rpc_internal_1.rpcCallbackId)(z);
+                if (cbId != undefined && byCbId.get(cbId) == z)
+                    byCbId.delete(cbId);
+            }
             function subscribe(z, opts) {
                 scope?.check();
                 if (typeof z !== "function")
@@ -73,14 +87,14 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
                     registry.set(owner, { subs });
                 subs.get(z)?.off();
                 const w = (0, listen_socket_1.listenSocket)(parent, { closeOn: disconnectListen, throttle: nodeThrottle });
-                subs.set(z, w);
+                indexSubscriber(z, w);
                 const forget = scope?.own(function closeScopedSubscription() {
                     try {
                         (0, rpc_walk_1.rpcEndCallback)(z);
                     }
                     finally {
                         w.off();
-                        subs.delete(z);
+                        forgetSubscriber(z);
                         if (!subs.size)
                             registry.delete(owner);
                     }
@@ -89,7 +103,7 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
                 done.then(() => {
                     forget?.();
                     if (subs.get(z) == w)
-                        subs.delete(z);
+                        forgetSubscriber(z);
                     if (subs.size == 0)
                         registry.delete(owner);
                 });
@@ -118,31 +132,48 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
                         w.off();
                     }
                 };
-                subs.set(z, w);
+                indexSubscriber(z, w);
                 const forget = scope?.own(function closeScopedOnce() {
                     try {
                         (0, rpc_walk_1.rpcEndCallback)(z);
                     }
                     finally {
                         w.off();
-                        subs.delete(z);
+                        forgetSubscriber(z);
                         if (!subs.size)
                             registry.delete(owner);
                     }
                 });
                 const done = w.on(oneShot, opts);
                 done.then(() => { forget?.(); if (subs.get(z) == w)
-                    subs.delete(z); if (subs.size == 0)
+                    forgetSubscriber(z); if (subs.size == 0)
                     registry.delete(owner); });
                 return done;
             }
             function unsubscribeAll() {
                 subs.forEach(w => w.off());
                 subs.clear();
+                byCbId.clear();
                 registry.delete(owner);
                 return true;
             }
-            result = { on: subscribe, off: unsubscribeAll, callback: subscribe, removeCallback: unsubscribeAll, once: subscribeOnce, close: () => scope ? unsubscribeAll() : parent.close?.() };
+            function removeCallback(...cbIds) {
+                const ids = cbIds.filter(function isCbId(x) { return typeof x == "number"; });
+                if (ids.length == 0)
+                    return unsubscribeAll();
+                for (const id of ids) {
+                    const z = byCbId.get(id);
+                    if (!z)
+                        continue;
+                    const w = subs.get(z);
+                    forgetSubscriber(z);
+                    w?.off();
+                }
+                if (subs.size == 0)
+                    registry.delete(owner);
+                return true;
+            }
+            result = { on: subscribe, off: unsubscribeAll, callback: subscribe, removeCallback, once: subscribeOnce, close: () => scope ? unsubscribeAll() : parent.close?.() };
             result[rpc_protocol_1.IS_RPC_LISTEN] = true;
             cache.set(owner, result);
             sourceByNode.set(result, owner);
@@ -394,5 +425,10 @@ function createRpcServerAuto({ socket, object: target, socketKey: key, debug, ho
         socket, object: target, socketKey: key, debug, limits, auth, opt,
         hooks: rpcHooks,
     });
+    if (disconnectListen) {
+        const detachCore = (0, rpc_internal_1.coreDetachOf)(core);
+        if (detachCore)
+            disconnectListen.on(detachCore);
+    }
     return { ...core, api };
 }

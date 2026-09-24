@@ -22,6 +22,7 @@ const MAX_SHAPE_ENTRIES = 1_000;
 const MAX_SHAPE_FIELD_REFS = 64_000;
 const MAX_SHAPE_KEY_TEXT_BYTES = 1_000_000;
 const MAX_VALUE_WORK_UNITS = 1_000_000;
+const NATIVE_LEAF_WORK_UNITS = 16;
 const MAX_CALLBACK_REFS_PER_VALUE = 1_024;
 const BYTE_WRITER_TAIL_RESERVE = 256;
 const MAX_TYPED_ARRAY_OWN_KEY_SCAN_ITEMS = 4_096;
@@ -248,7 +249,7 @@ function hasRegExpDuplicateNamedGroups(source) {
             continue;
         const end = source.indexOf('>', index + 3);
         if (end < 0)
-            continue;
+            break;
         const name = source.slice(index + 3, end);
         if (name.includes('\\') || names.has(name))
             return true;
@@ -941,6 +942,11 @@ function writeBinaryPayload(writer, tag, value, maxBinaryBytes) {
     writeLength(writer, value.byteLength);
     writer.writeBytes(value);
 }
+function chargeNativeLeaf(context, fail, message) {
+    context.workUnits += NATIVE_LEAF_WORK_UNITS - 1;
+    if (context.workUnits > MAX_VALUE_WORK_UNITS)
+        fail(message);
+}
 const writeValue = function writeBinaryValue(writer, value, depth, active, context) {
     if (++context.workUnits > MAX_VALUE_WORK_UNITS) {
         binaryRangeError('encoded value exceeds work limit');
@@ -1039,6 +1045,7 @@ const writeValue = function writeBinaryValue(writer, value, depth, active, conte
         return;
     }
     if (value instanceof RegExp) {
+        chargeNativeLeaf(context, binaryRangeError, 'encoded value exceeds work limit');
         exactPrototype(value, RegExp.prototype, 'RegExp');
         rejectOwnNativeShadows(value, REGEXP_NATIVE_SHADOW_KEYS, 'RegExp');
         validateNativeOwnState(value, 'RegExp');
@@ -1086,6 +1093,7 @@ const writeValue = function writeBinaryValue(writer, value, depth, active, conte
         return;
     }
     if (value instanceof ArrayBuffer) {
+        chargeNativeLeaf(context, binaryRangeError, 'encoded value exceeds work limit');
         exactPrototype(value, ArrayBuffer.prototype, 'ArrayBuffer');
         rejectOwnNativeShadows(value, ARRAY_BUFFER_NATIVE_SHADOW_KEYS, 'ArrayBuffer');
         validateNativeOwnState(value, 'ArrayBuffer');
@@ -1098,6 +1106,7 @@ const writeValue = function writeBinaryValue(writer, value, depth, active, conte
         rejectDynamicBinaryBuffer(value);
     }
     if (ArrayBuffer.isView(value)) {
+        chargeNativeLeaf(context, binaryRangeError, 'encoded value exceeds work limit');
         rejectOwnNativeShadows(value, ARRAY_BUFFER_VIEW_NATIVE_SHADOW_KEYS, 'ArrayBuffer view');
         rejectDynamicBinaryBuffer(value.buffer);
         const source = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
@@ -1283,6 +1292,7 @@ const readValue = function readBinaryValue(reader, depth, limits, context, allow
     if (tag == VALUE_TAG.DATE)
         return new Date(reader.readFloat64());
     if (tag == VALUE_TAG.REGEXP) {
+        chargeNativeLeaf(context, binaryError, 'decoded value exceeds work limit');
         const source = readString(reader, limits);
         const flags = validateRegExpV1(source, readString(reader, limits));
         return new RegExp(source, flags);
@@ -1378,12 +1388,15 @@ const readValue = function readBinaryValue(reader, depth, limits, context, allow
         return value;
     }
     if (tag == VALUE_TAG.ARRAY_BUFFER) {
+        chargeNativeLeaf(context, binaryError, 'decoded value exceeds work limit');
         return copyBinary(readBinaryPayload(reader, limits)).buffer;
     }
     if (tag == VALUE_TAG.DATA_VIEW) {
+        chargeNativeLeaf(context, binaryError, 'decoded value exceeds work limit');
         return new DataView(copyBinary(readBinaryPayload(reader, limits)).buffer);
     }
     if (tag == VALUE_TAG.TYPED_ARRAY) {
+        chargeNativeLeaf(context, binaryError, 'decoded value exceeds work limit');
         const code = reader.readU8();
         const entry = typedArrayEntryByCode(code);
         if (!entry)

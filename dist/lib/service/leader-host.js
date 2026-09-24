@@ -10,6 +10,7 @@ const node_fs_1 = require("node:fs");
 const Listen_1 = require("../Common/events/Listen");
 const rpc_server_auto_1 = require("../Common/rcp/rpc-server-auto");
 const fsReplayStorage_1 = require("../server/fsReplayStorage");
+const secret_equal_1 = require("../server/secret-equal");
 const leader_1 = require("./leader");
 const config_1 = require("./config");
 const rest_1 = require("./rest");
@@ -55,7 +56,7 @@ async function createServiceLeaderHost(deps) {
             const [gone, goneListen] = (0, Listen_1.listen)();
             if (auth?.['role'] == 'service-node') {
                 const nodeId = String(auth?.['node'] ?? '');
-                if (!nodeId || auth?.['token'] != leader.secrets.nodeToken) {
+                if (!nodeId || !(0, secret_equal_1.sameSecret)(auth?.['token'], leader.secrets.nodeToken)) {
                     socket.disconnect(true);
                     return;
                 }
@@ -98,7 +99,7 @@ async function createServiceLeaderHost(deps) {
             (0, rpc_server_auto_1.createRpcServerAuto)({
                 socket,
                 socketKey: 'app',
-                object: { [name]: leader.serve.browserFragment(String(auth?.['account'] ?? 'anonymous')) },
+                object: { [name]: leader.serve.browserFragment() },
                 disconnectListen: goneListen,
             });
         });

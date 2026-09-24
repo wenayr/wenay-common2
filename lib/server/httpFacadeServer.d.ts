@@ -8,6 +8,10 @@ export type HttpFacadeServerOptions<T extends object> = {
     basePath: string;
     middleware?: RequestHandler | readonly RequestHandler[];
     limits?: RpcLimits;
+    onError?: (error: unknown, context: {
+        route: string;
+        status: number;
+    }) => void;
 };
 export declare function createHttpFacadeServer<T extends object>(options: HttpFacadeServerOptions<T>): {
     routes: () => {

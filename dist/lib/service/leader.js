@@ -177,11 +177,11 @@ function createServiceLeader(deps) {
         (0, input_schema_1.buildInputValidate)(signup.input)(input);
         return authority.corridor.execute(definition_1.SYSTEM_ACCOUNT, signup.command, requestId, input);
     }
-    function browserFragment(account) {
-        const base = authority.serve.browser(account);
+    function browserFragment(_account) {
+        const { identity: { renew }, ...base } = authority.serve.browser('anonymous');
         const identity = definition.access?.login
-            ? { login: loginWith, renew: base.identity.renew, ...(definition.access.signup ? { signup: signupWith } : {}) }
-            : base.identity;
+            ? { login: loginWith, renew, ...(definition.access.signup ? { signup: signupWith } : {}) }
+            : { renew };
         const views = access.publicViews();
         if (views)
             return { roster: base.roster, identity, views, ...legacyView };

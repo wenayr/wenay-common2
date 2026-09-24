@@ -36,7 +36,7 @@ function createListenCoreLayer(options) {
         }
     }
     function dispatchInitial(...args) {
-        for (const entry of subs.values())
+        for (const entry of [...subs.values()])
             dispatch(entry.cb, args);
     }
     let dispatcher = dispatchInitial;
@@ -89,7 +89,7 @@ function createListenCoreLayer(options) {
         onRemove?.(key);
         event?.('remove', subs.size, api);
     }
-    function add(cb, key, admitted) {
+    function add(cb, key, admitted, source) {
         const k = key ?? Symbol();
         if (subs.has(k)) {
             subs.delete(k);
@@ -97,7 +97,7 @@ function createListenCoreLayer(options) {
                 rebuild();
             onRemove?.(k);
         }
-        const entry = { cb };
+        const entry = { cb, source };
         subs.set(k, entry);
         if (fast)
             rebuild();
@@ -124,9 +124,10 @@ function createListenCoreLayer(options) {
         }),
         off: (keyOrCallback) => {
             if (typeof keyOrCallback == 'function') {
-                for (const [key, entry] of [...subs])
-                    if (entry.cb === keyOrCallback)
+                for (const [key, entry] of [...subs]) {
+                    if (entry.cb === keyOrCallback || entry.source === keyOrCallback)
                         removeOne(key);
+                }
                 return;
             }
             if (keyOrCallback != null)
@@ -134,7 +135,7 @@ function createListenCoreLayer(options) {
         },
         once: (cb, opts = {}) => {
             let off = () => { };
-            off = api.on(((...args) => { off(); cb(...args); }), opts);
+            off = add(((...args) => { off(); cb(...args); }), opts.key, undefined, cb);
             return off;
         },
         close: () => {
@@ -170,6 +171,16 @@ function createListen(producer, options = {}) {
         event: event ? forwardRemoveEvent : undefined,
     });
     const core = resource.listen;
+    function subscribe(cb, { cbClose, key }, source) {
+        const k = key ?? Symbol();
+        return resource.control.add(cb, k, function admitted() {
+            if (cbClose) {
+                closeHooks = closeHooks ?? new Map();
+                closeHooks.set(k, cbClose);
+            }
+            event?.('add', core.count(), api);
+        }, source);
+    }
     const api = {
         emit: core.emit,
         has: core.has,
@@ -199,20 +210,13 @@ function createListen(producer, options = {}) {
             closeHooks.set(cb, cb);
             return function offClose() { closeHooks?.delete(cb); };
         },
-        on: ((cb, { cbClose, key } = {}) => {
-            const k = key ?? Symbol();
-            return resource.control.add(cb, k, function admitted() {
-                if (cbClose) {
-                    closeHooks = closeHooks ?? new Map();
-                    closeHooks.set(k, cbClose);
-                }
-                event?.('add', core.count(), api);
-            });
+        on: ((cb, opts = {}) => {
+            return subscribe(cb, opts);
         }),
         off: core.off,
         once: (cb, opts = {}) => {
             let off = () => { };
-            off = api.on(((...args) => { off(); cb(...args); }), opts);
+            off = subscribe(((...args) => { off(); cb(...args); }), opts, cb);
             return off;
         },
         count: core.count,
@@ -266,9 +270,7 @@ function withStoreListen(base, currentProvider) {
                     return () => { };
                 }
             }
-            let off = () => { };
-            off = base.on(((...args) => { off(); cb(...args); }), { key: opts.key });
-            return off;
+            return base.once(cb, { key: opts.key });
         },
     };
     listenByOn.set(api.on, api);

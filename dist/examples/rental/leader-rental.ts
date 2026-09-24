@@ -16,6 +16,7 @@
 // TODO(graduation): the 'wenay-common2' imports become package entrypoints
 // when the template graduates out of the incubator.
 
+import {createHash, timingSafeEqual} from 'node:crypto'
 import {existsSync, mkdirSync} from 'node:fs'
 import path from 'node:path'
 import {listen} from 'wenay-common2/listen'
@@ -28,6 +29,13 @@ import {createServiceLeader} from './leader'
 import {createRentalRest} from './board-rest'
 import {serviceDefinition} from './service'
 import {createHostResource} from './http-host'
+
+/** The fleet token is a shared secret: compare digests in constant time; a non-string never matches. */
+function sameSecret(presented: unknown, expected: string) {
+    if (typeof presented != 'string') return false
+    const digest = (value: string) => createHash('sha256').update(value).digest()
+    return timingSafeEqual(digest(presented), digest(expected))
+}
 
 const DEMO_ACCOUNT = 'demo-renter'
 const DEMO_TTL_MS = 12 * 60 * 60 * 1000
@@ -84,7 +92,7 @@ async function main() {
                 // bound to the claimed node id: the fleet token is shared, so binding is what
                 // keeps one node from registering, beating or delisting a peer's row
                 const nodeId = String(auth?.node ?? '')
-                if (!nodeId || auth?.token != leader.secrets.nodeToken) {
+                if (!nodeId || !sameSecret(auth?.token, leader.secrets.nodeToken)) {
                     socket.disconnect(true)
                     return
                 }

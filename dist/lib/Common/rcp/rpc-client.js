@@ -827,13 +827,13 @@ function createClient(socket, key, opts) {
     const isUnauthorized = (error) => error?.code == 'E_UNAUTHORIZED';
     function createCallAttempt(path, args, retryUnauthorized = false) {
         if (disposed) {
-            return { promise: Promise.reject(new Error('RPC client disposed')), abandon: function abandonDisposed() { } };
+            return { promise: Promise.reject(new Error('RPC client disposed')), abandon: function abandonDisposed() { }, cbIds: [] };
         }
         if (!transport.api.connected()) {
-            return { promise: Promise.reject(new Error('RPC transport disconnected')), abandon: function abandonOffline() { } };
+            return { promise: Promise.reject(new Error('RPC transport disconnected')), abandon: function abandonOffline() { }, cbIds: [] };
         }
         if (pending.size >= limit) {
-            return { promise: Promise.reject(new Error('RPC limit')), abandon: function abandonLimited() { } };
+            return { promise: Promise.reject(new Error('RPC limit')), abandon: function abandonLimited() { }, cbIds: [] };
         }
         const cbIds = [];
         let clean;
@@ -845,6 +845,7 @@ function createClient(socket, key, opts) {
             return {
                 promise: Promise.reject(error),
                 abandon: function abandonInvalidCall() { },
+                cbIds: [],
             };
         }
         const ref = routeCache[(0, rpc_path_1.rpcPathKey)(path)] ?? path;
@@ -857,6 +858,7 @@ function createClient(socket, key, opts) {
             return {
                 promise: Promise.reject(error),
                 abandon: function abandonExhaustedCall() { },
+                cbIds: [],
             };
         }
         let record;
@@ -903,7 +905,7 @@ function createClient(socket, key, opts) {
             }
             record.fail(new Error(reason));
         }
-        return { promise, abandon };
+        return { promise, abandon, cbIds };
     }
     function sendCallWire(path, args, wait) {
         if (disposed)
@@ -1023,7 +1025,8 @@ function createClient(socket, key, opts) {
         sub.ended = true;
         sub.lastEvents.clear();
         if (socketAlive && transport.api.connected()) {
-            sendCallWire([...sub.path.slice(0, -1), 'removeCallback'], [], false);
+            const cbIds = attempt?.call.cbIds ?? [];
+            sendCallWire([...sub.path.slice(0, -1), 'removeCallback'], cbIds, false);
         }
         else {
             attempt?.call.abandon('RPC Listen stopped while transport is disconnected');

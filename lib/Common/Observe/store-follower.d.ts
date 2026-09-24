@@ -95,7 +95,7 @@ export declare function createStoreFollower<T extends object>(deps: StoreFollowe
         once: (cb: import("../..").Listener<[readonly import("./store").StorePatch[]]>, opts?: {
             key?: string | symbol;
             current?: import("../..").ListenCurrent<[readonly import("./store").StorePatch[]]> | undefined;
-        }) => () => void;
+        }) => import("../..").ListenOff;
         getSince(seq: number): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]>[] | undefined;
         keyframe(): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]> | undefined;
         frame(seq: number, hint?: unknown): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]>[];
@@ -135,7 +135,7 @@ export declare function createStoreFollower<T extends object>(deps: StoreFollowe
             once: (cb: import("../..").Listener<[readonly import("./store").StorePatch[]]>, opts?: {
                 key?: string | symbol;
                 current?: import("../..").ListenCurrent<[readonly import("./store").StorePatch[]]> | undefined;
-            }) => () => void;
+            }) => import("../..").ListenOff;
             getSince(seq: number): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]>[] | undefined;
             keyframe(): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]> | undefined;
             frame(seq: number, hint?: unknown): import("../events/replay-listen").ReplayEvent<[readonly import("./store").StorePatch[]]>[];

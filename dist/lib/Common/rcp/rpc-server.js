@@ -13,6 +13,7 @@ const rpc_flow_1 = require("./rpc-flow");
 const myThrow_1 = require("../../toError/myThrow");
 const rpc_scope_1 = require("./rpc-scope");
 const rpc_deadline_1 = require("./rpc-deadline");
+const rpc_internal_1 = require("./rpc-internal");
 const SERVERS = new WeakMap();
 const MAX_CLIENT_SESSIONS = 16;
 let serverGenerationCounter = 0;
@@ -114,6 +115,15 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
     let strictSchema = {};
     let currentTarget = target;
     let principalEpoch = 0;
+    const routeIds = new Map();
+    function routeIdFor(pathKey) {
+        let id = routeIds.get(pathKey);
+        if (id === undefined) {
+            id = routeIds.size;
+            routeIds.set(pathKey, id);
+        }
+        return id;
+    }
     function buildDispatch(t) {
         const m = [], cx = [], paths = [], rm = {}, lp = [], ln = [];
         const resolved = transformTree(t);
@@ -124,10 +134,12 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
                 const v = obj[k];
                 const path = [...prefix, k];
                 if (typeof v == "function") {
-                    rm[(0, rpc_path_1.rpcPathKey)(path)] = m.length;
-                    m.push(v);
-                    cx.push(obj);
-                    paths.push(path);
+                    const pk = (0, rpc_path_1.rpcPathKey)(path);
+                    const id = routeIdFor(pk);
+                    rm[pk] = id;
+                    m[id] = v;
+                    cx[id] = obj;
+                    paths[id] = path;
                 }
                 else if (v && typeof v == "object" && !(0, rpc_dynamic_1.isNoStrict)(v)) {
                     if (hasRpcListen(v)) {
@@ -404,14 +416,14 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
     }
     function sendError(channel, reqId, error) {
         try {
-            sendChannel(channel, [rpc_protocol_1.Pkt.RESP, reqId, null, (0, rpc_walk_1.errToObj)(error)]);
+            sendChannel(channel, [rpc_protocol_1.Pkt.RESP, reqId, null, (0, rpc_walk_1.errToObj)(error, debug)]);
         }
         catch (serializationError) {
             sendChannel(channel, [
                 rpc_protocol_1.Pkt.RESP,
                 reqId,
                 null,
-                (0, rpc_walk_1.errToObj)(fallbackSerializationError(serializationError)),
+                (0, rpc_walk_1.errToObj)(fallbackSerializationError(serializationError), debug),
             ]);
         }
     }
@@ -593,7 +605,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
             if (Number.isSafeInteger(sessionId) && sessionId > 0
                 && generation == serverGeneration) {
                 if (!Number.isSafeInteger(clientId) || clientId <= 0) {
-                    await hooks?.onInvalid?.({
+                    reportInvalid({
                         reason: 'invalid_payload',
                         request: msg,
                         error: 'RPC session requires a client id',
@@ -602,7 +614,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
                 }
                 const owner = clientBySession.get(sessionId);
                 if (owner != undefined && owner != clientId) {
-                    await hooks?.onInvalid?.({
+                    reportInvalid({
                         reason: 'invalid_payload',
                         request: msg,
                         error: 'RPC session belongs to another client',
@@ -620,7 +632,7 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
                     if (!session && sessions.size >= MAX_CLIENT_SESSIONS) {
                         sessionByClient.delete(clientId);
                         clientBySession.delete(sessionId);
-                        await hooks?.onInvalid?.({
+                        reportInvalid({
                             reason: 'rate_limit',
                             request: msg,
                             error: 'too many RPC sessions',
@@ -845,7 +857,11 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
                     if (step.type === 'get') {
                         if (current == null)
                             throw new Error(`Cannot read property '${step.prop}' of ${current}`);
-                        current = current[step.prop];
+                        const owner = current;
+                        const next = current[step.prop];
+                        current = typeof next == 'function' && !next[IS_RPC_PIPE]
+                            ? next.bind(owner)
+                            : next;
                     }
                     else if (step.type === 'call') {
                         if (typeof current !== "function")
@@ -887,7 +903,9 @@ function createServer(socket, key, target, hooks, limits, auth, opt, debug = fal
         sendCapsChallenge();
     else
         sendMap();
-    return { control };
+    const server = { control };
+    (0, rpc_internal_1.registerCoreDetach)(server, detachServer);
+    return server;
 }
 function createRpcServer({ socket, object: target, socketKey: key, debug = false, hooks, limits, auth, opt }) {
     if (debug) {

@@ -24,6 +24,7 @@ type params = {
     port: number | string;
     file?: typeof apiSaveData;
     app?: Express;
+    maxSubscribersPerIp?: number;
 };
 export declare const createWebhookServer: (params: params) => {
     emit: (tag: string, payload: any) => Promise<void>;

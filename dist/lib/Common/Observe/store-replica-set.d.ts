@@ -197,7 +197,7 @@ export declare function createStoreReplicaSet<T extends object>(deps: StoreRepli
             once: (cb: import("../..").Listener<[readonly StorePatch[]]>, opts?: {
                 key?: string | symbol;
                 current?: import("../..").ListenCurrent<[readonly StorePatch[]]> | undefined;
-            }) => () => void;
+            }) => import("../..").ListenOff;
             getSince(seq: number): import("../events/replay-listen").ReplayEvent<[readonly StorePatch[]]>[] | undefined;
             keyframe(): import("../events/replay-listen").ReplayEvent<[readonly StorePatch[]]> | undefined;
             frame(seq: number, hint?: unknown): import("../events/replay-listen").ReplayEvent<[readonly StorePatch[]]>[];

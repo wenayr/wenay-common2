@@ -105,7 +105,9 @@ export type tIdentityFragment<D, Base extends {
     renew: Base['renew'];
 } & (tHasSignup<D> extends true ? {
     signup: (requestId: string, input: unknown) => Promise<unknown>;
-} : {}) : Base;
+} : {}) : {
+    renew: Base['renew'];
+};
 export type tPrincipalFacade<D, C, R> = {
     whoami: () => string;
     me: () => ServicePermissions;

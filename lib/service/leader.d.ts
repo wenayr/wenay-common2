@@ -81,7 +81,7 @@ export declare function createServiceLeader<D extends tServiceDefinition<any, an
                 once: (cb: import("..").Listener<[readonly import("../Common/Observe").StorePatch[]]>, opts?: {
                     key?: string | symbol;
                     current?: import("..").ListenCurrent<[readonly import("../Common/Observe").StorePatch[]]> | undefined;
-                }) => () => void;
+                }) => import("..").ListenOff;
                 getSince(seq: number): import("../Common/events/replay-listen").ReplayEvent<[readonly import("../Common/Observe").StorePatch[]]>[] | undefined;
                 keyframe(): import("../Common/events/replay-listen").ReplayEvent<[readonly import("../Common/Observe").StorePatch[]]> | undefined;
                 frame(seq: number, hint?: unknown): import("../Common/events/replay-listen").ReplayEvent<[readonly import("../Common/Observe").StorePatch[]]>[];
@@ -207,7 +207,7 @@ export declare function createServiceLeader<D extends tServiceDefinition<any, an
         close(): Promise<void>;
     };
     serve: {
-        browserFragment: (account: string) => (tHasViews<D> extends true ? {
+        browserFragment: (_account?: string) => (tHasViews<D> extends true ? {
             roster: import("../Common/Observe").StoreReplayRemote;
             identity: tIdentityFragment<D, {
                 login: () => {

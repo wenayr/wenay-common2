@@ -142,6 +142,13 @@ Allowed HTTP responses/preflights receive matching headers; denied origins recei
 WebSocket upgrades use the same decision via `allowRequest` (Socket.IO CORS alone does not gate WS).
 Credentials are not enabled by default. CORS is not bearer authorization or CSRF protection.
 
+The ungated participant surface never mints a token from a name: without `access.login` its
+identity is `{renew}` only, and `createServiceClient({auth: {credentials}})` requires `access.login`.
+Tests, stands and trusted issuers mint server-side (`leader.identity.login(account)` after their own
+authentication, or `createTokenCodec`); see [RPC-AUTH.md](RPC-AUTH.md#service-scaffold-live-roles-and-client-session-ownership).
+REST error bodies carry `{name, message, code?, data?, cause?}`, never `stack`; every 5xx goes with
+its stack to `createServiceRest({log})` (default `console.error`).
+
 ## Child process resource
 
 `createProcessResource({command, args, cwd, env, ipc, ready, startTimeoutMs, stopTimeoutMs, tailChars,

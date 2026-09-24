@@ -114,7 +114,7 @@ export declare function createDurableStoreReplay<T extends object>(deps: Durable
         once: (cb: import("../..").Listener<[readonly StorePatch[]]>, opts?: {
             key?: string | symbol;
             current?: import("../..").ListenCurrent<[readonly StorePatch[]]> | undefined;
-        }) => () => void;
+        }) => import("../..").ListenOff;
         getSince(seq: number): ReplayEvent<[readonly StorePatch[]]>[] | undefined;
         keyframe(): ReplayEvent<[readonly StorePatch[]]> | undefined;
         frame(seq: number, hint?: unknown): ReplayEvent<[readonly StorePatch[]]>[];

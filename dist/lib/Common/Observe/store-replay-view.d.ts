@@ -136,7 +136,7 @@ export declare function createStoreReplayViewLayer(deps: StoreReplayViewLayerDep
                 once: (cb: import("../..").Listener<[readonly StorePatch[]]>, opts?: {
                     key?: string | symbol;
                     current?: import("../..").ListenCurrent<[readonly StorePatch[]]> | undefined;
-                }) => () => void;
+                }) => import("../..").ListenOff;
             };
         };
         view: {

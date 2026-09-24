@@ -177,6 +177,16 @@ A pruned member is `null`. It serializes into the schema as `'null'`, so
 string-path CALL is rejected server-side. `resolveAuth` returns that facade as `object`, and the
 server rebuilds `routeMap`, the schema and the Listen declarations for it in one corridor.
 
+**Numeric method refs are pinned to a path for the life of the connection.** The client addresses
+methods by the numeric index in `Pkt.MAP`'s `routeMap`; the server assigns each method path an
+append-only id that survives principal rebuilds. A path the new principal keeps resolves to its
+method; a path it lacks is a hole and answers `Not a function`. A CALL racing a `reauth()` or a
+`control.grant()` can therefore never land on a different method of the new principal (before
+3.0.1 a user call could run an admin method that happened to take its index). The wire is unchanged.
+The legacy protocol accepted by `createRpcServerAutoDetect` resolves keys by the same rule (own
+members and `isSafeKey`, never the prototype chain). Proof: `oracle/regression/rpc-route-epoch.spec.ts`,
+`oracle/regression/rpc-legacy-proto.spec.ts` (repository checkout).
+
 ---
 
 ## Rule 4 — short TTL plus a provider
@@ -521,7 +531,8 @@ the `node` id the handshake claims and refuse a link that claims none. Honest li
 is one per fleet, so the claim itself is trusted — binding stops a node from touching rows other
 than the one it named, not a process holding the fleet token from naming a peer. Per-node tokens
 are the next tightening and belong to the host. Serve the UNBOUND link only where nodes are mutually
-trusted by deliberate choice.
+trusted by deliberate choice. The service leader host compares the node token in constant time; a
+non-string never matches.
 
 **Succession keeps every rule.** A standby authority (`leadership.role: 'standby'`) is itself a node
 principal on the leader's link (registered as a `'standby'` row) and FOLLOWS the deny list, so a
@@ -773,6 +784,13 @@ shutdown fix does not widen the authorization guarantees below; see
   released only by the real reply. Detach and transport teardown cover the other silent paths.
 - **Identity is not in this library.** `resolveAuth` is where your policy runs;
   `createTokenCodec` is a default you may replace outright.
+- **Core auth timers and flows are released on transport disconnect.** `createRpcServerAuto`
+  relays its `disconnectListen` into the core teardown, so a pending grant deadline no longer keeps
+  the socket and facade reachable after the connection drops. A bare `createRpcServer` has no
+  disconnect signal; use the auto layer (or take over the socket and key) to get this release.
+- **Errors reach peers without stack frames.** A failed call answers `{name, message, code?,
+  data?, cause?}`; `createRpcServer({debug: true})` adds `stack` for development. The HTTP facade
+  never sends one and hands the whole error to its optional `onError`.
 
 ## Executable truth
 
@@ -828,6 +846,16 @@ the existing view Stores. Removed role views are cleared and their subscriptions
 roles restore those same handles without login or UI polling. A view's `ready` resolves after its
 first permitted keyframe; a never-permitted view waits for permission or rejects when closed.
 Session resources are reused on same-account reauth and released on account replacement/disconnect.
+
+**The ungated identity never mints from a name** (since 3.0.1). Without `access.login`,
+`leader.serve.browserFragment()` serves `identity: {renew}`, and renew requires a live, unrevoked
+token; with `access.login` it is `{login(credentials), renew, signup?}`. The host binds no account
+from `socket.handshake.auth`, which the client controls. Before 3.0.1 a client could name any
+account in the handshake, receive its token and lift its revocation. Issue tokens server-side:
+`leader.identity.login(account)` after your own authentication, an `access.login` issuer, or
+`createTokenCodec({secret}).issue(...)`. `authority.serve.browser(account)` keeps a bound `login()`:
+bind only an authenticated account. Proof: `oracle/realsocket/service-leader-identity.spec.ts`
+(repository checkout).
 If an external issuer renews into another account, the client reloads permissions from a fresh
 keyframe, clears the previous account's private mirrors and adopts the new verified identity.
 

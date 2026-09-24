@@ -77,6 +77,7 @@ listenStore<T>({current,...opts}) -> [emit, storeListen]
 full Listen: .emit(...args) · .on(cb,{key?,cbClose?})->off · .off(key|cb) · .once(cb,{key?})->off · .onClose(cb)->off · .run() · .isRunning() · .close() · .count() · .keys()
 store Listen: .on(cb,{current?:true|()=>args,key?,cbClose?})->off · .once(cb,{current?:true|()=>args,key?})->off
 slim Listen: .on(cb,{key?})->off · .off(key|cb) · .close() · .count()
+// .off(cb) also cancels a pending .once(cb); fast:false delivers an emit only to the listeners present when it started
 ```
 External current getter example:
 ```
@@ -89,6 +90,7 @@ listen.once(cb, {current: true})     // current store value once, or waits for o
 ```
 isListenCallback(obj) -> boolean                  // duck-type a full Listen result
 socketBuffer(...) · listenSnapshot(...)           // snapshot/buffer adapters over a SocketSource
+  // listenSnapshot.run subscribes before connecting: the first subscriber sees what the source emits during connect()
 ```
 ## 🔢 number formatting & math (full)
 ```
@@ -432,6 +434,9 @@ endCallback(fn)                                     // alias: rpcEndCallback
 listenSocket(parent, opts?) · listenSocketFirst · listenSocketAll · listenSocketSmart
 deepListenFirst(obj, opts?) · deepListenAll · deepListenSmart
 RPC Listen surface on client: stream.on(cb)->off · stream.once(cb)->off · stream.close()
+  // two subscriptions to one node that differ only by args/opts ({current:true}, store-replay {knowledge})
+  //   are independent: stopping one leaves its siblings running (a pre-3.0.1 server still ends the node).
+  // errors arrive as {name, message, code?, data?, cause?} without server stack frames unless the server runs debug:true.
   // on/once also accept {current?:boolean}; true is narrowly forwarded to a server listenStore/current provider.
   // typed projection: client.func as unknown as DeepSocketListen<ServerFacade> (usually hidden behind a local webListen(client) helper).
   //   replay members project as ReplaySocketListen<Z> automatically (legacy surface + line/frameLine/since/keyframe/frame,
@@ -629,7 +634,9 @@ This registers both `GET /inspect/journal/history` and `POST /inspect/journal/hi
 from the `args` query as one JSON array. POST accepts `{args: [...]}` or a raw `[...]` JSON body. No `args` means an
 empty argument list. Responses are `{ok: true, value}`; thrown values become `{ok: false, error}` with HTTP 500,
 malformed input is HTTP 400, and `RpcLimits` violations are HTTP 413. `routes()` returns the registered method,
-object path, and URL for inspection.
+object path, and URL for inspection. Error bodies carry `{name, message, code?, data?, cause?}`, never a server
+`stack`; the optional `onError(error, {route, status})` receives the whole error for the operator, and a throwing
+hook never costs the reply. The service REST logs every 5xx with its stack through its optional `log`.
 
 The existing RPC walk codec restores Date/Map/Set/RegExp/BigInt request values and packs them in results. This is not
 a callback or binary transport: function signatures cannot be discovered at runtime, so callback/Listen-shaped
@@ -1367,7 +1374,10 @@ Migration rows: [NAMING_RENAMES.md](NAMING_RENAMES.md).
 ```
 SocketServerHook(opt?) · WebSocketServerHook(hook, params?, disconnect?)    // server-side socket wiring
 saveKeyValue({ dirDef, key? }) -> SaveKeyValueStore                          // fs-backed key/value store
+  // path = relative directories, key = one file name; '..', roots (/, \, UNC, drive) and NUL reject: pass an absolute base as dirDef
 createWebhookServer(params) · createWebhookClient(opts) · buildSelfWebhookUrl(ip, raw)
+  // createWebhookServer({..., maxSubscribersPerIp? = 32}): 429 beyond it; the bearer is compared in constant time;
+  //   a client lists only its own address's subscriptions. Client status(tag) -> {status, data: {subscribed, expireAt?}}.
 createSignatureFunction(hmacCreator) -> SignatureFunction
 ```
 
@@ -1498,7 +1508,8 @@ manager.stopAll()
 
 Contract:
 - `node` subscriptions are address-based, so `store.state.data = {BTC: 10}` keeps `store.node.data.BTC` subscriptions alive.
-- Dynamic node-cache entries are pruned after their state path is deleted unless that path still has a `node` subscription; the subscription keeps its node identity until its final `off()`. Remote `set`/`replace` and the Replay journal write/read raw state, so transient wire keys do not materialize path nodes.
+- Dynamic node-cache entries are pruned after their state path is deleted unless that path still has a `node` subscription; the subscription keeps its node identity until its final `off()`. Remote `set`/`replace` and the Replay journal write/read raw state, so transient wire keys do not materialize path nodes. An entry read on a path that never existed is released by the next write to a cached sibling; a write costs the same however many sibling entries are cached.
+- A path subscription follows its path when an ancestor is deleted (or replaced by a non-object) and recreated in the same drain window, including patch application and a replay tail catch-up; an unchanged leaf does not notify, later changes do.
 - Primitive, missing, and later-created paths are subscribable.
 - `{current:true}` emits only when a value exists; absent paths wait for the first value.
 - `drain` is per subscription/sync. Branch subscribers receive whole branch snapshots; mask `.on()` receives the selected snapshot; `.onEach()` receives `(value, ctx)` with route; `store.each()` receives `(key, value, ctx)` per changed top-level key.
@@ -1741,6 +1752,9 @@ serveReplayChannel(source, channel) <-> channelReplayRemote(channel) -> ReplayRe
   //   ReplayMessageChannel = {send, onMessage, sendBinary?, onBinaryMessage?, onClose?, close?};
   //   channelFromDataChannel(dc) selects ArrayBuffer delivery and owns its handlers. Oracles:
   //   replay/replay-channel-binary.test.ts and replay/route-webrtc.test.ts.
+  //   Binary budget: 1,000,000 work units per value; a binary view, ArrayBuffer or RegExp costs 16. A failed
+  //   live item or packet costs no neighbours and is rethrown once; channelFromDataChannel drops sends once
+  //   its readyState is closing (onClose reports it).
 createReplicatedMap<V>({keyOf, initial?, store?, delivery, lineId?, replay?}) -> {api, control}  // high-level keyed collection over layer B, not a parallel journal
 followReplicatedMap(remote, {delivery?, checkpoint?, onBatch?, onStatus?, staleMs?, ...}) -> followed map
   // PRODUCER: control = set/setMany/delete/deleteMany/replaceAll/get/has/snapshot/flush/close. All input iterables
@@ -2043,6 +2057,7 @@ await fill.filled                                    // promise: every key deliv
   // instead of redoing it. `filled` stays false while any of that is outstanding.
   // The host keeps no per-subscriber state, so a reconnect RESUMES the fill instead of
   // restarting it; persist the cursor through onCursor and hand it back to continue.
+  // Chunk values are detached clones (cloneStoreValue): an in-process mirror never shares objects with the host.
   // Values are read AT SEND TIME: a key rewritten beyond the cursor costs zero extra bytes and
   // still lands newest; a key changed behind the cursor is re-sent. That is all convergence
   // needs — no frozen snapshot, no second copy, no restart when the Store changes mid-transfer.

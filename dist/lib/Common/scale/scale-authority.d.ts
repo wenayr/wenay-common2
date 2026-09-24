@@ -146,7 +146,7 @@ export declare function createAuthority<T extends Record<string, any>, Cmds exte
                 once: (cb: import("../..").Listener<[readonly import("../Observe").StorePatch[]]>, opts?: {
                     key?: string | symbol;
                     current?: import("../..").ListenCurrent<[readonly import("../Observe").StorePatch[]]> | undefined;
-                }) => () => void;
+                }) => import("../..").ListenOff;
                 getSince(seq: number): import("../events/replay-listen").ReplayEvent<[readonly import("../Observe").StorePatch[]]>[] | undefined;
                 keyframe(): import("../events/replay-listen").ReplayEvent<[readonly import("../Observe").StorePatch[]]> | undefined;
                 frame(seq: number, hint?: unknown): import("../events/replay-listen").ReplayEvent<[readonly import("../Observe").StorePatch[]]>[];

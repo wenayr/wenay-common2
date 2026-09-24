@@ -30,11 +30,22 @@ function listenSnapshot({ func, memo = {}, callbackSave, snapshot }) {
             d = socketBuffer(func(), callbackSave, memo)({ callback });
     };
     const run = (...params) => {
-        if (!listenA.isRunning()) {
-            snapshot?.(memo);
-            connect();
+        const off = listenA.on(...params);
+        if (d == null) {
+            try {
+                snapshot?.(memo);
+                connect();
+            }
+            catch (error) {
+                try {
+                    off();
+                }
+                finally {
+                    throw error;
+                }
+            }
         }
-        return listenA.on(...params);
+        return off;
     };
     return {
         run, snapshot: () => snapshot?.(memo), memo, listenA, connect, get disconnect() {

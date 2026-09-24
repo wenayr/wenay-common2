@@ -23,5 +23,5 @@ export declare function createRpcCallbackWrapper({ id, sender, onEnd, legacyStop
 export declare function rpcEndCallback(fn: Function): void;
 export declare function unpack(args: any[], sender: (id: number, a: any[]) => void, onEnd: (id: number) => void, lim?: Required<RpcLimits>, flowHost?: (id: number) => (opts?: RpcFlowOpts) => tRpcFlowGate): any[];
 export declare function unpackResult(value: any, lim?: Required<RpcLimits>, rows?: tRowCodec): any;
-export declare const errToObj: (e: any) => any;
+export declare const errToObj: (e: any, withStack?: boolean) => any;
 export declare const resolveCA: (path: string[], args: any[]) => [string[], any[]];

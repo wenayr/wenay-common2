@@ -440,6 +440,9 @@ the original token delivered to `resolveAuth`.
 When the grant declared a deadline, the server attaches it to the ack under one reserved key:
 `ack.$rpc = { expiresAt }` — attached on a copy, so your own ack is never clobbered, and optional by
 contract (absent for an old server, a non-object ack, an ack that already owns `$rpc`, or no deadline).
+Numeric method refs stay pinned to their path across principal switches (a racing call never runs a
+different method); errors reach peers without server stack frames unless the server runs `debug`;
+a service without `access.login` never mints a token from a client-named account.
 
 ### 5.1 Server: empty initial facade + `gate: true`
 

@@ -13,7 +13,7 @@
         "node": ">=20.0.0"
     },
     "dependencies": {
-        "wenay-common2": "3.0.0",
+        "wenay-common2": "3.0.1",
         "express": "^5.2.1",
         "socket.io": "^4.8.3",
         "socket.io-client": "^4.8.3"

@@ -77,7 +77,7 @@ export declare function createServiceLeaderHost<D extends tServiceDefinition<any
                     once: (cb: import("..").Listener<[readonly import("../Common/Observe").StorePatch[]]>, opts?: {
                         key?: string | symbol;
                         current?: import("..").ListenCurrent<[readonly import("../Common/Observe").StorePatch[]]> | undefined;
-                    }) => () => void;
+                    }) => import("..").ListenOff;
                     getSince(seq: number): import("../Common/events/replay-listen").ReplayEvent<[readonly import("../Common/Observe").StorePatch[]]>[] | undefined;
                     keyframe(): import("../Common/events/replay-listen").ReplayEvent<[readonly import("../Common/Observe").StorePatch[]]> | undefined;
                     frame(seq: number, hint?: unknown): import("../Common/events/replay-listen").ReplayEvent<[readonly import("../Common/Observe").StorePatch[]]>[];
@@ -203,7 +203,7 @@ export declare function createServiceLeaderHost<D extends tServiceDefinition<any
             close(): Promise<void>;
         };
         serve: {
-            browserFragment: (account: string) => (import("./definition").tHasViews<D> extends true ? {
+            browserFragment: (_account?: string) => (import("./definition").tHasViews<D> extends true ? {
                 roster: import("../Common/Observe").StoreReplayRemote;
                 identity: import("./definition").tIdentityFragment<D, {
                     login: () => {
@@ -566,7 +566,7 @@ export declare function runLeaderProcess<D extends tServiceDefinition<any, any>>
                     once: (cb: import("..").Listener<[readonly import("../Common/Observe").StorePatch[]]>, opts?: {
                         key?: string | symbol;
                         current?: import("..").ListenCurrent<[readonly import("../Common/Observe").StorePatch[]]> | undefined;
-                    }) => () => void;
+                    }) => import("..").ListenOff;
                     getSince(seq: number): import("../Common/events/replay-listen").ReplayEvent<[readonly import("../Common/Observe").StorePatch[]]>[] | undefined;
                     keyframe(): import("../Common/events/replay-listen").ReplayEvent<[readonly import("../Common/Observe").StorePatch[]]> | undefined;
                     frame(seq: number, hint?: unknown): import("../Common/events/replay-listen").ReplayEvent<[readonly import("../Common/Observe").StorePatch[]]>[];
@@ -692,7 +692,7 @@ export declare function runLeaderProcess<D extends tServiceDefinition<any, any>>
             close(): Promise<void>;
         };
         serve: {
-            browserFragment: (account: string) => (import("./definition").tHasViews<D> extends true ? {
+            browserFragment: (_account?: string) => (import("./definition").tHasViews<D> extends true ? {
                 roster: import("../Common/Observe").StoreReplayRemote;
                 identity: import("./definition").tIdentityFragment<D, {
                     login: () => {

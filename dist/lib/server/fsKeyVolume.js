@@ -37,6 +37,15 @@ exports.saveKeyValue = saveKeyValue;
 const fs = __importStar(require("fs"));
 const waitRun_1 = require("../Common/async/waitRun");
 const Decorator_1 = require("../Common/core/Decorator");
+const ROOTED = /^([\\/]|[a-zA-Z]:)/;
+function requireStoreAddress(path, key) {
+    if (path.includes("\0") || ROOTED.test(path) || path.split(/[\\/]/).includes("..")) {
+        throw new Error(`saveKeyValue: path must be relative directories inside the store, got ${JSON.stringify(path)}`);
+    }
+    if (key.includes("\0") || ROOTED.test(key) || /[\\/]/.test(key) || key == "..") {
+        throw new Error(`saveKeyValue: key must be one file name inside the store, got ${JSON.stringify(key)}`);
+    }
+}
 function saveKeyValue({ dirDef = "", key: _key = "" }) {
     async function ensureDir(dir) {
         const fullDir = dirDef ? `${dirDef}/${dir}` : dir;
@@ -44,6 +53,7 @@ function saveKeyValue({ dirDef = "", key: _key = "" }) {
         return `${fullDir}/`;
     }
     async function resolvePath(path, key) {
+        requireStoreAddress(String(path), String(key));
         const fullPath = await ensureDir(path);
         return `${fullPath}${key}`;
     }

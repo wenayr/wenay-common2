@@ -16,6 +16,7 @@ export type ServiceRestDeps<D extends tServiceDefinition<any, any>> = {
         docs?: boolean;
     };
     limits?: RpcLimits;
+    log?: (line: string) => void;
 };
 export declare function createServiceRest<D extends tServiceDefinition<any, any>>(deps: ServiceRestDeps<D>): {
     basePath: string;
