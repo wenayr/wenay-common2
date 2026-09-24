@@ -36,6 +36,8 @@ const MAX_TYPED_ARRAY_OWN_KEY_SCAN_ITEMS = 4_096
 // concatenation as a rope, which costs more than the decoder once it is read.
 const ASCII_ENCODE_MAX_BYTES = 32
 const ASCII_DECODE_MAX_BYTES = 12
+// Shapes a transaction used last, matched by key identity before a signature.
+const RECENT_SHAPES = 8
 // An incremental frame patches its item count into one varuint byte.
 const BATCH_MAX_ITEMS = 127
 // A live frame carries up to 64 small events: start past the doubling steps.
@@ -206,6 +208,8 @@ type tBinaryShape = {
     keys: string[]
     signature: string
     keyTextBytes: number
+    // Lets every reference check the reader's string limit without a key scan.
+    maxKeyLength: number
 }
 
 type tShapeCacheLimits = {
@@ -231,6 +235,8 @@ type tShapeTransaction = {
     definitions: number
     references: number
     raw: number
+    // Newest last; only shapes that exist in this transaction.
+    recent: tBinaryShape[]
 }
 
 type tBinaryCodecConfig = {
@@ -610,6 +616,11 @@ function createByteWriter(maxWireBytes: number, initialCapacity = 256) {
     function writeVarUintNumber(value: number, maxBytes = 8) {
         if (!Number.isSafeInteger(value) || value < 0) {
             binaryRangeError('number varuint must be a non-negative safe integer')
+        }
+        // Lengths, shape ids and small integers: one byte without the division loop.
+        if (value < 0x80 && maxBytes >= 1) {
+            writeU8(value)
+            return
         }
         let remaining = value
         let count = 0
@@ -1048,18 +1059,47 @@ function readString(reader: tByteReader, limits: tBinaryDecodeLimits) {
     return binaryError('expected string')
 }
 
-function beginActive(active: WeakSet<object>, value: object) {
-    if (active.has(value)) binaryError('cyclic values are not supported')
-    active.add(value)
+// The containers being written, outermost first. Recursion is LIFO and bounded
+// by maxDepth (<= 64), so a linear scan of this short stack is cheaper than
+// WeakSet bookkeeping per container.
+type tActivePath = object[]
+
+function beginActive(active: tActivePath, value: object) {
+    for (let index = 0; index < active.length; index++) {
+        if (active[index] == value) binaryError('cyclic values are not supported')
+    }
+    active.push(value)
 }
 
 function exactPrototype(value: object, expected: object, label: string) {
     if (Object.getPrototypeOf(value) != expected) binaryError(label + ' subclasses are not supported')
 }
 
-function captureObject(value: Record<string, unknown>) {
+// Object.keys is exactly the enumerable string keys in [[OwnPropertyKeys]]
+// order, the order the protocol encodes. Two length probes prove the precise
+// walk would see nothing else (no non-enumerable string key, no symbol); only
+// then is it skipped. Accessors are still refused per key through the
+// descriptor, whose value is the field. Fields go onto the shared values stack.
+function captureObject(value: Record<string, unknown>, values: unknown[]) {
+    const keys = Object.keys(value)
+    if (Object.getOwnPropertyNames(value).length != keys.length
+        || Object.getOwnPropertySymbols(value).length != 0) {
+        return captureObjectPrecise(value, values)
+    }
+    for (let index = 0; index < keys.length; index++) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, keys[index])
+        if (!descriptor) binaryError('object property descriptor disappeared')
+        if (own.call(descriptor, 'get') || own.call(descriptor, 'set')) {
+            binaryError('accessor properties are not supported')
+        }
+        values.push(descriptor.value)
+    }
+    if (keys.length > MAX_OBJECT_KEYS) binaryRangeError('object exceeds key limit')
+    return keys
+}
+
+function captureObjectPrecise(value: Record<string, unknown>, values: unknown[]) {
     const keys: string[] = []
-    const values: unknown[] = []
     for (const key of Reflect.ownKeys(value)) {
         if (typeof key == 'symbol') binaryError('symbol object keys are not supported')
         const descriptor = Object.getOwnPropertyDescriptor(value, key)
@@ -1073,7 +1113,7 @@ function captureObject(value: Record<string, unknown>) {
         }
     }
     if (keys.length > MAX_OBJECT_KEYS) binaryRangeError('object exceeds key limit')
-    return {keys, values}
+    return keys
 }
 
 function createShapeCacheState(): tShapeCacheState {
@@ -1096,6 +1136,7 @@ function createShapeTransaction(state: tShapeCacheState, limits: tShapeCacheLimi
         definitions: 0,
         references: 0,
         raw: 0,
+        recent: [],
     }
 }
 
@@ -1120,6 +1161,31 @@ function shapeSignature(prototype: 0 | 1, keys: readonly string[]) {
 function transactionShape(transaction: tShapeTransaction, signature: string) {
     return transaction.stagedBySignature.get(signature)
         ?? transaction.state.bySignature.get(signature)
+}
+
+function sameShapeKeys(shape: tBinaryShape, prototype: 0 | 1, keys: readonly string[]) {
+    if (shape.prototype != prototype || shape.keys.length != keys.length) return false
+    const known = shape.keys
+    for (let index = 0; index < keys.length; index++) if (known[index] != keys[index]) return false
+    return true
+}
+
+function rememberShape(transaction: tShapeTransaction, shape: tBinaryShape) {
+    const recent = transaction.recent
+    if (recent.length >= RECENT_SHAPES) recent.shift()
+    recent.push(shape)
+}
+
+// Repeated shapes are found by key identity first: building a signature string
+// per object is what encoding them otherwise costs most.
+function findShape(transaction: tShapeTransaction, prototype: 0 | 1, keys: readonly string[]) {
+    const recent = transaction.recent
+    for (let index = recent.length - 1; index >= 0; index--) {
+        if (sameShapeKeys(recent[index], prototype, keys)) return recent[index]
+    }
+    const known = transactionShape(transaction, shapeSignature(prototype, keys))
+    if (known) rememberShape(transaction, known)
+    return known
 }
 
 function canStageShape(
@@ -1148,7 +1214,9 @@ function stageShape(
     }
     const signature = shapeSignature(prototype, keys)
     if (transactionShape(transaction, signature)) binaryError('duplicate object shape declaration')
-    const shape: tBinaryShape = {id, prototype, keys, signature, keyTextBytes}
+    let maxKeyLength = 0
+    for (const key of keys) if (key.length > maxKeyLength) maxKeyLength = key.length
+    const shape: tBinaryShape = {id, prototype, keys, signature, keyTextBytes, maxKeyLength}
     transaction.staged.push(shape)
     transaction.stagedBySignature.set(signature, shape)
     transaction.fieldRefs += keys.length
@@ -1192,8 +1260,13 @@ function saveShapeMark(transaction: tShapeTransaction, mark: tShapeMark) {
 // Shape ids are positions, so dropping the newest staged shapes frees exactly
 // the ids the dropped bytes declared.
 function restoreShapeMark(transaction: tShapeTransaction, mark: tShapeMark) {
-    while (transaction.staged.length > mark.staged) {
-        transaction.stagedBySignature.delete(transaction.staged.pop()!.signature)
+    if (transaction.staged.length > mark.staged) {
+        while (transaction.staged.length > mark.staged) {
+            transaction.stagedBySignature.delete(transaction.staged.pop()!.signature)
+        }
+        // A remembered shape may be one just dropped: its id is free again.
+        const firstFreed = transaction.state.shapes.length + mark.staged
+        transaction.recent = transaction.recent.filter(shape => shape.id < firstFreed)
     }
     transaction.fieldRefs = mark.fieldRefs
     transaction.keyTextBytes = mark.keyTextBytes
@@ -1252,7 +1325,7 @@ type tWriteValue = (
     writer: tByteWriter,
     value: unknown,
     depth: number,
-    active: WeakSet<object>,
+    active: tActivePath,
     context: tWriteContext,
 ) => void
 
@@ -1261,6 +1334,9 @@ type tWriteContext = {
     shapes: tShapeTransaction | undefined
     workUnits: number
     callbackRefs: number
+    // Field values of the objects on the active path, each object's run above
+    // the previous one: one keys array per object instead of two arrays and a record.
+    values: unknown[]
 }
 
 const writeValue: tWriteValue = function writeBinaryValue(writer, value, depth, active, context) {
@@ -1342,7 +1418,7 @@ const writeValue: tWriteValue = function writeBinaryValue(writer, value, depth, 
                 else writeValue(writer, value[index], depth + 1, active, context)
             }
         } finally {
-            active.delete(value)
+            active.pop()
         }
         return
     }
@@ -1382,7 +1458,7 @@ const writeValue: tWriteValue = function writeBinaryValue(writer, value, depth, 
                 writeValue(writer, item, depth + 1, active, context)
             }
         } finally {
-            active.delete(value)
+            active.pop()
         }
         return
     }
@@ -1397,7 +1473,7 @@ const writeValue: tWriteValue = function writeBinaryValue(writer, value, depth, 
             writeLength(writer, value.size)
             for (const item of value) writeValue(writer, item, depth + 1, active, context)
         } finally {
-            active.delete(value)
+            active.pop()
         }
         return
     }
@@ -1460,22 +1536,21 @@ const writeValue: tWriteValue = function writeBinaryValue(writer, value, depth, 
     if (prototype != Object.prototype && prototype != null) {
         binaryError('class instances are not supported')
     }
-    const captured = captureObject(value as Record<string, unknown>)
-    const keys = captured.keys
-    const values = captured.values
+    const values = context.values
+    const base = values.length
+    const keys = captureObject(value as Record<string, unknown>, values)
     const prototypeCode = prototype == null ? 1 : 0
     beginActive(active, value)
     try {
         const shapes = context.shapes
         if (shapes && keys.length <= shapes.limits.maxFieldRefs) {
-            const signature = shapeSignature(prototypeCode, keys)
-            const known = transactionShape(shapes, signature)
+            const known = findShape(shapes, prototypeCode, keys)
             if (known) {
                 writer.writeU8(VALUE_TAG.OBJECT_SHAPE_REF)
                 writeLength(writer, known.id)
                 shapes.references++
-                for (const item of values) {
-                    writeValue(writer, item, depth + 1, active, context)
+                for (let index = 0; index < keys.length; index++) {
+                    writeValue(writer, values[base + index], depth + 1, active, context)
                 }
                 return
             }
@@ -1485,13 +1560,14 @@ const writeValue: tWriteValue = function writeBinaryValue(writer, value, depth, 
             if (keyTextBytes <= shapes.limits.maxKeyTextBytes) {
                 if (canStageShape(shapes, keys, keyTextBytes)) {
                     const shape = stageShape(shapes, prototypeCode, keys)
+                    rememberShape(shapes, shape)
                     writer.writeU8(VALUE_TAG.OBJECT_SHAPE_DEF)
                     writeLength(writer, shape.id)
                     writer.writeU8(shape.prototype)
                     writeLength(writer, shape.keys.length)
                     for (const key of shape.keys) writeString(writer, key)
-                    for (const item of values) {
-                        writeValue(writer, item, depth + 1, active, context)
+                    for (let index = 0; index < keys.length; index++) {
+                        writeValue(writer, values[base + index], depth + 1, active, context)
                     }
                     return
                 }
@@ -1503,10 +1579,11 @@ const writeValue: tWriteValue = function writeBinaryValue(writer, value, depth, 
         writeLength(writer, keys.length)
         for (let index = 0; index < keys.length; index++) {
             writeString(writer, keys[index])
-            writeValue(writer, values[index], depth + 1, active, context)
+            writeValue(writer, values[base + index], depth + 1, active, context)
         }
     } finally {
-        active.delete(value)
+        active.pop()
+        values.length = base
     }
 }
 
@@ -1596,7 +1673,7 @@ function decodedShapeObject(
     shape: tBinaryShape,
 ) {
     if (shape.keys.length > limits.maxObjectKeys) binaryError('object exceeds key limit')
-    if (shape.keys.some(key => key.length > limits.maxStringCodeUnits)) {
+    if (shape.maxKeyLength > limits.maxStringCodeUnits) {
         binaryError('object shape key exceeds string limit')
     }
     if (reader.remaining() < shape.keys.length) binaryError('truncated shaped object')
@@ -2146,11 +2223,12 @@ export function createBinaryValueCodec(options: BinaryValueCodecOptions) {
         shapes: tShapeTransaction | undefined,
     ) {
         writeHeader(writer)
-        writeValue(writer, value, 0, new WeakSet<object>(), {
+        writeValue(writer, value, 0, [], {
             config,
             shapes,
             workUnits: 0,
             callbackRefs: 0,
+            values: [],
         })
     }
 
@@ -2211,7 +2289,9 @@ export function createBinaryValueCodec(options: BinaryValueCodecOptions) {
             ? createShapeTransaction(encodeShapes, config.shapeLimits)
             : undefined
         const writer = createByteWriter(config.maxWireBytes, BATCH_INITIAL_CAPACITY)
-        const context: tWriteContext = {config, shapes, workUnits: 0, callbackRefs: 0}
+        const context: tWriteContext = {config, shapes, workUnits: 0, callbackRefs: 0, values: []}
+        // Empty between adds: every container pops itself, even when writing throws.
+        const active: tActivePath = []
         let countAt = 0
         try {
             writeHeader(writer)
@@ -2220,7 +2300,6 @@ export function createBinaryValueCodec(options: BinaryValueCodecOptions) {
             if (prefix.length + 1 > MAX_ARRAY_ITEMS) binaryRangeError('array exceeds item limit')
             writer.writeU8(VALUE_TAG.ARRAY)
             writeLength(writer, prefix.length + 1)
-            const active = new WeakSet<object>()
             for (const item of prefix) writeValue(writer, item, 1, active, context)
             chargeFrameArray(context, 1)
             writer.writeU8(VALUE_TAG.ARRAY)
@@ -2253,6 +2332,9 @@ export function createBinaryValueCodec(options: BinaryValueCodecOptions) {
             itemCount = before.itemCount
             context.workUnits = before.workUnits
             context.callbackRefs = before.callbackRefs
+            // A capture that threw midway may leave fields no finally truncated.
+            context.values.length = 0
+            active.length = 0
             if (shapes) restoreShapeMark(shapes, before.shapes)
             canRewind = false
         }
@@ -2267,7 +2349,7 @@ export function createBinaryValueCodec(options: BinaryValueCodecOptions) {
             if (itemCount >= maxItems) throw new RangeError(config.label + ': batch item limit reached')
             saveBefore()
             try {
-                writeValue(writer, value, 2, new WeakSet<object>(), context)
+                writeValue(writer, value, 2, active, context)
             } catch (error) {
                 restoreBefore()
                 return throwLabeledError(config.label, error)
