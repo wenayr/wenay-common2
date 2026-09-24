@@ -545,14 +545,32 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
         }
     }
 
-    function refreshEntry(entry: OfferEntry) {
+    // A push that only advanced the sequence coordinates names the route, proof, path and cost
+    // this open entry already verified. A payload-less legacy push, a regressed seq or any other
+    // change takes the full read.
+    function pushedSeqAdvance(entry: OfferEntry, pushed: StoreReplicaDescriptor | undefined) {
+        const current = entry.descriptor
+        if (!pushed || entry.state != 'open' || !current) return null
+        let value: StoreReplicaDescriptor
+        try { value = validateDescriptor(pushed) }
+        catch { return null }
+        if (value.headSeq < current.headSeq || value.authoritySeq < current.authoritySeq) return null
+        const seqFree = {headSeq: 0, authoritySeq: 0}
+        if (!deepEqual({...value, ...seqFree}, {...current, ...seqFree})) return null
+        // An in-process push hands every follower the leader's own object.
+        return {...value, path: [...value.path]}
+    }
+
+    function refreshEntry(entry: OfferEntry, pushed?: StoreReplicaDescriptor) {
         if (entry.refreshing) return entry.refreshing
         const generation = entry.generation
         const run = async function refreshReplicaOffer() {
             const session = entry.session
             if (!session) return
             try {
-                const value = validateDescriptor(await session.remote.descriptor())
+                // A seq-only push skips the descriptor re-read and the rtt sample, not the checks.
+                const advanced = pushedSeqAdvance(entry, pushed)
+                const value = advanced ?? validateDescriptor(await session.remote.descriptor())
                 if (value.path.includes(nodeId)) {
                     entry.descriptor = value
                     entry.state = 'rejected'
@@ -569,10 +587,10 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
                     scheduleReconcile('authority proof rejected')
                     return
                 }
-                const sample = await ping(entry, generation)
+                const sample = advanced ? null : await ping(entry, generation)
                 if (generation != entry.generation || session != entry.session) return
                 entry.descriptor = value
-                entry.rtt = entry.rtt == null ? sample : entry.rtt * 0.7 + sample * 0.3
+                if (sample != null) entry.rtt = entry.rtt == null ? sample : entry.rtt * 0.7 + sample * 0.3
                 entry.state = 'open'
                 entry.error = null
                 maxObservedEpoch = Math.max(maxObservedEpoch, value.epoch)
@@ -615,8 +633,8 @@ export function createStoreReplicaSet<T extends object>(deps: StoreReplicaSetDep
             const hasChanged = await optionalRemoteMember(session.remote, 'changed')
             if (closed || generation != entry.generation || entry.session != session) return
             if (hasChanged) {
-                entry.offChanged = session.remote.changed!.on(function remoteDescriptorChanged() {
-                    void refreshEntry(entry)
+                entry.offChanged = session.remote.changed!.on(function remoteDescriptorChanged(pushed?: StoreReplicaDescriptor) {
+                    void refreshEntry(entry, pushed)
                 })
             }
             await refreshEntry(entry)
