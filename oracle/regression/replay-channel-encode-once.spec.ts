@@ -194,6 +194,42 @@ async function checkReentrantEmitKeepsTypesAndOrder() {
     } finally { stop() }
 }
 
+async function checkEmitDuringFailedReadyStaysJson() {
+    // The transport provokes an emit while it sends 'ready', then refuses that send:
+    // binary is off again, so the event must reach the peer as JSON, as in 3.0.1.
+    let forward: (ev: any) => void = function notSubscribed() { throw new Error('line not subscribed') }
+    const source: any = {
+        line: {on(cb: (ev: any) => void) { forward = cb; return function offManualLine() {} }},
+        since: () => null,
+        keyframe: () => null,
+        frame: () => null,
+    }
+    const toServer = new Set<(data: string) => void>()
+    const text: string[] = []
+    const binary: Uint8Array[] = []
+    const stop = serveReplayChannel(source, {
+        send(data) {
+            if (JSON.parse(data).t == 'ready') {
+                forward({seq: 1, ts: 1, event: [{when: new Date(5)}]})
+                throw new Error('ready refused')
+            }
+            text.push(data)
+        },
+        sendBinary(data) { binary.push(data) },
+        onMessage(cb) { toServer.add(cb); return () => toServer.delete(cb) },
+        onBinaryMessage() {},
+    })
+    try {
+        for (const cb of [...toServer]) cb(JSON.stringify({t: 'sub', batch: 1}))
+        assert.throws(function helloWithRefusedReady() {
+            for (const cb of [...toServer]) cb(JSON.stringify({t: 'hello', binary: 1}))
+        }, /ready refused/)
+        await delay(5)
+        assert.equal(binary.length, 0, 'no binary frame reaches a peer that never saw ready')
+        assert.deepEqual(text.map(raw => JSON.parse(raw)), [{t: 'evs', evs: [{seq: 1, ts: 1, event: [{when: new Date(5).toJSON()}]}]}])
+    } finally { stop() }
+}
+
 async function checkFrameBudgetRefusalTravelsAlone() {
     // One work budget spans a frame. An event refused only because its frame is
     // already heavy must travel in a frame of its own, not fall back to JSON.
@@ -251,6 +287,7 @@ async function main() {
         checkRefusedSendRedefinesShapes,
         checkRequestFlushesOpenFrameFirst,
         checkReentrantEmitKeepsTypesAndOrder,
+        checkEmitDuringFailedReadyStaysJson,
         checkFrameBudgetRefusalTravelsAlone,
         checkOneEncodePassPerEvent,
     ]

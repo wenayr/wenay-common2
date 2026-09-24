@@ -513,11 +513,17 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
             if (binaryEnabled) return
             flushLiveQueue()
             binaryEnabled = true
+            // An emit this send provokes is deferred: whether binary stays on is
+            // only known once the send returned.
+            const wasBusy = liveBusy
+            liveBusy = true
             try {
                 channel.send(JSON.stringify({t: 'ready', binary: REPLAY_BINARY_FEATURE}))
             } catch (error) {
                 binaryEnabled = false
                 throw error
+            } finally {
+                liveBusy = wasBusy
             }
             return
         }
