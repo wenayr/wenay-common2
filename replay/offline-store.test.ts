@@ -3,6 +3,7 @@ import {createStore, StorePatch} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {exposeStoreReplay} from '../src/Common/Observe/store-replay'
 import {ReplayRemote} from '../src/Common/events/replay-index'
+import {runOracle} from '../oracle/run-oracle'
 
 type World = {
     units: Record<string, {hp: number}>
@@ -39,7 +40,7 @@ async function readRecord(storage: ReturnType<typeof createMemoryOfflineStorage>
     return await storage.read<OfflineStoreRecord<World>>(key)
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[offline-store] cold start uses keyframe and persists snapshot + seq')
     {
         const backend = createStore<World>({units: {a: {hp: 10}}, tick: 1}, {drain: 'micro'})
@@ -153,4 +154,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

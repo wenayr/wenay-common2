@@ -5,6 +5,7 @@ import {
     PeerPacketEnvelope,
     PeerPacketWire,
 } from '../src/Common/peer/peer-index'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 function ok(condition: unknown, message: string) {
@@ -24,7 +25,7 @@ async function waitFor(label: string, condition: () => boolean) {
     throw new Error('timeout: ' + label)
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[peer-packet-mesh-backpressure] bounded ordered async intake')
 
     type Payload = {index: number}
@@ -169,4 +170,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function reportFailure(error) { console.error(error); process.exit(1) })
+async function main() {
+    await runChecks().catch(function reportFailure(error) { console.error(error); process.exit(1) })
+}
+
+runOracle(main)

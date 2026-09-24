@@ -6,6 +6,7 @@ import {
     splitMeasuredPeerPublishEnvelopes,
     splitPeerPublishEnvelopes,
 } from '../src/Common/peer/peer-publish-batch'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 
@@ -34,7 +35,7 @@ function envelope(seq: number, path: PropertyKey[], value: any): PatchEnvelope {
     return {seq, ts: seq, event: [{path, value, exists: true}]}
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[peer-publish-measure] measured partitions retain exact limits and order')
     {
         const small = Array.from({length: PEER_PUBLISH_BATCH_MAX_ITEMS + 1},
@@ -339,7 +340,11 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function reportPeerPublishMeasureFailure(error) {
-    console.error(error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function reportPeerPublishMeasureFailure(error) {
+        console.error(error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

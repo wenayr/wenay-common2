@@ -7,6 +7,7 @@ import {
     PeerPacketRouteStatus,
     PeerPacketWire,
 } from '../src/Common/peer/peer-index'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -25,7 +26,7 @@ async function waitFor(label: string, condition: () => boolean) {
 
 type Payload = {value: string}
 
-async function main() {
+async function runChecks() {
     console.log('\n[peer-packet-mesh-bulk] one discovery replacement, one visible mesh round')
 
     const registry = createPeerPacketOffers<Payload>()
@@ -82,4 +83,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(error => { console.error(error); process.exit(1) })
+async function main() {
+    await runChecks().catch(error => { console.error(error); process.exit(1) })
+}
+
+runOracle(main)

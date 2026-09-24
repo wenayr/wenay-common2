@@ -23,6 +23,7 @@ import {
 import {listen as createListenPair} from '../src/Common/events/Listen'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -90,7 +91,7 @@ async function waitFor(label: string, cond: () => boolean) {
     throw new Error(`timeout: ${label}`)
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[media] fixed binary frames over a real Socket.IO wire')
 
     const pcm = new Int16Array([0, 1000, -1000, 32767, -32768])
@@ -352,4 +353,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

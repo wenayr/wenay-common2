@@ -15,6 +15,7 @@ import {callPortOf, createCallManager} from '../src/Common/peer/peer-call'
 import {createMediaRelay} from '../src/Common/peer/peer-media-relay'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -31,7 +32,7 @@ async function waitFor(label: string, cond: () => boolean) {
     throw new Error(`timeout: ${label}`)
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[peer-call] presence + ring/accept/decline + media over the relay')
 
     // ================= lifecycle regressions (in-process, deterministic) =================
@@ -276,4 +277,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

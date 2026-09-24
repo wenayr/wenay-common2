@@ -5,6 +5,7 @@ import {flushReactive} from '../src/Common/Observe/reactive'
 import {applyStorePatch, createStore, StorePatch} from '../src/Common/Observe/store'
 import {replaySubscribe} from '../src/Common/events/replay-wire'
 import {createPatchRelayJournal, createPeerClient, PatchEnvelope, PeerRemote} from '../src/Common/peer/peer-index'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -43,7 +44,7 @@ function makeLossyRemote(journal: ReturnType<typeof createPatchRelayJournal>, ac
     return {remote, state}
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[peer-repair] gap matrix on the relay journal')
     {
         const j = createPatchRelayJournal({history: 16})
@@ -183,4 +184,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

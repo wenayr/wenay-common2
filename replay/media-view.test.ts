@@ -16,6 +16,7 @@ import {
     encodeMediaFrame,
     pipeMediaPublish,
 } from '../src/Common/media/media-index'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -56,7 +57,7 @@ function createFakeAudioContext() {
     return ctx
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[media-view] audio player: sequential playhead + live backlog drop')
     {
         const [emit, line] = listen<[Uint8Array, number]>()
@@ -198,4 +199,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)
