@@ -18,6 +18,9 @@ const MAX_SHAPE_ENTRIES = 1_000
 const MAX_SHAPE_FIELD_REFS = 64_000
 const MAX_SHAPE_KEY_TEXT_BYTES = 1_000_000
 const MAX_VALUE_WORK_UNITS = 1_000_000
+// A binary view or RegExp allocates native state and decodes 5-30x slower than
+// a plain object. Charging it more keeps the work budget a real time bound.
+const NATIVE_LEAF_WORK_UNITS = 16
 // RpcLimits defaults to 100 callbacks. A protocol-hard 1024 ceiling leaves
 // generous room for explicit policies while bounding branded-object allocation
 // even before the RPC application walk applies its per-route limit.
@@ -377,7 +380,8 @@ function hasRegExpDuplicateNamedGroups(source: string) {
             || source[index + 2] != '<'
             || source[index + 3] == '=' || source[index + 3] == '!') continue
         const end = source.indexOf('>', index + 3)
-        if (end < 0) continue
+        // No later group can close either; rescanning the tail per '(?<' is quadratic.
+        if (end < 0) break
         const name = source.slice(index + 3, end)
         // Escaped group names can normalize to the same identifier with different
         // source text. Fail closed instead of relying on a newer parser.
@@ -1128,6 +1132,13 @@ function writeBinaryPayload(
     writer.writeBytes(value)
 }
 
+// Encode and decode charge identically: a frame the peer refuses would
+// desynchronize the shape caches of both ends.
+function chargeNativeLeaf(context: {workUnits: number}, fail: tFailure, message: string) {
+    context.workUnits += NATIVE_LEAF_WORK_UNITS - 1
+    if (context.workUnits > MAX_VALUE_WORK_UNITS) fail(message)
+}
+
 type tWriteValue = (
     writer: tByteWriter,
     value: unknown,
@@ -1237,6 +1248,7 @@ const writeValue: tWriteValue = function writeBinaryValue(writer, value, depth, 
     }
 
     if (value instanceof RegExp) {
+        chargeNativeLeaf(context, binaryRangeError, 'encoded value exceeds work limit')
         exactPrototype(value, RegExp.prototype, 'RegExp')
         rejectOwnNativeShadows(value, REGEXP_NATIVE_SHADOW_KEYS, 'RegExp')
         validateNativeOwnState(value, 'RegExp')
@@ -1282,6 +1294,7 @@ const writeValue: tWriteValue = function writeBinaryValue(writer, value, depth, 
     }
 
     if (value instanceof ArrayBuffer) {
+        chargeNativeLeaf(context, binaryRangeError, 'encoded value exceeds work limit')
         exactPrototype(value, ArrayBuffer.prototype, 'ArrayBuffer')
         rejectOwnNativeShadows(value, ARRAY_BUFFER_NATIVE_SHADOW_KEYS, 'ArrayBuffer')
         validateNativeOwnState(value, 'ArrayBuffer')
@@ -1300,6 +1313,7 @@ const writeValue: tWriteValue = function writeBinaryValue(writer, value, depth, 
         rejectDynamicBinaryBuffer(value)
     }
     if (ArrayBuffer.isView(value)) {
+        chargeNativeLeaf(context, binaryRangeError, 'encoded value exceeds work limit')
         rejectOwnNativeShadows(
             value,
             ARRAY_BUFFER_VIEW_NATIVE_SHADOW_KEYS,
@@ -1539,6 +1553,7 @@ const readValue: tReadValue = function readBinaryValue(
     }
     if (tag == VALUE_TAG.DATE) return new Date(reader.readFloat64())
     if (tag == VALUE_TAG.REGEXP) {
+        chargeNativeLeaf(context, binaryError, 'decoded value exceeds work limit')
         const source = readString(reader, limits)
         const flags = validateRegExpV1(source, readString(reader, limits))
         return new RegExp(source, flags)
@@ -1633,14 +1648,17 @@ const readValue: tReadValue = function readBinaryValue(
     }
 
     if (tag == VALUE_TAG.ARRAY_BUFFER) {
+        chargeNativeLeaf(context, binaryError, 'decoded value exceeds work limit')
         return copyBinary(readBinaryPayload(reader, limits)).buffer
     }
 
     if (tag == VALUE_TAG.DATA_VIEW) {
+        chargeNativeLeaf(context, binaryError, 'decoded value exceeds work limit')
         return new DataView(copyBinary(readBinaryPayload(reader, limits)).buffer)
     }
 
     if (tag == VALUE_TAG.TYPED_ARRAY) {
+        chargeNativeLeaf(context, binaryError, 'decoded value exceeds work limit')
         const code = reader.readU8()
         const entry = typedArrayEntryByCode(code)
         if (!entry) binaryError('unknown or unsupported typed-array code')
