@@ -1755,6 +1755,11 @@ serveReplayChannel(source, channel) <-> channelReplayRemote(channel) -> ReplayRe
   //   Binary budget: 1,000,000 work units per value; a binary view, ArrayBuffer or RegExp costs 16. A failed
   //   live item or packet costs no neighbours and is rethrown once; channelFromDataChannel drops sends once
   //   its readyState is closing (onClose reports it).
+  //   A batched binary live event is encoded once, at emit, into the open frame: those bytes are its
+  //   snapshot. A frame goes out at 64 events or 64 KB; an event that does not fit starts the next frame,
+  //   one past 64 KB travels alone, and one the codec refuses even alone keeps the JSON envelope. Events
+  //   emitted while a frame is being sent (synchronous transports) keep their order and binary types.
+  //   A JSON peer's message skips the byte reviver unless its text holds the byte marker or a \u escape.
 createReplicatedMap<V>({keyOf, initial?, store?, delivery, lineId?, replay?}) -> {api, control}  // high-level keyed collection over layer B, not a parallel journal
 followReplicatedMap(remote, {delivery?, checkpoint?, onBatch?, onStatus?, staleMs?, ...}) -> followed map
   // PRODUCER: control = set/setMany/delete/deleteMany/replaceAll/get/has/snapshot/flush/close. All input iterables
