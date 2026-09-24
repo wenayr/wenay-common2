@@ -15,7 +15,7 @@ const dir = mkdtempSync(path.join(os.tmpdir(), 'wenay-run-oracle-'))
 function exitOf(name: string, body: string) {
     const file = path.join(dir, name + '.ts')
     writeFileSync(file, body)
-    const result = spawnSync(process.execPath, [tsx, file], {encoding: 'utf8', windowsHide: true, timeout: 60_000})
+    const result = spawnSync(process.execPath, [tsx, file], {encoding: 'utf8', windowsHide: true, timeout: 30_000})
     return {code: result.status, text: result.stdout + result.stderr}
 }
 
@@ -43,6 +43,13 @@ try {
     assert.equal(thrown.code, 1, thrown.text)
     assert.match(thrown.text, /boom/)
     console.log('PASS  a thrown main() fails the process')
+
+    // a throw must end the run now, not when open sockets/timers happen to close (a hang until the runner timeout)
+    const started = Date.now()
+    const thrownOpen = exitOf('thrown-open', `import {runOracle} from '${guard}'\nrunOracle(async function main() { setInterval(() => {}, 1000); throw new Error('boom with a live handle') })\n`)
+    assert.equal(thrownOpen.code, 1, 'a thrown main with an open handle must exit 1 promptly: ' + thrownOpen.text)
+    assert.ok(Date.now() - started < 20_000, 'took ' + (Date.now() - started) + ' ms')
+    console.log('PASS  a thrown main() with an open handle exits at once')
 
     const failedExit = exitOf('failed-exit', `import {runOracle} from '${guard}'\nrunOracle(async function main() { process.exit(1) })\n`)
     assert.equal(failedExit.code, 1, failedExit.text)
