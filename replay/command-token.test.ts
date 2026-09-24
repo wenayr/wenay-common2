@@ -12,6 +12,7 @@
 import {createCommandHost} from '../src/Common/command/command-host'
 import {forwardCommandsByToken, verifyCommands} from '../src/Common/command/command-token'
 import {createTokenCodec} from '../src/server/auth-token'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -102,4 +103,4 @@ async function main() {
     console.log(fails == 0 ? '\nALL GREEN' : `\n${fails} FAILURES`)
     if (fails) process.exitCode = 1
 }
-void main()
+runOracle(main)

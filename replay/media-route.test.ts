@@ -8,6 +8,7 @@ import {
     tRouteKind,
 } from '../src/Common/events/route-coordinator'
 import {createMediaRoute} from '../src/Common/media/media-route'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -85,7 +86,7 @@ function makeFakeRoutes(replay: any) {
     return {connect, connects, failOpen, live}
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[media-route] relay is the compatible default')
     {
         const [emit, replay] = replayListen<[number]>({history: 32, current: 'last'})
@@ -189,7 +190,11 @@ async function main() {
     console.log('\nALL MEDIA ROUTE TESTS PASSED')
 }
 
-main().catch(error => {
-    console.error(error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(error => {
+        console.error(error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

@@ -21,6 +21,7 @@ import {flushReactive} from '../src/Common/Observe/reactive'
 import {replayListen, ReplayEvent} from '../src/Common/events/replay-index'
 import {archiveReplay, createMemoryReplayStorage, openHistory, ReplayStorage} from '../src/Common/events/replay-index'
 import {exposeStoreReplay, storeReplayAt} from '../src/Common/Observe/store-replay'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -54,7 +55,7 @@ function makeCounterLine(storage: ReplayStorage<[number]>, everyEvents: number, 
 }
 const lastValue = (envs: ReplayEvent<[number]>[] | undefined) => envs ? envs[envs.length - 1].event[0] : undefined
 
-async function main() {
+async function runChecks() {
     console.log('\n[history] empty storage has no keyframe')
     {
         const storage = createMemoryReplayStorage<[number]>()
@@ -292,4 +293,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

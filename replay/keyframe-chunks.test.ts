@@ -17,6 +17,7 @@ import {
     type StoreReplayChunkedProgress,
 } from '../src/Common/Observe/store-replay'
 import {decodeStoreReplayBatchV2} from '../src/Common/Observe/store-replay-codec'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -255,4 +256,4 @@ async function main() {
     console.log(fails == 0 ? '\nkeyframe-chunks: ALL GREEN' : `\nkeyframe-chunks: ${fails} FAILURES`)
     if (fails) process.exitCode = 1
 }
-void main()
+runOracle(main)

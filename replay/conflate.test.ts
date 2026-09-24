@@ -13,6 +13,7 @@ import {flushReactive} from '../src/Common/Observe/reactive'
 import {replayListen, replaySubscribe, ReplayRemote} from '../src/Common/events/replay-index'
 import {exposeStoreReplay, syncStoreReplay} from '../src/Common/Observe/store-replay'
 import {conflateReplay} from '../src/Common/events/replay-index'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -36,7 +37,7 @@ type World = {
     tick: number
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[conflate] generic line: drop over highWater, keyframe recovery on drain')
     {
         let value = 0
@@ -222,4 +223,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

@@ -26,6 +26,7 @@ import {flushReactive} from '../src/Common/Observe/reactive'
 import {exposeStoreReplay, syncStoreReplay} from '../src/Common/Observe/store-replay'
 import {conflateReplay, exposeReplay} from '../src/Common/events/replay-index'
 import {ReplayRemote} from '../src/Common/events/replay-index'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -50,7 +51,7 @@ type World = {
 
 type ConflateStats = {conflating: boolean, dropped: number, keyframes: number, coalesced: number, flushes: number}
 
-async function main() {
+async function runChecks() {
     console.log('\n[conflate-socket] per-connection conflation over a real Socket.IO wire')
 
     const backend = createStore<World>({units: {alpha: {hp: 100, x: 0}, beta: {hp: 100, x: 0}, gamma: {hp: 100, x: 0}}, tick: 0}, {drain: 'micro'})
@@ -286,4 +287,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

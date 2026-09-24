@@ -18,6 +18,7 @@ import http from 'node:http'
 import type {AddressInfo} from 'node:net'
 import {createHttpFacadeServer, type HttpFacadeServerOptions, type tHttpFacadeMethod} from '../src/server/httpFacadeServer'
 import {createHttpFacadeOpenApi} from '../demo/http-openapi'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -66,7 +67,7 @@ function requestJson(port: number, method: string, path: string, body?: unknown)
     })
 }
 
-async function main() {
+async function runChecks() {
     // ============== the captured walk is the spec's route list ==============
     {
         const object = makeFacadeObject()
@@ -249,4 +250,8 @@ async function main() {
     console.log(fails ? `http-openapi: ${fails} FAILED` : 'http-openapi: ALL GREEN')
     process.exit(fails ? 1 : 0)
 }
-main().catch(e => { console.error(e); process.exit(2) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(2) })
+}
+
+runOracle(main)

@@ -15,6 +15,7 @@ import {createStore, listenStorePatches, type StorePatch} from '../src/Common/Ob
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {exposeStoreReplay} from '../src/Common/Observe/store-replay'
 import {storeReplayPatchV2WireMetrics} from '../src/Common/Observe/store-replay-codec'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -25,7 +26,7 @@ const ok = (condition: any, message: string) => {
 let t = 1_000_000
 const now = () => t
 
-async function main() {
+async function runChecks() {
     // ============== keepBytes evicts oldest, newest tail stays servable ==============
     {
         const [emit, line] = replayListen<[number]>({keepBytes: 100, sizeOf: () => 10, current: 'last', now})
@@ -200,4 +201,8 @@ async function main() {
     console.log(fails ? `journal-bytes: ${fails} FAILED` : 'journal-bytes: ALL GREEN')
     process.exit(fails ? 1 : 0)
 }
-main().catch(e => { console.error(e); process.exit(2) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(2) })
+}
+
+runOracle(main)
