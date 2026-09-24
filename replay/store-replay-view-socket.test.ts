@@ -18,6 +18,7 @@ import {
 } from '../src/Common/Observe/store-replay'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
+import {runOracle} from '../oracle/run-oracle'
 
 const SOCKET_KEY = 'store-replay-view-socket'
 const MIB = 1024 * 1024
@@ -78,7 +79,7 @@ function selectedSnapshot(source: ReturnType<typeof createStore<State>>, keys: r
     return selected
 }
 
-async function main() {
+async function runChecks() {
     const selectedKeys = Array.from(
         {length: SELECTED_COUNT},
         (_value, index) => numberedKey('selected', index),
@@ -296,7 +297,11 @@ async function main() {
     }
 }
 
-main().catch(function storeReplayViewSocketTestFailed(error) {
-    console.error(error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function storeReplayViewSocketTestFailed(error) {
+        console.error(error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

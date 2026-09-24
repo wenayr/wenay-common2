@@ -18,6 +18,7 @@ import {
 } from '../src/Common/Observe/store-replay'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
+import {runOracle} from '../oracle/run-oracle'
 
 function delay(ms: number) {
     return new Promise<void>(function wait(resolve) { setTimeout(resolve, ms) })
@@ -31,7 +32,7 @@ async function waitFor(label: string, condition: () => boolean) {
     throw new Error('timeout: ' + label)
 }
 
-async function main() {
+async function runChecks() {
     type Quotes = Record<string, {c: number, t: number}>
     const initial: Quotes = {}
     for (let index = 0; index < 100; index++) {
@@ -104,7 +105,11 @@ async function main() {
     console.log('Store Replay V2 Socket.IO test: OK')
 }
 
-main().catch(function fail(error) {
-    console.error(error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function fail(error) {
+        console.error(error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

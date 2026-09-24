@@ -18,6 +18,7 @@ import {
     encodeStoreReplayPatchV2,
     storeReplayBatchV2WireMetrics,
 } from '../src/Common/Observe/store-replay-codec'
+import {runOracle} from '../oracle/run-oracle'
 
 let failures = 0
 
@@ -29,7 +30,7 @@ function ok(condition: unknown, message: string) {
     }
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[store-replay-v2] patch tuples')
     const patches: StorePatch[] = [
         {path: ['BTC'], exists: true, value: {c: 1}},
@@ -269,7 +270,11 @@ async function main() {
     process.exit(failures == 0 ? 0 : 1)
 }
 
-main().catch(function fail(error) {
-    console.error(error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function fail(error) {
+        console.error(error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

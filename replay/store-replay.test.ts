@@ -2,6 +2,7 @@ import {createStore} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {exposeStoreReplay, syncStoreReplay} from '../src/Common/Observe/store-replay'
 import {ReplayRemote} from '../src/Common/events/replay-index'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -29,7 +30,7 @@ function makeRemote(exposed: ReturnType<typeof exposeStoreReplay<World>>, lag = 
 
 const ascendingUnique = (seqs: number[]) => seqs.every((s, i) => i == 0 || s > seqs[i - 1])
 
-async function main() {
+async function runChecks() {
     console.log('\n[store-replay] transient dynamic paths do not remain in Store node cache')
     {
         const backend = createStore<Record<string, {value: number}>>({})
@@ -172,4 +173,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

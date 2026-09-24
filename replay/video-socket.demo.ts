@@ -28,6 +28,7 @@ import {createStore, StorePatch} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {exposeStoreReplay, syncStoreReplay} from '../src/Common/Observe/store-replay'
 import {ReplayRemote} from '../src/Common/events/replay-index'
+import {runOracle} from '../oracle/run-oracle'
 
 const W = 32, H = 10, FRAMES = 60
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
@@ -111,7 +112,7 @@ async function connectViewer(port: number, name: string) {
     return {remote, close: () => hub.socket?.disconnect?.()}
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[video] bouncing ball over a real Socket.IO wire')
 
     // ============ server: "recording" ============
@@ -197,4 +198,8 @@ async function main() {
     }
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

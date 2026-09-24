@@ -27,6 +27,7 @@ import {
 import {createMediaRelay} from '../src/Common/peer/peer-media-relay'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
+import {runOracle} from '../oracle/run-oracle'
 
 type tLine = 'cam' | 'screen'
 type tParticipant = {account: string, room: string}
@@ -332,7 +333,7 @@ async function expectDenied(label: string, run: () => Promise<any>) {
     ok(denied, label)
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[video-windows-stress] synthetic multi-participant video over real RPC')
     const roomByAccount = new Map(participants.map(item => [item.account, item.room]))
     const server = await createStressServer(roomByAccount)
@@ -694,7 +695,11 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function onFatal(error) {
-    console.error(error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function onFatal(error) {
+        console.error(error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

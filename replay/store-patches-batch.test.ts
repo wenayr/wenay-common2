@@ -6,6 +6,7 @@ import {isDeepStrictEqual} from 'node:util'
 import {createStore, createStoreMirror, exposeStore, StorePatch} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {rpcResultWireByteLength} from '../src/Common/rcp/rpc-wire-size'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 function ok(condition: any, message: string) {
@@ -21,7 +22,7 @@ async function settle(...stores: {state: object}[]) {
     for (const store of stores) await flushReactive(store.state)
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[store-patches-batch] new server serves old and new clients')
     {
         const source = createStore<State>({}, {drain: 'micro'})
@@ -171,4 +172,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(error => { console.error(error); process.exit(1) })
+async function main() {
+    await runChecks().catch(error => { console.error(error); process.exit(1) })
+}
+
+runOracle(main)

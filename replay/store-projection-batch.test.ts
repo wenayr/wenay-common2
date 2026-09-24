@@ -8,6 +8,7 @@ import {flushReactive} from '../src/Common/Observe/reactive'
 import {syncStoreReplay} from '../src/Common/Observe/store-replay'
 import {decodeStoreReplayBatchV2} from '../src/Common/Observe/store-replay-codec'
 import {createFileJobHost} from '../src/Common/resource/file-job-host'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 function ok(condition: any, message: string) {
@@ -19,7 +20,7 @@ async function drainTurn() {
     await new Promise<void>(function waitForDrain(resolve) { setImmediate(resolve) })
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[store-projection-batch] silent unrelated views + compact visible bursts')
 
     const projected = createStore({items: {a: {value: 1}}, flags: {ready: {value: true}}}, {drain: 'micro'})
@@ -194,4 +195,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function reportFailure(error) { console.error(error); process.exit(1) })
+async function main() {
+    await runChecks().catch(function reportFailure(error) { console.error(error); process.exit(1) })
+}
+
+runOracle(main)

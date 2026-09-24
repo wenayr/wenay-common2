@@ -13,6 +13,7 @@ import {createOfflineStore, createMemoryOfflineStorage} from '../src/Common/Obse
 import {createDurableStoreReplay} from '../src/Common/Observe/store-durable'
 import {createMemoryReplayStorage, ReplayStorage} from '../src/Common/events/replay-history'
 import {ReplayEvent} from '../src/Common/events/replay-listen'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 function ok(condition: any, message: string) {
@@ -48,7 +49,7 @@ function instrumentStorage(withBulk: boolean) {
     return {storage, counts: () => ({singles, bulks, sizes})}
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[store-replay-v2-branches] leader -> follower -> client')
     {
         const source = createStore<State>({}, {drain: 'micro'})
@@ -206,4 +207,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(error => { console.error(error); process.exit(1) })
+async function main() {
+    await runChecks().catch(error => { console.error(error); process.exit(1) })
+}
+
+runOracle(main)

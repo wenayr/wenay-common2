@@ -14,6 +14,7 @@ import {
     decodeStoreReplayBatchV2,
     storeReplayBatchV2WireMetrics,
 } from '../src/Common/Observe/store-replay-codec'
+import {runOracle} from '../oracle/run-oracle'
 
 let failures = 0
 
@@ -681,7 +682,4 @@ async function main() {
     if (failures) process.exitCode = 1
 }
 
-void main().catch(function fatal(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runOracle(main)

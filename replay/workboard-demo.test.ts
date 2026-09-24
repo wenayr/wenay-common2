@@ -13,6 +13,7 @@ import {listen} from '../src/Common/events/Listen'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 
@@ -105,7 +106,7 @@ async function startClient(port: number, account: string) {
     }
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[workboard-demo] authoritative commands and replay mirrors over real Socket.IO')
     let nextId = 0
     let clock = 1_000
@@ -188,7 +189,11 @@ async function main() {
     console.log('\nPASS: Workboard Store boundary, revisions and reconnect are green')
 }
 
-main().catch(function failWorkboardOracle(error) {
-    console.error(error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function failWorkboardOracle(error) {
+        console.error(error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)
