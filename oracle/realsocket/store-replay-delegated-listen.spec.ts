@@ -42,7 +42,10 @@ async function main() {
         assert.equal(mirror.state.reading, 0)
         source.state.reading = 2
         const deadline = Date.now() + 3000
-        while (mirror.state.reading != 2 && Date.now() < deadline) {
+        // read through a call: assert.equal(..., 0) above narrowed the property to 0 for TS,
+        // but the mirror changes asynchronously
+        const reading = () => mirror.state.reading
+        while (reading() != 2 && Date.now() < deadline) {
             await new Promise(resolve => setTimeout(resolve, 5))
         }
         assert.equal(error, undefined)

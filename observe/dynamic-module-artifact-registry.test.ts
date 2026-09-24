@@ -96,8 +96,11 @@ async function main() {
     assert.equal(registry.view.stats().fetches, 1, 'concurrent same-hash misses fold into one fetch')
     assert.equal(provider.view.stats().entries, 1)
     assert.equal(provider.view.stats().misses, 20)
+    // the byte cache types bytes as string | Uint8Array; the copy check needs bytes a caller can write
+    const written = copies[0]!.bytes
+    assert.ok(written instanceof Uint8Array, 'the provider returns binary artifact bytes')
     const original = copies[1]!.bytes[0]
-    copies[0]!.bytes[0] = copies[0]!.bytes[0]! ^ 0xff
+    written[0] = written[0]! ^ 0xff
     const cached = await provider.resource.fetch(descriptor.artifactRef)
     assert.equal(cached.bytes[0], original, 'callers receive defensive byte copies')
     assert.equal(provider.view.stats().hits, 1)

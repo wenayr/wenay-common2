@@ -95,7 +95,7 @@ test('lazy line: a "__proto__" key survives host chunking and reaches the mirror
 
     const mirror = createStore<Record<string, {v: number}>>({}, {drain: 'micro'})
     const sync = syncStoreLazyLine(mirror, host.api, {})
-    await sync.ready
+    await sync.filled
     await flushReactive(mirror.state)
 
     const own = Object.prototype.hasOwnProperty.call(mirror.state, '__proto__')
