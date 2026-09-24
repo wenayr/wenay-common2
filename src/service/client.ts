@@ -54,7 +54,7 @@ export type ServiceClientDeps<D extends tServiceDefinition<any, any>> = {
     }
     /** Stable identity of this client's lines (default: random). */
     clientId?: string
-    /** Socket handshake auth (e.g. {account} for the ungated participant surface). */
+    /** Socket handshake auth for a custom host; the service hosts bind no identity from it. */
     handshake?: Record<string, unknown>
     log?: (line: string) => void
     resourceOptions?: ServiceResourceOptions

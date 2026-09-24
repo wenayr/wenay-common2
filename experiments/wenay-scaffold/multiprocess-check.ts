@@ -11,6 +11,7 @@ import {createRpcClientHub} from '../../src/Common/rcp/rpc-clientHub'
 import {followNodeDirectory, type NodeDirectoryView} from '../../src/Common/Observe/node-directory'
 import {createStoreFollower} from '../../src/Common/Observe/store-follower'
 import {createClusterClient} from '../../src/Common/scale/scale-client'
+import {createTokenCodec} from '../../src/server/auth-token'
 import {serviceDefinition, type CounterState} from './template/service'
 import type {createServiceLeader} from './template/leader'
 
@@ -96,13 +97,15 @@ async function main() {
         })
         const url = /leader listening on (http:\/\/localhost:\d+)/.exec(leader.output())![1]
         const primary = createRpcClientHub(
-            () => io(url, {transports: ['websocket'], forceNew: true, auth: {account: 'process-consumer'}}),
+            () => io(url, {transports: ['websocket'], forceNew: true}),
             rpc => ({read: rpc<Record<string, Browser>>('app'), write: rpc<Record<string, Writer>>('scale')}),
         )
         cleanup.push(function closePrimary() { primary.close() })
         const primaryApi = await primary.setToken(null)
         await primaryApi.read.readyStrict()
-        const minted = await primaryApi.read.func[name].identity.login()
+        // The operator issues the consumer's session with the secret it handed the leader:
+        // the ungated port has no login without access.login.
+        const minted = {token: createTokenCodec({secret: secrets.SERVICE_TOKEN_SECRET}).issue({sub: 'process-consumer'})}
         await primary.reauth(minted.token)
         const roster = followNodeDirectory(primaryApi.read.func[name].roster)
         cleanup.push(roster.close)

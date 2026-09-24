@@ -245,12 +245,15 @@ export function createServiceLeader<D extends tServiceDefinition<any, any>>(deps
         : Omit<BrowserBase, 'identity'> & {identity: Identity}) & tLegacyView<D>
     type ReadFragment = (tHasViews<D> extends true ? {views: tPublicViewLines<D>} : ReaderBase) & tLegacyView<D>
 
-    /** Participant surface (ungated): roster + identity, and the public views — the raw line only without views. */
-    function browserFragment(account: string): BrowserFragment {
-        const base = authority.serve.browser(account)
+    /** Participant surface (ungated): roster + identity, and the public views — the raw line only without views.
+     *  Anyone can reach it, so its identity mints only from credentials (access.login) and otherwise
+     *  only renews a live token. `_account` is ignored: an ungated surface has no verified account. */
+    function browserFragment(_account?: string): BrowserFragment {
+        // the authority's bound login(account) is a host-side verb; it never rides this surface
+        const {identity: {renew}, ...base} = authority.serve.browser('anonymous')
         const identity = definition.access?.login
-            ? {login: loginWith, renew: base.identity.renew, ...(definition.access.signup ? {signup: signupWith} : {})}
-            : base.identity
+            ? {login: loginWith, renew, ...(definition.access.signup ? {signup: signupWith} : {})}
+            : {renew}
         const views = access.publicViews()
         if (views) return {roster: base.roster, identity, views, ...legacyView} as unknown as BrowserFragment
         return {...base, identity, ...legacyView} as unknown as BrowserFragment

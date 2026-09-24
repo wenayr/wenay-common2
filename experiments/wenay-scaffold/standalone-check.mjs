@@ -56,6 +56,7 @@ try {
         .replace("../../src/Common/Observe/node-directory", 'wenay-common2/observe')
         .replace("../../src/Common/Observe/store-follower", 'wenay-common2/observe')
         .replace("import {createClusterClient} from '../../src/Common/scale/scale-client'", "import {Scale} from 'wenay-common2'\nconst {createClusterClient} = Scale")
+        .replace("../../src/server/auth-token", 'wenay-common2/server/auth')
         .replaceAll("'./template/", "'./")
         .replace("path.resolve(__dirname, '../..')", '__dirname')
         .replace('log() {},', 'log(line) { console.log(line) },')

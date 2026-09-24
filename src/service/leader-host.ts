@@ -121,11 +121,12 @@ export async function createServiceLeaderHost<D extends tServiceDefinition<any, 
                 resources.attach(resourceServer.control)
             }
 
-            // ungated participant surface: the line, the roster projection, identity, the read view
+            // ungated participant surface: the line, the roster projection, identity, the read view;
+            // the handshake is client-controlled, so no account is bound from it
             createRpcServerAuto({
                 socket,
                 socketKey: 'app',
-                object: {[name]: leader.serve.browserFragment(String(auth?.['account'] ?? 'anonymous'))},
+                object: {[name]: leader.serve.browserFragment()},
                 disconnectListen: goneListen,
             })
         })

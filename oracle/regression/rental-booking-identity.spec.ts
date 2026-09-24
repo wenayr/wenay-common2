@@ -6,8 +6,8 @@ import {serviceDefinition} from '../../experiments/wenay-scaffold/examples/renta
 test('rental scopes opaque booking identities to the verified account', async function scopedBookingIdentity() {
     const leader = createServiceLeader({definition: serviceDefinition, selfUrl: () => 'mem://rental', log() {}})
     try {
-        const alice = leader.serve.browserFragment('alice-private').identity.login().token
-        const bob = leader.serve.browserFragment('bob-private').identity.login().token
+        const alice = leader.identity.login('alice-private').token
+        const bob = leader.identity.login('bob-private').token
         const commands = leader.corridor.byToken()
         const firstInput = {itemId: 'kayak', from: '2026-10-01', to: '2026-10-03'}
         const secondInput = {itemId: 'tent', from: '2026-10-01', to: '2026-10-03'}
@@ -31,7 +31,7 @@ test('rental scopes opaque booking identities to the verified account', async fu
             definition: {...serviceDefinition, initial: saved}, selfUrl: () => 'mem://rental-restored', log() {},
         })
         try {
-            const token = restarted.serve.browserFragment('alice-private').identity.login().token
+            const token = restarted.identity.login('alice-private').token
             const before = restarted.line.control.store.snapshot()
             await assert.rejects(restarted.corridor.byToken().book(token, 'same-request', {
                 itemId: 'ebike', from: '2026-11-01', to: '2026-11-03',

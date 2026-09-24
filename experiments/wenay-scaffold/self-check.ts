@@ -237,8 +237,10 @@ async function main() {
     await node.start()
     await waitFor('the node registers itself in the roster', () => row('node-1')?.role == 'mirror' && row('node-1')?.url == 'mem://node-1')
 
-    // ============== identity: a real codec token from the leader's ungated port ==============
-    const minted = leader.serve.browserFragment('author').identity.login()
+    // ============== identity: the operator mints a real codec token through the authority ==============
+    // The ungated port has no login without access.login: anyone can reach it, so it never mints from a name.
+    ok(!('login' in leader.serve.browserFragment().identity), 'the ungated identity port offers renewal only, no login')
+    const minted = leader.identity.login('author')
     ok(minted.account == 'author' && codec.verify(minted.token).ok == true,
         'login mints a codec token the node secret verifies')
 
@@ -312,8 +314,9 @@ async function main() {
     await waitFor('the deny-list fact cuts the live session on the node', () => sawRevoked)
     const afterRevoke = await write.func[name].commands.add('r3', {delta: 1}).catch((error: any) => error?.code ?? String(error))
     ok(afterRevoke == 'E_UNAUTHORIZED', 'after the cut the node gate is closed')
-    const relogin = leader.serve.browserFragment('author').identity.login()
-    ok(codec.verify(relogin.token).ok == true, 'an explicit login lifts the revocation and mints anew')
+    const relogin = leader.identity.login('author')
+    ok(codec.verify(relogin.token).ok == true && !leader.view.isRevoked('author'),
+        'an explicit host-side login lifts the revocation and mints anew')
 
     // ============== drain: leave on the node's OWN directory fact ==============
     leader.control.drain('node-1')
@@ -363,7 +366,7 @@ async function main() {
         }).catch(function bootFailed(error: Error) { ok(false, error.message); return '' })
         if (url) {
             ok(true, `leader.ts boots as a process and binds a port (${url})`)
-            const socket = ioClient(url, {transports: ['websocket'], auth: {account: 'day-one'}})
+            const socket = ioClient(url, {transports: ['websocket']})
             const read = createRpcClient<any>({socket: socket as any, socketKey: 'app'})
             const view = await read.readyStrict().then(() => read.func[name].view()).catch((error: any) => ({error: String(error?.message ?? error)}))
             ok(JSON.stringify(view) == '{"counter":0}', `the process serves the read view over a real socket with zero nodes (${JSON.stringify(view)})`)

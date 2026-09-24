@@ -20,5 +20,7 @@ write partitions or elect a replacement authority. State and receipts need expli
 for authority restart recovery. Production identity issuance and operational policy belong to your host.
 
 The `readerFacet` projection does not restrict the full replicated state exposed by `replica`.
-Do not place private data on a publicly served replica. This template's login is a demonstration
+Do not place private data on a publicly served replica. Without `access.login` the leader serves no
+network login, only renewal of a live token: your host issues tokens (for example
+`leader.identity.login(account)` after its own authentication). The token codec is a demonstration
 identity adapter, not a production sign-in system.

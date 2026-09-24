@@ -123,7 +123,8 @@ async function main() {
     await waitFor('the leader serves REST on a real port and the node registers in the roster',
         () => row('leader')?.role == 'leader' && row('node-1')?.role == 'mirror')
 
-    const minted = leader.serve.browserFragment('renter').identity.login()
+    // the operator mints through the authority; the ungated port only renews
+    const minted = leader.identity.login('renter')
     ok(minted.account == 'renter' && codec.verify(minted.token).ok == true,
         'login mints a codec token the shared secret verifies')
 
@@ -173,7 +174,7 @@ async function main() {
         'the refused requestId left NO receipt — the same id retries honestly')
 
     // ============== ownership: the account is the token principal ==============
-    const stranger = leader.serve.browserFragment('stranger').identity.login()
+    const stranger = leader.identity.login('stranger')
     const stolen = await httpPost('/api/rental/cancel', ['s1', {bookingId: retried.body.value.id}], stranger.token)
     ok(stolen.body.ok == false && /owner/.test(stolen.body.error?.message ?? '')
         && bookings()[retried.body.value.id]?.state == 'active',

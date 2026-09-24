@@ -118,10 +118,11 @@ export type tPublicViewLines<D> = D extends {views: infer V extends Record<strin
 export type tPrincipalViewLines<D> = D extends {views: infer V extends Record<string, tServiceView<any>>}
     ? {[K in keyof V]: tViewLine<V[K]>} : {}
 type tMinted = {token: string, account: string, expiresAt?: number}
-/** The identity port of the ungated surface: credentials in when the definition declares a login. */
+/** The identity port of the ungated surface: credentials in when the definition declares a login;
+ *  without one it only renews a live token — anyone can reach it, so it never mints from a name. */
 export type tIdentityFragment<D, Base extends {renew: (...args: any[]) => any}> = tHasLogin<D> extends true
     ? {login: (credentials: unknown) => tMinted, renew: Base['renew']} & (tHasSignup<D> extends true ? {signup: (requestId: string, input: unknown) => Promise<unknown>} : {})
-    : Base
+    : {renew: Base['renew']}
 /** The gated facade of one principal: pruned commands, roles, the allowed view lines. */
 export type tPrincipalFacade<D, C, R> = {
     whoami: () => string, me: () => ServicePermissions, commands: C,
