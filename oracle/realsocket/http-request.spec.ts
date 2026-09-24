@@ -12,6 +12,9 @@ import {runOracle} from '../run-oracle'
 
 const binary = Buffer.from(Array.from({length: 256}, (_, i) => i))
 
+// the /echo answer as the route below writes it
+type Echo = {method?: string, type: string | null, auth: string | null, query: Record<string, string>, body: string}
+
 const server = http.createServer(function route(req, res) {
     const url = new URL(req.url ?? '/', 'http://local')
     const chunks: Buffer[] = []
@@ -38,7 +41,7 @@ async function runChecks() {
         assert.deepEqual(echoed, {method: 'POST', type: 'application/json', auth: 't', query: {}, body: '{"tag":"a"}'})
         console.log('PASS  json body carries its content type and caller headers')
 
-        const queried = await (await httpRequest(`${base}/echo`, {query: {url: ':1/webHook_a b&c'}})).json()
+        const queried = await (await httpRequest(`${base}/echo`, {query: {url: ':1/webHook_a b&c'}})).json() as Echo
         assert.deepEqual(queried.query, {url: ':1/webHook_a b&c'})
         assert.equal(queried.method, 'GET')
         assert.equal(queried.type, null)

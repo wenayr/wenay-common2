@@ -907,7 +907,8 @@ async function runChecks() {
             onBatch() { callbackCheckpoint = atomicFollower.checkpoint() },
         })
         await atomicFollower.ready
-        callbackCheckpoint = undefined
+        // reset without narrowing to undefined: onBatch assigns it again during settle()
+        callbackCheckpoint = undefined as ReplicatedMapCheckpoint<Row> | undefined
         atomicProducer.control.set(row('ATOMIC', 1))
         await settle(atomicFollower)
         ok(callbackCheckpoint?.cursor.seq == atomicFollower.seq()

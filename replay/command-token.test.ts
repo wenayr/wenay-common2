@@ -9,7 +9,7 @@
 //  Run: npx tsx replay/command-token.test.ts
 // ============================================================
 
-import {createCommandHost} from '../src/Common/command/command-host'
+import {createCommandHost, type tCommandMap} from '../src/Common/command/command-host'
 import {forwardCommandsByToken, verifyCommands} from '../src/Common/command/command-token'
 import {createTokenCodec} from '../src/server/auth-token'
 import {runOracle} from '../oracle/run-oracle'
@@ -30,19 +30,18 @@ async function main() {
     const codec = createTokenCodec({secret: 'oracle-secret', ttlMs: 60_000, now: () => clock})
     const revoked = new Set<string>()
     let applied = 0
-    const host = createCommandHost({
-        now: () => clock,
-        commands: {
-            add(ctx, input: {delta: number}) {
-                applied += input.delta
-                return {value: applied, by: ctx.account}
-            },
+    const commands = {
+        add(ctx, input: {delta: number}) {
+            applied += input.delta
+            return {value: applied, by: ctx.account}
         },
-    })
+    } satisfies tCommandMap
+    const host = createCommandHost({now: () => clock, commands})
 
     // ============== authority: verify EVERY call, never trust the relay ==============
     const seenTokens: unknown[] = []
-    const authority = verifyCommands({
+    // Cmds cannot be inferred back through CommandHost or the token fragment, so it is named
+    const authority = verifyCommands<typeof commands>({
         host,
         accountOf(token) {
             seenTokens.push(token)
@@ -55,7 +54,7 @@ async function main() {
     ok(authority.names.length == 1 && authority.names[0] == 'add', 'verifyCommands relays the host names')
 
     // ============== relay: shape-identical fragment, identity never asserted ==============
-    const relay = forwardCommandsByToken({upstream: authority.fragment(), names: authority.names})
+    const relay = forwardCommandsByToken<typeof commands>({upstream: authority.fragment(), names: authority.names})
     const tokenA = codec.issue({sub: 'person-a'})
     const viaRelay = relay.fragment(tokenA)
 

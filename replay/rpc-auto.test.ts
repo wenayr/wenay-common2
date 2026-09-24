@@ -203,7 +203,8 @@ async function runChecks() {
         // ============ frame equivalence: mini-frame == fold of full tail ============
         world.emitQuote('AAPL', 100); world.emitQuote('AAPL', 101); world.emitQuote('MSFT', 300)
         world.emitQuote('AAPL', 102); world.emitQuote('MSFT', 301)
-        const fullTail = await deep.quotes.since(0)
+        // null means an evicted tail; the length check below then fails instead of throwing
+        const fullTail = (await deep.quotes.since(0)) ?? []
         const mini = await deep.quotes.frame(0)
         ok(fullTail.length == 5 && mini.length == 2, `mini-frame condensed 5 events into 2 (${mini.length})`)
         ok(json(foldQuotes(mini)) == json(foldQuotes(fullTail)), 'apply(mini-frame) == apply(full tail) — state equivalent')

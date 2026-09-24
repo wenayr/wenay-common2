@@ -296,7 +296,8 @@ async function cursorFromAnotherHostLifetimeIsRefused() {
 
     const before = exposeStoreLazyLine(store, {now})
     const mirror = createStore<Record<string, Quote>>({})
-    let saved: StoreLazyCursor | null = null
+    // assigned in onCursor: the initializer must not narrow it to null for the reads below
+    let saved = null as StoreLazyCursor | null
     const first = syncStoreLazyLine(mirror, before.api, {
         fillOnly: true,
         onCursor: value => { saved = value },

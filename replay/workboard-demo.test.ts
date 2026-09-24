@@ -136,7 +136,7 @@ async function runChecks() {
         ok(duplicate.id == created.id && Object.keys(host.control.store.state).length == 2,
             'requestId retry returns the original receipt without a duplicate item')
 
-        const staleRevision = b.workboard.store.state[created.id].revision
+        const staleRevision = b.workboard.store.state[created.id]!.revision
         const moved = await a.workboard.move({
             requestId: 'move-1', id: created.id, status: 'active', expectedRevision: created.revision,
         })

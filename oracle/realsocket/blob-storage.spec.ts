@@ -33,7 +33,8 @@ async function main() {
         const oversized = await fetch(url + '/bytes', {method: 'POST', body: 'a'.repeat(100), headers: {authorization: 'yes'}})
         assert.equal(oversized.status, 413)
         const saved = await fetch(url + '/bytes', {method: 'POST', body: 'binary', headers: {authorization: 'yes'}})
-        const {value} = await saved.json()
+        // the router answers {ok: true, value} with value = storage.control.upload's result
+        const {value} = await saved.json() as {ok: true, value: Awaited<ReturnType<typeof storage.control.upload>>}
         assert.equal(saved.status, 200)
         assert(checks.includes('upload:commit'))
         const duplicate = await storage.control.upload('yes', Buffer.from('binary'))
