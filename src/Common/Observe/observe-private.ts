@@ -3,6 +3,7 @@
 export const REACTIVE_ARRAY_MUTATIONS = Symbol('reactive.arrayMutations')
 export const STORE_REPLAY_PATCH_SOURCE = Symbol('store.replayPatchSource')
 export const STORE_REPLAY_VIEW_PATCH_SOURCE = Symbol('store.replayViewPatchSource')
+export const STORE_EACH_RAW_SOURCE = Symbol('store.eachRawSource')
 
 export type ReactiveArrayMutations = {
     paths: readonly PropertyKey[][]

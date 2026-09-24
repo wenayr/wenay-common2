@@ -7,6 +7,7 @@ import {positiveIntegerOption} from '../positive-integer-option'
 import {rpcResultWireMetricsFast} from '../rcp/rpc-wire-size'
 import {
     REACTIVE_ARRAY_MUTATIONS,
+    STORE_EACH_RAW_SOURCE,
     STORE_REPLAY_PATCH_SOURCE,
     STORE_REPLAY_VIEW_PATCH_SOURCE,
     type ReactiveArrayMutations,
@@ -823,7 +824,9 @@ function createPatchesBatchListen(
 // into per-key paths, including deletes — cold start and reconnect are not special cases.
 // A key with unchanged primitive on root replace does not fire (set trap
 // skips Object.is-equal entries) — consumer doesn't need it.
-function createEachListen<T extends object>(store: Store<T>, opts: StoreEachOpts = {}) {
+// rawValues: the variant for layers that own a big mirror. A proxy read per changed
+// key leaves one reactive node per entry behind; a raw read leaves none.
+function createEachListen<T extends object>(store: Store<T>, opts: StoreEachOpts = {}, rawValues = false) {
     if (opts.depth != null && opts.depth != 1) throw new Error("store.each: only depth 1 is supported (reserved option)")
     return createListen<[key: string, value: T[keyof T] | undefined, ctx: StoreEachCtx]>((emit) => {
         // keys that consumers already know — so a hypothetical root-path []
@@ -834,7 +837,8 @@ function createEachListen<T extends object>(store: Store<T>, opts: StoreEachOpts
             const exists = isObj(raw) && key in raw
             if (exists) known.add(key)
             else known.delete(key)
-            emit(key as any, exists ? (store.state as any)[key] : undefined, {path: [key]})
+            const source: any = rawValues ? raw : store.state
+            emit(key as any, exists ? source[key] : undefined, {path: [key]})
         }
         const off = store.listenPaths().on(function eachStoreChange(change: StoreChange) {
             const keys = new Set<PropertyKey>()
@@ -855,6 +859,13 @@ function createEachListen<T extends object>(store: Store<T>, opts: StoreEachOpts
             if (type == "add" && count == 1 && !api.isRunning()) api.run()
             if (type == "remove" && count == 0 && api.isRunning()) api.close()
         },
+    })
+}
+
+// Same changed keys as each(), raw values: kept off the public Store surface.
+function installStoreEachRawSource<T extends object>(store: Store<T>) {
+    Object.defineProperty(store, STORE_EACH_RAW_SOURCE, {
+        value: function createStoreEachRawListen() { return createEachListen<T>(store, {}, true) },
     })
 }
 
@@ -1206,6 +1217,7 @@ export function createStore<T extends object>(initial: T, opts: Parameters<typeo
     installStorePatchesListenOwner(store)
     installStoreReplayPatchesListenOwner(store)
     installStoreReplayViewPatchesOwner(store)
+    installStoreEachRawSource(store)
     return store
 }
 

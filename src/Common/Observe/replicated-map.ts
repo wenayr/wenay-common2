@@ -14,6 +14,7 @@ import {
 } from './store-replay'
 import {toRaw} from './reactive'
 import {compareDeepValues} from '../core/deep-equal'
+import {STORE_EACH_RAW_SOURCE} from './observe-private'
 
 // ============================================================
 // public contract
@@ -739,17 +740,34 @@ export function followReplicatedMap<V, K extends string = string>(
         pendingChanges.push(delivery == 'lossless' ? losslessChange(patches) : latestChange(patches))
     }
 
-    const offEach = store.each().on(function forwardReplicatedMapKey(key, _value) {
-        if (keys.count() == 0) return
+    // ============== key feed: raw reads, per-key dispatch ==============
+    // The public each() reads every changed key through the proxy, which kept one reactive
+    // node per mirrored entry; the Store's raw variant keeps the same changed-key algorithm.
+    // onKey callbacks sit in a per-key table: a change no longer visits every subscriber.
+    type KeyRegistration = {cb: (value: V | undefined, ctx: ReplicatedMapKeyContext<K>) => void}
+    const keyed = new Map<K, Set<KeyRegistration>>()
+    const createRawKeyFeed = (store as Store<ReplicatedMapState<V, K>> & {
+        [STORE_EACH_RAW_SOURCE]?: () => ReturnType<Store<ReplicatedMapState<V, K>>['each']>
+    })[STORE_EACH_RAW_SOURCE]
+
+    function forwardReplicatedMapKey(key: string) {
+        const targets = keyed.get(key as K)
+        if (keys.count() == 0 && !targets) return
         const safeKey = requireReplicatedMapKey<K>(key)
         const state = toRaw(store.state) as ReplicatedMapState<V, K>
         const exists = owns(state, safeKey)
-        emitKey(
-            safeKey,
-            exists ? cloneStoreProjectionValue(state[safeKey]) : undefined,
-            {key: safeKey, exists},
-        )
-    })
+        const value = exists ? cloneStoreProjectionValue(state[safeKey]) : undefined
+        const ctx = {key: safeKey, exists}
+        // Taken before any callback runs, as a Listen snapshots its subscribers per emit.
+        const selected = targets ? [...targets] : []
+        if (keys.count() > 0) emitKey(safeKey, value, ctx)
+        for (const registration of selected) {
+            try { registration.cb(value, ctx) }
+            catch (error) { reportConsumerError(error) }
+        }
+    }
+
+    const offEach = (createRawKeyFeed?.() ?? store.each()).on(forwardReplicatedMapKey)
 
     function reportSyncError(error: unknown) {
         if (closed) return
@@ -977,9 +995,19 @@ export function followReplicatedMap<V, K extends string = string>(
     ) {
         if (closed) throw new Error('replicated map follower is closed')
         const safeKey = requireReplicatedMapKey<K>(key)
-        const off = keys.on(function forwardSelectedReplicatedMapKey(changedKey, value, ctx) {
-            if (changedKey == safeKey) cb(value, ctx)
-        })
+        // One registration per call: a callback registered twice runs twice.
+        const registration: KeyRegistration = {cb}
+        let targets = keyed.get(safeKey)
+        if (!targets) {
+            targets = new Set()
+            keyed.set(safeKey, targets)
+        }
+        targets.add(registration)
+        function off() {
+            const current = keyed.get(safeKey)
+            if (!current?.delete(registration)) return
+            if (current.size == 0) keyed.delete(safeKey)
+        }
         if (keyOpts.current) {
             try { cb(get(safeKey), {key: safeKey, exists: has(safeKey)}) }
             catch (error) { reportConsumerError(error) }
@@ -1021,6 +1049,7 @@ export function followReplicatedMap<V, K extends string = string>(
         sync?.()
         pendingChanges.length = 0
         offEach()
+        keyed.clear()
         setStatus({state: 'closed'})
         batches.close()
         keys.close()
