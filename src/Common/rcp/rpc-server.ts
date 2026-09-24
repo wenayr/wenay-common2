@@ -1104,7 +1104,14 @@ function createServer<T extends object>(
 
                     if (step.type === 'get') {
                         if (current == null) throw new Error(`Cannot read property '${step.prop}' of ${current}`);
-                        current = current[step.prop];
+                        const owner = current;
+                        const next = current[step.prop];
+                        // A this-dependent method (class instance method, Date.prototype.*) must
+                        // keep the receiver it was read from — only the root method was bound.
+                        // A pipe-relay proxy is left alone so the IS_RPC_PIPE check above still sees it.
+                        current = typeof next == 'function' && !(next as any)[IS_RPC_PIPE]
+                            ? next.bind(owner)
+                            : next;
                     } else if (step.type === 'call') {
                         if (typeof current !== "function") throw new Error("Attempted to call a non-function in pipe");
                         // like in CALL: else Date/Map/BigInt in callback args perish on JSON transport
