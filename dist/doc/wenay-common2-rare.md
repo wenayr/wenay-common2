@@ -1510,7 +1510,7 @@ Contract:
 - `node` subscriptions are address-based, so `store.state.data = {BTC: 10}` keeps `store.node.data.BTC` subscriptions alive.
 - Dynamic node-cache entries are pruned after their state path is deleted unless that path still has a `node` subscription; the subscription keeps its node identity until its final `off()`. Remote `set`/`replace` and the Replay journal write/read raw state, so transient wire keys do not materialize path nodes. An entry read on a path that never existed is released by the next write to a cached sibling; a write costs the same however many sibling entries are cached.
 - A path subscription follows its path when an ancestor is deleted (or replaced by a non-object) and recreated in the same drain window, including patch application and a replay tail catch-up; an unchanged leaf does not notify, later changes do.
-- Primitive, missing, and later-created paths are subscribable.
+- Primitive, missing, and later-created paths are subscribable. A primitive-leaf subscription re-reads its path only when that path or a prefix was written through the Store (own accessors are re-read on every wake), so 10k leaf subscriptions under one parent cost about as much per drain as one; raw writes that bypass the proxy and writes through an aliased branch are not observed.
 - `{current:true}` emits only when a value exists; absent paths wait for the first value.
 - `drain` is per subscription/sync. Branch subscribers receive whole branch snapshots; mask `.on()` receives the selected snapshot; `.onEach()` receives `(value, ctx)` with route; `store.each()` receives `(key, value, ctx)` per changed top-level key.
 - `pathString` is human-readable; internal route identity is collision-safe for dotted keys and distinct `Symbol()` keys.
@@ -1755,6 +1755,11 @@ serveReplayChannel(source, channel) <-> channelReplayRemote(channel) -> ReplayRe
   //   Binary budget: 1,000,000 work units per value; a binary view, ArrayBuffer or RegExp costs 16. A failed
   //   live item or packet costs no neighbours and is rethrown once; channelFromDataChannel drops sends once
   //   its readyState is closing (onClose reports it).
+  //   A batched binary live event is encoded once, at emit, into the open frame: those bytes are its
+  //   snapshot. A frame goes out at 64 events or 64 KB; an event that does not fit starts the next frame,
+  //   one past 64 KB travels alone, and one the codec refuses even alone keeps the JSON envelope. Events
+  //   emitted while a frame is being sent (synchronous transports) keep their order and binary types.
+  //   A JSON peer's message skips the byte reviver unless its text holds the byte marker or a \u escape.
 createReplicatedMap<V>({keyOf, initial?, store?, delivery, lineId?, replay?}) -> {api, control}  // high-level keyed collection over layer B, not a parallel journal
 followReplicatedMap(remote, {delivery?, checkpoint?, onBatch?, onStatus?, staleMs?, ...}) -> followed map
   // PRODUCER: control = set/setMany/delete/deleteMany/replaceAll/get/has/snapshot/flush/close. All input iterables
@@ -1769,6 +1774,8 @@ followReplicatedMap(remote, {delivery?, checkpoint?, onBatch?, onStatus?, staleM
   //   mutates and publishes only semantic changes. New object identity is irrelevant. When the producer already has
   //   a dirty-key list, setMany(changes) avoids the full-snapshot scan.
   // CLIENT: get/has/snapshot/onKey/ready/status/statusChanges/batches/keys/seq()/replayMode()/delivery()/checkpoint()/isStale()/close().
+  //   onKey callbacks run per key, after that change's `keys` subscribers; keys.count() counts `keys` subscribers only.
+  //   The follower reads changed keys raw: with no key consumers it creates no per-key reactive nodes.
   //   onBatch receives {delivery,set:[[key,value]],delete:[key],operations:[...]} after one bounded physical envelope
   //   is materialized. Bounds may split one setMany; maxDelayMs may merge adjacent source operations. Consumer errors
   //   on the high-level batches/keys/status streams are isolated from replay and reported as asynchronous throws.
@@ -1871,6 +1878,9 @@ createStoreReplicaSet<T>(deps) -> {control, api, close}                         
   // ROUTE CHOICE: choose the best accepted authority, restrict to its freshest authoritySeq, then minimize
   //   remote authorityCost + measured local RTT + offer priority. The active route stays until a replacement
   //   wins by hysteresisMs. A path containing the local node is rejected; so a cheap descendant never loops.
+  //   Local RTT is sampled when a route opens, on probe()/probeIntervalMs and when a push changes more than
+  //   headSeq/authoritySeq; a seq-only push is validated and passed through accept() without a descriptor
+  //   read or ping (before 3.1.0: two round trips per leader write per route).
   //   Same remote replay space hands off by seq; a different cascade/authority line resets through a keyframe.
   // AUTHORITY: default fork choice is epoch -> leaderId -> authorityLineId (deterministic availability mode).
   //   Automatic promotion is OFF unless autoPromoteMs is supplied. Without an injected elect/accept policy,
@@ -2023,8 +2033,11 @@ const facade = {
 // on a slow link. Chunks are partial keyframes over DISJOINT top-level key subsets (one oversized
 // value = its own chunk, never split), all at ONE seq; the client merges and synthesizes a standard
 // keyframe event, so apply stays the existing atomic single-event path. Presence IS the capability
-// (like frame/frameLine — no Caps bit); the producer retains the encoded set 60 s / max 4 attempts,
-// an evicted pull answers null and the client FALLS BACK to the monolithic keyframe.
+// (like frame/frameLine — no Caps bit); the producer retains one encoded set per journal head and
+// budget (snap-<head>-<budget>), shared by every attempt that begins there: a begin at a retained head
+// takes no new snapshot and answers its own ts. 60 s, refreshed by begin/pull; LRU cap of 4 DISTINCT
+// snapshots; end() releases one reader, the last frees the set. An evicted pull answers null and the
+// client FALLS BACK to the monolithic keyframe (20 reconnecting clients: 1 snapshot, 0 fallbacks).
 // Client control: chunkedKeyframe on sync/route opts — default ON when offered, false disables,
 // {budgetBytes /* clamped 16K..4M, default 256K */, onProgress({snapshotId, received, total})} tunes.
 // Producer control: exposeStoreReplay {chunks: false} withholds the facet — the opt-out for facades

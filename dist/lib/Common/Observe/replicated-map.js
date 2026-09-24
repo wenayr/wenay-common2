@@ -11,6 +11,7 @@ const store_1 = require("./store");
 const store_replay_1 = require("./store-replay");
 const reactive_1 = require("./reactive");
 const deep_equal_1 = require("../core/deep-equal");
+const observe_private_1 = require("./observe-private");
 function owns(value, key) {
     return Object.prototype.hasOwnProperty.call(value, key);
 }
@@ -557,14 +558,30 @@ function followReplicatedMap(remote, opts = {}) {
         }
         pendingChanges.push(delivery == 'lossless' ? losslessChange(patches) : latestChange(patches));
     }
-    const offEach = store.each().on(function forwardReplicatedMapKey(key, _value) {
-        if (keys.count() == 0)
+    const keyed = new Map();
+    const createRawKeyFeed = store[observe_private_1.STORE_EACH_RAW_SOURCE];
+    function forwardReplicatedMapKey(key) {
+        const targets = keyed.get(key);
+        if (keys.count() == 0 && !targets)
             return;
         const safeKey = requireReplicatedMapKey(key);
         const state = (0, reactive_1.toRaw)(store.state);
         const exists = owns(state, safeKey);
-        emitKey(safeKey, exists ? (0, store_projection_1.cloneStoreProjectionValue)(state[safeKey]) : undefined, { key: safeKey, exists });
-    });
+        const value = exists ? (0, store_projection_1.cloneStoreProjectionValue)(state[safeKey]) : undefined;
+        const ctx = { key: safeKey, exists };
+        const selected = targets ? [...targets] : [];
+        if (keys.count() > 0)
+            emitKey(safeKey, value, ctx);
+        for (const registration of selected) {
+            try {
+                registration.cb(value, ctx);
+            }
+            catch (error) {
+                reportConsumerError(error);
+            }
+        }
+    }
+    const offEach = (createRawKeyFeed?.() ?? store.each()).on(forwardReplicatedMapKey);
     function reportSyncError(error) {
         if (closed)
             return;
@@ -804,10 +821,20 @@ function followReplicatedMap(remote, opts = {}) {
         if (closed)
             throw new Error('replicated map follower is closed');
         const safeKey = requireReplicatedMapKey(key);
-        const off = keys.on(function forwardSelectedReplicatedMapKey(changedKey, value, ctx) {
-            if (changedKey == safeKey)
-                cb(value, ctx);
-        });
+        const registration = { cb };
+        let targets = keyed.get(safeKey);
+        if (!targets) {
+            targets = new Set();
+            keyed.set(safeKey, targets);
+        }
+        targets.add(registration);
+        function off() {
+            const current = keyed.get(safeKey);
+            if (!current?.delete(registration))
+                return;
+            if (current.size == 0)
+                keyed.delete(safeKey);
+        }
         if (keyOpts.current) {
             try {
                 cb(get(safeKey), { key: safeKey, exists: has(safeKey) });
@@ -849,6 +876,7 @@ function followReplicatedMap(remote, opts = {}) {
         sync?.();
         pendingChanges.length = 0;
         offEach();
+        keyed.clear();
         setStatus({ state: 'closed' });
         batches.close();
         keys.close();

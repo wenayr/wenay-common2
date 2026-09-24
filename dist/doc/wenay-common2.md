@@ -1074,6 +1074,8 @@ Observe.playbackStoreReplay<T>(storage, {speed? = 1 | Infinity, maxStepMs?, drai
   // re-emits the recorded patch line as an ORDINARY head — mirrors consume it like live;
   // playback batching is opt-in through expose.batch; recording coordinates remain unchanged
   // random access stays Observe.storeReplayAt(storage, {seq|ts}). Oracle: replay/record-playback.test.ts
+  // the pacing timers keep the process alive until `done` (close() clears them), so a standalone
+  // `await playback.done` plays to the end
 
 // node health — stats() of local primitives aggregated into ONE mirrorable store
 Observe.createNodeHealth({node, intervalMs?, now?, drain?})

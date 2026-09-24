@@ -1,3 +1,4 @@
+import { type ListenOff } from '../events/Listen';
 import { Store, StoreDrain } from './store';
 import { StoreReplayOpts, StoreReplayRemote, StoreReplaySyncOpts, tStoreReplayMode } from './store-replay';
 export type tReplicatedMapDelivery = 'latest' | 'lossless';
@@ -107,7 +108,7 @@ export declare function followReplicatedMap<V, K extends string = string>(remote
     snapshot: () => Partial<Record<K, V>>;
     onKey: (key: K, cb: (value: V | undefined, ctx: ReplicatedMapKeyContext<K>) => void, keyOpts?: {
         current?: boolean;
-    }) => import("../..").ListenOff;
+    }) => ListenOff;
     batches: import("../..").ListenApi<[ReplicatedMapChange<V, K>]>;
     keys: import("../..").ListenApi<[K, V | undefined, ReplicatedMapKeyContext<K>]>;
     ready: Promise<void>;
@@ -121,12 +122,12 @@ export declare function followReplicatedMap<V, K extends string = string>(remote
         keys(): import("../..").ListenKey[];
         isRunning(): boolean;
         run(): void;
-        onClose(cb: () => void): import("../..").ListenOff;
+        onClose(cb: () => void): ListenOff;
         on: import("../..").ListenOnCurrent<[ReplicatedMapStatus]>;
         once: (cb: import("../..").Listener<[ReplicatedMapStatus]>, opts?: {
             key?: import("../..").ListenKey;
             current?: import("../..").ListenCurrent<[ReplicatedMapStatus]> | undefined;
-        }) => import("../..").ListenOff;
+        }) => ListenOff;
     };
     seq: () => number;
     replayMode: () => "v2";

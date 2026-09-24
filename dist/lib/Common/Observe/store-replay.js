@@ -300,7 +300,6 @@ function exposeStoreReplayWire(replay, encode, prepareRead, chunking) {
     function buildChunksFacet(chunking) {
         const now = chunking.now ?? Date.now;
         const chunkSets = new Map();
-        let nextSnapshotId = 0;
         function sweepChunkSets() {
             const at = now();
             for (const [snapshotId, retained] of chunkSets) {
@@ -320,16 +319,31 @@ function exposeStoreReplayWire(replay, encode, prepareRead, chunking) {
             const budgetBytes = Number.isFinite(requested)
                 ? Math.min(exports.STORE_REPLAY_CHUNK_BUDGET_MAX, Math.max(exports.STORE_REPLAY_CHUNK_BUDGET_MIN, Math.floor(requested)))
                 : exports.STORE_REPLAY_CHUNK_BUDGET_DEFAULT;
-            const event = replay.keyframe();
-            if (!event)
-                return null;
-            const chunks = chunking.split(event, budgetBytes).map(encode);
-            if (chunks.length == 0)
-                return null;
-            const snapshotId = 'snap-' + (++nextSnapshotId) + '-' + event.seq;
             sweepChunkSets();
-            chunkSets.set(snapshotId, { chunks, expiresAt: now() + exports.STORE_REPLAY_CHUNK_TTL_MS });
-            return { snapshotId, seq: event.seq, ts: event.ts, total: chunks.length, budgetBytes, chunk0: chunks[0] };
+            const snapshotId = 'snap-' + replay.head() + '-' + budgetBytes;
+            let retained = chunkSets.get(snapshotId);
+            let ts;
+            let chunk0;
+            if (retained) {
+                ts = now();
+                chunk0 = encode({ ...retained.part0, ts });
+                chunkSets.delete(snapshotId);
+            }
+            else {
+                const event = replay.keyframe();
+                if (!event)
+                    return null;
+                const parts = chunking.split(event, budgetBytes);
+                if (parts.length == 0)
+                    return null;
+                retained = { chunks: parts.map(encode), part0: parts[0], readers: 0, expiresAt: 0 };
+                ts = event.ts;
+                chunk0 = retained.chunks[0];
+            }
+            retained.readers++;
+            retained.expiresAt = now() + exports.STORE_REPLAY_CHUNK_TTL_MS;
+            chunkSets.set(snapshotId, retained);
+            return { snapshotId, seq: retained.part0.seq, ts, total: retained.chunks.length, budgetBytes, chunk0 };
         }
         function pull(snapshotId, index) {
             sweepChunkSets();
@@ -346,7 +360,13 @@ function exposeStoreReplayWire(replay, encode, prepareRead, chunking) {
             return retained.chunks[at];
         }
         function end(snapshotId) {
-            return chunkSets.delete(String(snapshotId));
+            const key = String(snapshotId);
+            const retained = chunkSets.get(key);
+            if (!retained)
+                return false;
+            if (--retained.readers == 0)
+                chunkSets.delete(key);
+            return true;
         }
         return { begin, pull, end };
     }

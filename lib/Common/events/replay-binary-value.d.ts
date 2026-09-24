@@ -34,6 +34,18 @@ export declare function createBinaryValueCodec(options: BinaryValueCodecOptions)
         commit: () => void;
         rollback: () => void;
     };
+    openBatch: (prefix: readonly unknown[], maxItems?: number) => {
+        add: (value: unknown) => undefined;
+        rewindLast: () => void;
+        count: () => number;
+        byteLength: () => number;
+        finish: () => {
+            wire: Uint8Array<ArrayBuffer>;
+            commit: () => void;
+            rollback: () => void;
+        };
+        rollback: () => void;
+    };
     measureEncode: (value: unknown) => number;
     decode: (wire: unknown, requestedLimits?: RpcLimits, wireLimits?: BinaryValueWireLimits) => unknown;
     decodeTrusted: (wire: unknown, requestedLimits?: RpcLimits, wireLimits?: BinaryValueWireLimits) => unknown;

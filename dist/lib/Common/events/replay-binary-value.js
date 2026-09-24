@@ -26,6 +26,11 @@ const NATIVE_LEAF_WORK_UNITS = 16;
 const MAX_CALLBACK_REFS_PER_VALUE = 1_024;
 const BYTE_WRITER_TAIL_RESERVE = 256;
 const MAX_TYPED_ARRAY_OWN_KEY_SCAN_ITEMS = 4_096;
+const ASCII_ENCODE_MAX_BYTES = 32;
+const ASCII_DECODE_MAX_BYTES = 12;
+const RECENT_SHAPES = 8;
+const BATCH_MAX_ITEMS = 127;
+const BATCH_INITIAL_CAPACITY = 4_096;
 const VALUE_TAG = {
     NULL: 0,
     UNDEFINED: 1,
@@ -389,8 +394,8 @@ function varUintNumberByteLength(value) {
     }
     return bytes;
 }
-function createByteWriter(maxWireBytes) {
-    let bytes = new Uint8Array(256);
+function createByteWriter(maxWireBytes, initialCapacity = 256) {
+    let bytes = new Uint8Array(initialCapacity);
     let view = new DataView(bytes.buffer);
     let position = 0;
     function ensure(extra) {
@@ -439,9 +444,19 @@ function createByteWriter(maxWireBytes) {
         }
         position += byteLength;
     }
+    function writeAscii(value, byteLength) {
+        ensure(byteLength);
+        for (let index = 0; index < byteLength; index++)
+            bytes[position + index] = value.charCodeAt(index);
+        position += byteLength;
+    }
     function writeVarUintNumber(value, maxBytes = 8) {
         if (!Number.isSafeInteger(value) || value < 0) {
             binaryRangeError('number varuint must be a non-negative safe integer');
+        }
+        if (value < 0x80 && maxBytes >= 1) {
+            writeU8(value);
+            return;
         }
         let remaining = value;
         let count = 0;
@@ -473,14 +488,31 @@ function createByteWriter(maxWireBytes) {
             return bytes.slice(0, position);
         return bytes.subarray(0, position);
     }
+    function currentPosition() {
+        return position;
+    }
+    function rewind(to) {
+        if (!Number.isSafeInteger(to) || to < 0 || to > position)
+            binaryRangeError('invalid writer rewind');
+        position = to;
+    }
+    function patchU8(offset, value) {
+        if (!Number.isSafeInteger(offset) || offset < 0 || offset >= position)
+            binaryRangeError('invalid writer patch');
+        bytes[offset] = value;
+    }
     return {
         writeU8,
         writeU16,
         writeFloat64,
         writeBytes,
         writeUtf8,
+        writeAscii,
         writeVarUintNumber,
         writeVarUint,
+        position: currentPosition,
+        rewind,
+        patchU8,
         finish,
     };
 }
@@ -506,6 +538,9 @@ function createByteCounter(maxWireBytes) {
         advance(value.byteLength);
     }
     function writeUtf8(_value, byteLength) {
+        advance(byteLength);
+    }
+    function writeAscii(_value, byteLength) {
         advance(byteLength);
     }
     function writeVarUintNumber(value, maxBytes = 8) {
@@ -534,6 +569,7 @@ function createByteCounter(maxWireBytes) {
         writeFloat64,
         writeBytes,
         writeUtf8,
+        writeAscii,
         writeVarUintNumber,
         writeVarUint,
         byteLength,
@@ -562,6 +598,19 @@ function createByteReader(bytes) {
         const result = bytes.subarray(position, position + length);
         position += length;
         return result;
+    }
+    function takeAscii(length) {
+        requireBytes(length);
+        const end = position + length;
+        let value = '';
+        for (let index = position; index < end; index++) {
+            const byte = bytes[index];
+            if (byte > 0x7f)
+                return undefined;
+            value += String.fromCharCode(byte);
+        }
+        position = end;
+        return value;
     }
     function readVarUint(maxBytes, label, maxValue) {
         let value = 0n;
@@ -687,6 +736,7 @@ function createByteReader(bytes) {
         readU8,
         readFloat64,
         take,
+        takeAscii,
         readVarUint,
         readVarUintNumber,
         readSafeInteger,
@@ -762,11 +812,22 @@ function writeString(writer, value) {
         binaryRangeError('string exceeds byte limit');
     writer.writeU8(VALUE_TAG.STRING_UTF8);
     writeLength(writer, byteLength);
-    writer.writeUtf8(value, byteLength);
+    if (byteLength == value.length && byteLength <= ASCII_ENCODE_MAX_BYTES)
+        writer.writeAscii(value, byteLength);
+    else
+        writer.writeUtf8(value, byteLength);
 }
 function readUtf8String(reader, limits) {
     const maximumBytes = Math.min(MAX_STRING_BYTES, limits.maxStringCodeUnits * 3);
     const byteLength = readLength(reader, maximumBytes, 'UTF-8 string length');
+    if (byteLength <= ASCII_DECODE_MAX_BYTES) {
+        const ascii = reader.takeAscii(byteLength);
+        if (ascii != undefined) {
+            if (ascii.length > limits.maxStringCodeUnits)
+                binaryError('string exceeds code-unit limit');
+            return ascii;
+        }
+    }
     const encoded = reader.take(byteLength);
     let value;
     try {
@@ -810,17 +871,37 @@ function readString(reader, limits) {
     return binaryError('expected string');
 }
 function beginActive(active, value) {
-    if (active.has(value))
-        binaryError('cyclic values are not supported');
-    active.add(value);
+    for (let index = 0; index < active.length; index++) {
+        if (active[index] == value)
+            binaryError('cyclic values are not supported');
+    }
+    active.push(value);
 }
 function exactPrototype(value, expected, label) {
     if (Object.getPrototypeOf(value) != expected)
         binaryError(label + ' subclasses are not supported');
 }
-function captureObject(value) {
+function captureObject(value, values) {
+    const keys = Object.keys(value);
+    if (Object.getOwnPropertyNames(value).length != keys.length
+        || Object.getOwnPropertySymbols(value).length != 0) {
+        return captureObjectPrecise(value, values);
+    }
+    for (let index = 0; index < keys.length; index++) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, keys[index]);
+        if (!descriptor)
+            binaryError('object property descriptor disappeared');
+        if (own.call(descriptor, 'get') || own.call(descriptor, 'set')) {
+            binaryError('accessor properties are not supported');
+        }
+        values.push(descriptor.value);
+    }
+    if (keys.length > MAX_OBJECT_KEYS)
+        binaryRangeError('object exceeds key limit');
+    return keys;
+}
+function captureObjectPrecise(value, values) {
     const keys = [];
-    const values = [];
     for (const key of Reflect.ownKeys(value)) {
         if (typeof key == 'symbol')
             binaryError('symbol object keys are not supported');
@@ -837,7 +918,7 @@ function captureObject(value) {
     }
     if (keys.length > MAX_OBJECT_KEYS)
         binaryRangeError('object exceeds key limit');
-    return { keys, values };
+    return keys;
 }
 function createShapeCacheState() {
     return {
@@ -858,6 +939,7 @@ function createShapeTransaction(state, limits) {
         definitions: 0,
         references: 0,
         raw: 0,
+        recent: [],
     };
 }
 function encodedStringByteLength(value) {
@@ -880,6 +962,32 @@ function transactionShape(transaction, signature) {
     return transaction.stagedBySignature.get(signature)
         ?? transaction.state.bySignature.get(signature);
 }
+function sameShapeKeys(shape, prototype, keys) {
+    if (shape.prototype != prototype || shape.keys.length != keys.length)
+        return false;
+    const known = shape.keys;
+    for (let index = 0; index < keys.length; index++)
+        if (known[index] != keys[index])
+            return false;
+    return true;
+}
+function rememberShape(transaction, shape) {
+    const recent = transaction.recent;
+    if (recent.length >= RECENT_SHAPES)
+        recent.shift();
+    recent.push(shape);
+}
+function findShape(transaction, prototype, keys) {
+    const recent = transaction.recent;
+    for (let index = recent.length - 1; index >= 0; index--) {
+        if (sameShapeKeys(recent[index], prototype, keys))
+            return recent[index];
+    }
+    const known = transactionShape(transaction, shapeSignature(prototype, keys));
+    if (known)
+        rememberShape(transaction, known);
+    return known;
+}
 function canStageShape(transaction, keys, keyTextBytes) {
     return transaction.state.shapes.length + transaction.staged.length < transaction.limits.maxEntries
         && transaction.fieldRefs + keys.length <= transaction.limits.maxFieldRefs
@@ -897,7 +1005,11 @@ function stageShape(transaction, prototype, keys, expectedId) {
     const signature = shapeSignature(prototype, keys);
     if (transactionShape(transaction, signature))
         binaryError('duplicate object shape declaration');
-    const shape = { id, prototype, keys, signature, keyTextBytes };
+    let maxKeyLength = 0;
+    for (const key of keys)
+        if (key.length > maxKeyLength)
+            maxKeyLength = key.length;
+    const shape = { id, prototype, keys, signature, keyTextBytes, maxKeyLength };
     transaction.staged.push(shape);
     transaction.stagedBySignature.set(signature, shape);
     transaction.fieldRefs += keys.length;
@@ -912,6 +1024,31 @@ function commitShapeTransaction(transaction) {
     }
     transaction.state.fieldRefs = transaction.fieldRefs;
     transaction.state.keyTextBytes = transaction.keyTextBytes;
+}
+function createShapeMark() {
+    return { staged: 0, fieldRefs: 0, keyTextBytes: 0, definitions: 0, references: 0, raw: 0 };
+}
+function saveShapeMark(transaction, mark) {
+    mark.staged = transaction.staged.length;
+    mark.fieldRefs = transaction.fieldRefs;
+    mark.keyTextBytes = transaction.keyTextBytes;
+    mark.definitions = transaction.definitions;
+    mark.references = transaction.references;
+    mark.raw = transaction.raw;
+}
+function restoreShapeMark(transaction, mark) {
+    if (transaction.staged.length > mark.staged) {
+        while (transaction.staged.length > mark.staged) {
+            transaction.stagedBySignature.delete(transaction.staged.pop().signature);
+        }
+        const firstFreed = transaction.state.shapes.length + mark.staged;
+        transaction.recent = transaction.recent.filter(shape => shape.id < firstFreed);
+    }
+    transaction.fieldRefs = mark.fieldRefs;
+    transaction.keyTextBytes = mark.keyTextBytes;
+    transaction.definitions = mark.definitions;
+    transaction.references = mark.references;
+    transaction.raw = mark.raw;
 }
 function isArrayIndexKey(key, length) {
     const index = Number(key);
@@ -946,6 +1083,12 @@ function chargeNativeLeaf(context, fail, message) {
     context.workUnits += NATIVE_LEAF_WORK_UNITS - 1;
     if (context.workUnits > MAX_VALUE_WORK_UNITS)
         fail(message);
+}
+function chargeFrameArray(context, depth) {
+    if (++context.workUnits > MAX_VALUE_WORK_UNITS)
+        binaryRangeError('encoded value exceeds work limit');
+    if (depth > context.config.maxDepth)
+        binaryRangeError('maximum depth exceeded');
 }
 const writeValue = function writeBinaryValue(writer, value, depth, active, context) {
     if (++context.workUnits > MAX_VALUE_WORK_UNITS) {
@@ -1032,7 +1175,7 @@ const writeValue = function writeBinaryValue(writer, value, depth, active, conte
             }
         }
         finally {
-            active.delete(value);
+            active.pop();
         }
         return;
     }
@@ -1071,7 +1214,7 @@ const writeValue = function writeBinaryValue(writer, value, depth, active, conte
             }
         }
         finally {
-            active.delete(value);
+            active.pop();
         }
         return;
     }
@@ -1088,7 +1231,7 @@ const writeValue = function writeBinaryValue(writer, value, depth, active, conte
                 writeValue(writer, item, depth + 1, active, context);
         }
         finally {
-            active.delete(value);
+            active.pop();
         }
         return;
     }
@@ -1135,22 +1278,21 @@ const writeValue = function writeBinaryValue(writer, value, depth, active, conte
     if (prototype != Object.prototype && prototype != null) {
         binaryError('class instances are not supported');
     }
-    const captured = captureObject(value);
-    const keys = captured.keys;
-    const values = captured.values;
+    const values = context.values;
+    const base = values.length;
+    const keys = captureObject(value, values);
     const prototypeCode = prototype == null ? 1 : 0;
     beginActive(active, value);
     try {
         const shapes = context.shapes;
         if (shapes && keys.length <= shapes.limits.maxFieldRefs) {
-            const signature = shapeSignature(prototypeCode, keys);
-            const known = transactionShape(shapes, signature);
+            const known = findShape(shapes, prototypeCode, keys);
             if (known) {
                 writer.writeU8(VALUE_TAG.OBJECT_SHAPE_REF);
                 writeLength(writer, known.id);
                 shapes.references++;
-                for (const item of values) {
-                    writeValue(writer, item, depth + 1, active, context);
+                for (let index = 0; index < keys.length; index++) {
+                    writeValue(writer, values[base + index], depth + 1, active, context);
                 }
                 return;
             }
@@ -1158,14 +1300,15 @@ const writeValue = function writeBinaryValue(writer, value, depth, active, conte
             if (keyTextBytes <= shapes.limits.maxKeyTextBytes) {
                 if (canStageShape(shapes, keys, keyTextBytes)) {
                     const shape = stageShape(shapes, prototypeCode, keys);
+                    rememberShape(shapes, shape);
                     writer.writeU8(VALUE_TAG.OBJECT_SHAPE_DEF);
                     writeLength(writer, shape.id);
                     writer.writeU8(shape.prototype);
                     writeLength(writer, shape.keys.length);
                     for (const key of shape.keys)
                         writeString(writer, key);
-                    for (const item of values) {
-                        writeValue(writer, item, depth + 1, active, context);
+                    for (let index = 0; index < keys.length; index++) {
+                        writeValue(writer, values[base + index], depth + 1, active, context);
                     }
                     return;
                 }
@@ -1177,11 +1320,12 @@ const writeValue = function writeBinaryValue(writer, value, depth, active, conte
         writeLength(writer, keys.length);
         for (let index = 0; index < keys.length; index++) {
             writeString(writer, keys[index]);
-            writeValue(writer, values[index], depth + 1, active, context);
+            writeValue(writer, values[base + index], depth + 1, active, context);
         }
     }
     finally {
-        active.delete(value);
+        active.pop();
+        values.length = base;
     }
 };
 function copyBinary(value) {
@@ -1211,8 +1355,7 @@ function defineDecodedValue(target, key, value, context, nullPrototype) {
         target[key] = value;
         return;
     }
-    const inherited = Object.getOwnPropertyDescriptor(Object.prototype, key);
-    if (!inherited || own.call(inherited, 'value') && inherited.writable == true) {
+    if (!(key in Object.prototype)) {
         target[key] = value;
         return;
     }
@@ -1231,7 +1374,7 @@ function transactionShapeById(transaction, id) {
 function decodedShapeObject(reader, depth, limits, context, shape) {
     if (shape.keys.length > limits.maxObjectKeys)
         binaryError('object exceeds key limit');
-    if (shape.keys.some(key => key.length > limits.maxStringCodeUnits)) {
+    if (shape.maxKeyLength > limits.maxStringCodeUnits) {
         binaryError('object shape key exceeds string limit');
     }
     if (reader.remaining() < shape.keys.length)
@@ -1432,7 +1575,8 @@ function readTrustedUtf8String(reader, limits) {
     if (byteLength > Math.min(MAX_STRING_BYTES, limits.maxStringCodeUnits * 3)) {
         return binaryRangeError('trusted UTF-8 string exceeds limit');
     }
-    const value = trustedUtf8Decoder.decode(reader.take(byteLength));
+    const value = (byteLength <= ASCII_DECODE_MAX_BYTES ? reader.takeAscii(byteLength) : undefined)
+        ?? trustedUtf8Decoder.decode(reader.take(byteLength));
     if (value.length > limits.maxStringCodeUnits) {
         return binaryRangeError('trusted UTF-8 string exceeds code-unit limit');
     }
@@ -1707,15 +1851,19 @@ function createBinaryValueCodec(options) {
         decodeDefinitions += transaction.definitions;
         decodeReferences += transaction.references;
     }
-    function writeEncodedValue(writer, value, shapes) {
+    function writeHeader(writer) {
         for (const byte of config.magic)
             writer.writeU8(byte);
         writer.writeU8(config.version);
-        writeValue(writer, value, 0, new WeakSet(), {
+    }
+    function writeEncodedValue(writer, value, shapes) {
+        writeHeader(writer);
+        writeValue(writer, value, 0, [], {
             config,
             shapes,
             workUnits: 0,
             callbackRefs: 0,
+            values: [],
         });
     }
     function prepareEncode(value) {
@@ -1757,6 +1905,124 @@ function createBinaryValueCodec(options) {
         catch (error) {
             return throwLabeledError(config.label, error);
         }
+    }
+    function openBatch(prefix, maxItems = BATCH_MAX_ITEMS) {
+        if (pendingEncode) {
+            throw new Error(config.label + ': prepared encode must be committed or rolled back');
+        }
+        if (!Number.isSafeInteger(maxItems) || maxItems < 1 || maxItems > BATCH_MAX_ITEMS) {
+            throw new RangeError(config.label + ': batch maxItems must be 1 through ' + BATCH_MAX_ITEMS);
+        }
+        const shapes = config.shapeLimits
+            ? createShapeTransaction(encodeShapes, config.shapeLimits)
+            : undefined;
+        const writer = createByteWriter(config.maxWireBytes, BATCH_INITIAL_CAPACITY);
+        const context = { config, shapes, workUnits: 0, callbackRefs: 0, values: [] };
+        const active = [];
+        let countAt = 0;
+        try {
+            writeHeader(writer);
+            chargeFrameArray(context, 0);
+            if (prefix.length + 1 > MAX_ARRAY_ITEMS)
+                binaryRangeError('array exceeds item limit');
+            writer.writeU8(VALUE_TAG.ARRAY);
+            writeLength(writer, prefix.length + 1);
+            for (const item of prefix)
+                writeValue(writer, item, 1, active, context);
+            chargeFrameArray(context, 1);
+            writer.writeU8(VALUE_TAG.ARRAY);
+            countAt = writer.position();
+            writer.writeU8(0);
+        }
+        catch (error) {
+            return throwLabeledError(config.label, error);
+        }
+        const token = {};
+        const preparedGeneration = generation;
+        pendingEncode = token;
+        let itemCount = 0;
+        let finished = false;
+        let settled = false;
+        const before = { position: 0, itemCount: 0, workUnits: 0, callbackRefs: 0, shapes: createShapeMark() };
+        let canRewind = false;
+        function saveBefore() {
+            before.position = writer.position();
+            before.itemCount = itemCount;
+            before.workUnits = context.workUnits;
+            before.callbackRefs = context.callbackRefs;
+            if (shapes)
+                saveShapeMark(shapes, before.shapes);
+        }
+        function restoreBefore() {
+            writer.rewind(before.position);
+            itemCount = before.itemCount;
+            context.workUnits = before.workUnits;
+            context.callbackRefs = before.callbackRefs;
+            context.values.length = 0;
+            active.length = 0;
+            if (shapes)
+                restoreShapeMark(shapes, before.shapes);
+            canRewind = false;
+        }
+        function requireOpen() {
+            if (finished)
+                throw new Error(config.label + ': batch is finished');
+        }
+        function add(value) {
+            requireOpen();
+            if (itemCount >= maxItems)
+                throw new RangeError(config.label + ': batch item limit reached');
+            saveBefore();
+            try {
+                writeValue(writer, value, 2, active, context);
+            }
+            catch (error) {
+                restoreBefore();
+                return throwLabeledError(config.label, error);
+            }
+            itemCount++;
+            canRewind = true;
+        }
+        function rewindLast() {
+            requireOpen();
+            if (!canRewind)
+                throw new Error(config.label + ': batch has no item to rewind');
+            restoreBefore();
+        }
+        function commit() {
+            if (settled)
+                return;
+            if (preparedGeneration != generation || pendingEncode != token) {
+                throw new Error(config.label + ': prepared encode belongs to an obsolete generation');
+            }
+            settled = true;
+            pendingEncode = undefined;
+            if (shapes)
+                commitShapeTransaction(shapes);
+            applyEncodeStats(shapes);
+        }
+        function rollback() {
+            if (settled)
+                return;
+            settled = true;
+            finished = true;
+            if (pendingEncode == token)
+                pendingEncode = undefined;
+        }
+        function finish() {
+            requireOpen();
+            finished = true;
+            writer.patchU8(countAt, itemCount);
+            return { wire: trustReplayBinaryLeaf(writer.finish()), commit, rollback };
+        }
+        return {
+            add,
+            rewindLast,
+            count: () => itemCount,
+            byteLength: () => writer.position(),
+            finish,
+            rollback,
+        };
     }
     function measureEncode(value) {
         if (pendingEncode) {
@@ -1858,5 +2124,5 @@ function createBinaryValueCodec(options) {
         decodeDefinitions = 0;
         decodeReferences = 0;
     }
-    return { encode, prepareEncode, measureEncode, decode, decodeTrusted, stats, reset };
+    return { encode, prepareEncode, openBatch, measureEncode, decode, decodeTrusted, stats, reset };
 }
