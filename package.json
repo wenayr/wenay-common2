@@ -17,7 +17,7 @@
   "types": "lib/index.d.ts",
   "private": true,
   "bin": {
-    "wenay-https": "./lib/cli/wenay-https.js"
+    "wenay-https": "lib/cli/wenay-https.js"
   },
   "scripts": {
     "test": "npm run test:rpc-guards && npm run test:doc-links && npm run test:release-guard && npm run test:types && npm run test:spec-types && npm run test:demo-types && npm run test:console && npm run test:rpc && npm run test:rpc-flow && npm run test:rpc-markers && npm run test:rpc-inproc && npm run test:store-values && npm run test:store-external && npm run test:https && npm run test:dynamic-runtime && npm run --prefix ./test test && npm run test:exchange",
