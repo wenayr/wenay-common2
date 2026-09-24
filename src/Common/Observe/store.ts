@@ -1008,7 +1008,12 @@ function subscribePath<T>(store: StoreInternal<any>, path: PropertyKey[], cb: (v
             const value = getAt(store._state, path)
             const valueIsObject = isReactive(value)
             const watchedSelf = target === value
-            if (!valueIsObject && !watchedSelf && sameLeaf(lastValue, value, lastExists, exists)) return
+            if (!valueIsObject && !watchedSelf && sameLeaf(lastValue, value, lastExists, exists)) {
+                // The watched ancestor was detached and recreated in this window with an
+                // equal leaf: a detached node never fires again, so follow the path now.
+                if (!isReactive(target) && !done) attach()
+                return
+            }
             lastExists = exists
             lastValue = value
             const nextTarget = watchTarget(store._state, path)
