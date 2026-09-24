@@ -15,6 +15,7 @@ import {
     ModuleRolloutCommand,
     RolloutNodeBinding,
 } from '../experiments/dynamic-runtime/rollout-journal'
+import {runOracle} from '../oracle/run-oracle'
 
 const V1 = ('sha256:' + '1'.repeat(64)) as tModuleArtifactRef
 const V2 = ('sha256:' + '2'.repeat(64)) as tModuleArtifactRef
@@ -144,7 +145,4 @@ async function main() {
     }
 }
 
-void main().catch(function fatal(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runOracle(main)

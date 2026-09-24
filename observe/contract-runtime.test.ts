@@ -7,6 +7,7 @@ import {
     createContractRuntime,
     resolveContractBinding,
 } from '../src/Common/contract/contract-index'
+import {runOracle} from '../oracle/run-oracle'
 
 type EditorApi = {
     implementation: string
@@ -68,7 +69,7 @@ function descriptor(implementationId: string, contractVersion = '1.0.0') {
     }
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[contract-runtime] deterministic resolution')
     const inert = function inertOpen() {
         return {api: {} as EditorApi, close() {}}
@@ -258,7 +259,11 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exit(2)
-})
+async function main() {
+    await runChecks().catch(function fatal(error) {
+        console.error(error)
+        process.exit(2)
+    })
+}
+
+runOracle(main)

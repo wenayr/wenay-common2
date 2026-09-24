@@ -13,6 +13,7 @@
 // ============================================================
 
 import {reactive, onUpdatePaths, flushReactive} from '../src/Common/Observe/reactive'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -36,7 +37,7 @@ async function benchWindow(n: number, rounds: number) {
     return best
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[hot-write] changedPaths correctness under a hot window')
     {
         const state = reactive<any>({quotes: {}}, {drain: 'micro'})
@@ -92,4 +93,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

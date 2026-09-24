@@ -2,6 +2,7 @@ import {strict as assert} from 'node:assert'
 import {sha256Hex} from '../src/Common/artifact/artifact-hash'
 import {validateModuleManifest} from '../src/Common/dynamic/module-manifest'
 import {createModuleArtifactVerifier} from '../src/Common/dynamic/module-verifier'
+import {runOracle} from '../oracle/run-oracle'
 
 async function manifestFor(bytes: Uint8Array, changes: Record<string, unknown> = {}) {
     const digest = await sha256Hex(bytes)
@@ -99,7 +100,7 @@ async function rejects(label: string, work: () => unknown | Promise<unknown>, pa
     await assert.rejects(work, pattern, label)
 }
 
-async function main() {
+async function runChecks() {
     const source = new TextEncoder().encode(
         'globalThis.__dynamicModuleWasEvaluated = true; export const compress = () => 1',
     )
@@ -215,7 +216,11 @@ async function main() {
     console.log('dynamic module manifest/verifier: all passed')
 }
 
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function fatal(error) {
+        console.error(error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

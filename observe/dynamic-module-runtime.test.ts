@@ -3,6 +3,7 @@ import {sha256Hex} from '../src/Common/artifact/artifact-hash'
 import {createModuleArtifactVerifier} from '../src/Common/dynamic/module-verifier'
 import {createDynamicModuleHost, DynamicModuleHost} from '../src/server/dynamic/module-host'
 import {createModuleWorkerIsolation} from '../src/server/dynamic/module-worker-isolation'
+import {runOracle} from '../oracle/run-oracle'
 
 async function manifestFor(
     source: string,
@@ -138,7 +139,7 @@ async function expectReject(work: () => unknown | Promise<unknown>, pattern: Reg
     await assert.rejects(work, pattern)
 }
 
-async function main() {
+async function runChecks() {
     const verifier = createModuleArtifactVerifier({
         verifySignature: input => input.signature == 'valid-signature',
         policy: {
@@ -473,7 +474,11 @@ async function main() {
     console.log('dynamic module runtime: all passed')
 }
 
-void main().catch(function fatal(error) {
-    console.error(error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function fatal(error) {
+        console.error(error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

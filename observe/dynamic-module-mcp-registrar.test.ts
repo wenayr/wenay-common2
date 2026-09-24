@@ -8,6 +8,7 @@ import {
     createMcpContributionGateway,
     McpContributionGatewayError,
 } from '../experiments/dynamic-runtime/mcp-contribution-gateway'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 function ok(condition: unknown, message: string) {
@@ -135,7 +136,7 @@ async function expectGatewayCode(promise: Promise<unknown>, code: string) {
     }
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[module-mcp] scoped worker registrar and policy receipts')
     const session = createSession()
     await session.control.start()
@@ -240,8 +241,12 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function fatal(error) {
-    if (error instanceof ModuleWorkerError) console.error(error.code, error.message)
-    else console.error(error)
-    process.exit(2)
-})
+async function main() {
+    await runChecks().catch(function fatal(error) {
+        if (error instanceof ModuleWorkerError) console.error(error.code, error.message)
+        else console.error(error)
+        process.exit(2)
+    })
+}
+
+runOracle(main)

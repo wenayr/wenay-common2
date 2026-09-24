@@ -4,6 +4,7 @@ import {
     ModuleWorkerError,
     VerifiedModuleSource,
 } from '../src/server/dynamic/module-worker'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 function ok(condition: unknown, message: string) {
@@ -98,7 +99,7 @@ async function expectCode(promise: Promise<unknown>, code: string) {
     }
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[module-worker] startup, handshake, metadata and heartbeat')
     const session = createSession(normalModule, 'v1')
     const events: string[] = []
@@ -265,7 +266,11 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exit(2)
-})
+async function main() {
+    await runChecks().catch(function fatal(error) {
+        console.error(error)
+        process.exit(2)
+    })
+}
+
+runOracle(main)

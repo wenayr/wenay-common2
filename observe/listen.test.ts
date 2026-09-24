@@ -1,4 +1,5 @@
 import {createListen, createListenCore, getListenByOn, isListenOn, listenStore} from '../src/Common/events/Listen'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -6,7 +7,7 @@ const ok = (condition: any, message: string) => {
     else console.log('  OK  ', message)
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[listen] core compatibility')
     {
         const listen = createListenCore<[number]>()
@@ -89,4 +90,8 @@ async function main() {
     process.exit(fails == 0 ? 0 : 1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

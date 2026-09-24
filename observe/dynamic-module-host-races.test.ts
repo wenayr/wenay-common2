@@ -11,6 +11,7 @@ import {
     ModuleIsolationPort,
     ModuleIsolationSession,
 } from '../src/server/dynamic/module-isolation'
+import {runOracle} from '../oracle/run-oracle'
 
 function deferred<T>() {
     let resolve!: (value: T) => void
@@ -418,7 +419,7 @@ async function outwardObserverFailureIsolation() {
     await host.close()
 }
 
-async function main() {
+async function runChecks() {
     await closeDuringVerification()
     await leaseDrainAndDiscard()
     await failureDuringOfferHandoff()
@@ -426,7 +427,11 @@ async function main() {
     console.log('dynamic module host races: all passed')
 }
 
-void main().catch(function fatal(error) {
-    console.error(error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function fatal(error) {
+        console.error(error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

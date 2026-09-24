@@ -7,6 +7,7 @@ import {
     createModuleArtifactRegistry,
     ModuleArtifactPublication,
 } from '../experiments/dynamic-runtime/artifact-registry'
+import {runOracle} from '../oracle/run-oracle'
 
 async function publication(): Promise<ModuleArtifactPublication> {
     const bytes = new TextEncoder().encode('function createModule() { return {} }')
@@ -135,7 +136,4 @@ async function main() {
     console.log('[dynamic artifact registry] verified publication, immutability, single-flight, corruption: ok')
 }
 
-void main().catch(function fatal(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runOracle(main)
