@@ -180,9 +180,13 @@ void checkPublicTypeFlow
     run(path.join(consumer, 'output', 'test.js'), [], consumer)
     run(path.join(consumer, 'output', 'esm.mjs'), [], consumer)
     run(path.join(consumer, 'service-server.cjs'), [], consumer)
-    run(path.join(root, 'node_modules', 'esbuild', 'bin', 'esbuild'), [
-        'browser.ts', '--bundle', '--platform=browser', '--format=esm', '--outfile=browser.js',
-    ], consumer)
+    // The JS API, not bin/esbuild: on Linux and macOS esbuild's install replaces that file with
+    // the native binary, which `node` cannot run. absWorkingDir keeps resolution in the consumer.
+    const {build} = await import('esbuild')
+    await build({
+        absWorkingDir: consumer, entryPoints: ['browser.ts'], bundle: true,
+        platform: 'browser', format: 'esm', outfile: 'browser.js', logLevel: 'info',
+    })
     console.log('Isolated tarball consumer: CJS/ESM types and runtime, browser bundle passed')
 } finally {
     const resolved = realpathSync(consumer)
