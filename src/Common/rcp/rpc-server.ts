@@ -19,6 +19,7 @@ import { rpcFlowClosedError, type RpcFlowOpts, type tRpcFlowGate } from './rpc-f
 import { MyError } from "../../toError/myThrow";
 import {rpcScopeFor, transformRpcScoped, type RpcScope} from './rpc-scope'
 import {createRpcDeadline} from './rpc-deadline'
+import {registerCoreDetach} from './rpc-internal'
 
 type Func = (...args: any[]) => any;
 
@@ -1189,7 +1190,13 @@ function createServer<T extends object>(
 
     // Additive: this factory used to return nothing. ONE facet — commands inward, for the
     // application that owns this connection. Reads (schema, subscriptions) are not here.
-    return {control}
+    const server = {control}
+    // detachServer clears auth timers and closes flows (and runs onDispose); until now it ran
+    // ONLY when a new server took this socket+key. A wrapper with a disconnect signal relays it
+    // here so a dropped transport does not leave a pending grant deadline holding the facade.
+    // Internal seam (rpc-internal), not on the public return.
+    registerCoreDetach(server, detachServer)
+    return server
 }
 
 export function createRpcServer<T extends object>({ socket, object: target, socketKey: key, debug = false, hooks, limits, auth, opt }: {

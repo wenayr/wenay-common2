@@ -5,6 +5,7 @@ import { createRpcServer, type PromiseServerHooks, type RpcLimits, type RpcServe
 import {DeepSocketListen} from "./listen-deep";
 import {SocketTmpl, IS_RPC_LISTEN, RPC_STOP} from "./rpc-protocol";
 import {rpcEndCallback, rpcCallbackId} from './rpc-walk'
+import {coreDetachOf} from './rpc-internal'
 import {currentRpcScope, inheritRpcScopes, type RpcScope} from './rpc-scope'
 import {
     getRpcReplayWireSource,
@@ -474,6 +475,15 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         socket, object: target as any, socketKey: key, debug, limits, auth, opt,
         hooks: rpcHooks,
     });
+
+    // The core owns the auth timers and flow gates; without a disconnect signal a pending grant
+    // deadline (and the socket + facade its timer closes over) outlives the connection until
+    // another server takes the socket+key. Relay THIS connection's disconnect into the core
+    // teardown — the same path a server replacement runs, idempotent and safe to run once here.
+    if (disconnectListen) {
+        const detachCore = coreDetachOf(core);
+        if (detachCore) disconnectListen.on(detachCore);
+    }
 
     // additive: previously void, then { api }. Old calls (harness x3, test.ts) ignore the return.
     // The core server's facets are retransmitted WHOLE — `control` drives the principal of the
