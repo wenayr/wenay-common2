@@ -1039,7 +1039,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         return proxy;
     };
 
-    type tCallAttempt = {promise: Promise<any>; abandon: (reason: string) => void}
+    type tCallAttempt = {promise: Promise<any>; abandon: (reason: string) => void; cbIds: number[]}
 
     // The server's gate rejection is machine-readable (MyError code), never a message match.
     const isUnauthorized = (error: any) => error?.code == 'E_UNAUTHORIZED'
@@ -1048,13 +1048,13 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
     // itself is issued WITHOUT the flag, so "exactly once" is structural, not a counter.
     function createCallAttempt(path: string[], args: any[], retryUnauthorized = false): tCallAttempt {
         if (disposed) {
-            return {promise: Promise.reject(new Error('RPC client disposed')), abandon: function abandonDisposed() {}}
+            return {promise: Promise.reject(new Error('RPC client disposed')), abandon: function abandonDisposed() {}, cbIds: []}
         }
         if (!transport.api.connected()) {
-            return {promise: Promise.reject(new Error('RPC transport disconnected')), abandon: function abandonOffline() {}}
+            return {promise: Promise.reject(new Error('RPC transport disconnected')), abandon: function abandonOffline() {}, cbIds: []}
         }
         if (pending.size >= limit) {
-            return {promise: Promise.reject(new Error('RPC limit')), abandon: function abandonLimited() {}}
+            return {promise: Promise.reject(new Error('RPC limit')), abandon: function abandonLimited() {}, cbIds: []}
         }
 
         const cbIds: number[] = []
@@ -1066,6 +1066,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             return {
                 promise: Promise.reject(error),
                 abandon: function abandonInvalidCall() {},
+                cbIds: [],
             }
         }
         const ref: number | string[] = routeCache[rpcPathKey(path)] ?? path
@@ -1077,6 +1078,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             return {
                 promise: Promise.reject(error),
                 abandon: function abandonExhaustedCall() {},
+                cbIds: [],
             }
         }
         let record!: tPending
@@ -1130,7 +1132,7 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
             // never reused, so a late packet cannot settle a new request.
             record.fail(new Error(reason))
         }
-        return {promise, abandon}
+        return {promise, abandon, cbIds}
     }
 
     function sendCallWire(path: string[], args: any[], wait: boolean): any {
@@ -1263,7 +1265,12 @@ function createClient<T extends object>(socket: SocketTmpl, key: string, opts?: 
         sub.ended = true
         sub.lastEvents.clear()
         if (socketAlive && transport.api.connected()) {
-            sendCallWire([...sub.path.slice(0, -1), 'removeCallback'], [], false)
+            // Stop ONLY this subscription's callback id(s). A node-wide removeCallback() maps to
+            // the server's unsubscribeAll and would also end sibling subscriptions on the same
+            // Listen node that differ only by args/opts. An old server ignores the extra arg and
+            // still tears the node down (previous behavior); a fixed server offs just these ids.
+            const cbIds = attempt?.call.cbIds ?? []
+            sendCallWire([...sub.path.slice(0, -1), 'removeCallback'], cbIds, false)
         } else {
             attempt?.call.abandon('RPC Listen stopped while transport is disconnected')
         }

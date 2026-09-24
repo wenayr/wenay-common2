@@ -4,7 +4,7 @@ import { listenSocket, type RpcListenSubscribeOpts } from "./listen-socket";
 import { createRpcServer, type PromiseServerHooks, type RpcLimits, type RpcServerAuth, type RpcOpt, type RpcPrincipalChange } from "./rpc-server";
 import {DeepSocketListen} from "./listen-deep";
 import {SocketTmpl, IS_RPC_LISTEN, RPC_STOP} from "./rpc-protocol";
-import {rpcEndCallback} from './rpc-walk'
+import {rpcEndCallback, rpcCallbackId} from './rpc-walk'
 import {currentRpcScope, inheritRpcScopes, type RpcScope} from './rpc-scope'
 import {
     getRpcReplayWireSource,
@@ -124,6 +124,19 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
         let result = cache.get(owner);
         if (!result) {
             const subs = new Map<Function, ReturnType<typeof listenSocket>>();
+            // A wire subscription is addressable by the callback id it was created for, so a
+            // client can stop ONE of several subscriptions on this node (see removeCallback).
+            const byCbId = new Map<number, Function>();
+            function indexSubscriber(z: any, w: ReturnType<typeof listenSocket>) {
+                subs.set(z, w);
+                const cbId = rpcCallbackId(z);
+                if (cbId != undefined) byCbId.set(cbId, z);
+            }
+            function forgetSubscriber(z: any) {
+                subs.delete(z);
+                const cbId = rpcCallbackId(z);
+                if (cbId != undefined && byCbId.get(cbId) == z) byCbId.delete(cbId);
+            }
             function subscribe(z: any, opts?: RpcListenSubscribeOpts) {
                 scope?.check()
                 if (typeof z !== "function") return Promise.reject(new TypeError("Listen callback expects a function"));
@@ -134,19 +147,19 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                 if (!registry.has(owner)) registry.set(owner, { subs });
                 subs.get(z)?.off();
                 const w = listenSocket(parent, { closeOn: disconnectListen, throttle: nodeThrottle });
-                subs.set(z, w);
+                indexSubscriber(z, w);
                 const forget = scope?.own(function closeScopedSubscription() {
                     try { rpcEndCallback(z) }
                     finally {
                         w.off()
-                        subs.delete(z)
+                        forgetSubscriber(z)
                         if (!subs.size) registry.delete(owner)
                     }
                 })
                 const done = w.on(z, opts);
                 done.then(() => {
                     forget?.()
-                    if (subs.get(z) == w) subs.delete(z);
+                    if (subs.get(z) == w) forgetSubscriber(z);
                     if (subs.size == 0) registry.delete(owner); // node emptied — remove from stats() count
                 });
                 return done;
@@ -171,27 +184,44 @@ export function createRpcServerAuto<T extends object>({ socket, object: target, 
                         w.off();
                     }
                 };
-                subs.set(z, w);
+                indexSubscriber(z, w);
                 const forget = scope?.own(function closeScopedOnce() {
                     try { rpcEndCallback(z) }
                     finally {
                         w.off()
-                        subs.delete(z)
+                        forgetSubscriber(z)
                         if (!subs.size) registry.delete(owner)
                     }
                 })
                 const done = w.on(oneShot, opts);
-                done.then(() => { forget?.(); if (subs.get(z) == w) subs.delete(z); if (subs.size == 0) registry.delete(owner); });
+                done.then(() => { forget?.(); if (subs.get(z) == w) forgetSubscriber(z); if (subs.size == 0) registry.delete(owner); });
                 return done;
             }
             function unsubscribeAll() {
                 subs.forEach(w => w.off());
                 subs.clear();
+                byCbId.clear();
                 registry.delete(owner); // node torn down — remove from registry
                 return true;
             }
+            // removeCallback — the client's per-subscription stop. With one or more callback ids it
+            // ends ONLY those subscribers, so siblings on the same node survive; with no numeric id
+            // (an old client, or a deliberate node teardown) it falls back to unsubscribeAll.
+            function removeCallback(...cbIds: any[]) {
+                const ids = cbIds.filter(function isCbId(x): x is number { return typeof x == "number" });
+                if (ids.length == 0) return unsubscribeAll();
+                for (const id of ids) {
+                    const z = byCbId.get(id);
+                    if (!z) continue;
+                    const w = subs.get(z);
+                    forgetSubscriber(z);
+                    w?.off(); // ends this stream (RESP for its .on call → client cleans that cbId)
+                }
+                if (subs.size == 0) registry.delete(owner);
+                return true;
+            }
             // close — close entire Listen source (full teardown; affects ALL node consumers).
-            result = { on: subscribe, off: unsubscribeAll, callback: subscribe, removeCallback: unsubscribeAll, once: subscribeOnce, close: () => scope ? unsubscribeAll() : (parent as any).close?.() };
+            result = { on: subscribe, off: unsubscribeAll, callback: subscribe, removeCallback, once: subscribeOnce, close: () => scope ? unsubscribeAll() : (parent as any).close?.() };
             (result as any)[IS_RPC_LISTEN] = true; // server will declare node address in Pkt.MAP
             cache.set(owner, result);
             sourceByNode.set(result, owner);

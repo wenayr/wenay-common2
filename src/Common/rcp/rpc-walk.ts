@@ -251,6 +251,14 @@ export function packResult(value: any, rows?: tRowCodec, onReserved?: tReservedK
 }
 
 const _stopRegistry = new WeakMap<Function, () => void>();
+// Wire callback wrapper → the id it was created for. Lets a subscription host address ONE
+// subscriber (a specific callback id) instead of tearing down a whole Listen node.
+const _idRegistry = new WeakMap<Function, number>();
+
+/** The wire callback id a wrapper was created for, or undefined for a plain function. */
+export function rpcCallbackId(fn: Function): number | undefined {
+    return _idRegistry.get(fn);
+}
 
 export function createRpcCallbackWrapper({
     id,
@@ -273,6 +281,7 @@ export function createRpcCallbackWrapper({
         sender(id, args)
     }
     _stopRegistry.set(rpcCallbackWrapper, function endRpcCallbackWrapper() { onEnd(id) })
+    _idRegistry.set(rpcCallbackWrapper, id)
     return rpcCallbackWrapper
 }
 

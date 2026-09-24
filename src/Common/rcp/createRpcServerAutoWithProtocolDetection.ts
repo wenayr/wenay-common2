@@ -6,6 +6,7 @@ import { Pkt, type SocketTmpl } from "./rpc-protocol";
 import { promiseServer } from "./oldCommonsServerMini";
 import { isNoStrict } from "./rpc-dynamic";
 import { isSafeKey } from "./rpc-limits";
+import { rpcCallbackId } from "./rpc-walk";
 
 type ListenCallbackBase<T extends any[] = any[]> = ReturnType<typeof createListen<T>>;
 
@@ -57,30 +58,56 @@ export function createRpcServerAutoDetect<T extends object>({
         if (result) listenSockets.add(result);
         if (!result) {
             const subs = new Map<Function, ReturnType<typeof listenSocket>>();
+            // Same per-subscription addressing as rpc-server-auto: one node may carry several wire
+            // subscriptions (different args/opts), so removeCallback stops only the named ids.
+            const byCbId = new Map<number, Function>();
+            function indexSubscriber(z: any, w: ReturnType<typeof listenSocket>) {
+                subs.set(z, w);
+                const cbId = rpcCallbackId(z);
+                if (cbId != undefined) byCbId.set(cbId, z);
+            }
+            function forgetSubscriber(z: any) {
+                subs.delete(z);
+                const cbId = rpcCallbackId(z);
+                if (cbId != undefined && byCbId.get(cbId) == z) byCbId.delete(cbId);
+            }
             function subscribe(z: any) {
                 if (typeof z !== "function") return Promise.reject(new TypeError("Listen callback expects a function"));
                 subs.get(z)?.off();
                 const w = listenSocket(parent, { closeOn: disconnectListen });
-                subs.set(z, w);
+                indexSubscriber(z, w);
                 const done = w.on(z);
-                done.then(() => { if (subs.get(z) == w) subs.delete(z); });
+                done.then(() => { if (subs.get(z) == w) forgetSubscriber(z); });
                 return done;
             }
             function subscribeOnce(z: any) {
                 if (typeof z !== "function") return Promise.reject(new TypeError("Listen once expects a function"));
                 subs.get(z)?.off();
                 const w = listenSocket(parent, { closeOn: disconnectListen });
-                subs.set(z, w);
+                indexSubscriber(z, w);
                 const done = w.once(z);
-                done.then(() => { if (subs.get(z) == w) subs.delete(z); });
+                done.then(() => { if (subs.get(z) == w) forgetSubscriber(z); });
                 return done;
             }
             function unsubscribeAll() {
                 subs.forEach(w => w.off());
                 subs.clear();
+                byCbId.clear();
                 return true;
             }
-            result = { on: subscribe, off: unsubscribeAll, callback: subscribe, removeCallback: unsubscribeAll, once: subscribeOnce, close: () => (parent as any).close?.() } as ReturnType<typeof listenSocket>;
+            function removeCallback(...cbIds: any[]) {
+                const ids = cbIds.filter(function isCbId(x): x is number { return typeof x == "number" });
+                if (ids.length == 0) return unsubscribeAll();
+                for (const id of ids) {
+                    const z = byCbId.get(id);
+                    if (!z) continue;
+                    const w = subs.get(z);
+                    forgetSubscriber(z);
+                    w?.off();
+                }
+                return true;
+            }
+            result = { on: subscribe, off: unsubscribeAll, callback: subscribe, removeCallback, once: subscribeOnce, close: () => (parent as any).close?.() } as ReturnType<typeof listenSocket>;
             listenSockets.add(result);
             cache.set(parent, result);
         }
