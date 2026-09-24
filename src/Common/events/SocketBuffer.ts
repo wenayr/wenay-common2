@@ -57,11 +57,19 @@ export function listenSnapshot<T extends SocketSource<any | any[]>, T2 extends (
         if (d == null) d = socketBuffer(func(), callbackSave, memo)({callback})
     }
     const run = (...params: Parameters<typeof listenA.on>) => {
-        if (!listenA.isRunning()) {
-            snapshot?.(memo)
-            connect()
+        // listen() is already running, so only a missing connection means "connect".
+        // Subscribe first: a source may push its first data while connecting.
+        const off = listenA.on(...params)
+        if (d == null) {
+            try {
+                snapshot?.(memo)
+                connect()
+            } catch (error) {
+                try { off() }
+                finally { throw error }
+            }
         }
-        return listenA.on(...params)
+        return off
     }
     return {
         run, snapshot: () => snapshot?.(memo), memo, listenA, connect, get disconnect() {
