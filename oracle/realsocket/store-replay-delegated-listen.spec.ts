@@ -7,6 +7,7 @@ import {createStore} from '../../src/Common/Observe/store'
 import {exposeStoreReplay, syncStoreReplay} from '../../src/Common/Observe/store-replay'
 import {createRpcServerAuto} from '../../src/Common/rcp/rpc-server-auto'
 import {createRpcClientHub} from '../../src/Common/rcp/rpc-clientHub'
+import {runOracle} from '../run-oracle'
 
 async function main() {
     const source = createStore({reading: 0})
@@ -55,4 +56,4 @@ async function main() {
     }
 }
 
-main().catch(function fatal(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

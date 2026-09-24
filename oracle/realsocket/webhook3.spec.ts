@@ -12,6 +12,7 @@ import http from 'node:http'
 import type {AddressInfo} from 'node:net'
 import express from 'express'
 import {createWebhookClient, createWebhookServer} from '../../src/server/WebHook3'
+import {runOracle} from '../run-oracle'
 
 const token = 'webhook-oracle-token'
 const memory = {loadSubscribers: () => new Map(), saveSubscribers() {}}
@@ -32,7 +33,7 @@ function nextPayload(received: unknown[], count: number) {
     })
 }
 
-async function main() {
+async function runChecks() {
     const serverApp = express()
     serverApp.use(express.json())
     const hub = createWebhookServer({authToken: token, port: 0, app: serverApp, file: memory})
@@ -104,7 +105,11 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) {
-    console.error('FAIL webhook3:', error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function failed(error) {
+        console.error('FAIL webhook3:', error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

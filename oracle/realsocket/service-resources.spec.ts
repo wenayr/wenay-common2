@@ -7,6 +7,7 @@ import {listen} from '../../src/Common/events/Listen'
 import {noStrict} from '../../src/Common/rcp/rpc-dynamic'
 import {createPeerHost, createPeerClient} from '../../src/Common/peer/peer-index'
 import type {Socket} from 'node:net'
+import {runOracle} from '../run-oracle'
 
 async function until(check: () => boolean, label: string, ms = 5000) {
     const end = Date.now() + ms
@@ -127,4 +128,4 @@ async function main() {
     assert.deepEqual(errors, [])
     console.log('PASS resource real sockets: authority ownership, roles, independent opens/tabs, saved remotes, views and commands')
 }
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

@@ -3,6 +3,7 @@ import {setTimeout as delay} from 'node:timers/promises'
 import {createServiceLeaderHost} from '../../src/service/host'
 import {createServiceClient} from '../../src/service/client'
 import {describeService, type ServiceResourceContext} from '../../src/service'
+import {runOracle} from '../run-oracle'
 
 function barrier<T = void>() {
     let resolve!: (value: T) => void
@@ -106,4 +107,4 @@ async function main() {
     assert.deepEqual(errors, [])
     console.log('PASS resource cancellation: pending factory/token, exactly-once cleanup, client close errors, no unhandled promises')
 }
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

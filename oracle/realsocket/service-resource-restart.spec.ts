@@ -7,6 +7,7 @@ import {createServiceLeaderHost} from '../../src/service/host'
 import {createServiceClient} from '../../src/service/client'
 import {describeService, type ServiceResourceContext} from '../../src/service'
 import {setTimeout as delay} from 'node:timers/promises'
+import {runOracle} from '../run-oracle'
 
 async function until(check: () => boolean, label: string) {
     const deadline = Date.now() + 7000
@@ -73,4 +74,4 @@ async function main() {
     } finally { client.close(); await host.close() }
     console.log('PASS resource authority restart: fresh generations, archive state, persisted receipt, raw paths, renew, account replacement')
 }
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

@@ -6,6 +6,7 @@ import http from 'node:http'
 import type {AddressInfo} from 'node:net'
 import express from 'express'
 import {createWebhookServer} from '../../src/server/WebHook3'
+import {runOracle} from '../run-oracle'
 
 // Spy on the constant-time primitive: timing itself is not measurable reliably over loopback HTTP.
 const nodeCrypto = require('node:crypto') as typeof import('node:crypto')
@@ -98,4 +99,4 @@ async function main() {
     else console.log('PASS webhook3 hardening: constant-time bearer, bounded subscribers per client IP')
 }
 
-main().catch(function crashed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

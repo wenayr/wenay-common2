@@ -9,6 +9,7 @@ import http from 'node:http'
 import type {AddressInfo} from 'node:net'
 import express from 'express'
 import {createWebhookServer} from '../../src/server/WebHook3'
+import {runOracle} from '../run-oracle'
 
 const token = 'client-subscriptions-token'
 
@@ -26,7 +27,7 @@ function request(port: number, localAddress: string, method: string, path: strin
     })
 }
 
-async function main() {
+async function runChecks() {
     const app = express()
     app.use(express.json())
     createWebhookServer({authToken: token, port: 0, app, file: {loadSubscribers: () => new Map(), saveSubscribers() {}}})
@@ -54,7 +55,11 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) {
-    console.error('FAIL webhook3 client subscriptions:', error?.message ?? error)
-    process.exitCode = 1
-})
+async function main() {
+    await runChecks().catch(function failed(error) {
+        console.error('FAIL webhook3 client subscriptions:', error?.message ?? error)
+        process.exitCode = 1
+    })
+}
+
+runOracle(main)
