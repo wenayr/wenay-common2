@@ -4,6 +4,10 @@ Breaking migration: старые имена не оставляем алиаса
 
 | Было | Стало |
 | --- | --- |
+| **3.0.1 — security fixes that change behavior** | |
+| `identity.login()` on the ungated surface of a service without `access.login` (minted for the handshake's `account`) | server-side `leader.identity.login(account)` after your own authentication, `access.login`, or `createTokenCodec({secret}).issue(...)`; the ungated identity is `{renew}` |
+| `saveKeyValue({path: '<absolute dir>'})`, keys with `..` or separators | `saveKeyValue({dirDef: '<absolute dir>'})`; `path` = relative directories, `key` = one file name |
+| RPC/HTTP error `stack` on the peer | `createRpcServer({debug: true})` in development; HTTP: `createHttpFacadeServer({onError})`, service REST `log` |
 | **3.0.0 — exchange data is the separate package `wenay-exchange`** (peer: this package) | |
 | `import {Bars} from 'wenay-common2'` · `from 'wenay-common2/client'` | `import {Bars} from 'wenay-exchange'` |
 | `CQuotesHistory` / `CQuotesHistoryMutable*` and the other `IHistoryBase`, `LoadBase`, `MarketData` root names | the same names from `'wenay-exchange'` (`TF`, `Period`, the time API and `Params` stay here) |
