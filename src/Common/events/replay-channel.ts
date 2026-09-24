@@ -156,61 +156,11 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
     const binaryDecoder = binaryCapable
         ? createReplayBinaryCodec('replay channel server decode', true)
         : null
-    const snapshotEncoder = binaryCapable
-        ? createReplayBinaryCodec('replay channel live snapshot encode', false)
-        : null
-    const snapshotDecoder = binaryCapable
-        ? createReplayBinaryCodec('replay channel live snapshot decode', false)
-        : null
     let binaryEnabled = false
-    type LiveItem = {
-        binary: boolean
-        value?: any
-        encoded?: string
-        bytes: number
-    }
-    let liveQueue: LiveItem[] = []
-    let liveQueueBytes = REPLAY_LIVE_BATCH_OVERHEAD
 
-    function encodedLiveItem(item: LiveItem) {
-        if (item.encoded != null) return item.encoded
-        return stringifyMessage(item.value) ?? 'null'
-    }
-
-    // An item that cannot be encoded, or a packet the transport refuses, is recorded
-    // in failures and skipped: the rest of the micro-batch still goes out.
-    function sendJsonLive(items: LiveItem[], failures: unknown[]) {
-        let encoded: string[] = []
-        let bytes = REPLAY_LIVE_BATCH_OVERHEAD
-
-        function flushJsonBatch() {
-            if (!encoded.length) return
-            const batch = REPLAY_LIVE_BATCH_PREFIX + encoded.join(',') + REPLAY_LIVE_BATCH_SUFFIX
-            encoded = []
-            bytes = REPLAY_LIVE_BATCH_OVERHEAD
-            try { channel.send(batch) }
-            catch (error) { failures.push(error) }
-        }
-
-        for (const item of items) {
-            let value: string
-            try { value = encodedLiveItem(item) }
-            catch (error) {
-                failures.push(error)
-                continue
-            }
-            const valueBytes = item.encoded != null ? item.bytes : utf8ByteLength(value)
-            const separator = encoded.length ? 1 : 0
-            if (encoded.length && (encoded.length >= REPLAY_LIVE_BATCH_MAX_ITEMS ||
-                bytes + separator + valueBytes > REPLAY_LIVE_BATCH_MAX_BYTES)) flushJsonBatch()
-            encoded.push(value)
-            bytes += (encoded.length > 1 ? 1 : 0) + valueBytes
-            if (encoded.length >= REPLAY_LIVE_BATCH_MAX_ITEMS || bytes >= REPLAY_LIVE_BATCH_MAX_BYTES) {
-                flushJsonBatch()
-            }
-        }
-        flushJsonBatch()
-    }
+    // ============================================================
+    // protocol messages: responses and unbatched live events
+    // ============================================================
 
     function sendPreparedBinary(prepared: ReturnType<NonNullable<typeof binaryEncoder>['prepareEncode']>) {
         try {
@@ -240,48 +190,63 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
         channel.send(stringifyMessage(message))
     }
 
-    function sendBinaryLive(items: LiveItem[], failures: unknown[]) {
-        const packet = [
-            REPLAY_BINARY_MESSAGE.EVENTS,
-            items.map(item => item.value),
-        ]
-        const prepared = prepareBinary(packet)
-        if (!prepared) {
-            if (items.length > 1) {
-                const middle = Math.ceil(items.length / 2)
-                sendBinaryLive(items.slice(0, middle), failures)
-                sendBinaryLive(items.slice(middle), failures)
-                return
+    // ============================================================
+    // live micro-batch
+    // ============================================================
+    // Pending live traffic, oldest first: a run of legacy JSON items, then at most
+    // one open binary frame. A binary event is encoded into the frame when it is
+    // emitted, so those bytes are its snapshot and nothing encodes it again. A
+    // JSON item sends the open frame before it is queued, so the order holds.
+    type tJsonLiveItem = {encoded: string, bytes: number}
+    let liveQueue: tJsonLiveItem[] = []
+    let liveQueueBytes = REPLAY_LIVE_BATCH_OVERHEAD
+    let liveFrame: ReturnType<NonNullable<typeof binaryEncoder>['openBatch']> | null = null
+
+    // A packet the transport refuses is recorded in failures and skipped: the rest
+    // of the micro-batch still goes out.
+    function sendJsonLive(items: tJsonLiveItem[], failures: unknown[]) {
+        let encoded: string[] = []
+        let bytes = REPLAY_LIVE_BATCH_OVERHEAD
+
+        function flushJsonBatch() {
+            if (!encoded.length) return
+            const batch = REPLAY_LIVE_BATCH_PREFIX + encoded.join(',') + REPLAY_LIVE_BATCH_SUFFIX
+            encoded = []
+            bytes = REPLAY_LIVE_BATCH_OVERHEAD
+            try { channel.send(batch) }
+            catch (error) { failures.push(error) }
+        }
+
+        for (const item of items) {
+            const separator = encoded.length ? 1 : 0
+            if (encoded.length && (encoded.length >= REPLAY_LIVE_BATCH_MAX_ITEMS ||
+                bytes + separator + item.bytes > REPLAY_LIVE_BATCH_MAX_BYTES)) flushJsonBatch()
+            encoded.push(item.encoded)
+            bytes += (encoded.length > 1 ? 1 : 0) + item.bytes
+            if (encoded.length >= REPLAY_LIVE_BATCH_MAX_ITEMS || bytes >= REPLAY_LIVE_BATCH_MAX_BYTES) {
+                flushJsonBatch()
             }
-            sendJsonLive(items, failures)
-            return
         }
-        if (prepared.wire.byteLength > REPLAY_LIVE_BATCH_MAX_BYTES && items.length > 1) {
-            prepared.rollback()
-            const middle = Math.ceil(items.length / 2)
-            sendBinaryLive(items.slice(0, middle), failures)
-            sendBinaryLive(items.slice(middle), failures)
-            return
-        }
-        try { sendPreparedBinary(prepared) }
+        flushJsonBatch()
+    }
+
+    function sendLiveFrame(failures: unknown[]) {
+        const frame = liveFrame
+        if (!frame) return
+        liveFrame = null
+        try { sendPreparedBinary(frame.finish()) }
         catch (error) { failures.push(error) }
     }
 
     function drainLiveQueue(failures: unknown[]) {
-        if (closed || !liveQueue.length) return
-        const queue = liveQueue
-        liveQueue = []
-        liveQueueBytes = REPLAY_LIVE_BATCH_OVERHEAD
-        let at = 0
-        while (at < queue.length) {
-            const binary = queue[at].binary
-            let end = at + 1
-            while (end < queue.length && queue[end].binary == binary) end++
-            const items = queue.slice(at, end)
-            if (binary) sendBinaryLive(items, failures)
-            else sendJsonLive(items, failures)
-            at = end
+        if (closed) return
+        if (liveQueue.length) {
+            const queue = liveQueue
+            liveQueue = []
+            liveQueueBytes = REPLAY_LIVE_BATCH_OVERHEAD
+            sendJsonLive(queue, failures)
         }
+        sendLiveFrame(failures)
     }
 
     function liveFailure(failures: unknown[]) {
@@ -290,37 +255,155 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
             : new AggregateError(failures, 'Multiple replay channel live sends failed')
     }
 
-    /** Attempts every queued item, then throws whatever failed. */
-    function flushLiveQueue() {
-        const failures: unknown[] = []
-        drainLiveQueue(failures)
-        if (failures.length) throw liveFailure(failures)
+    function addToFreshFrame(ev: any) {
+        const frame = binaryEncoder!.openBatch([REPLAY_BINARY_MESSAGE.EVENTS], REPLAY_LIVE_BATCH_MAX_ITEMS)
+        try { frame.add(ev) }
+        catch {
+            frame.rollback()
+            return false
+        }
+        liveFrame = frame
+        return true
     }
 
-    function createLiveItem(ev: any): LiveItem {
-        if (binaryEnabled && snapshotEncoder && snapshotDecoder) {
+    // false: the codec refuses the event even in a frame of its own, i.e. inside
+    // [EVENTS, [ev]], the packet 3.0.1 snapshotted it in.
+    function addLiveBinary(ev: any, failures: unknown[]) {
+        if (!binaryEnabled || !binaryEncoder) return false
+        const frame = liveFrame
+        if (!frame) return addToFreshFrame(ev)
+        try {
+            frame.add(ev)
+        } catch {
+            // One work and byte budget spans the frame: its predecessors go out
+            // and the event is tried alone before it counts as refused.
+            drainLiveQueue(failures)
+            return !closed && addToFreshFrame(ev)
+        }
+        if (frame.byteLength() > REPLAY_LIVE_BATCH_MAX_BYTES && frame.count() > 1) {
+            // It does not fit behind its predecessors: send them, then encode it again
+            // at the head of a fresh frame. Still inside emit, so still the emitted value.
+            frame.rewindLast()
+            drainLiveQueue(failures)
+            return !closed && addToFreshFrame(ev)
+        }
+        return true
+    }
+
+    function queueJsonLive(item: tJsonLiveItem, failures: unknown[]) {
+        if (liveFrame) drainLiveQueue(failures)
+        if (closed) return
+        const separator = liveQueue.length ? 1 : 0
+        if (liveQueue.length && (liveQueue.length >= REPLAY_LIVE_BATCH_MAX_ITEMS ||
+            liveQueueBytes + separator + item.bytes > REPLAY_LIVE_BATCH_MAX_BYTES)) drainLiveQueue(failures)
+        const nextSeparator = liveQueue.length ? 1 : 0
+        liveQueue.push(item)
+        liveQueueBytes += nextSeparator + item.bytes
+        if (liveQueue.length >= REPLAY_LIVE_BATCH_MAX_ITEMS || liveQueueBytes >= REPLAY_LIVE_BATCH_MAX_BYTES) {
+            drainLiveQueue(failures)
+        } else {
+            scheduleLiveFlush()
+        }
+    }
+
+    function placeLiveEvent(ev: any, failures: unknown[]) {
+        if (closed) return
+        if (addLiveBinary(ev, failures)) {
+            const frame = liveFrame!
+            if (frame.count() >= REPLAY_LIVE_BATCH_MAX_ITEMS || frame.byteLength() >= REPLAY_LIVE_BATCH_MAX_BYTES) {
+                drainLiveQueue(failures)
+            } else {
+                scheduleLiveFlush()
+            }
+            return
+        }
+        if (closed) return
+        // Unsupported binary values retain the exact legacy JSON behavior. One JSON
+        // refuses too is reported to the emitter, after the flushes above.
+        let encoded: string
+        try { encoded = stringifyMessage(ev) ?? 'null' }
+        catch (error) {
+            failures.push(error)
+            return
+        }
+        queueJsonLive({encoded, bytes: utf8ByteLength(encoded)}, failures)
+    }
+
+    // ============================================================
+    // live events emitted while the live path is encoding or sending
+    // ============================================================
+    // A synchronous transport can deliver a frame to a consumer that emits again
+    // before the send returns. The encoder still belongs to that frame, so the
+    // event is snapshotted on its own now (bytes of [EVENTS, [ev]], as in 3.0.1)
+    // and placed, in order, once the operation in progress is over.
+    type tDeferredLive = {binary: true, value: unknown} | {binary: false, item: tJsonLiveItem}
+    let liveBusy = false
+    let deferred: tDeferredLive[] = []
+    let deferredCodec: ReturnType<typeof createReplayBinaryCodec> | null = null
+
+    function deferLiveEvent(ev: any) {
+        if (binaryEnabled) {
             try {
-                // Snapshot the event inside the smallest packet it can travel in: the
-                // depth and work budgets it passes here are then exactly the ones the
-                // batch packet meets at flush, two levels deeper than a bare event.
-                const wire = snapshotEncoder.encode([REPLAY_BINARY_MESSAGE.EVENTS, [ev]])
-                return {
-                    binary: true,
-                    // The bytes were produced one line above by our own encoder and have not
-                    // crossed any boundary, so the untrusted reader's per-key work — safe-key
-                    // filtering, duplicate detection, prototype shadow checks — is spent on
-                    // input that cannot be hostile. decodeTrusted keeps the limits and drops
-                    // exactly that; it also pairs with trustReplayBinaryLeaf, which lets the
-                    // re-encode below skip re-enumerating binary leaves.
-                    value: (snapshotDecoder.decodeTrusted(wire) as [number, [any]])[1][0],
-                    bytes: wire.byteLength,
-                }
+                deferredCodec ??= createReplayBinaryCodec('replay channel deferred live snapshot', false)
+                const wire = deferredCodec.encode([REPLAY_BINARY_MESSAGE.EVENTS, [ev]])
+                // Our own bytes that crossed no boundary: the trusted decode is enough.
+                deferred.push({binary: true, value: (deferredCodec.decodeTrusted(wire) as [number, [unknown]])[1][0]})
+                scheduleLiveFlush()
+                return
             } catch {
                 // Unsupported binary values retain the exact legacy JSON behavior.
             }
         }
         const encoded = stringifyMessage(ev) ?? 'null'
-        return {binary: false, encoded, bytes: utf8ByteLength(encoded)}
+        deferred.push({binary: false, item: {encoded, bytes: utf8ByteLength(encoded)}})
+        scheduleLiveFlush()
+    }
+
+    // Takes only what is deferred now: events deferred while these are placed are
+    // newer and wait for the next flush, so a feedback loop cannot spin in here.
+    function placeDeferred(failures: unknown[]) {
+        if (!deferred.length) return
+        const events = deferred
+        deferred = []
+        for (const next of events) {
+            if (closed) return
+            if (next.binary) placeLiveEvent(next.value, failures)
+            else queueJsonLive(next.item, failures)
+        }
+    }
+
+    function scheduleLiveFlush() {
+        if (liveScheduled) return
+        liveScheduled = true
+        queueMicrotask(function flushReplayChannelMicroBatch() {
+            liveScheduled = false
+            const late: unknown[] = []
+            flushLive(late)
+            if (!late.length) return
+            // No emitter is on the stack any more: rethrow on a timer, as the replay line does.
+            const failure = liveFailure(late)
+            setTimeout(function rethrowReplayChannelLiveFailure() { throw failure }, 0)
+        })
+    }
+
+    /** Places deferred events and sends everything pending, in order. */
+    function flushLive(failures: unknown[]) {
+        if (closed || liveBusy) return
+        liveBusy = true
+        try {
+            placeDeferred(failures)
+            drainLiveQueue(failures)
+        } finally {
+            liveBusy = false
+        }
+        if (deferred.length) scheduleLiveFlush()
+    }
+
+    /** Attempts every pending item, then throws whatever failed. */
+    function flushLiveQueue() {
+        const failures: unknown[] = []
+        flushLive(failures)
+        if (failures.length) throw liveFailure(failures)
     }
 
     function forwardEnvelope(ev: any) {
@@ -332,31 +415,36 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
             )
             return
         }
-        const item = createLiveItem(ev)
-        // The emitter is on the stack: failures of a size-triggered flush reach it
-        // as in the unbatched path, but only after this item is queued.
-        const failures: unknown[] = []
-        const separator = liveQueue.length ? 1 : 0
-        if (liveQueue.length && (liveQueue.length >= REPLAY_LIVE_BATCH_MAX_ITEMS ||
-            liveQueueBytes + separator + item.bytes > REPLAY_LIVE_BATCH_MAX_BYTES)) drainLiveQueue(failures)
-        const nextSeparator = liveQueue.length ? 1 : 0
-        liveQueue.push(item)
-        liveQueueBytes += nextSeparator + item.bytes
-        if (liveQueue.length >= REPLAY_LIVE_BATCH_MAX_ITEMS || liveQueueBytes >= REPLAY_LIVE_BATCH_MAX_BYTES) {
-            drainLiveQueue(failures)
-        } else if (!liveScheduled) {
-            liveScheduled = true
-            queueMicrotask(function flushReplayChannelMicroBatch() {
-                liveScheduled = false
-                const late: unknown[] = []
-                drainLiveQueue(late)
-                if (!late.length) return
-                // No emitter is on the stack any more: rethrow on a timer, as the replay line does.
-                const failure = liveFailure(late)
-                setTimeout(function rethrowReplayChannelLiveFailure() { throw failure }, 0)
-            })
+        if (liveBusy) {
+            deferLiveEvent(ev)
+            return
         }
+        // The emitter is on the stack: failures of a flush this event triggers reach
+        // it as in the unbatched path, but only after the event itself is placed.
+        const failures: unknown[] = []
+        liveBusy = true
+        try {
+            placeDeferred(failures)
+            placeLiveEvent(ev, failures)
+        } finally {
+            liveBusy = false
+        }
+        if (deferred.length) scheduleLiveFlush()
         if (failures.length) throw liveFailure(failures)
+    }
+
+    // A response follows every live event queued before it. Its prepared encode
+    // owns the encoder while it is sent, so an emit that send provokes is deferred.
+    function respond(packet: any[], message: unknown) {
+        flushLiveQueue()
+        const wasBusy = liveBusy
+        liveBusy = true
+        try {
+            sendProtocolMessage(packet, message)
+        } finally {
+            liveBusy = wasBusy
+        }
+        if (deferred.length) scheduleLiveFlush()
     }
 
     async function readFrame(seq: number, hint: unknown) {
@@ -374,8 +462,7 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
                 : msg.m == 'frame' ? await readFrame(msg.a[0], msg.a[1])
                 : undefined
             if (!closed) {
-                flushLiveQueue()
-                sendProtocolMessage(
+                respond(
                     [REPLAY_BINARY_MESSAGE.RES_OK, msg.id, v ?? null],
                     {t: 'res', id: msg.id, ok: true, v: v ?? null},
                 )
@@ -383,8 +470,7 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
         } catch (e) {
             // the sacred line and other throws reach the consumer loudly, same as in the rpc projection
             if (!closed) {
-                flushLiveQueue()
-                sendProtocolMessage(
+                respond(
                     [REPLAY_BINARY_MESSAGE.RES_ERROR, msg.id, String(e)],
                     {t: 'res', id: msg.id, ok: false, e: String(e)},
                 )
@@ -455,6 +541,12 @@ export function serveReplayChannel<Z extends any[]>(source: ReplayRemote<Z>, cha
         closed = true
         liveQueue = []
         liveQueueBytes = REPLAY_LIVE_BATCH_OVERHEAD
+        deferred = []
+        // A frame no flush sent (close without flush, or one asked for mid-send)
+        // still owns the encoder.
+        const abandoned = liveFrame
+        liveFrame = null
+        if (abandoned) capture(function abandonLiveFrame() { abandoned.rollback() })
         const activeLine = lineOff
         lineOff = null
         capture(function unsubscribeReplaySource() { unsubscribeHandle(activeLine) })

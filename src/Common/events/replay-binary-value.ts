@@ -30,6 +30,10 @@ const BYTE_WRITER_TAIL_RESERVE = 256
 // element. Exact expando validation is therefore bounded independently of its
 // binary payload; common native shadows remain rejected for every size.
 const MAX_TYPED_ARRAY_OWN_KEY_SCAN_ITEMS = 4_096
+// An incremental frame patches its item count into one varuint byte.
+const BATCH_MAX_ITEMS = 127
+// A live frame carries up to 64 small events: start past the doubling steps.
+const BATCH_INITIAL_CAPACITY = 4_096
 
 const VALUE_TAG = {
     NULL: 0,
@@ -532,8 +536,8 @@ function varUintNumberByteLength(value: number) {
     return bytes
 }
 
-function createByteWriter(maxWireBytes: number) {
-    let bytes = new Uint8Array(256)
+function createByteWriter(maxWireBytes: number, initialCapacity = 256) {
+    let bytes = new Uint8Array(initialCapacity)
     let view = new DataView(bytes.buffer)
     let position = 0
 
@@ -626,6 +630,21 @@ function createByteWriter(maxWireBytes: number) {
         return bytes.subarray(0, position)
     }
 
+    function currentPosition() {
+        return position
+    }
+
+    // Only backwards: the bytes past `to` were written by this writer.
+    function rewind(to: number) {
+        if (!Number.isSafeInteger(to) || to < 0 || to > position) binaryRangeError('invalid writer rewind')
+        position = to
+    }
+
+    function patchU8(offset: number, value: number) {
+        if (!Number.isSafeInteger(offset) || offset < 0 || offset >= position) binaryRangeError('invalid writer patch')
+        bytes[offset] = value
+    }
+
     return {
         writeU8,
         writeU16,
@@ -634,11 +653,15 @@ function createByteWriter(maxWireBytes: number) {
         writeUtf8,
         writeVarUintNumber,
         writeVarUint,
+        position: currentPosition,
+        rewind,
+        patchU8,
         finish,
     }
 }
 
-type tByteWriter = Omit<ReturnType<typeof createByteWriter>, 'finish'>
+// What value writers may touch: appends only.
+type tByteWriter = Omit<ReturnType<typeof createByteWriter>, 'finish' | 'position' | 'rewind' | 'patchU8'>
 
 function createByteCounter(maxWireBytes: number) {
     let position = 0
@@ -1099,6 +1122,42 @@ function commitShapeTransaction(transaction: tShapeTransaction) {
     transaction.state.keyTextBytes = transaction.keyTextBytes
 }
 
+// A point inside an open transaction that its later staging can be rewound to.
+type tShapeMark = {
+    staged: number
+    fieldRefs: number
+    keyTextBytes: number
+    definitions: number
+    references: number
+    raw: number
+}
+
+function createShapeMark(): tShapeMark {
+    return {staged: 0, fieldRefs: 0, keyTextBytes: 0, definitions: 0, references: 0, raw: 0}
+}
+
+function saveShapeMark(transaction: tShapeTransaction, mark: tShapeMark) {
+    mark.staged = transaction.staged.length
+    mark.fieldRefs = transaction.fieldRefs
+    mark.keyTextBytes = transaction.keyTextBytes
+    mark.definitions = transaction.definitions
+    mark.references = transaction.references
+    mark.raw = transaction.raw
+}
+
+// Shape ids are positions, so dropping the newest staged shapes frees exactly
+// the ids the dropped bytes declared.
+function restoreShapeMark(transaction: tShapeTransaction, mark: tShapeMark) {
+    while (transaction.staged.length > mark.staged) {
+        transaction.stagedBySignature.delete(transaction.staged.pop()!.signature)
+    }
+    transaction.fieldRefs = mark.fieldRefs
+    transaction.keyTextBytes = mark.keyTextBytes
+    transaction.definitions = mark.definitions
+    transaction.references = mark.references
+    transaction.raw = mark.raw
+}
+
 function isArrayIndexKey(key: string, length: number) {
     const index = Number(key)
     return Number.isInteger(index) && index >= 0 && index < length && String(index) == key
@@ -1137,6 +1196,12 @@ function writeBinaryPayload(
 function chargeNativeLeaf(context: {workUnits: number}, fail: tFailure, message: string) {
     context.workUnits += NATIVE_LEAF_WORK_UNITS - 1
     if (context.workUnits > MAX_VALUE_WORK_UNITS) fail(message)
+}
+
+// The checks writeValue runs on entry, for an array an incremental frame writes itself.
+function chargeFrameArray(context: tWriteContext, depth: number) {
+    if (++context.workUnits > MAX_VALUE_WORK_UNITS) binaryRangeError('encoded value exceeds work limit')
+    if (depth > context.config.maxDepth) binaryRangeError('maximum depth exceeded')
 }
 
 type tWriteValue = (
@@ -2023,13 +2088,17 @@ export function createBinaryValueCodec(options: BinaryValueCodecOptions) {
         decodeReferences += transaction.references
     }
 
+    function writeHeader(writer: tByteWriter) {
+        for (const byte of config.magic) writer.writeU8(byte)
+        writer.writeU8(config.version)
+    }
+
     function writeEncodedValue(
         writer: tByteWriter,
         value: unknown,
         shapes: tShapeTransaction | undefined,
     ) {
-        for (const byte of config.magic) writer.writeU8(byte)
-        writer.writeU8(config.version)
+        writeHeader(writer)
         writeValue(writer, value, 0, new WeakSet<object>(), {
             config,
             shapes,
@@ -2074,6 +2143,131 @@ export function createBinaryValueCodec(options: BinaryValueCodecOptions) {
             return {wire, commit, rollback}
         } catch (error) {
             return throwLabeledError(config.label, error)
+        }
+    }
+
+    // ============================================================
+    // incremental frame: [...prefix, [item, ...]], one item at a time
+    // ============================================================
+    // Byte-identical to prepareEncode of the finished array: one shape
+    // transaction, one work budget and the same depths span the frame. An item is
+    // encoded when it is added, so the frame is the snapshot of its values. The
+    // frame owns the pending-encode token from open until its send is settled.
+    function openBatch(prefix: readonly unknown[], maxItems = BATCH_MAX_ITEMS) {
+        if (pendingEncode) {
+            throw new Error(config.label + ': prepared encode must be committed or rolled back')
+        }
+        if (!Number.isSafeInteger(maxItems) || maxItems < 1 || maxItems > BATCH_MAX_ITEMS) {
+            throw new RangeError(config.label + ': batch maxItems must be 1 through ' + BATCH_MAX_ITEMS)
+        }
+        const shapes = config.shapeLimits
+            ? createShapeTransaction(encodeShapes, config.shapeLimits)
+            : undefined
+        const writer = createByteWriter(config.maxWireBytes, BATCH_INITIAL_CAPACITY)
+        const context: tWriteContext = {config, shapes, workUnits: 0, callbackRefs: 0}
+        let countAt = 0
+        try {
+            writeHeader(writer)
+            // The two arrays prepareEncode would walk: the frame at depth 0, its items at 1.
+            chargeFrameArray(context, 0)
+            if (prefix.length + 1 > MAX_ARRAY_ITEMS) binaryRangeError('array exceeds item limit')
+            writer.writeU8(VALUE_TAG.ARRAY)
+            writeLength(writer, prefix.length + 1)
+            const active = new WeakSet<object>()
+            for (const item of prefix) writeValue(writer, item, 1, active, context)
+            chargeFrameArray(context, 1)
+            writer.writeU8(VALUE_TAG.ARRAY)
+            countAt = writer.position()
+            writer.writeU8(0)
+        } catch (error) {
+            return throwLabeledError(config.label, error)
+        }
+        const token = {}
+        const preparedGeneration = generation
+        pendingEncode = token
+        let itemCount = 0
+        let finished = false
+        let settled = false
+        // The frame before the latest add: a refused add returns to it and
+        // rewindLast() takes a successful one back out. Reused, not allocated per add.
+        const before = {position: 0, itemCount: 0, workUnits: 0, callbackRefs: 0, shapes: createShapeMark()}
+        let canRewind = false
+
+        function saveBefore() {
+            before.position = writer.position()
+            before.itemCount = itemCount
+            before.workUnits = context.workUnits
+            before.callbackRefs = context.callbackRefs
+            if (shapes) saveShapeMark(shapes, before.shapes)
+        }
+
+        function restoreBefore() {
+            writer.rewind(before.position)
+            itemCount = before.itemCount
+            context.workUnits = before.workUnits
+            context.callbackRefs = before.callbackRefs
+            if (shapes) restoreShapeMark(shapes, before.shapes)
+            canRewind = false
+        }
+
+        function requireOpen() {
+            if (finished) throw new Error(config.label + ': batch is finished')
+        }
+
+        // A refused item leaves the frame exactly as it was.
+        function add(value: unknown) {
+            requireOpen()
+            if (itemCount >= maxItems) throw new RangeError(config.label + ': batch item limit reached')
+            saveBefore()
+            try {
+                writeValue(writer, value, 2, new WeakSet<object>(), context)
+            } catch (error) {
+                restoreBefore()
+                return throwLabeledError(config.label, error)
+            }
+            itemCount++
+            canRewind = true
+        }
+
+        function rewindLast() {
+            requireOpen()
+            if (!canRewind) throw new Error(config.label + ': batch has no item to rewind')
+            restoreBefore()
+        }
+
+        function commit() {
+            if (settled) return
+            if (preparedGeneration != generation || pendingEncode != token) {
+                throw new Error(config.label + ': prepared encode belongs to an obsolete generation')
+            }
+            settled = true
+            pendingEncode = undefined
+            if (shapes) commitShapeTransaction(shapes)
+            applyEncodeStats(shapes)
+        }
+
+        function rollback() {
+            if (settled) return
+            settled = true
+            finished = true
+            if (pendingEncode == token) pendingEncode = undefined
+        }
+
+        // The count patch is one byte: identical to the varuint of any count below 128.
+        function finish() {
+            requireOpen()
+            finished = true
+            writer.patchU8(countAt, itemCount)
+            return {wire: trustReplayBinaryLeaf(writer.finish()), commit, rollback}
+        }
+
+        return {
+            add,
+            rewindLast,
+            count: () => itemCount,
+            byteLength: () => writer.position(),
+            finish,
+            rollback,
         }
     }
 
@@ -2191,7 +2385,7 @@ export function createBinaryValueCodec(options: BinaryValueCodecOptions) {
         decodeReferences = 0
     }
 
-    return {encode, prepareEncode, measureEncode, decode, decodeTrusted, stats, reset}
+    return {encode, prepareEncode, openBatch, measureEncode, decode, decodeTrusted, stats, reset}
 }
 
 export type BinaryValueCodec = ReturnType<typeof createBinaryValueCodec>
