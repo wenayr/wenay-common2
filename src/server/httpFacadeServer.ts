@@ -12,6 +12,8 @@ export type HttpFacadeServerOptions<T extends object> = {
     basePath: string
     middleware?: RequestHandler | readonly RequestHandler[]
     limits?: RpcLimits
+    /** The whole error, stack included, for the operator: callers only get its facts. */
+    onError?: (error: unknown, context: {route: string, status: number}) => void
 }
 
 type tRoute = {
@@ -140,14 +142,17 @@ function publicError(error: unknown): unknown {
     return cause === undefined ? facts : {...facts, cause: publicError((error as {cause?: unknown}).cause)}
 }
 
-function createRouteHandler(route: tRoute, limits: Required<RpcLimits>) {
+function createRouteHandler(route: tRoute, limits: Required<RpcLimits>, onError?: HttpFacadeServerOptions<object>['onError']) {
     return async function handleHttpFacadeRequest(req: Request, res: Response) {
         try {
             const args = decodeArgs(req, route.method, limits)
             const value = await route.fn.apply(route.context, args)
             res.json({ok: true, value: packResult(value)})
         } catch (error) {
-            res.status(statusForError(error)).json({ok: false, error: publicError(error)})
+            const status = statusForError(error)
+            // a failing operator hook must not cost the caller its reply
+            try { onError?.(error, {route: route.route, status}) } catch {}
+            res.status(status).json({ok: false, error: publicError(error)})
         }
     }
 }
@@ -183,7 +188,7 @@ export function createHttpFacadeServer<T extends object>(options: HttpFacadeServ
 
     const register = app[method].bind(app) as (path: string, ...handlers: RequestHandler[]) => unknown
     for (const route of routes) {
-        register(route.route, ...middleware, createRouteHandler(route, limits))
+        register(route.route, ...middleware, createRouteHandler(route, limits, options.onError))
         registered.add(`${route.method}\u0000${route.route}`)
     }
 

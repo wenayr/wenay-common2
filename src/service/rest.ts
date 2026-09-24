@@ -34,6 +34,8 @@ export type ServiceRestDeps<D extends tServiceDefinition<any, any>> = {
     /** Mount /panel (default true) and /docs (default true). */
     pages?: {panel?: boolean, docs?: boolean}
     limits?: RpcLimits
+    /** Where a 5xx goes with its stack (default console.error): the HTTP caller only gets its facts. */
+    log?: (line: string) => void
 }
 
 // One JSON envelope for every route (the demo stand's limits).
@@ -75,6 +77,7 @@ export function createServiceRest<D extends tServiceDefinition<any, any>>(deps: 
     const name = definition.name
     const basePath = '/api'
     const limits = deps.limits ?? defaultLimits
+    const log = deps.log ?? console.error
     const access = leader.access
     const viewNames = Object.keys(definition.views ?? {})
     const commandNames = Object.keys(definition.commands)
@@ -109,20 +112,26 @@ export function createServiceRest<D extends tServiceDefinition<any, any>>(deps: 
         ...(signup ? {signup: function signupWithForm(requestId: unknown, input: unknown) { return leader.serve.signup(String(requestId ?? ''), input) }} : {}),
     }} : null
 
+    /** A 5xx is the operator's problem: its stack goes to the log, never into the HTTP body. */
+    function logServerError(error: unknown, context: {route: string, status: number}) {
+        if (context.status < 500) return
+        log(`${name} REST ${context.route} failed (${context.status}): ${error instanceof Error ? error.stack ?? error.message : String(error)}`)
+    }
+
     const readServer = createHttpFacadeServer({
-        app, object: publicFacade, method: 'get', basePath, limits,
+        app, object: publicFacade, method: 'get', basePath, limits, onError: logServerError,
         middleware: [bearerIntoArgs(false)],
     })
     const meServer = createHttpFacadeServer({
-        app, object: meFacade, method: 'get', basePath, limits,
+        app, object: meFacade, method: 'get', basePath, limits, onError: logServerError,
         middleware: [bearerIntoArgs(true)],
     })
     const writeServer = createHttpFacadeServer({
-        app, object: commandsFacade, method: 'post', basePath, limits,
+        app, object: commandsFacade, method: 'post', basePath, limits, onError: logServerError,
         middleware: [express.json({limit: '16kb'}), bearerIntoArgs(true)],
     })
     const loginServer = loginFacade ? createHttpFacadeServer({
-        app, object: loginFacade, method: 'post', basePath, limits,
+        app, object: loginFacade, method: 'post', basePath, limits, onError: logServerError,
         middleware: [express.json({limit: '16kb'})],
     }) : null
 
