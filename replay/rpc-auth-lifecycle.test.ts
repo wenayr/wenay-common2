@@ -28,6 +28,7 @@ import {createRpcClientHub, RpcHubAuthEvent, RpcTokenProvider} from '../src/Comm
 import {Pkt} from '../src/Common/rcp/rpc-protocol'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 import {createTokenCodec} from '../src/server/auth-token'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 
@@ -586,7 +587,7 @@ async function realTokenCodec() {
     }
 }
 
-async function main() {
+async function runChecks() {
     await grantAndRenewal()
     await expiryAndRetry()
     await revocationMidSession()
@@ -595,4 +596,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function reportAuthLifecycleFailure(error) { console.error(error); process.exit(1) })
+async function main() {
+    await runChecks().catch(function reportAuthLifecycleFailure(error) { console.error(error); process.exit(1) })
+}
+
+runOracle(main)

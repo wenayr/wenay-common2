@@ -13,6 +13,7 @@
 // ============================================================
 
 import {replayListen, exposeReplay, replaySubscribe, StaleInfo, ReplayRemote} from '../src/Common/events/replay-index'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -22,7 +23,7 @@ const ok = (condition: any, message: string) => {
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 const edgesOf = (list: StaleInfo[]) => list.map(i => i.stale ? 'T' : 'F').join(',')
 
-async function main() {
+async function runChecks() {
     console.log('\n[staleness] producer: silent line, edge-triggered both directions')
     {
         const edges: StaleInfo[] = []
@@ -173,4 +174,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

@@ -19,6 +19,7 @@ import {createStore, StorePatch} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {exposeStoreReplay, syncStoreReplay} from '../src/Common/Observe/store-replay'
 import {ReplayRemote} from '../src/Common/events/replay-index'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -86,7 +87,7 @@ async function startRealClient<T extends object>(port: number) {
     }
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[socket-replay] store mirror over a real Socket.IO wire')
 
     const backend = createStore<World>({units: {alpha: {hp: 100, x: 0}}, tick: 0}, {drain: 'micro'})
@@ -196,4 +197,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

@@ -4,6 +4,7 @@ import {createMemoryOfflineStorage, createOfflineStore} from '../src/Common/Obse
 import {StoreReplayRemote} from '../src/Common/Observe/store-replay'
 import {encodeStoreReplayBatchV2} from '../src/Common/Observe/store-replay-codec'
 import {RPC_MEMBER_LOOKUP, RPC_SCHEMA_READY} from '../src/Common/events/transport-lifecycle'
+import {runOracle} from '../oracle/run-oracle'
 
 type State = {source: string}
 
@@ -77,7 +78,7 @@ function createDeferredRemote(source: string, holdKeyframe = false) {
     }
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[store-offline-generation-race] close before MAP cancels deferred start')
     {
         const deferred = createDeferredRemote('closed')
@@ -132,4 +133,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function reportFailure(error) { console.error(error); process.exit(1) })
+async function main() {
+    await runChecks().catch(function reportFailure(error) { console.error(error); process.exit(1) })
+}
+
+runOracle(main)

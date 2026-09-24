@@ -10,6 +10,7 @@ import {createRpcClient} from '../src/Common/rcp/rpc-client'
 import {createInProcSocketPair} from '../src/Common/rcp/rpc-inproc'
 import {Pkt, SocketTmpl} from '../src/Common/rcp/rpc-protocol'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 function ok(condition: any, message: string) {
@@ -39,7 +40,7 @@ function brandLookup(remote: object, available: (member: string) => boolean | un
     Object.defineProperty(remote, RPC_MEMBER_LOOKUP, {value: lookup})
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[rpc-optional-capability] raw Store waits for schema and falls back to changed')
     {
         const source = createStore({value: 1}, {drain: 'micro'})
@@ -226,4 +227,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function reportFailure(error) { console.error(error); process.exit(1) })
+async function main() {
+    await runChecks().catch(function reportFailure(error) { console.error(error); process.exit(1) })
+}
+
+runOracle(main)

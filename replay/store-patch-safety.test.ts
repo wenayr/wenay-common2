@@ -6,6 +6,7 @@ import {
     applyStorePatch, applyStorePatches, createStore, exposeStore, StorePatch,
 } from '../src/Common/Observe/store'
 import {syncStoreReplay} from '../src/Common/Observe/store-replay'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 
@@ -18,7 +19,7 @@ function json(value: any) {
     return JSON.stringify(value)
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[store-patch-safety] validate before mutation')
     const store = createStore<Record<string, any>>({})
     const invalid: StorePatch = {
@@ -107,7 +108,11 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function storePatchSafetyFailed(error) {
-    console.error(error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function storePatchSafetyFailed(error) {
+        console.error(error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

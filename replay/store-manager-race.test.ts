@@ -5,6 +5,7 @@ import {
     OfflineStorage,
     StoreReplayRemote,
 } from '../src/Common/Observe'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 
@@ -127,7 +128,7 @@ function createDelayedMirror(snapshot: World) {
     }
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[store-manager race] stop before deferred start enters resource code')
     {
         const replay = createDelayedReplay({rows: {a: {qty: 0}}})
@@ -276,7 +277,11 @@ async function main() {
     process.exit(fails == 0 ? 0 : 1)
 }
 
-main().catch(function storeManagerRaceFailed(error) {
-    console.error(error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function storeManagerRaceFailed(error) {
+        console.error(error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

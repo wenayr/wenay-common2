@@ -25,6 +25,7 @@ import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto, RpcReplayOpts} from '../src/Common/rcp/rpc-server-auto'
 import {Pkt} from '../src/Common/rcp/rpc-protocol'
 import {rpcPathKey} from '../src/Common/rcp/rpc-path'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -114,7 +115,7 @@ const foldQuotes = (envs: ReplayEvent<[string, number]>[]) => {
     return m
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[rpc-auto] replay-transparent exposure over a real Socket.IO wire')
 
     // ============ in-proc: sacred line throws loud ============
@@ -262,4 +263,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

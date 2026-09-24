@@ -5,6 +5,7 @@
 import {isDeepStrictEqual} from 'node:util'
 import {createStore, createStoreMirror, exposeStore} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 function ok(condition: any, message: string) {
@@ -60,7 +61,7 @@ async function runMode(mode: 'pull' | 'patches' | 'changedData') {
     return converged
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[store-mirror-race] changes during initial get are not lost')
     ok(await runMode('pull'), 'changed/changedPaths queues a follow-up pull')
     ok(await runMode('patches'), 'patchesBatch buffers absolutes until the snapshot lands')
@@ -70,4 +71,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(error => { console.error(error); process.exit(1) })
+async function main() {
+    await runChecks().catch(error => { console.error(error); process.exit(1) })
+}
+
+runOracle(main)
