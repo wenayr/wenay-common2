@@ -212,7 +212,24 @@ function createServer<T extends object>(
     let currentTarget: any = target; // active object (facade of current principal)
     let principalEpoch = 0
 
+    // A numeric ref is a PROMISE that index N means one method path for the life of this
+    // connection. A dense re-numbering per principal broke that promise: the client caches
+    // getUser=0 under P1, then a switch to P2 (whose Object.keys order differs) rebuilds
+    // methods[] so index 0 is admin.deleteUser — and a getUser CALL that raced the switch
+    // executes deleteUser. So the id is assigned per PATH, once, append-only: a path present in
+    // the new principal keeps its id (same method, correct), a path the new principal lacks
+    // leaves a HOLE (methods[id] === undefined → "Not a function"). The wire is unchanged —
+    // routeMap is still pathKey→number, only the numbering is stable.
+    const routeIds = new Map<string, number>()
+    function routeIdFor(pathKey: string) {
+        let id = routeIds.get(pathKey)
+        if (id === undefined) { id = routeIds.size; routeIds.set(pathKey, id) }
+        return id
+    }
+
     function buildDispatch(t: any) {
+        // Sparse by stable id: a hole is a path this principal does not serve. `delete` reflects
+        // that back to the client MAP so a legitimate cached ref is never re-advertised as live.
         const m: Function[] = [], cx: any[] = [], paths: string[][] = [], rm: Record<string, number> = {}, lp: string[] = [], ln: object[] = [];
         const resolved = transformTree(t);
         (function index(obj: any, prefix: string[]) {
@@ -220,7 +237,11 @@ function createServer<T extends object>(
                 if (!isSafeKey(k)) continue;
                 const v = obj[k];
                 const path = [...prefix, k];
-                if (typeof v == "function") { rm[rpcPathKey(path)] = m.length; m.push(v); cx.push(obj); paths.push(path); }
+                if (typeof v == "function") {
+                    const pk = rpcPathKey(path)
+                    const id = routeIdFor(pk)
+                    rm[pk] = id; m[id] = v; cx[id] = obj; paths[id] = path;
+                }
                 else if (v && typeof v == "object" && !isNoStrict(v)) {
                     if (hasRpcListen(v)) { lp.push(rpcPathKey(path)); ln.push(listenNodeOrigin.get(v) ?? v); }
                     index(v, path);
