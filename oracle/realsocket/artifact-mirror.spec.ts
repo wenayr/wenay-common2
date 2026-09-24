@@ -11,8 +11,7 @@ import {createArtifactMirror} from '../../src/Common/artifact/artifact-mirror'
 import {createArtifactByteCache} from '../../src/Common/artifact/artifact-cache'
 import {sha256Hex} from '../../src/Common/artifact/artifact-hash'
 import {createStoreFollower} from '../../src/Common/Observe/store-follower'
-import {StorePatch} from '../../src/Common/Observe/store'
-import {ReplayRemote} from '../../src/Common/events/replay-wire'
+import type {StoreReplayRemote} from '../../src/Common/Observe/store-replay'
 
 const LEADER_PORT = 3162
 const MIRROR_PORT = 3163
@@ -89,7 +88,7 @@ async function main() {
     // ============== mirror node: catalog follower + byte cache + read-edge ==============
     const upstream = await startRealClient({port: LEADER_PORT})   // first connection = mirror-link
     const catalog = createStoreFollower<ArtifactStore>({
-        remote: upstream.api.artifacts.state as ReplayRemote<[StorePatch]>,
+        remote: upstream.api.artifacts.state as StoreReplayRemote<ArtifactStore>,
         initial: {artifacts: {}},
     })
     const cache = createArtifactByteCache({

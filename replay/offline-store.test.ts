@@ -1,7 +1,7 @@
 import {createOfflineStore, createMemoryOfflineStorage, OfflineStoreRecord} from '../src/Common/Observe/store-offline'
 import {createStore, StorePatch} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
-import {exposeStoreReplay} from '../src/Common/Observe/store-replay'
+import {exposeStoreReplay, type StoreReplayRemote} from '../src/Common/Observe/store-replay'
 import {ReplayRemote} from '../src/Common/events/replay-index'
 import {runOracle} from '../oracle/run-oracle'
 
@@ -18,9 +18,15 @@ const ok = (condition: any, message: string) => {
 const delay = (ms = 0) => new Promise<void>(resolve => setTimeout(resolve, ms))
 const json = (v: any) => JSON.stringify(v)
 
+// library type: StoreReplayRemote admits only the V2 tuple wire, yet syncStoreReplay also decodes the
+// plain batch events of exposed.replay (decodeStoreReplayV2), the documented conflateReplay(exposed.replay) path
+function asStoreReplayRemote(remote: ReplayRemote<[readonly StorePatch[]]>) {
+    return remote as unknown as StoreReplayRemote<World>
+}
+
 function makeRemote(exposed: ReturnType<typeof exposeStoreReplay<World>>, lag = 0) {
     const counters = {since: 0, keyframe: 0}
-    const remote: ReplayRemote<[StorePatch]> = {
+    const remote: ReplayRemote<[readonly StorePatch[]]> = {
         line: exposed.replay.line,
         since: async (s: number) => {
             counters.since++
@@ -50,7 +56,7 @@ async function runChecks() {
 
         const offline = await createOfflineStore<World>({
             key: 'world',
-            remote,
+            remote: asStoreReplayRemote(remote),
             initial: {units: {}, tick: -1},
             storage,
             debounceMs: 0,
@@ -76,7 +82,7 @@ async function runChecks() {
 
         const first = await createOfflineStore<World>({
             key: 'world',
-            remote,
+            remote: asStoreReplayRemote(remote),
             initial: {units: {}, tick: -1},
             storage,
             debounceMs: 0,
@@ -104,7 +110,7 @@ async function runChecks() {
         ok(offlineOnly.status().offline, 'no remote marks status offline')
 
         const {remote: remote2, counters: counters2} = makeRemote(exposed)
-        await offlineOnly.reconnect(remote2)
+        await offlineOnly.reconnect(asStoreReplayRemote(remote2))
         await offlineOnly.ready
         await offlineOnly.flush()
 
@@ -132,7 +138,7 @@ async function runChecks() {
 
         const offline = await createOfflineStore<World>({
             key: 'world',
-            remote,
+            remote: asStoreReplayRemote(remote),
             initial: {units: {}, tick: -1},
             storage,
             debounceMs: 0,

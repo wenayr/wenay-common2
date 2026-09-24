@@ -8,10 +8,10 @@
 //      npx tsx replay/conflate.test.ts
 // ============================================================
 
-import {createStore} from '../src/Common/Observe/store'
+import {createStore, type StorePatch} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {replayListen, replaySubscribe, ReplayRemote} from '../src/Common/events/replay-index'
-import {exposeStoreReplay, syncStoreReplay} from '../src/Common/Observe/store-replay'
+import {exposeStoreReplay, syncStoreReplay, type StoreReplayRemote} from '../src/Common/Observe/store-replay'
 import {conflateReplay} from '../src/Common/events/replay-index'
 import {runOracle} from '../oracle/run-oracle'
 
@@ -35,6 +35,12 @@ async function waitFor(label: string, cond: () => boolean) {
 type World = {
     units: Record<string, {hp: number, x: number}>
     tick: number
+}
+
+// library type: StoreReplayRemote admits only the V2 tuple wire, yet syncStoreReplay also decodes the
+// plain batch events a conflateReplay(exposed.replay) gate carries (decodeStoreReplayV2), a documented path
+function asStoreReplayRemote(remote: ReplayRemote<[readonly StorePatch[]]>) {
+    return remote as unknown as StoreReplayRemote<World>
 }
 
 async function runChecks() {
@@ -176,14 +182,14 @@ async function runChecks() {
         const buf = {v: 0}
         const gated = conflateReplay(exposed.replay, {pending: () => buf.v, highWater: 3, pollMs: 10})
         let envelopes = 0
-        const remote: ReplayRemote<any> = {
+        const remote: ReplayRemote<[readonly StorePatch[]]> = {
             line: {on: (cb: any) => gated.api.line.on((ev: any) => { envelopes++; cb(ev) })},
             since: async s => { await delay(10); return gated.api.since(s) },
             keyframe: async () => { await delay(10); return gated.api.keyframe() },
         }
         const mirror = createStore<World>({units: {}, tick: -1})
         const seqs: number[] = []
-        const sub = syncStoreReplay(mirror, remote, {onSeq: s => seqs.push(s)})
+        const sub = syncStoreReplay(mirror, asStoreReplayRemote(remote), {onSeq: s => seqs.push(s)})
         await sub.ready
         ok(json(mirror.state) == json(backend.snapshot()), 'fresh mirror converged via keyframe')
 

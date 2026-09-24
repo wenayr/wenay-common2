@@ -7,10 +7,9 @@
 // small journal (history: 16) so bounces exercise both tail and keyframe paths.
 // Ports 3167/3168 (3100+ range).
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
-import {createStore, StorePatch} from '../../src/Common/Observe/store'
-import {exposeStoreReplay, syncStoreReplay} from '../../src/Common/Observe/store-replay'
+import {createStore} from '../../src/Common/Observe/store'
+import {exposeStoreReplay, syncStoreReplay, type StoreReplayRemote} from '../../src/Common/Observe/store-replay'
 import {createStoreFollower} from '../../src/Common/Observe/store-follower'
-import {ReplayRemote} from '../../src/Common/events/replay-wire'
 
 const LEADER_PORT = 3167
 const MID_PORT = 3168
@@ -44,7 +43,7 @@ async function main() {
 
     // ============== mid: follower of the leader, serving its own cascade ==============
     const up = await startRealClient({port: LEADER_PORT})
-    const mid = createStoreFollower<Record<string, any>>({remote: up.api.board.replay as ReplayRemote<[StorePatch]>, initial: {}, epoch: 0})
+    const mid = createStoreFollower<Record<string, any>>({remote: up.api.board.replay as StoreReplayRemote<Record<string, any>>, initial: {}, epoch: 0})
     await mid.ready
     const midSrv = await startRealServer({port: MID_PORT, makeObject: () => ({board: mid.api})})
 
@@ -52,7 +51,7 @@ async function main() {
     const edge = createStore<Record<string, any>>({}, {drain: 'micro'})
     const seqs: number[] = []
     let edgeClient = await startRealClient({port: MID_PORT})
-    let edgeSub = syncStoreReplay(edge, edgeClient.api.board.replay as ReplayRemote<[StorePatch]>, {onSeq: s => seqs.push(s)})
+    let edgeSub = syncStoreReplay(edge, edgeClient.api.board.replay as StoreReplayRemote<Record<string, any>>, {onSeq: s => seqs.push(s)})
     await edgeSub.ready
 
     async function bounceEdge() {
@@ -61,7 +60,7 @@ async function main() {
         await delay(15 + Math.floor(rand() * 30))
         edgeClient = await startRealClient({port: MID_PORT})
         const since = seqs.length ? seqs[seqs.length - 1] : -1
-        edgeSub = syncStoreReplay(edge, edgeClient.api.board.replay as ReplayRemote<[StorePatch]>, {since, onSeq: s => seqs.push(s)})
+        edgeSub = syncStoreReplay(edge, edgeClient.api.board.replay as StoreReplayRemote<Record<string, any>>, {since, onSeq: s => seqs.push(s)})
         await edgeSub.ready
     }
 

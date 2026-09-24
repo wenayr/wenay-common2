@@ -8,9 +8,8 @@
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {createWorkboardHost} from '../../demo/workboard-host'
 import {createStoreFollower} from '../../src/Common/Observe/store-follower'
-import {createStore, StorePatch} from '../../src/Common/Observe/store'
-import {syncStoreReplay} from '../../src/Common/Observe/store-replay'
-import {ReplayRemote} from '../../src/Common/events/replay-wire'
+import {createStore} from '../../src/Common/Observe/store'
+import {syncStoreReplay, type StoreReplayRemote} from '../../src/Common/Observe/store-replay'
 import {WorkboardState} from '../../demo/workboard-contract'
 
 const LEADER_PORT = 3160
@@ -98,7 +97,7 @@ async function main() {
     // ============== follower instance: leader client + server for its own ==============
     const upstream = await startRealClient({port: LEADER_PORT})
     const follower = createStoreFollower<WorkboardState>({
-        remote: upstream.api.workboard.state as ReplayRemote<[StorePatch]>,
+        remote: upstream.api.workboard.state as StoreReplayRemote<WorkboardState>,
     })
     function forwardCommand(name: 'create' | 'rename' | 'move' | 'assign' | 'remove', who: string) {
         return function forwardToLeader(input: any) {
@@ -134,7 +133,7 @@ async function main() {
     const a = await startRealClient({port: LEADER_PORT})
     const b = await startRealClient({port: FOLLOWER_PORT})
     const bStore = createStore<WorkboardState>({})
-    const bSync = syncStoreReplay(bStore, b.api.workboard.state as ReplayRemote<[StorePatch]>)
+    const bSync = syncStoreReplay(bStore, b.api.workboard.state as StoreReplayRemote<WorkboardState>)
     await bSync.ready
     await check('B (follower client) sees the seed via cascade', () => bStore.snapshot(), board.control.store.snapshot())
 

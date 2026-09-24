@@ -26,10 +26,9 @@ import {listen as createListenPair} from '../src/Common/events/Listen'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 import {createOfflineStore, createMemoryOfflineStorage, OfflineStoreRecord} from '../src/Common/Observe/store-offline'
-import {createStore, StorePatch} from '../src/Common/Observe/store'
+import {createStore} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
-import {exposeStoreReplay} from '../src/Common/Observe/store-replay'
-import {ReplayRemote} from '../src/Common/events/replay-index'
+import {exposeStoreReplay, type StoreReplayRemote} from '../src/Common/Observe/store-replay'
 import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
@@ -60,7 +59,7 @@ type Counters = {
     keyframe: number
 }
 
-function makeRemote(deep: any): ReplayRemote<[StorePatch]> {
+function makeRemote(deep: any): StoreReplayRemote<World> {
     return {
         line: deep.replay.line,
         since: (s: number) => deep.replay.since(s),

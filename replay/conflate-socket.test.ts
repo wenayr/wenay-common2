@@ -23,7 +23,7 @@ import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 import {createStore, StorePatch} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
-import {exposeStoreReplay, syncStoreReplay} from '../src/Common/Observe/store-replay'
+import {exposeStoreReplay, syncStoreReplay, type StoreReplayRemote} from '../src/Common/Observe/store-replay'
 import {conflateReplay, exposeReplay} from '../src/Common/events/replay-index'
 import {ReplayRemote} from '../src/Common/events/replay-index'
 import {runOracle} from '../oracle/run-oracle'
@@ -47,6 +47,12 @@ async function waitFor(label: string, cond: () => boolean) {
 type World = {
     units: Record<string, {hp: number, x: number}>
     tick: number
+}
+
+// library type: StoreReplayRemote admits only the V2 tuple wire, yet syncStoreReplay also decodes the
+// plain batch events a conflateReplay(exposed.replay) gate carries (decodeStoreReplayV2), a documented path
+function asStoreReplayRemote(remote: ReplayRemote<[readonly StorePatch[]]>) {
+    return remote as unknown as StoreReplayRemote<World>
 }
 
 type ConflateStats = {conflating: boolean, dropped: number, keyframes: number, coalesced: number, flushes: number}
@@ -115,14 +121,14 @@ async function runChecks() {
 
     try {
         let envelopes = 0
-        const remote: ReplayRemote<[StorePatch]> = {
+        const remote: ReplayRemote<[readonly StorePatch[]]> = {
             line: {on: (cb: any) => deep.replay.line.on((ev: any) => { envelopes++; cb(ev) })},
             since: (s: number) => deep.replay.since(s),
             keyframe: () => deep.replay.keyframe(),
         }
         const mirror = createStore<World>({units: {}, tick: -1})
         const seqs: number[] = []
-        const sub = syncStoreReplay(mirror, remote, {onSeq: s => seqs.push(s)})
+        const sub = syncStoreReplay(mirror, asStoreReplayRemote(remote), {onSeq: s => seqs.push(s)})
         await sub.ready
         ok(json(mirror.state) == json(backend.snapshot()), 'fresh client converged via keyframe over the wire')
 
@@ -160,13 +166,13 @@ async function runChecks() {
 
         // ============ keyOf-gates: congestion collapses into tail of latest values, NOT keyframe ============
         let envelopesK = 0
-        const remoteK: ReplayRemote<[StorePatch]> = {
+        const remoteK: ReplayRemote<[readonly StorePatch[]]> = {
             line: {on: (cb: any) => deep.replayK.line.on((ev: any) => { envelopesK++; cb(ev) })},
             since: (s: number) => deep.replayK.since(s),
             keyframe: () => deep.replayK.keyframe(),
         }
         const mirrorK = createStore<World>({units: {}, tick: -1})
-        const subK = syncStoreReplay(mirrorK, remoteK)
+        const subK = syncStoreReplay(mirrorK, asStoreReplayRemote(remoteK))
         await subK.ready
         ok(json(mirrorK.state) == json(backend.snapshot()), 'keyOf line: fresh mirror converged via keyframe')
 
@@ -209,13 +215,13 @@ async function runChecks() {
         const clientsB = await hubB.setToken(null)
         await clientsB.api.readyStrict()
         const deepB = clientsB.api.func as any
-        const remoteB: ReplayRemote<[StorePatch]> = {
+        const remoteB: ReplayRemote<[readonly StorePatch[]]> = {
             line: {on: (cb: any) => deepB.replay.line.on(cb)},
             since: (s: number) => deepB.replay.since(s),
             keyframe: () => deepB.replay.keyframe(),
         }
         const mirrorB = createStore<World>({units: {}, tick: -1})
-        const subB = syncStoreReplay(mirrorB, remoteB)
+        const subB = syncStoreReplay(mirrorB, asStoreReplayRemote(remoteB))
         await subB.ready
         ok(json(mirrorB.state) == json(backend.snapshot()), 'second client converged via its own keyframe')
 
@@ -261,12 +267,12 @@ async function runChecks() {
         await clients2.api.readyStrict()
         const deep2 = clients2.api.func as any
         const seqs2: number[] = []
-        const remote2: ReplayRemote<[StorePatch]> = {
+        const remote2: ReplayRemote<[readonly StorePatch[]]> = {
             line: {on: (cb: any) => deep2.replay.line.on(cb)},
             since: (s: number) => deep2.replay.since(s),
             keyframe: () => deep2.replay.keyframe(),
         }
-        const sub2 = syncStoreReplay(mirror, remote2, {since: at, onSeq: s => seqs2.push(s)})
+        const sub2 = syncStoreReplay(mirror, asStoreReplayRemote(remote2), {since: at, onSeq: s => seqs2.push(s)})
         await sub2.ready
         ok(json(mirror.state) == json(backend.snapshot()), 'reconnect mid-episode converged from the journal tail')
         ok(seqs2.length == 7, `gate drops did not hole the journal: since delivered seven V2 envelopes (got ${seqs2.length})`)

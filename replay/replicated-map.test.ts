@@ -1185,8 +1185,8 @@ async function runChecks() {
         const source = createStore<Record<string, Row>>({OLD: row('OLD', 1)})
         const exposed = exposeStoreReplay(source)
         const batches: ReplicatedMapChange<Row>[] = []
-        const follower = followReplicatedMap(
-            exposed.api.replay as ReplicatedMapRemote<Row>,
+        const follower = followReplicatedMap<Row>(
+            exposed.api.replay,
             {
                 delivery: 'latest',
                 checkpoint: {

@@ -1,6 +1,6 @@
-import {createStore} from '../src/Common/Observe/store'
+import {createStore, type StorePatch} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
-import {exposeStoreReplay, syncStoreReplay} from '../src/Common/Observe/store-replay'
+import {exposeStoreReplay, syncStoreReplay, type StoreReplayRemote} from '../src/Common/Observe/store-replay'
 import {ReplayRemote} from '../src/Common/events/replay-index'
 import {runOracle} from '../oracle/run-oracle'
 
@@ -17,10 +17,16 @@ type World = {
     tick: number
 }
 
+// library type: StoreReplayRemote admits only the V2 tuple wire, yet syncStoreReplay also decodes the
+// plain batch events of exposed.replay (decodeStoreReplayV2), the documented conflateReplay(exposed.replay) path
+function asStoreReplayRemote(remote: ReplayRemote<[readonly StorePatch[]]>) {
+    return remote as unknown as StoreReplayRemote<World>
+}
+
 // in-proc "wire": methods become async with delay — like real RPC
 function makeRemote(exposed: ReturnType<typeof exposeStoreReplay<World>>, lag = 15) {
     const counters = {since: 0, keyframe: 0}
-    const remote: ReplayRemote<any> = {
+    const remote: ReplayRemote<[readonly StorePatch[]]> = {
         line: exposed.replay.line,
         since: async (s: number) => { counters.since++; await delay(lag); return exposed.replay.getSince(s) ?? null },
         keyframe: async () => { counters.keyframe++; await delay(lag); return exposed.replay.keyframe() ?? null },
@@ -62,7 +68,7 @@ async function runChecks() {
         const {remote, counters} = makeRemote(exposed)
         const mirror = createStore<World>({units: {}, tick: -1})
         const seqs: number[] = []
-        const sub = syncStoreReplay(mirror, remote, {onSeq: s => seqs.push(s)})
+        const sub = syncStoreReplay(mirror, asStoreReplayRemote(remote), {onSeq: s => seqs.push(s)})
         await sub.ready
         ok(json(mirror.state) == json(backend.snapshot()), 'since<0 → keyframe → mirror equals backend')
         ok(counters.keyframe == 1 && counters.since == 0, 'keyframe requested exactly once, no tail call')
@@ -83,7 +89,7 @@ async function runChecks() {
         const exposed = exposeStoreReplay(backend, {history: 100})
         const {remote} = makeRemote(exposed)
         const mirror = createStore<World>({units: {}, tick: -1})
-        const sub = syncStoreReplay(mirror, remote)
+        const sub = syncStoreReplay(mirror, asStoreReplayRemote(remote))
         await sub.ready
         sub()  // "connection break"
 
@@ -94,7 +100,7 @@ async function runChecks() {
         await flushReactive(backend.state)
 
         const {remote: remote2, counters: counters2} = makeRemote(exposed)
-        const sub2 = syncStoreReplay(mirror, remote2, {since: sub.seq()})
+        const sub2 = syncStoreReplay(mirror, asStoreReplayRemote(remote2), {since: sub.seq()})
         await sub2.ready
         ok(json(mirror.state) == json(backend.snapshot()), 'reconnect via since converges')
         ok(counters2.keyframe == 0 && counters2.since == 1, 'reconnect cost = tail of patches, NOT a snapshot')
@@ -108,7 +114,7 @@ async function runChecks() {
         const exposed = exposeStoreReplay(backend, {history: 3})
         const {remote} = makeRemote(exposed)
         const mirror = createStore<World>({units: {}, tick: -1})
-        const sub = syncStoreReplay(mirror, remote)
+        const sub = syncStoreReplay(mirror, asStoreReplayRemote(remote))
         await sub.ready
         sub()
 
@@ -118,8 +124,8 @@ async function runChecks() {
         }
         let applied = 0
         const {remote: remote2, counters: counters2} = makeRemote(exposed)
-        const counting: ReplayRemote<any> = {...remote2, line: {on: (cb: any) => remote2.line.on((ev: any) => { applied++; cb(ev) })}}
-        const sub2 = syncStoreReplay(mirror, counting, {since: sub.seq()})
+        const counting: ReplayRemote<[readonly StorePatch[]]> = {...remote2, line: {on: (cb: any) => remote2.line.on((ev: any) => { applied++; cb(ev) })}}
+        const sub2 = syncStoreReplay(mirror, asStoreReplayRemote(counting), {since: sub.seq()})
         await sub2.ready
         ok(json(mirror.state) == json(backend.snapshot()), 'evicted → keyframe fallback converges')
         ok(counters2.keyframe == 1, 'fallback took exactly one fresh keyframe')
@@ -135,7 +141,7 @@ async function runChecks() {
         const {remote} = makeRemote(exposed, 30)
         const mirror = createStore<World>({units: {}, tick: -1})
         const seqs: number[] = []
-        const sub = syncStoreReplay(mirror, remote, {onSeq: s => seqs.push(s)})
+        const sub = syncStoreReplay(mirror, asStoreReplayRemote(remote), {onSeq: s => seqs.push(s)})
         // mutations DURING keyframe wait: reach both snapshot and live queue
         backend.state.tick = 1
         await flushReactive(backend.state)
@@ -157,7 +163,7 @@ async function runChecks() {
         const exposed = exposeStoreReplay(backend, {history: 100})  // fresh server: head is small
         const {remote, counters} = makeRemote(exposed)
         const mirror = createStore<World>({units: {}, tick: -1})
-        const sub = syncStoreReplay(mirror, remote, {since: 99999})
+        const sub = syncStoreReplay(mirror, asStoreReplayRemote(remote), {since: 99999})
         await sub.ready
         ok(json(mirror.state) == json(backend.snapshot()), 'future seq → keyframe fallback')
         ok(counters.keyframe == 1, 'keyframe taken once')

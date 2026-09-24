@@ -24,10 +24,9 @@ import {io} from 'socket.io-client'
 import {listen as createListenPair} from '../src/Common/events/Listen'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
-import {createStore, StorePatch} from '../src/Common/Observe/store'
+import {createStore} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
-import {exposeStoreReplay, syncStoreReplay} from '../src/Common/Observe/store-replay'
-import {ReplayRemote} from '../src/Common/events/replay-index'
+import {exposeStoreReplay, syncStoreReplay, type StoreReplayRemote} from '../src/Common/Observe/store-replay'
 import {runOracle} from '../oracle/run-oracle'
 
 const W = 32, H = 10, FRAMES = 60
@@ -103,7 +102,7 @@ async function connectViewer(port: number, name: string) {
     const clients = await hub.setToken(null)
     await clients.api.readyStrict()
     const deep = clients.api.func as any
-    const remote: ReplayRemote<[StorePatch]> = {
+    const remote: StoreReplayRemote<Video> = {
         line: deep.replay.line,
         since: (s: number) => deep.replay.since(s),
         keyframe: () => deep.replay.keyframe(),

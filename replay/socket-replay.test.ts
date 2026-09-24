@@ -15,10 +15,9 @@ import {io} from 'socket.io-client'
 import {listen as createListenPair} from '../src/Common/events/Listen'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
-import {createStore, StorePatch} from '../src/Common/Observe/store'
+import {createStore} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
-import {exposeStoreReplay, syncStoreReplay} from '../src/Common/Observe/store-replay'
-import {ReplayRemote} from '../src/Common/events/replay-index'
+import {exposeStoreReplay, syncStoreReplay, type StoreReplayRemote} from '../src/Common/Observe/store-replay'
 import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
@@ -114,7 +113,7 @@ async function runChecks() {
         // ============ fresh client: keyframe + live ============
         c1 = await startRealClient<typeof facade>(server.port)
         const deep1 = c1.client.func as any
-        const remote1: ReplayRemote<[StorePatch]> = {
+        const remote1: StoreReplayRemote<World> = {
             line: deep1.replay.line,
             since: (s: number) => deep1.replay.since(s),
             keyframe: () => deep1.replay.keyframe(),
@@ -148,7 +147,7 @@ async function runChecks() {
         const kfBefore = counters.keyframe
         c2 = await startRealClient<typeof facade>(server.port)
         const deep2 = c2.client.func as any
-        const remote2: ReplayRemote<[StorePatch]> = {
+        const remote2: StoreReplayRemote<World> = {
             line: deep2.replay.line,
             since: (s: number) => deep2.replay.since(s),
             keyframe: () => deep2.replay.keyframe(),

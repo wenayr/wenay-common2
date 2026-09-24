@@ -12,8 +12,6 @@ import {createNodeHealth} from '../src/Common/Observe/node-health'
 import {createStore} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {exposeStoreReplay, syncStoreReplay} from '../src/Common/Observe/store-replay'
-import {ReplayRemote} from '../src/Common/events/replay-wire'
-import {StorePatch} from '../src/Common/Observe/store'
 import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
@@ -44,7 +42,7 @@ async function runChecks() {
     // mirrors through the ordinary wire — no special monitoring transport
     const exposed = exposeStoreReplay(health.store)
     const mirror = createStore<any>({}, {drain: 'micro'})
-    const sub = syncStoreReplay(mirror, exposed.api.replay as unknown as ReplayRemote<[StorePatch]>)
+    const sub = syncStoreReplay(mirror, exposed.api.replay)
     await sub.ready
     await tick()
     ok((mirror.snapshot() as any)?.parts?.follower?.seq == 9, 'health store mirrors through the replay wire')

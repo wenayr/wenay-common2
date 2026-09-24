@@ -10,9 +10,8 @@
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {createWorkboardHost, WorkboardHost} from '../../demo/workboard-host'
 import {createStoreFollower, diffKeyedState} from '../../src/Common/Observe/store-follower'
-import {createStore, StorePatch} from '../../src/Common/Observe/store'
-import {syncStoreReplay} from '../../src/Common/Observe/store-replay'
-import {ReplayRemote} from '../../src/Common/events/replay-wire'
+import {createStore} from '../../src/Common/Observe/store'
+import {syncStoreReplay, type StoreReplayRemote} from '../../src/Common/Observe/store-replay'
 import {WorkboardState} from '../../demo/workboard-contract'
 
 const LEADER_PORT = 3164
@@ -77,7 +76,7 @@ async function main() {
     // ============== follower: mirror + dynamic command dispatch ==============
     const upstream = await startRealClient({port: LEADER_PORT})
     const follower = createStoreFollower<WorkboardState>({
-        remote: upstream.api.workboard.state as ReplayRemote<[StorePatch]>,
+        remote: upstream.api.workboard.state as StoreReplayRemote<WorkboardState>,
         epoch: 1,
     })
     let promotedHost: WorkboardHost | null = null
@@ -111,7 +110,7 @@ async function main() {
     const b = await startRealClient({port: FOLLOWER_PORT})
     const bStore = createStore<WorkboardState>({})
     let bSyncErrors = 0
-    const bSync = syncStoreReplay(bStore, b.api.workboard.state as ReplayRemote<[StorePatch]>, {
+    const bSync = syncStoreReplay(bStore, b.api.workboard.state as StoreReplayRemote<WorkboardState>, {
         onError: function bLineFailed() { bSyncErrors++ },
     })
     await bSync.ready
@@ -178,7 +177,7 @@ async function main() {
 
     // Old node takes on follower role: winner keyframe over its state
     const rejoin = await startRealClient({port: FOLLOWER_PORT})
-    const rejoinSync = syncStoreReplay(board.control.store, rejoin.api.workboard.state as ReplayRemote<[StorePatch]>)
+    const rejoinSync = syncStoreReplay(board.control.store, rejoin.api.workboard.state as StoreReplayRemote<WorkboardState>)
     await rejoinSync.ready
     await waitFor('old node converges to the winner', () =>
         JSON.stringify(board.control.store.snapshot()) == JSON.stringify(follower.store.snapshot()))

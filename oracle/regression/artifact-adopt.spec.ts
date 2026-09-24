@@ -5,8 +5,6 @@
 
 import {createArtifactHost, ArtifactRecord, ArtifactStore} from '../../src/Common/artifact/artifact-host'
 import {createStoreFollower} from '../../src/Common/Observe/store-follower'
-import {StorePatch} from '../../src/Common/Observe/store'
-import {ReplayRemote} from '../../src/Common/events/replay-wire'
 import {runOracle} from '../run-oracle'
 
 let failures = 0
@@ -47,7 +45,7 @@ async function runChecks() {
     // === mirror-link: catalog follower over the per-account view (in-proc replay wire) ===
     const link = leader.connection('mirror')
     const follower = createStoreFollower<ArtifactStore>({
-        remote: link.fragment.state as unknown as ReplayRemote<[StorePatch]>,
+        remote: link.fragment.state,
         initial: {artifacts: {}},
     })
     await follower.ready

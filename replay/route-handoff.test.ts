@@ -1,7 +1,7 @@
 import {replayListen, ReplayRemote, replayRouteSubscribe} from '../src/Common/events/replay-index'
 import {createStore, StorePatch} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
-import {exposeStoreReplay, syncStoreReplayRoute} from '../src/Common/Observe/store-replay'
+import {exposeStoreReplay, syncStoreReplayRoute, type StoreReplayRemote} from '../src/Common/Observe/store-replay'
 import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
@@ -48,6 +48,12 @@ function makeRemote<Z extends any[]>(replay: any, label: string, lag = 0, failFr
 type World = {
     units: Record<string, {hp: number, x: number}>
     tick: number
+}
+
+// library type: StoreReplayRemote admits only the V2 tuple wire, yet syncStoreReplayRoute also decodes the
+// plain batch events of exposed.replay (decodeStoreReplayV2), the documented conflateReplay(exposed.replay) path
+function asStoreReplayRemote(remote: ReplayRemote<[readonly StorePatch[]]>) {
+    return remote as unknown as StoreReplayRemote<World>
 }
 
 async function runChecks() {
@@ -115,10 +121,10 @@ async function runChecks() {
     {
         const backend = createStore<World>({units: {a: {hp: 100, x: 0}}, tick: 0}, {drain: 'micro'})
         const exposed = exposeStoreReplay(backend, {history: 100})
-        const relay = makeRemote<[StorePatch]>(exposed.replay, 'store-relay', 5)
-        const direct = makeRemote<[StorePatch]>(exposed.replay, 'store-direct', 30)
+        const relay = makeRemote<[readonly StorePatch[]]>(exposed.replay, 'store-relay', 5)
+        const direct = makeRemote<[readonly StorePatch[]]>(exposed.replay, 'store-direct', 30)
         const mirror = createStore<World>({units: {}, tick: -1}, {drain: 'micro'})
-        const sub = syncStoreReplayRoute(mirror, relay.remote, {label: 'relay'})
+        const sub = syncStoreReplayRoute(mirror, asStoreReplayRemote(relay.remote), {label: 'relay'})
         await sub.ready
         ok(json(mirror.state) == json(backend.snapshot()), 'store mirror starts from route keyframe')
 
@@ -126,7 +132,7 @@ async function runChecks() {
         await flushReactive(backend.state)
         await waitFor('live relay patch', () => mirror.state.tick == 1)
 
-        const promote = sub.switch(direct.remote, {label: 'direct'})
+        const promote = sub.switch(asStoreReplayRemote(direct.remote), {label: 'direct'})
         await delay(5)
         backend.state.units.b = {hp: 50, x: 5}
         await flushReactive(backend.state)
