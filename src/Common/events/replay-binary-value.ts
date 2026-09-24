@@ -30,6 +30,12 @@ const BYTE_WRITER_TAIL_RESERVE = 256
 // element. Exact expando validation is therefore bounded independently of its
 // binary payload; common native shadows remain rejected for every size.
 const MAX_TYPED_ARRAY_OWN_KEY_SCAN_ITEMS = 4_096
+// Pure ASCII strings skip TextEncoder/TextDecoder: their bytes are their code
+// units, so no validation is lost, and at these sizes the per-call cost of the
+// text codecs dominates. Decoding stops earlier: from 13 characters V8 builds a
+// concatenation as a rope, which costs more than the decoder once it is read.
+const ASCII_ENCODE_MAX_BYTES = 32
+const ASCII_DECODE_MAX_BYTES = 12
 // An incremental frame patches its item count into one varuint byte.
 const BATCH_MAX_ITEMS = 127
 // A live frame carries up to 64 small events: start past the doubling steps.
@@ -594,6 +600,13 @@ function createByteWriter(maxWireBytes: number, initialCapacity = 256) {
         position += byteLength
     }
 
+    // Only for a string whose UTF-8 length is its length: every code unit <= 0x7f.
+    function writeAscii(value: string, byteLength: number) {
+        ensure(byteLength)
+        for (let index = 0; index < byteLength; index++) bytes[position + index] = value.charCodeAt(index)
+        position += byteLength
+    }
+
     function writeVarUintNumber(value: number, maxBytes = 8) {
         if (!Number.isSafeInteger(value) || value < 0) {
             binaryRangeError('number varuint must be a non-negative safe integer')
@@ -651,6 +664,7 @@ function createByteWriter(maxWireBytes: number, initialCapacity = 256) {
         writeFloat64,
         writeBytes,
         writeUtf8,
+        writeAscii,
         writeVarUintNumber,
         writeVarUint,
         position: currentPosition,
@@ -694,6 +708,10 @@ function createByteCounter(maxWireBytes: number) {
         advance(byteLength)
     }
 
+    function writeAscii(_value: string, byteLength: number) {
+        advance(byteLength)
+    }
+
     function writeVarUintNumber(value: number, maxBytes = 8) {
         if (!Number.isSafeInteger(value) || value < 0) {
             binaryRangeError('number varuint must be a non-negative safe integer')
@@ -720,6 +738,7 @@ function createByteCounter(maxWireBytes: number) {
         writeFloat64,
         writeBytes,
         writeUtf8,
+        writeAscii,
         writeVarUintNumber,
         writeVarUint,
         byteLength,
@@ -753,6 +772,21 @@ function createByteReader(bytes: Uint8Array) {
         const result = bytes.subarray(position, position + length)
         position += length
         return result
+    }
+
+    // Bytes <= 0x7f are valid UTF-8 by construction, so skipping the fatal decoder
+    // loses no validation. Any other byte leaves the reader where it was.
+    function takeAscii(length: number) {
+        requireBytes(length)
+        const end = position + length
+        let value = ''
+        for (let index = position; index < end; index++) {
+            const byte = bytes[index]
+            if (byte > 0x7f) return undefined
+            value += String.fromCharCode(byte)
+        }
+        position = end
+        return value
     }
 
     function readVarUint(maxBytes: number, label: string, maxValue?: bigint) {
@@ -881,6 +915,7 @@ function createByteReader(bytes: Uint8Array) {
         readU8,
         readFloat64,
         take,
+        takeAscii,
         readVarUint,
         readVarUintNumber,
         readSafeInteger,
@@ -959,12 +994,21 @@ function writeString(writer: tByteWriter, value: string) {
     if (byteLength > MAX_STRING_BYTES) binaryRangeError('string exceeds byte limit')
     writer.writeU8(VALUE_TAG.STRING_UTF8)
     writeLength(writer, byteLength)
-    writer.writeUtf8(value, byteLength)
+    // Equal lengths: no code unit above 0x7f, so the bytes are the code units.
+    if (byteLength == value.length && byteLength <= ASCII_ENCODE_MAX_BYTES) writer.writeAscii(value, byteLength)
+    else writer.writeUtf8(value, byteLength)
 }
 
 function readUtf8String(reader: tByteReader, limits: tBinaryDecodeLimits) {
     const maximumBytes = Math.min(MAX_STRING_BYTES, limits.maxStringCodeUnits * 3)
     const byteLength = readLength(reader, maximumBytes, 'UTF-8 string length')
+    if (byteLength <= ASCII_DECODE_MAX_BYTES) {
+        const ascii = reader.takeAscii(byteLength)
+        if (ascii != undefined) {
+            if (ascii.length > limits.maxStringCodeUnits) binaryError('string exceeds code-unit limit')
+            return ascii
+        }
+    }
     const encoded = reader.take(byteLength)
     let value: string
     try {
@@ -1502,8 +1546,10 @@ function defineDecodedValue(
         target[key] = value
         return
     }
-    const inherited = Object.getOwnPropertyDescriptor(Object.prototype, key)
-    if (!inherited || own.call(inherited, 'value') && inherited.writable == true) {
+    // Asked per key, so accessors added to Object.prototype at runtime still count.
+    // A key it has even as writable data is defined: the same own data property
+    // assignment would create, with no descriptor lookup on the common path.
+    if (!(key in Object.prototype)) {
         target[key] = value
         return
     }
@@ -1774,7 +1820,8 @@ function readTrustedUtf8String(reader: tByteReader, limits: tBinaryDecodeLimits)
     if (byteLength > Math.min(MAX_STRING_BYTES, limits.maxStringCodeUnits * 3)) {
         return binaryRangeError('trusted UTF-8 string exceeds limit')
     }
-    const value = trustedUtf8Decoder.decode(reader.take(byteLength))
+    const value = (byteLength <= ASCII_DECODE_MAX_BYTES ? reader.takeAscii(byteLength) : undefined)
+        ?? trustedUtf8Decoder.decode(reader.take(byteLength))
     if (value.length > limits.maxStringCodeUnits) {
         return binaryRangeError('trusted UTF-8 string exceeds code-unit limit')
     }
