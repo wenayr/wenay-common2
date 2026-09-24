@@ -2,6 +2,7 @@ import * as assert from 'node:assert/strict'
 import {createCommandHost} from '../src/Common/command/command-host'
 import {commandReceiptKey, createCommandReceipts, type CommandReceiptLine, type CommandReceiptRecord} from '../src/Common/command/command-receipts'
 import {createStore} from '../src/Common/Observe/store'
+import {runOracle} from '../oracle/run-oracle'
 
 async function testDistinctReceiptPairs() {
     const line = createCommandReceipts()
@@ -140,4 +141,4 @@ async function main() {
     console.log('command boundaries: ALL GREEN')
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

@@ -10,6 +10,7 @@
 // ============================================================
 
 import {createCommandHost} from '../src/Common/command/command-host'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 let step = 0
@@ -19,7 +20,7 @@ const ok = (condition: any, message: string) => {
     else console.log(`${label}. OK   ${message}`)
 }
 
-async function main() {
+async function runChecks() {
     let executed = 0
     const host = createCommandHost({
         commands: {tick(ctx, input: {n: number}) { executed++; return {n: input.n, by: ctx.account} }},
@@ -47,7 +48,11 @@ async function main() {
 }
 function ok_silent(condition: boolean) { if (!condition) fails++ }
 
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exit(2)
-})
+async function main() {
+    await runChecks().catch(function fatal(error) {
+        console.error(error)
+        process.exit(2)
+    })
+}
+
+runOracle(main)

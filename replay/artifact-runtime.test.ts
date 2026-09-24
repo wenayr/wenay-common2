@@ -9,6 +9,7 @@ import {createArtifactClient, createArtifactFrame, createArtifactHost} from '../
 import {listen as createListenPair} from '../src/Common/events/Listen'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 function ok(condition: any, message: string) {
@@ -28,7 +29,7 @@ async function waitFor(label: string, condition: () => boolean) {
     throw new Error('timeout: ' + label)
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[artifact] storage-backed descriptors + sandboxed iframe over existing RPC')
 
     let clock = 1_000
@@ -179,4 +180,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(error => { console.error(error); process.exit(1) })
+async function main() {
+    await runChecks().catch(error => { console.error(error); process.exit(1) })
+}
+
+runOracle(main)

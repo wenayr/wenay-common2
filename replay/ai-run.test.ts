@@ -8,6 +8,7 @@ import {createAiRunClient, createAiRunHost, AiRunEvent} from '../src/Common/ai/a
 import {listen as createListenPair} from '../src/Common/events/Listen'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 function ok(condition: any, message: string) {
@@ -88,7 +89,7 @@ async function testSynchronousAnswers() {
     host.close()
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[ai-run] idempotent AI lifecycle, approvals and resume over an existing RPC connection')
 
     await testSynchronousAnswers()
@@ -216,4 +217,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function reportFailure(error) { console.error(error); process.exit(1) })
+async function main() {
+    await runChecks().catch(function reportFailure(error) { console.error(error); process.exit(1) })
+}
+
+runOracle(main)

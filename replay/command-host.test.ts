@@ -9,6 +9,7 @@
 // ============================================================
 
 import {createCommandHost, forwardCommands} from '../src/Common/command/command-host'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -22,7 +23,7 @@ async function rejects(run: () => Promise<unknown>, match: string) {
     return false
 }
 
-async function main() {
+async function runChecks() {
     let t = 1_000_000
     let applied = 0
     const host = createCommandHost({
@@ -178,4 +179,8 @@ async function main() {
     console.log(fails ? `command-host: ${fails} FAILED` : 'command-host: ALL GREEN')
     process.exit(fails ? 1 : 0)
 }
-main().catch(e => { console.error(e); process.exit(2) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(2) })
+}
+
+runOracle(main)

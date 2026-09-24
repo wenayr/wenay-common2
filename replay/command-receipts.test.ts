@@ -13,6 +13,7 @@ import {createCommandHost} from '../src/Common/command/command-host'
 import {commandReceiptKey, createCommandReceipts} from '../src/Common/command/command-receipts'
 import {createStoreFollower} from '../src/Common/Observe/store-follower'
 import type {CommandReceiptRecord} from '../src/Common/command/command-receipts'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -30,7 +31,7 @@ async function waitFor(message: string, check: () => boolean, timeoutMs = 3000) 
     ok(false, message + ' (timed out)')
 }
 
-async function main() {
+async function runChecks() {
     let t = 1_000_000
     let applied = 0
     const commands = {
@@ -123,4 +124,8 @@ async function main() {
     process.exit(fails ? 1 : 0)
 }
 
-main().catch(function crashed(error) { console.error(error); process.exit(1) })
+async function main() {
+    await runChecks().catch(function crashed(error) { console.error(error); process.exit(1) })
+}
+
+runOracle(main)

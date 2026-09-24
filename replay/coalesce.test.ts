@@ -15,6 +15,7 @@ import {createStore} from '../src/Common/Observe/store'
 import {flushReactive} from '../src/Common/Observe/reactive'
 import {replayListen, replaySubscribe, ReplayRemote, conflateReplay} from '../src/Common/events/replay-index'
 import {exposeStoreReplay, syncStoreReplay} from '../src/Common/Observe/store-replay'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 const ok = (condition: any, message: string) => {
@@ -42,7 +43,7 @@ type World = {
     tick: number
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[coalesce] generic line: last-per-key tail instead of a full keyframe')
     {
         const state: Record<string, number> = {}
@@ -258,4 +259,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

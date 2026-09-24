@@ -21,6 +21,7 @@ import {listen as createListenPair} from '../src/Common/events/Listen'
 import {createRpcClientHub} from '../src/Common/rcp/rpc-clientHub'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 import {replayListen, exposeReplay, replaySubscribe, ReplayRemote} from '../src/Common/events/replay-index'
+import {runOracle} from '../oracle/run-oracle'
 
 const W = 64, H = 48, BPP = 4  // 12288 bytes per frame
 
@@ -99,7 +100,7 @@ async function connectViewer(port: number) {
     return {remote, close: () => hub.socket?.disconnect?.()}
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[canvas] raw RGBA byte stream over a real Socket.IO wire')
 
     // ============ server: canvas + line of deltas ============
@@ -184,4 +185,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(1) })
+}
+
+runOracle(main)

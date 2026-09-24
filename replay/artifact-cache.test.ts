@@ -1,5 +1,6 @@
 import {createArtifactByteCache} from '../src/Common/artifact/artifact-cache'
 import {ArtifactRecord} from '../src/Common/artifact/artifact-host'
+import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
 function ok(condition: unknown, message: string) {
@@ -25,7 +26,7 @@ function artifact(version: string): ArtifactRecord {
     }
 }
 
-async function main() {
+async function runChecks() {
     console.log('\n[artifact-cache] generation-safe clear and byte ownership')
 
     const firstFetch = deferred<Uint8Array>()
@@ -72,4 +73,8 @@ async function main() {
     if (fails) process.exit(1)
 }
 
-main().catch(function reportFailure(error) { console.error(error); process.exit(1) })
+async function main() {
+    await runChecks().catch(function reportFailure(error) { console.error(error); process.exit(1) })
+}
+
+runOracle(main)
