@@ -5,6 +5,7 @@ import {listen} from '../Common/events/Listen'
 import {createRpcServerAuto} from '../Common/rcp/rpc-server-auto'
 import type {ScaleDurableLine} from '../Common/scale/scale-authority'
 import {openFsReplayStorage} from '../server/fsReplayStorage'
+import {sameSecret} from '../server/secret-equal'
 import {createServiceLeader, type ServiceLeader} from './leader'
 import type {tServiceDefinition} from './definition'
 import type {ServiceResourceOptions} from './resource-definition'
@@ -76,7 +77,7 @@ export async function createServiceLeaderHost<D extends tServiceDefinition<any, 
             // the node link: only for connections that presented the node token, bound to the claimed id
             if (auth?.['role'] == 'service-node') {
                 const nodeId = String(auth?.['node'] ?? '')
-                if (!nodeId || auth?.['token'] != leader.secrets.nodeToken) {
+                if (!nodeId || !sameSecret(auth?.['token'], leader.secrets.nodeToken)) {
                     socket.disconnect(true)
                     return
                 }

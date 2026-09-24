@@ -3,6 +3,7 @@ import type { Express, Request, Response } from 'express';
 import * as fs from 'fs';
 import { createAsyncQueue } from "../Common/async/waitRun";
 import { httpRequest } from "../Common/http-request";
+import { sameSecret } from "./secret-equal";
 
 const SUBSCRIBERS_FILE = './subscribers.json';
 
@@ -63,18 +64,27 @@ type params = {
     port: number | string;
     file?: typeof apiSaveData;
     app?: Express;
+    /** Distinct subscriber urls one client IP may hold (default 32); a new one beyond it answers 429. */
+    maxSubscribersPerIp?: number;
 };
 
 export const createWebhookServer = (params: params) => {
     const app: Express = params.app ?? express();
     if (!params.app) app.use(express.json());
     const file = params.file ?? apiSaveData;
-    const { authToken, port } = params;
+    const { authToken, port, maxSubscribersPerIp = 32 } = params;
     const subscribers = file.loadSubscribers();
 
     const checkAuth = (req: Request, res: Response, next: () => void) => {
-        if (req.headers.authorization !== authToken) { res.status(403).json({ error: 'Недействительный токен авторизации' }); return; }
+        if (!sameSecret(req.headers.authorization, authToken)) { res.status(403).json({ error: 'Недействительный токен авторизации' }); return; }
         next();
+    };
+
+    // every subscriber url is http://<its client ip>...: count by exact hostname, not by prefix
+    const subscribersOf = (ip: string) => {
+        let count = 0;
+        subscribers.forEach(s => { if (new URL(s.url).hostname === ip) count++; });
+        return count;
     };
 
     const clientAddr = (req: Request) => 'http://' + normalizeIP(req.ip ?? '127.0.0.1');
@@ -90,9 +100,15 @@ export const createWebhookServer = (params: params) => {
 
     app.post('/webHook_subscribe', checkAuth, (req: Request, res: Response) => {
         const { tag } = req.body;
-        const url = buildSelfWebhookUrl(normalizeIP(req.ip ?? '127.0.0.1'), req.body.url);
+        const ip = normalizeIP(req.ip ?? '127.0.0.1');
+        const url = buildSelfWebhookUrl(ip, req.body.url);
         if (!url || typeof tag !== 'string') { res.status(400).json({ error: 'Неверный запрос' }); return; }
         purgeExpired();
+        // a renewal of a known url is free; each new one also rewrites the subscriber file
+        if (!subscribers.has(url) && subscribersOf(ip) >= maxSubscribersPerIp) {
+            res.status(429).json({ error: 'Превышен лимит подписок для этого адреса' });
+            return;
+        }
         subscribers.set(url, { url, tag, expireAt: renewExpiry() });
         file.saveSubscribers(subscribers);
         res.json({ message: 'Подписка оформлена' });
