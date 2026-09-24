@@ -406,8 +406,8 @@ async function main() {
             describe: resource.describe,
             replay: resource.replay,
             snapshot: {
-                open() {
-                    const opened = resource.snapshot.open()
+                async open() {
+                    const opened = await resource.snapshot.open()
                     openedBase = opened.baseSeq
                     return opened
                 },
@@ -551,8 +551,8 @@ async function main() {
             describe: resource.describe,
             replay: resource.replay,
             snapshot: {
-                open() {
-                    const opened = resource.snapshot.open()
+                async open() {
+                    const opened = await resource.snapshot.open()
                     opens++
                     if (opens == 1) firstTransfer = opened.transferId
                     return opened

@@ -60,7 +60,7 @@ async function runChecks() {
             'root patch with a gap = legitimate reset point (keyframe repair / owner restart)')
         ok(j.push(root(3, {n: 3})) == true && j.seq() == 3,
             'root patch with a LOWER seq = owner restart reset')
-        ok(json(j.remote.keyframe()?.event[0].value) == json({n: 3}), 'folded keyframe stays truthful throughout')
+        ok(json((await j.remote.keyframe())?.event[0].value) == json({n: 3}), 'folded keyframe stays truthful throughout')
     }
 
     console.log('\n[peer-repair] sacred journal: never invents, strict contiguity')
@@ -73,7 +73,7 @@ async function runChecks() {
         let threw = false
         try { j.remote.frame!(0) } catch { threw = true }
         ok(threw, 'sacred frame() on an evicted tail THROWS (loud, never a silent seq jump)')
-        ok(json(j.remote.since(1)?.map(e => e.seq)) == json([2, 3]), 'covered tail is still served exactly')
+        ok(json((await j.remote.since(1))?.map(e => e.seq)) == json([2, 3]), 'covered tail is still served exactly')
     }
 
     console.log('\n[peer-repair] tail repair: lossless catch-up after an offline window')

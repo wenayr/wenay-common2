@@ -172,31 +172,31 @@ async function runChecks() {
         const journal = createPatchRelayJournal({history: 3})
         journal.push(root(0, {generation: 'first'}))
         for (let i = 1; i <= 7; i++) journal.push(envelope(i, ['n'], i))
-        ok(json(journal.remote.since(4)?.map(event => event.seq)) == json([5, 6, 7]),
+        ok(json((await journal.remote.since(4))?.map(event => event.seq)) == json([5, 6, 7]),
             'wrapped relay history retains chronological order')
         ok(journal.remote.since(3) == null,
             'wrapped relay history reports an evicted coordinate')
 
         journal.push(root(0, {generation: 'second'}))
-        ok(json(journal.remote.since(-1)?.map(event => event.seq)) == json([0])
+        ok(json((await journal.remote.since(-1))?.map(event => event.seq)) == json([0])
             && journal.snapshot().generation == 'second',
         'a lower root resets the circular history and folded keyframe together')
         for (let i = 1; i <= 4; i++) journal.push(envelope(i, ['n'], i))
-        ok(json(journal.remote.since(1)?.map(event => event.seq)) == json([2, 3, 4])
+        ok(json((await journal.remote.since(1))?.map(event => event.seq)) == json([2, 3, 4])
             && journal.remote.since(0) == null,
         'history continues wrapping correctly after a root reset')
     }
     {
         const noHistory = createPatchRelayJournal({history: 0})
         noHistory.push(root(0, {n: 0}))
-        ok(noHistory.remote.since(-1) == null && noHistory.remote.keyframe()?.seq == 0,
+        ok(noHistory.remote.since(-1) == null && (await noHistory.remote.keyframe())?.seq == 0,
             'history zero keeps folded keyframes but no resumable tail')
 
         const oneHistory = createPatchRelayJournal({history: 1})
         oneHistory.push(root(0, {n: 0}))
         oneHistory.push(envelope(1, ['n'], 1))
         oneHistory.push(envelope(2, ['n'], 2))
-        ok(json(oneHistory.remote.since(1)?.map(event => event.seq)) == json([2])
+        ok(json((await oneHistory.remote.since(1))?.map(event => event.seq)) == json([2])
             && oneHistory.remote.since(0) == null,
         'history one keeps exactly the newest envelope')
     }
@@ -288,7 +288,7 @@ async function runChecks() {
         const tail = journal.remote.since(-1)
         ok(accepted == true && reentrantVerdict == true && journal.snapshot().winner == 'outer',
             'validated batch state commits before a subscriber can re-enter the relay')
-        ok(json(delivered) == json([0, 1]) && json(tail?.map(event => event.event[0].value)) == json([{}, 'outer']),
+        ok(json(delivered) == json([0, 1]) && json((await tail)?.map(event => event.event[0].value)) == json([{}, 'outer']),
             're-entrant duplicate cannot replace or suppress the committed outer suffix')
     }
 
