@@ -109,19 +109,31 @@ async function main() {
     const expired = await remote.chunks.begin({budgetBytes: 1})
     clock += STORE_REPLAY_CHUNK_TTL_MS + 1
     ok(await remote.chunks.pull(expired.snapshotId, 1) == null, 'an attempt older than the TTL answers null')
+    // Attempts at one journal head share one retained snapshot and the cap bounds
+    // distinct snapshots, so each capped attempt below begins after a write.
+    let revision = 0
+    async function beginNextSnapshot() {
+        store.state['key-0001'] = {id: 'key-0001', payload: 'rev-' + (++revision)}
+        await settle()
+        return remote.chunks.begin({budgetBytes: 1})
+    }
     const attempts = [] as any[]
-    for (let i = 0; i < 5; i++) attempts.push(await remote.chunks.begin({budgetBytes: 1}))
+    for (let i = 0; i < 5; i++) attempts.push(await beginNextSnapshot())
     ok(await remote.chunks.pull(attempts[0].snapshotId, 1) == null,
-        'the LRU cap evicts the oldest of five concurrent attempts')
+        'the LRU cap evicts the oldest of five concurrent snapshots')
     ok(await remote.chunks.pull(attempts[4].snapshotId, 1) != null, 'the newest attempt still serves')
+    const crowd = [] as any[]
+    for (let i = 0; i < 5; i++) crowd.push(await remote.chunks.begin({budgetBytes: 1}))
+    ok(await remote.chunks.pull(crowd[0].snapshotId, 1) != null,
+        'five attempts at one head share one snapshot and never evict each other')
 
     // LRU means USE refreshes position: a slow client mid-assembly must not be
     // evicted by a newer begin while idle attempts sit in the cap
-    const active = await remote.chunks.begin({budgetBytes: 1})
+    const active = await beginNextSnapshot()
     const idle = [] as any[]
-    for (let i = 0; i < 3; i++) idle.push(await remote.chunks.begin({budgetBytes: 1}))
+    for (let i = 0; i < 3; i++) idle.push(await beginNextSnapshot())
     ok(await remote.chunks.pull(active.snapshotId, 1) != null, 'the active attempt serves before the cap bites')
-    await remote.chunks.begin({budgetBytes: 1})   // fifth attempt: the sweep must evict an IDLE one
+    await beginNextSnapshot()   // fifth snapshot: the sweep must evict an IDLE one
     ok(await remote.chunks.pull(active.snapshotId, 2) != null,
         'an actively pulled attempt survives the cap sweep (LRU by use, not insertion order)')
     ok(await remote.chunks.pull(idle[0].snapshotId, 1) == null,

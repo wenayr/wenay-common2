@@ -485,12 +485,18 @@ function exposeStoreReplayWire<W>(
     // snapshots and splits ONE keyframe, keeps the encoded chunk set under a
     // TTL + LRU cap, and pull() serves indexes from it — so consistency never
     // depends on the Store staying still, and an abandoned attempt costs only
-    // its retention window.
+    // its retention window. Attempts that begin at one journal head with one
+    // budget read ONE set: the cap bounds distinct snapshots, not concurrent
+    // readers, and end() releases one reader's share.
     function buildChunksFacet(chunking: StoreReplayWireChunking) {
         const now = chunking.now ?? Date.now
-        type RetainedChunkSet = {chunks: W[], expiresAt: number}
+        type RetainedChunkSet = {
+            chunks: W[]
+            part0: ReplayEvent<[readonly StorePatch[]]>
+            readers: number
+            expiresAt: number
+        }
         const chunkSets = new Map<string, RetainedChunkSet>()
-        let nextSnapshotId = 0
         function sweepChunkSets() {
             const at = now()
             for (const [snapshotId, retained] of chunkSets) {
@@ -510,14 +516,29 @@ function exposeStoreReplayWire<W>(
             const budgetBytes = Number.isFinite(requested)
                 ? Math.min(STORE_REPLAY_CHUNK_BUDGET_MAX, Math.max(STORE_REPLAY_CHUNK_BUDGET_MIN, Math.floor(requested)))
                 : STORE_REPLAY_CHUNK_BUDGET_DEFAULT
-            const event = replay.keyframe()
-            if (!event) return null
-            const chunks = chunking.split(event, budgetBytes).map(encode)
-            if (chunks.length == 0) return null
-            const snapshotId = 'snap-' + (++nextSnapshotId) + '-' + event.seq
             sweepChunkSets()
-            chunkSets.set(snapshotId, {chunks, expiresAt: now() + STORE_REPLAY_CHUNK_TTL_MS})
-            return {snapshotId, seq: event.seq, ts: event.ts, total: chunks.length, budgetBytes, chunk0: chunks[0]!}
+            const snapshotId = 'snap-' + replay.head() + '-' + budgetBytes
+            let retained = chunkSets.get(snapshotId)
+            let ts: number
+            let chunk0: W
+            if (retained) {
+                // A later reader answers its own keyframe time, as a fresh split at this head would.
+                ts = now()
+                chunk0 = encode({...retained.part0, ts})
+                chunkSets.delete(snapshotId)
+            } else {
+                const event = replay.keyframe()
+                if (!event) return null
+                const parts = chunking.split(event, budgetBytes)
+                if (parts.length == 0) return null
+                retained = {chunks: parts.map(encode), part0: parts[0]!, readers: 0, expiresAt: 0}
+                ts = event.ts
+                chunk0 = retained.chunks[0]!
+            }
+            retained.readers++
+            retained.expiresAt = now() + STORE_REPLAY_CHUNK_TTL_MS
+            chunkSets.set(snapshotId, retained)
+            return {snapshotId, seq: retained.part0.seq, ts, total: retained.chunks.length, budgetBytes, chunk0}
         }
         function pull(snapshotId: string, index: number) {
             sweepChunkSets()
@@ -535,7 +556,12 @@ function exposeStoreReplayWire<W>(
             return retained.chunks[at]!
         }
         function end(snapshotId: string) {
-            return chunkSets.delete(String(snapshotId))
+            const key = String(snapshotId)
+            const retained = chunkSets.get(key)
+            if (!retained) return false
+            // Other readers keep the set until their own end() or its retention runs out.
+            if (--retained.readers == 0) chunkSets.delete(key)
+            return true
         }
         return {begin, pull, end}
     }
