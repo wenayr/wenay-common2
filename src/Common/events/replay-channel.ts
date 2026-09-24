@@ -113,7 +113,12 @@ function stringifyMessage(value: unknown) {
     })
 }
 
+// The reviver returns every value unchanged unless it is a byte marker, yet it
+// costs more than the parse. A parsed key can equal the marker only if the text
+// holds it literally or through a \u escape (no other JSON escape yields a
+// letter or '_'): without either, the plain parse is the same result.
 function parseMessage(raw: string) {
+    if (typeof raw == 'string' && !raw.includes(REPLAY_BYTES) && !raw.includes('\\u')) return JSON.parse(raw)
     return JSON.parse(raw, function decodeReplayBytes(_key, item) {
         if (item != null && typeof item == 'object' && Object.keys(item).length == 1 && typeof item[REPLAY_BYTES] == 'string') {
             return base64ToBytes(item[REPLAY_BYTES])
