@@ -682,7 +682,7 @@ async function main() {
         const producer = createReplicatedMap<Row>({
             keyOf(value) { return value.id },
             delivery: 'lossless',
-            replay: {batch: {maxDelayMs: 10_000}},
+            replay: {maxDelayMs: 10_000},
         })
         producer.control.set(row('A', 1))
         const batches: ReplicatedMapChange<Row>[] = []
