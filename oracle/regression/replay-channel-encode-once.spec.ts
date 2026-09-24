@@ -3,6 +3,7 @@ import {createBinaryValueCodec} from '../../src/Common/events/replay-binary-valu
 import {channelReplayRemote, ReplayMessageChannel, serveReplayChannel} from '../../src/Common/events/replay-channel'
 import {replayListen} from '../../src/Common/events/replay-listen'
 import {exposeReplay} from '../../src/Common/events/replay-wire'
+import {runOracle} from '../run-oracle'
 
 // A batched binary live event is encoded once, at emit time, straight into the
 // frame that carries it: those bytes are its snapshot. Everything the 3.0.1
@@ -278,7 +279,7 @@ async function checkOneEncodePassPerEvent() {
     }
 }
 
-async function main() {
+async function runChecks() {
     let failures = 0
     const checks = [
         checkMutationAfterEmitIsInvisible,
@@ -308,7 +309,11 @@ async function main() {
     console.log('PASS replay channel encode-once: one encode per live event, 3.0.1 snapshot, order and failure semantics kept')
 }
 
-main().catch(function fail(error) {
-    console.error('FAIL', error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function fail(error) {
+        console.error('FAIL', error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

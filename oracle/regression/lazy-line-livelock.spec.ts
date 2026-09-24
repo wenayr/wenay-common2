@@ -23,6 +23,7 @@
 import {createStore} from '../../src/Common/Observe/store'
 import {flushReactive} from '../../src/Common/Observe/reactive'
 import {exposeStoreLazyLine, type StoreLazyChunkV1, type StoreLazyCursor, type StoreLazyReadV1} from '../../src/Common/Observe/store-lazy-line'
+import {runOracle} from '../run-oracle'
 
 type Test = {name: string, fn: () => void | Promise<void>}
 const tests: Test[] = []
@@ -175,4 +176,4 @@ async function main() {
     process.exit(failed == 0 ? 0 : 1)
 }
 
-void main()
+runOracle(main)

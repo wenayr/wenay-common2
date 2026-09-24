@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {createPeerHost, type PatchEnvelope} from '../../src/Common/peer/peer-index'
+import {runOracle} from '../run-oracle'
 
 function frame(seq: number, x: number): PatchEnvelope {
     return {seq, ts: seq, event: [{path: [], exists: true, value: {x}}]}
@@ -94,8 +95,5 @@ async function main() {
     await pendingSignal(true)
 }
 
-main().catch(function failed(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runOracle(main)
 

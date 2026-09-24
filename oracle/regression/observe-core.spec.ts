@@ -1,5 +1,6 @@
 import * as srcApi from '../../src/Common/Observe/reactive'
 import * as observeApi from '../../observe/reactive'
+import {runOracle} from '../run-oracle'
 
 type Fn = () => void
 type Api = typeof srcApi
@@ -260,7 +261,7 @@ function addCoreSuite(label: string, api: Api) {
 addCoreSuite('src/Common/Observe/reactive', srcApi)
 addCoreSuite('observe/reactive', observeApi)
 
-async function main() {
+async function runChecks() {
     for (const t of tests) {
         try {
             await t.run()
@@ -275,7 +276,11 @@ async function main() {
     process.exit(failures === 0 ? 0 : 1)
 }
 
-main().catch(e => {
-    console.error(e?.stack ?? e)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(e => {
+        console.error(e?.stack ?? e)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

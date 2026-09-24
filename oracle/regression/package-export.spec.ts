@@ -7,6 +7,7 @@ import * as srcObserve from '../../src/Common/Observe/reactive'
 import * as srcConversation from '../../src/Common/conversation/conversation-index'
 import * as srcContract from '../../src/Common/contract/contract-index'
 import * as srcHttps from '../../src/Common/https/https-index'
+import {runOracle} from '../run-oracle'
 
 type Api = {
     reactive: Function
@@ -271,7 +272,7 @@ test('dist package artifacts include HTTPS API, declarations, and CLI when dist 
     assertHttpsApi('dist/lib/Common/https', requireFromSpec(distHttpsPath))
 })
 
-async function main() {
+async function runChecks() {
     for (const t of tests) {
         try {
             await t.run()
@@ -286,7 +287,11 @@ async function main() {
     process.exit(failures === 0 ? 0 : 1)
 }
 
-main().catch(e => {
-    console.error(e?.stack ?? e)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(e => {
+        console.error(e?.stack ?? e)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

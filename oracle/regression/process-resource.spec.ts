@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {createProcessResource} from '../../src/server/process-resource'
+import {runOracle} from '../run-oracle'
 
 async function main() {
     function child(code: string, extra = {}) {
@@ -27,4 +28,4 @@ async function main() {
     assert(running.view.output().includes('READY'))
     console.log('PASS process resource: never ready, early exit, cancel, concurrent close, hung shutdown force-kill (' + process.platform + ')')
 }
-void main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

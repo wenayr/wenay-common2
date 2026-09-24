@@ -3,6 +3,7 @@ import {channelReplayRemote, ReplayMessageChannel, serveReplayChannel} from '../
 import {replayListen} from '../../src/Common/events/replay-listen'
 import {exposeReplay, replaySubscribe} from '../../src/Common/events/replay-wire'
 import {channelFromDataChannel} from '../../src/Common/events/route-signal-webrtc'
+import {runOracle} from '../run-oracle'
 
 // One live event that cannot travel must not cost the other events of its
 // micro-batch their delivery, and its failure must surface once, loudly.
@@ -228,7 +229,7 @@ async function checkServerOverClosingDataChannel() {
     }
 }
 
-async function main() {
+async function runChecks() {
     let failures = 0
     const checks = [
         checkDeepItemKeepsItsBatchNeighbours,
@@ -256,7 +257,11 @@ async function main() {
     console.log('PASS replay channel live batch: bad items and failed sends cost no neighbours, closing datachannels stay quiet')
 }
 
-main().catch(function fail(error) {
-    console.error('FAIL', error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function fail(error) {
+        console.error('FAIL', error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

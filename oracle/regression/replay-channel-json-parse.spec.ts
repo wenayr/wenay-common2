@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {channelReplayRemote, ReplayMessageChannel, serveReplayChannel} from '../../src/Common/events/replay-channel'
+import {runOracle} from '../run-oracle'
 
 // A JSON peer's messages are parsed with a reviver that turns byte markers
 // ({"__wenayReplayBytes": base64}) back into Uint8Array. Most messages carry no
@@ -164,7 +165,7 @@ function checkMarkerFreeMessageSkipsReviver() {
     assert.ok(perMessage < referencePerMessage * 3, 'wide bound: delivering costs less than three reviver parses')
 }
 
-async function main() {
+async function runChecks() {
     let failures = 0
     const checks = [
         checkParseMatchesReference,
@@ -188,7 +189,11 @@ async function main() {
     console.log('PASS replay channel JSON parse: identical results with and without byte markers, no reviver pass without one')
 }
 
-main().catch(function fail(error) {
-    console.error('FAIL', error)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(function fail(error) {
+        console.error('FAIL', error)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

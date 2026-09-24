@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import {setTimeout as pause} from 'node:timers/promises'
 import {createReconciler, createResourceScope, listen} from '../../src'
+import {runOracle} from '../run-oracle'
 
 function gate() {
     let resolve!: () => void
@@ -132,4 +133,4 @@ async function main() {
     console.log('PASS reconciler: burst coalescing, fresh snapshots, no overlap, retry policy, stop and completion races')
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {createAudioSource, decodeMediaFrame} from '../../src/Common/media/media-index'
+import {runOracle} from '../run-oracle'
 
 function deferred<T>() {
     let resolve!: (value: T) => void
@@ -144,4 +145,4 @@ async function main() {
     }
     console.log('PASS M1: old chunks/errors, unsubscribe/stop, device switch, track end, failed grant and worklet generations')
 }
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)
