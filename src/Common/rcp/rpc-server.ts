@@ -847,7 +847,9 @@ function createServer<T extends object>(
                 // Correlated client ids prevent one shared socket client from
                 // overwriting another client's negotiated callback policy.
                 if (!Number.isSafeInteger(clientId) || clientId <= 0) {
-                    await hooks?.onInvalid?.({
+                    // A remote peer controls this trigger, so an async hook that rejects must not
+                    // escape as an unhandledRejection — same guard the request path uses.
+                    reportInvalid({
                         reason: 'invalid_payload',
                         request: msg,
                         error: 'RPC session requires a client id',
@@ -856,7 +858,7 @@ function createServer<T extends object>(
                 }
                 const owner = clientBySession.get(sessionId)
                 if (owner != undefined && owner != clientId) {
-                    await hooks?.onInvalid?.({
+                    reportInvalid({
                         reason: 'invalid_payload',
                         request: msg,
                         error: 'RPC session belongs to another client',
@@ -874,7 +876,7 @@ function createServer<T extends object>(
                     if (!session && sessions.size >= MAX_CLIENT_SESSIONS) {
                         sessionByClient.delete(clientId)
                         clientBySession.delete(sessionId)
-                        await hooks?.onInvalid?.({
+                        reportInvalid({
                             reason: 'rate_limit',
                             request: msg,
                             error: 'too many RPC sessions',
