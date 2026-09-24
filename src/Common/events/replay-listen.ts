@@ -506,9 +506,14 @@ function decorateReplayListen<T>(
             if (since == null) {
                 // modes without replay-journal — as in store-layer
                 const off = base.on(cb, {cbClose, key})
-                if (cur) {
-                    const m = currentValue(cur)
-                    if (m) cb(...m)
+                try {
+                    if (cur) {
+                        const m = currentValue(cur)
+                        if (m) cb(...m)
+                    }
+                } catch (error) {
+                    try { off() }
+                    finally { throw error }
                 }
                 return off
             }
@@ -531,22 +536,28 @@ function decorateReplayListen<T>(
                 if (replaying) queue.push(ev)
                 else deliver(ev)
             }, {cbClose, key})
-            const tail = journalSince(since)
-            if (tail) {
-                for (const ev of tail) deliver(ev)
-            } else {
-                // journal evicted → fresh keyframe + line from it (killer property:
-                // no backlog — new starting point). Reset possible even DOWN:
-                // seq "from another server lifetime" must not suppress live events.
-                const m = current?.()
-                lastDelivered = head
-                if (m) {
-                    cb(...m)
-                    onSeq?.(head)
+            try {
+                const tail = journalSince(since)
+                if (tail) {
+                    for (const ev of tail) deliver(ev)
+                } else {
+                    // journal evicted → fresh keyframe + line from it (killer property:
+                    // no backlog — new starting point). Reset possible even DOWN:
+                    // seq "from another server lifetime" must not suppress live events.
+                    const m = current?.()
+                    lastDelivered = head
+                    if (m) {
+                        cb(...m)
+                        onSeq?.(head)
+                    }
                 }
+                // re-entrant emits during replay — deliver with the same dedup logic
+                while (queue.length) deliver(queue.shift()!)
+            } catch (error) {
+                // The caller never gets off(): a tap left in replay mode queues forever.
+                try { off() }
+                finally { throw error }
             }
-            // re-entrant emits during replay — deliver with the same dedup logic
-            while (queue.length) deliver(queue.shift()!)
             replaying = false
             return off
         }) as ListenOnReplay<Z>,
