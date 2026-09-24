@@ -19,6 +19,25 @@ function deferred<T>() {
     return {promise, resolve}
 }
 
+// The host never reads the MCP facet; these sessions model a module with no MCP registrations.
+function emptyMcp(): ModuleIsolationSession['mcp'] {
+    return {
+        control: {setPublished: () => false},
+        resource: {
+            call: function callWithoutRegistrations() {
+                return Promise.reject(new Error('module has no MCP registrations'))
+            },
+        },
+        events: {on: () => function offMcpEvents() {}},
+        view: {
+            snapshot: () => ({
+                enabled: false, total: 0, accepted: 0, attached: 0, detached: 0, rejected: 0, removed: 0,
+                registrations: [],
+            }),
+        },
+    }
+}
+
 async function artifact(version: string) {
     const bytes = new TextEncoder().encode('function createModule() { return {} } //' + version)
     const digest = await sha256Hex(bytes)
@@ -185,6 +204,7 @@ async function leaseDrainAndDiscard() {
                     inFlight: 0,
                 }),
             },
+            mcp: emptyMcp(),
         }
     }
 
@@ -298,6 +318,7 @@ async function failureDuringOfferHandoff() {
                             inFlight: 0,
                         }),
                     },
+                    mcp: emptyMcp(),
                 }
             },
         },
@@ -360,6 +381,7 @@ async function outwardObserverFailureIsolation() {
                     inFlight: 0,
                 }),
             },
+            mcp: emptyMcp(),
         }
     }
 

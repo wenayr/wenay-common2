@@ -135,7 +135,7 @@ function dependencySource(kind: 'c' | 'd') {
     }`
 }
 
-async function expectReject(work: () => unknown | Promise<unknown>, pattern: RegExp) {
+async function expectReject(work: () => Promise<unknown>, pattern: RegExp) {
     await assert.rejects(work, pattern)
 }
 

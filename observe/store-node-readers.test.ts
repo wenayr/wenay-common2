@@ -16,10 +16,10 @@ import {createLoopbackSocketPair} from '../src/Common/rcp/rpc-inproc'
 import type {SocketTmpl} from '../src/Common/rcp/rpc-protocol'
 import {createNodeDirectory, type NodeDirectoryView} from '../src/Common/Observe/node-directory'
 import {createStore} from '../src/Common/Observe/store'
-import {syncStoreReplayRoute} from '../src/Common/Observe/store-replay'
+import {syncStoreReplayRoute, type StoreReplayRemote} from '../src/Common/Observe/store-replay'
 import {createStoreFollower} from '../src/Common/Observe/store-follower'
 import {createStoreReplicaSet} from '../src/Common/Observe/store-replica-set'
-import {createStoreNode, type StoreNodeInstance} from '../src/Common/Observe/store-node'
+import {createStoreNode, type StoreNodeControlState, type StoreNodeInstance} from '../src/Common/Observe/store-node'
 import {createClusterClient} from '../src/Common/scale/scale-client'
 
 let fails = 0
@@ -52,7 +52,9 @@ function bootNode(deps: {
         roster: {url: () => 'mem://' + deps.nodeId, graceMs: 40, heartbeatMs: 50},
         upstream: () => ({
             replica: deps.authority.api.fragment,
-            control: deps.directory.api!,
+            // a bare directory line stands in for the authority's control line: its `nodes` section
+            // without the deny list, which these readers checks never exercise
+            control: deps.directory.api! as StoreReplayRemote<StoreNodeControlState>,
             register: entry => deps.directory.control.set({...entry, role: 'mirror'}),
             heartbeat: (nodeId, facts) => deps.directory.control.heartbeat(nodeId, {meta: {readers: facts?.readers ?? 0}}),
             goodbye: nodeId => deps.directory.control.remove(nodeId),

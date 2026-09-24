@@ -13,7 +13,8 @@
 // ============================================================
 
 import {createAuthority} from '../src/Common/scale/scale-authority'
-import {createMemoryReplayStorage} from '../src/Common/events/replay-history'
+import {createMemoryReplayStorage, type ReplayStorage} from '../src/Common/events/replay-history'
+import type {StorePatch} from '../src/Common/Observe/store'
 import {runOracle} from '../oracle/run-oracle'
 
 type State = {counter: {value: number}}
@@ -27,13 +28,13 @@ const ok = (condition: any, message: string) => {
 }
 const quiet = () => {}
 
-function boot(line: ReturnType<typeof createMemoryReplayStorage>, control: ReturnType<typeof createMemoryReplayStorage> | null, executions: {count: number}) {
+function boot(line: ReplayStorage<[readonly StorePatch[]]>, control: ReplayStorage<[readonly StorePatch[]]> | null, executions: {count: number}) {
     const authority = createAuthority<State, {add: (ctx: any, input: {delta: number}) => {value: number}}>({
         line: {storeId: 'receipts-line', originId: 'receipts-origin', initial: {counter: {value: 0}}, durable: {storage: line, everyEvents: 1000}},
         ...(control ? {control: {durable: {storage: control, everyEvents: 1000}}} : {}),
         roster: {url: () => 'mem://authority'},
         identity: {issue: account => 'tok:' + account, verify: presented => ({account: String(presented).slice(4)})},
-        corridor: {commands: {add(_ctx, input) {
+        corridor: {commands: {add(_ctx, input): {value: number} {
             executions.count++
             const store = authority.line.control.store
             store.state.counter = {value: store.state.counter.value + input.delta}
@@ -47,8 +48,8 @@ function boot(line: ReturnType<typeof createMemoryReplayStorage>, control: Retur
 
 async function runChecks() {
     // ============== the seam: receipts and the deny list survive a solo restart ==============
-    const line = createMemoryReplayStorage()
-    const control = createMemoryReplayStorage()
+    const line = createMemoryReplayStorage<[readonly StorePatch[]]>()
+    const control = createMemoryReplayStorage<[readonly StorePatch[]]>()
     const executions = {count: 0}
     const first = boot(line, control, executions)
     const acked = await first.corridor.execute('alice', 'add', 'r1', {delta: 5})
@@ -77,7 +78,7 @@ async function runChecks() {
     third.close()
 
     // ============== control: without the seam a restart re-executes an acknowledged requestId ==============
-    const plainLine = createMemoryReplayStorage()
+    const plainLine = createMemoryReplayStorage<[readonly StorePatch[]]>()
     const plainRuns = {count: 0}
     const plainFirst = boot(plainLine, null, plainRuns)
     await plainFirst.corridor.execute('alice', 'add', 'r1', {delta: 5})

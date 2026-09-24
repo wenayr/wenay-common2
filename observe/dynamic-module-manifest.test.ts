@@ -96,7 +96,7 @@ function verifier(signatureResult: boolean | {accepted: boolean, reason?: string
     return {instance, signatureCalls: () => signatureCalls}
 }
 
-async function rejects(label: string, work: () => unknown | Promise<unknown>, pattern: RegExp) {
+async function rejects(label: string, work: () => Promise<unknown>, pattern: RegExp) {
     await assert.rejects(work, pattern, label)
 }
 

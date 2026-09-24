@@ -12,7 +12,8 @@
 // ============================================================
 
 import {createAuthority} from '../src/Common/scale/scale-authority'
-import {createMemoryReplayStorage} from '../src/Common/events/replay-history'
+import {createMemoryReplayStorage, type ReplayStorage} from '../src/Common/events/replay-history'
+import type {StorePatch} from '../src/Common/Observe/store'
 import {runOracle} from '../oracle/run-oracle'
 
 type State = {counter: {value: number}}
@@ -26,12 +27,12 @@ const ok = (condition: any, message: string) => {
 }
 const quiet = () => {}
 
-function boot(storage: ReturnType<typeof createMemoryReplayStorage>) {
+function boot(storage: ReplayStorage<[readonly StorePatch[]]>) {
     const authority = createAuthority<State, {add: (ctx: any, input: {delta: number}) => {value: number}}>({
         line: {storeId: 'close-line', originId: 'close-origin', initial: {counter: {value: 0}}, durable: {storage, everyEvents: 1000}},
         roster: {url: () => 'mem://authority'},
         identity: {issue: account => 'tok:' + account, verify: presented => ({account: String(presented).slice(4)})},
-        corridor: {commands: {add(_ctx, input) { authority.line.control.store.state.counter = {value: authority.line.control.store.state.counter.value + input.delta}; return {value: authority.line.control.store.state.counter.value} }}},
+        corridor: {commands: {add(_ctx, input): {value: number} { authority.line.control.store.state.counter = {value: authority.line.control.store.state.counter.value + input.delta}; return {value: authority.line.control.store.state.counter.value} }}},
         log: quiet,
     })
     authority.start()
@@ -39,7 +40,7 @@ function boot(storage: ReturnType<typeof createMemoryReplayStorage>) {
 }
 
 async function runChecks() {
-    const storage = createMemoryReplayStorage()
+    const storage = createMemoryReplayStorage<[readonly StorePatch[]]>()
     const first = boot(storage)
     const acked = await first.corridor.execute('alice', 'add', 'r1', {delta: 5})
     ok(acked.value == 5 && first.line.control.store.state.counter.value == 5, 'the command is acknowledged and applied')
@@ -51,7 +52,7 @@ async function runChecks() {
     ok((second.view.restored()?.seq ?? 0) >= 1, `the seq space continued (${second.view.restored()?.seq})`)
 
     // control: with a drain delay before close the archive was complete all along
-    const controlStorage = createMemoryReplayStorage()
+    const controlStorage = createMemoryReplayStorage<[readonly StorePatch[]]>()
     const third = boot(controlStorage)
     await third.corridor.execute('alice', 'add', 'r1', {delta: 7})
     await new Promise(resolve => setTimeout(resolve, 50))

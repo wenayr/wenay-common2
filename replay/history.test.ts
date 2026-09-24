@@ -228,7 +228,7 @@ async function runChecks() {
         let clock = 0
         const backend = createStore<World>({units: {a: {hp: 100, x: 0}}, tick: 0}, {drain: 'micro'})
         const exposed = exposeStoreReplay(backend, {history: 8, now: () => clock})
-        const storage = createMemoryReplayStorage<[StorePatch]>()
+        const storage = createMemoryReplayStorage<[readonly StorePatch[]]>()
         const arch = archiveReplay(exposed.replay, {storage, everyEvents: 7})
 
         const snapAt: Record<number, string> = {}

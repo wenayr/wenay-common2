@@ -17,7 +17,8 @@ import {makeChecker, delay} from './_rs'
 import {createRpcClientHub} from '../../src/Common/rcp/rpc-clientHub'
 import {createNodeDirectory, type NodeDirectoryView} from '../../src/Common/Observe/node-directory'
 import {createStoreReplicaSet} from '../../src/Common/Observe/store-replica-set'
-import {createStoreNode} from '../../src/Common/Observe/store-node'
+import {createStoreNode, type StoreNodeControlState} from '../../src/Common/Observe/store-node'
+import type {StoreReplayRemote} from '../../src/Common/Observe/store-replay'
 import {createClusterClient} from '../../src/Common/scale/scale-client'
 
 const PORTS: Record<string, number> = {n1: 4181, n2: 4182}
@@ -47,8 +48,9 @@ async function bootRealNode(deps: {
         roster: {url: () => 'http://localhost:' + port, heartbeatMs: 60, graceMs: 40},
         upstream: () => ({
             replica: deps.authority.api.fragment,
-            // a bare directory line stands in for the authority's control line (its `nodes` section)
-            control: deps.directory.api!,
+            // a bare directory line stands in for the authority's control line (its `nodes` section,
+            // without the deny list, which these readers checks never exercise)
+            control: deps.directory.api! as StoreReplayRemote<StoreNodeControlState>,
             register: entry => deps.directory.control.set({...entry, role: 'mirror'}),
             heartbeat: (nodeId, facts) => {
                 const meta = {...deps.directory.control.get(nodeId)?.meta, readers: facts?.readers ?? 0}
