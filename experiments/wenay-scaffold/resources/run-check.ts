@@ -1,0 +1,44 @@
+// =====================================================================
+//  runCheck(main): how a check script ends.
+//
+//  A check awaits servers, clients and child processes. Ended with a bare main().catch(...), an
+//  await that can never settle does one of two things: if nothing keeps the event loop alive, Node
+//  exits 0 with the remaining assertions unrun (a false green); if a socket or server is still
+//  open, the check never exits. runCheck turns both into exit code 1 with a message, ends a failed
+//  main() at once even while handles are open, and leaves a passing run and a deliberate
+//  process.exit(code) as they were. deadlineMs bounds the whole run; the default is about ten
+//  times the slowest example check.
+// =====================================================================
+import path from 'node:path'
+
+export function runCheck(main: () => Promise<unknown>, deadlineMs = 120_000) {
+    const name = path.basename(process.argv[1] ?? 'check')
+    let settled = false
+    let failing = false
+    function fail(...message: unknown[]) {
+        if (failing) return
+        failing = true
+        console.error(`FAIL ${name}:`, ...message)
+        // stdout/stderr can be asynchronous (a pipe on POSIX, a terminal on Windows): exit once flushed
+        process.stdout.write('', function stdoutFlushed() {
+            process.stderr.write('', function stderrFlushed() { process.exit(1) })
+        })
+    }
+    // the event loop emptied while main() still waits; not emitted on an explicit process.exit()
+    process.on('beforeExit', function loopEmptied() {
+        if (!settled) fail('main() never settled: it awaits something that can no longer happen, so the remaining checks never ran')
+    })
+    const deadline = setTimeout(function expired() {
+        fail(settled
+            ? `main() finished, but an open socket, server, timer or child process kept the process alive for ${deadlineMs / 1000} s`
+            : `main() still pending after ${deadlineMs / 1000} s: an await never settled while open handles kept the process running`)
+    }, deadlineMs)
+    // never keeps a finished check alive
+    deadline.unref()
+    main().then(function finished() {
+        settled = true
+    }, function failed(error) {
+        settled = true
+        fail('main() failed:', error)
+    })
+}
