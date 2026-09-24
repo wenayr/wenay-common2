@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET store-node readers oracle. The mini-scale stand observed line
 // subscriber counts on mini nodes that only ever grow; the in-process loopback
 // oracle (observe/store-node-readers.test.ts) is green, so this spec mirrors

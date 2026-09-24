@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET artifact transfer oracle. Artifact catalog is replicated to
 // a mirror node with a plain createStoreFollower (it is a store), bytes travel lazily through
 // createArtifactByteCache: miss → open at the leader → fetch → sha256 check →

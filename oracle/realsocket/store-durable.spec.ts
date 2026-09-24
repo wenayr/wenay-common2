@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET durable head oracle: the replay line survives a process restart.
 // Lifetime 1 writes through a real socket into a file-journaled head; everything
 // is torn down; lifetime 2 reboots from the SAME file — state and seq restored,

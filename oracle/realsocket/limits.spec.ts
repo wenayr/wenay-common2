@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // ============================================================
 //  oracle/realsocket/limits.spec.ts — DISPOSABLE real-socket oracle
 //  CATEGORY: limits — server-side incoming payload caps (serverOpts.limits).

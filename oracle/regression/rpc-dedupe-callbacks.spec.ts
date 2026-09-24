@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 import { createRpcClient } from "../../src/Common/rcp/rpc-client"
 import { createRpcServerAuto } from "../../src/Common/rcp/rpc-server-auto"
 import { type SocketTmpl } from "../../src/Common/rcp/rpc-protocol"

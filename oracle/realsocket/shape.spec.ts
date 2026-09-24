@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // ============================================================
 //  oracle/realsocket/shape.spec.ts — DISPOSABLE real-socket oracle
 //  CATEGORY "shape": adaptive shape compaction (Pkt.SHAPE/CBV) over a REAL WebSocket.

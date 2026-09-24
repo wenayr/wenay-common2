@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // =====================================================================
 //  A server WITHOUT `gate` must stay callable after a refused reauth.
 //

@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET chaos oracle: a seeded random schedule of writes, edge-mirror
 // bounces (disconnect + reconnect with since) and a mid-cascade leader kill +
 // promote over leader → follower → edge. Invariants: the edge converges to the

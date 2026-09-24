@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // =====================================================================
 //  An async onInvalid hook that rejects must not crash the process.
 //

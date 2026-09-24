@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET intentional teardown lifecycle: client.dispose() drains live subscriptions,
 // and hard setToken rotation fires onDisconnect, tears down old subs, then connects a fresh
 // socket generation (connectCount++). Neither hard boundary auto-resubscribes. Port 4108.

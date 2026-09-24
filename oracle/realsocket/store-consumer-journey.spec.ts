@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // One domain command: local Store -> RPC -> Scale placement -> transport reconnect.
 // Reader sockets cross real WebSockets; trusted node-to-authority links stay in-process.
 import assert from 'node:assert/strict'

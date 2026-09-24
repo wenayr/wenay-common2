@@ -5,7 +5,7 @@
 // verify everything when touching core (events / Observe / replay / rpc).
 // Files named *-extended-stress.* stay outside that routine gate and run through
 // --extended-stress; their stdout is retained because workload counters are the result.
-import {readdirSync} from 'node:fs'
+import {readdirSync, readFileSync} from 'node:fs'
 import {spawnSync} from 'node:child_process'
 import {fileURLToPath} from 'node:url'
 import path from 'node:path'
@@ -58,6 +58,23 @@ if (extendedStressOnly) {
         console.error('Missing extended stress oracles: ' + missing.join(', '))
         process.exit(1)
     }
+}
+
+// An async oracle must end through runOracle (oracle/run-oracle.ts): otherwise an awaited promise
+// that never settles lets Node exit 0 and the file reads green while its later checks never ran.
+// node:test files report through their runner, synchronous scripts throw by themselves, and a file
+// with its own stall guard names it with a `// oracle-ends: <reason>` line.
+function endsHonestly(file) {
+    const source = readFileSync(path.join(root, file), 'utf8')
+    if (/\brunOracle\(/.test(source) || /from ['"]node:test['"]/.test(source)) return true
+    if (/^\/\/ oracle-ends: \S/m.test(source)) return true
+    return !/\bawait\b|\.then\(/.test(source)
+}
+const unguarded = files.filter(file => !endsHonestly(file))
+if (unguarded.length) {
+    console.error('Oracles that can exit 0 without finishing — end them through runOracle (oracle/run-oracle.ts):')
+    for (const file of unguarded) console.error('  ' + file)
+    process.exit(1)
 }
 
 let failed = 0

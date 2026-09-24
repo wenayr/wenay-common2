@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET slimv2: NEW slim Listen v2 (slimListen) — unit-surface + end-to-end wire. Port 4110.
 //
 // FINDING (verified against source, see notes in ##RESULT##):

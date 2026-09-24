@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // ============================================================
 //  oracle/realsocket/callbacks.spec.ts — DISPOSABLE real-socket oracle
 //  CATEGORY "callbacks": callbacks-as-args (Pkt.CB) + listen streaming

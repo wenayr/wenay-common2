@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET stress: MASS / volume over a genuine WebSocket. Port 4111.
 //  (1) 500+ concurrent CALLs — id-pool integrity, no dropped/mismatched RESP.
 //  (2) 50+ concurrent subscribers + 100+ high-freq ticks — no loss, clean teardown to 0.

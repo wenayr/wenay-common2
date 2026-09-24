@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET oracle: contract implementations travel as ordinary RPC facades,
 // while one Store/replay mirror remains alive across an atomic implementation swap.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'

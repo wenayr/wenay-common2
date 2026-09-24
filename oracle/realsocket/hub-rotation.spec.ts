@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET hub rotation oracle. A token wave (setToken/connect) replaces the
 // hub's connection: the NEW socket must be the only one left alive — a wave that
 // strands its predecessor turns every logout/rotation into a zombie TCP socket

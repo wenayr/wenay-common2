@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // ============================================================
 //  oracle/realsocket/pipe.spec.ts — DISPOSABLE real-socket oracle for PIPE chains
 //

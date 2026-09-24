@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // ============================================================
 //  oracle/realsocket/errors.spec.ts — DISPOSABLE real-socket oracle
 //  CATEGORY "errors": error propagation across a real WebSocket.

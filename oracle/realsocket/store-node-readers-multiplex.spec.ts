@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET multiplex-faithful readers oracle. The browser demo creates every
 // sim reader's per-node socket EXACTLY as io(node.url, {transports:
 // ['websocket', 'polling'], auth}) — same URL per node, NO forceNew, NO

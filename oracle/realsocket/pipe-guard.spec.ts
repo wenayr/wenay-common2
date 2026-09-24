@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // ============================================================
 //  oracle/realsocket/pipe-guard.spec.ts — REAL-SOCKET oracle for the two
 //  route-resolution guards in rpc-server.ts.

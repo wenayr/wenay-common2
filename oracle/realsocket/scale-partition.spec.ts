@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // Two authorities over real sockets; the lease/resource arbiter is a local test fixture.
 // This proves host fencing integration, not distributed consensus or Kubernetes Leases.
 import assert from 'node:assert/strict'

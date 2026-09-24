@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET oracle: Store replica offers carry a descriptor + replay line
 // over the ordinary RPC facade. A follower may expose the same fragment again,
 // so a browser-like client can join through a cascade without transport-specific

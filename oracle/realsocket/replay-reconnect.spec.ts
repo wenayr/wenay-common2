@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET replay reconnect oracle. The replay journals below outlive every
 // Socket.IO connection: reconnect must repair a logical subscription, not create
 // a new application-level replay line. Port 4112.

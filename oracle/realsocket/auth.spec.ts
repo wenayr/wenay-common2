@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // ============================================================
 //  oracle/realsocket/auth.spec.ts — DISPOSABLE real-socket test
 //  Category "auth": in-band auth over a genuine WebSocket.

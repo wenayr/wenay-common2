@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET regression: reconnect recovery must wait for delayed in-band auth
 // before recreating the physical replay subscription. Port 4125.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'

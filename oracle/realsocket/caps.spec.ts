@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // ============================================================
 //  oracle/realsocket/caps.spec.ts — DISPOSABLE real-socket oracle
 //  CATEGORY "caps": capability NEGOTIATION over a REAL WebSocket.

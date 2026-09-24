@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET failover oracle (phase 4 of mirror plan). Hard leader loss →
 // manual follower promotion: authority is built OVER mirror store (workboard
 // host with deps.store), cascading journal continues to live — client subscription

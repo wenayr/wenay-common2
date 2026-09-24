@@ -1,3 +1,4 @@
+// oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET store follower oracle. Leader instance owns the workboard-store;
 // follower instance (createStoreFollower) mirrors it over replay-line and distributes
 // it to its OWN clients via cascading exposeStoreReplay; commands are forwarded to leader with
