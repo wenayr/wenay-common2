@@ -64,9 +64,9 @@ async function checkDeepItemKeepsItsBatchNeighbours() {
     const {emit, stop, remote} = await openLiveLine()
     try {
         const seqs: number[] = []
-        const lenient = replaySubscribe(remote, function consume() {}, {onSeq: seq => { seqs.push(seq) }})
+        const lenient = replaySubscribe<[any]>(remote, function consume() {}, {onSeq: seq => { seqs.push(seq) }})
         let strictError: Error | undefined
-        const strict = replaySubscribe(remote, function consumeStrictly() {}, {
+        const strict = replaySubscribe<[any]>(remote, function consumeStrictly() {}, {
             gapPolicy: 'error',
             onError(error) { strictError = error },
         })

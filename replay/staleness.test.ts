@@ -102,11 +102,11 @@ async function runChecks() {
         const [, listen] = replayListen<[number]>({history: 8})
         const remote = exposeReplay(listen) as unknown as ReplayRemote<[number]>
         const edges: StaleInfo[] = []
-        const sub = replaySubscribe(remote, () => {}, {staleMs: 40, onStale: i => edges.push(i)})
+        const sub = replaySubscribe<[number]>(remote, () => {}, {staleMs: 40, onStale: i => edges.push(i)})
         await sub.ready
         await delay(100)
         ok(edgesOf(edges) == 'T', 'no envelope ever -> stale from the subscribe-time arrival gap')
-        const lazy = replaySubscribe(remote, () => {}, {staleMs: 40})
+        const lazy = replaySubscribe<[number]>(remote, () => {}, {staleMs: 40})
         await lazy.ready
         await delay(80)
         ok(lazy.isStale(), 'isStale() works lazily without onStale (no timer)')
@@ -158,12 +158,12 @@ async function runChecks() {
         const [, listen] = replayListen<[number]>({history: 8, current: () => [state], now: skewedNow})
         const remote = exposeReplay(listen) as unknown as ReplayRemote<[number]>
         const strict: StaleInfo[] = []
-        const s1 = replaySubscribe(remote, () => {}, {staleMs: 50, onStale: i => strict.push(i)})
+        const s1 = replaySubscribe<[number]>(remote, () => {}, {staleMs: 50, onStale: i => strict.push(i)})
         await s1.ready
         ok(edgesOf(strict) == 'T', 'skewMs=0: an 80ms-old ts trips the 50ms threshold at delivery')
         s1()
         const tolerant: StaleInfo[] = []
-        const s2 = replaySubscribe(remote, () => {}, {staleMs: 50, skewMs: 100, onStale: i => tolerant.push(i)})
+        const s2 = replaySubscribe<[number]>(remote, () => {}, {staleMs: 50, skewMs: 100, onStale: i => tolerant.push(i)})
         await s2.ready
         ok(tolerant.length == 0, 'skewMs=100 absorbs the clock offset — no false stale')
         s2()

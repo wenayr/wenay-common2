@@ -59,7 +59,7 @@ async function runChecks() {
         })
         const tick = (sym: string, px: number) => { state[sym] = px; emit({type: 'tick', sym, px}) }
         const buf = {v: 0}
-        const gated = conflateReplay(replay, {
+        const gated = conflateReplay<[Msg]>(replay, {
             pending: () => buf.v, highWater: 5, pollMs: 10,
             keyOf: m => m.type == 'tick' ? m.sym : null,
         })
@@ -146,7 +146,7 @@ async function runChecks() {
         })
         const tick = (sym: string, px: number) => { state[sym] = px; emit({type: 'tick', sym, px}) }
         const buf = {v: 10}
-        const gated = conflateReplay(replay, {
+        const gated = conflateReplay<[Msg]>(replay, {
             pending: () => buf.v, highWater: 5, pollMs: 10,
             keyOf: m => m.type == 'tick' ? m.sym : null,
             maxKeys: 2,
@@ -173,7 +173,7 @@ async function runChecks() {
         })
         const tick = (sym: string, px: number) => { state[sym] = px; emit({type: 'tick', sym, px}) }
         const buf = {v: 10}
-        const gated = conflateReplay(replay, {
+        const gated = conflateReplay<[Msg]>(replay, {
             pending: () => buf.v, highWater: 5, pollMs: 10,
             keyOf: m => m.type == 'tick' ? m.sym : null,
         })

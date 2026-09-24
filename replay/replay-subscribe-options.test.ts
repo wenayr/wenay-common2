@@ -177,7 +177,7 @@ async function main() {
                 return {seq: 9, ts: 1, event: [9] as [number]}
             },
         })
-        const subscription = replaySubscribe(remote, function receiveUnexpected() {
+        const subscription = replaySubscribe<[number]>(remote, function receiveUnexpected() {
             ok(false, 'strict gap recovery must not deliver a keyframe')
         }, {
             since: 4,

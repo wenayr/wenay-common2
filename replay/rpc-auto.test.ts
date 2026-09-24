@@ -136,7 +136,7 @@ async function runChecks() {
             since: () => [],
             keyframe: () => null,
         }
-        replaySubscribe(remote, () => {}, {since: 0, onError: e => err = e})
+        replaySubscribe<[number]>(remote, () => {}, {since: 0, onError: e => err = e})
         await delay(30)
         ok(err != null, 'non-envelope on line (RPC_STOP) surfaces via onError, not silence')
     }

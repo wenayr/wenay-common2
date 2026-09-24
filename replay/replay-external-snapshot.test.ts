@@ -190,7 +190,7 @@ async function main() {
                 return event(9)
             },
         })
-        const subscription = replaySubscribe(remote, function receiveUnexpectedValue() {
+        const subscription = replaySubscribe<[number]>(remote, function receiveUnexpectedValue() {
             ok(false, 'strict missing-tail recovery must not deliver')
         }, {
             since: 4,
@@ -225,7 +225,7 @@ async function main() {
                 return []
             },
         })
-        const subscription = replaySubscribe(remote, function receiveUnexpectedRecoveryValue() {
+        const subscription = replaySubscribe<[number]>(remote, function receiveUnexpectedRecoveryValue() {
             ok(false, 'closed recovery must not deliver')
         }, {
             since: 2,
@@ -263,7 +263,7 @@ async function main() {
         })
         Object.defineProperty(remote, RPC_TRANSPORT_LIFECYCLE, {value: lifecycle.api})
 
-        const subscription = replaySubscribe(remote, function receiveUnexpectedReconnectValue() {
+        const subscription = replaySubscribe<[number]>(remote, function receiveUnexpectedReconnectValue() {
             ok(false, 'empty reconnect tail must not deliver')
         }, {
             catchUp: 'tail',
@@ -296,7 +296,7 @@ async function main() {
 
     await runCase('external coordinate validates fully and honors reentrant close', async function validateBeforeCommit() {
         let failure: unknown
-        const invalid = replaySubscribe(createRemote(), function receiveInvalidSnapshot() {}, {
+        const invalid = replaySubscribe<[number]>(createRemote(), function receiveInvalidSnapshot() {}, {
             since: 2,
             catchUp: 'tail',
             onError(error) { failure = error },
@@ -310,7 +310,7 @@ async function main() {
 
         let tailCalls = 0
         let closing!: ReturnType<typeof replaySubscribe<[number]>>
-        closing = replaySubscribe(createRemote({
+        closing = replaySubscribe<[number]>(createRemote({
             since: async function tailAfterClosedPreparation() {
                 tailCalls++
                 return []
