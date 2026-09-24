@@ -4,6 +4,18 @@ import {Transformer} from "../Common/core/Decorator";
 
 export type SaveKeyValueStore = ReturnType<typeof saveKeyValue>
 
+// path/key often carry caller ids: an address must stay below dirDef (below cwd without one) —
+// no parent hop, no root (/, \, UNC, drive letter), no NUL; the key names one file.
+const ROOTED = /^([\\/]|[a-zA-Z]:)/;
+function requireStoreAddress(path: string, key: string) {
+    if (path.includes("\0") || ROOTED.test(path) || path.split(/[\\/]/).includes("..")) {
+        throw new Error(`saveKeyValue: path must be relative directories inside the store, got ${JSON.stringify(path)}`);
+    }
+    if (key.includes("\0") || ROOTED.test(key) || /[\\/]/.test(key) || key == "..") {
+        throw new Error(`saveKeyValue: key must be one file name inside the store, got ${JSON.stringify(key)}`);
+    }
+}
+
 export function saveKeyValue({ dirDef = "", key: _key = "" }: { dirDef: string; key?: string }) {
     async function ensureDir(dir: string): Promise<string> {
         const fullDir = dirDef ? `${dirDef}/${dir}` : dir;
@@ -12,6 +24,7 @@ export function saveKeyValue({ dirDef = "", key: _key = "" }: { dirDef: string; 
     }
 
     async function resolvePath(path: string, key: string): Promise<string> {
+        requireStoreAddress(String(path), String(key));
         const fullPath = await ensureDir(path);
         return `${fullPath}${key}`;
     }
