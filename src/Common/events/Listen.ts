@@ -69,7 +69,9 @@ function createListenCoreLayer<T>(options: ListenCoreOptions<T>) {
     const {fast = true, onRemove, event} = options
     const dispatchError = options[LISTEN_DISPATCH_ERROR]
     type Z = NormalizeTuple<T>
-    const subs = new Map<ListenKey, {cb: Listener<Z>}>()
+    // source: the callback once() was given. Its caller knows only that one, and
+    // off(callback) must still find the wrapper stored for it.
+    const subs = new Map<ListenKey, {cb: Listener<Z>, source?: Listener<Z>}>()
     function dispatch(cb: Listener<Z>, args: Z) {
         if (!dispatchError) { cb(...args); return }
         try { cb(...args) }
@@ -126,14 +128,14 @@ function createListenCoreLayer<T>(options: ListenCoreOptions<T>) {
         event?.('remove', subs.size, api)
     }
 
-    function add(cb: Listener<Z>, key?: ListenKey, admitted?: () => void) {
+    function add(cb: Listener<Z>, key?: ListenKey, admitted?: () => void, source?: Listener<Z>) {
         const k = key ?? Symbol()
         if (subs.has(k)) {
             subs.delete(k)
             if (fast) rebuild()
             onRemove?.(k)
         }
-        const entry = {cb}
+        const entry = {cb, source}
         subs.set(k, entry)
         if (fast) rebuild()
         try {
@@ -158,14 +160,16 @@ function createListenCoreLayer<T>(options: ListenCoreOptions<T>) {
         }) as ListenOn<Z>,
         off: (keyOrCallback) => {
             if (typeof keyOrCallback == 'function') {
-                for (const [key, entry] of [...subs]) if (entry.cb === keyOrCallback) removeOne(key)
+                for (const [key, entry] of [...subs]) {
+                    if (entry.cb === keyOrCallback || entry.source === keyOrCallback) removeOne(key)
+                }
                 return
             }
             if (keyOrCallback != null) removeOne(keyOrCallback)
         },
         once: (cb, opts = {}) => {
             let off: ListenOff = () => {}
-            off = api.on(((...args: Z) => { off(); cb(...args) }) as Listener<Z>, opts)
+            off = add(((...args: Z) => { off(); cb(...args) }) as Listener<Z>, opts.key, undefined, cb)
             return off
         },
         close: () => {
@@ -209,6 +213,21 @@ export function createListen<T>(
     })
     const core = resource.listen
 
+    function subscribe(
+        cb: Listener<Z>,
+        {cbClose, key}: {cbClose?: CloseCallback; key?: ListenKey},
+        source?: Listener<Z>,
+    ) {
+        const k = key ?? Symbol()
+        return resource.control.add(cb, k, function admitted() {
+            if (cbClose) {
+                closeHooks = closeHooks ?? new Map()
+                closeHooks.set(k, cbClose)
+            }
+            event?.('add', core.count(), api)
+        }, source)
+    }
+
     const api: ListenApi<T> = {
         emit: core.emit,
         has: core.has,
@@ -236,20 +255,13 @@ export function createListen<T>(
             closeHooks.set(cb, cb)
             return function offClose() { closeHooks?.delete(cb) }
         },
-        on: ((cb: Listener<Z>, {cbClose, key}: {cbClose?: CloseCallback; key?: ListenKey} = {}) => {
-            const k = key ?? Symbol()
-            return resource.control.add(cb, k, function admitted() {
-                if (cbClose) {
-                    closeHooks = closeHooks ?? new Map()
-                    closeHooks.set(k, cbClose)
-                }
-                event?.('add', core.count(), api)
-            })
+        on: ((cb: Listener<Z>, opts: {cbClose?: CloseCallback; key?: ListenKey} = {}) => {
+            return subscribe(cb, opts)
         }) as ListenOn<Z>,
         off: core.off,
         once: (cb, opts = {}) => {
             let off: ListenOff = () => {}
-            off = api.on(((...args: Z) => { off(); cb(...args) }) as Listener<Z>, opts)
+            off = subscribe(((...args: Z) => { off(); cb(...args) }) as Listener<Z>, opts, cb)
             return off
         },
         count: core.count,
@@ -297,9 +309,7 @@ export function withStoreListen<T>(base: ListenApi<T>, currentProvider: ListenCu
                 const value = currentValue(opts.current)
                 if (value) { cb(...value); return () => {} }
             }
-            let off: ListenOff = () => {}
-            off = base.on(((...args: Z) => { off(); cb(...args) }) as Listener<Z>, {key: opts.key})
-            return off
+            return base.once(cb, {key: opts.key})
         },
     }
     listenByOn.set(api.on, api)

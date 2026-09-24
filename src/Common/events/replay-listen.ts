@@ -567,9 +567,7 @@ function decorateReplayListen<T>(
                 const m = currentValue(opts.current)
                 if (m) { cb(...m); return () => {} }
             }
-            let off: () => void = () => {}
-            off = base.on(((...e: Z) => { off(); cb(...e) }), {key: opts.key})
-            return off
+            return base.once(cb, {key: opts.key})
         },
     }
     // brand for wire: auto-detection in rpc-server-auto — by it, not by shape
