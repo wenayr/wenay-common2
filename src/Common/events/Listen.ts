@@ -76,7 +76,9 @@ function createListenCoreLayer<T>(options: ListenCoreOptions<T>) {
         catch (error) { dispatchError(error) }
     }
     function dispatchInitial(...args: Z) {
-        for (const entry of subs.values()) dispatch(entry.cb, args)
+        // A live Map iterator also visits listeners added by this emit (a re-arming
+        // once never ends); fast mode's cached array is a snapshot, so is this.
+        for (const entry of [...subs.values()]) dispatch(entry.cb, args)
     }
     let dispatcher: Listener<Z> | null = dispatchInitial
     let cached: Listener<Z>[] | null = null
