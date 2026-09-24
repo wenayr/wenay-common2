@@ -1,0 +1,23 @@
+{
+  // Type-check project for the oracle directories (observe/, replay/, oracle/). They run under tsx,
+  // which strips types without checking them, so a type error there never failed anything.
+  // Same options as the library except noPropertyAccessFromIndexSignature: oracles are consumer
+  // code and read Store state and RPC facades by name, as the examples do (their tsconfig is plain
+  // `strict`). noEmit: nothing here is built. The include is a glob, so a new oracle is checked
+  // automatically. observe/demo-browser-rtc.test.ts needs the DOM lib; tsconfig.demo.json checks it.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "noPropertyAccessFromIndexSignature": false
+  },
+  "include": [
+    "./observe/**/*.ts",
+    "./replay/**/*.ts",
+    "./oracle/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "./observe/demo-browser-rtc.test.ts"
+  ]
+}

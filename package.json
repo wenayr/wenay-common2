@@ -47,6 +47,7 @@
     "test:release-guard": "node scripts/release-guard.spec.mjs",
     "test:types": "tsc -p tsconfig.type-tests.json",
     "test:spec-types": "tsc -p tsconfig.spec.json",
+    "test:oracle-types": "tsc -p tsconfig.oracles.json",
     "test:console": "tsx src/Common/node-console.spec.ts",
     "test:rpc": "tsx src/Common/rcp/rpc.harness.spec.ts",
     "test:rpc-flow": "tsx src/Common/rcp/rpc-flow.spec.ts",
