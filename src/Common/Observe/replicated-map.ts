@@ -2,7 +2,7 @@
 // Replicated Map — high-level keyed collection over Store Replay
 // =====================================================================
 
-import {LISTEN_DISPATCH_ERROR, listen, listenStore} from '../events/Listen'
+import {LISTEN_DISPATCH_ERROR, listen, listenStore, type ListenOff} from '../events/Listen'
 import {readReplayDescriptor} from '../events/replay-wire'
 import {getRpcTransportLifecycle} from '../events/transport-lifecycle'
 import {isSafeKey} from '../rcp/rpc-limits'
@@ -992,7 +992,7 @@ export function followReplicatedMap<V, K extends string = string>(
         key: K,
         cb: (value: V | undefined, ctx: ReplicatedMapKeyContext<K>) => void,
         keyOpts: {current?: boolean} = {},
-    ) {
+    ): ListenOff {
         if (closed) throw new Error('replicated map follower is closed')
         const safeKey = requireReplicatedMapKey<K>(key)
         // One registration per call: a callback registered twice runs twice.
