@@ -27,6 +27,8 @@ import {createMiniScaleHost} from './mini-scale-host'
 import type {WorkboardState} from './workboard-contract'
 import {createAuthLifecycleHost} from './auth-lifecycle-host'
 import {authSocketKeys} from './auth-lifecycle-contract'
+import {createServiceTokenHost} from './service-token-host'
+import {serviceTokenRole, serviceTokenRoutes} from './service-token-contract'
 import {demoRpcOpt} from './protocol-schema'
 
 const portStart = Number(process.env['DEMO_PORT_START'] ?? 3100)
@@ -337,6 +339,12 @@ const workboard = createWorkboardHost({
 // cycle can be watched without changing anything the other stands rely on.
 const authLifecycle = createAuthLifecycleHost()
 
+// ============== service tokens: real service leaders in per-visitor sandboxes ==============
+// Who issues a service token, who verifies it, who refuses it: each tab's sandbox holds two
+// createServiceLeader instances on sockets of their own (role=service-token), so a revoke or a
+// login in one sandbox never reaches another visitor, and the participant surface is untouched.
+const serviceTokens = createServiceTokenHost({log: line => console.log(line)})
+
 // ============== video rooms: application policy over the media relay ==============
 type VideoRoomEntry = {id: string, name: string, members: Set<string>}
 
@@ -605,6 +613,9 @@ app.post('/auth-lifecycle/login', express.json({limit: '1kb'}), function issueAu
     }
     res.json({sid: result.sid, token: result.token, expiresAt: result.expiresAt})
 })
+// The service tokens stand's own HTTP port: a sandbox, the application's login (demo credentials,
+// then leader.identity.login) and the operator's revoke. Each route acts on the caller's sandbox only.
+app.use(serviceTokenRoutes.base, serviceTokens.serve.router())
 app.get('/artifact-open/:artifactId', function openArtifact(req, res) {
     const ticket = typeof req.query['ticket'] == 'string' ? artifactTickets.get(req.query['ticket']) : undefined
     if (req.hostname != new URL(artifactOrigin()).hostname || !ticket
@@ -1199,6 +1210,12 @@ ioServer.on('connection', function onDemoConnection(socket) {
         console.log('[demo] auth lifecycle stand connected')
         return
     }
+    // The service tokens stand connects with role=service-token: its sandbox's leader serves
+    // 'app' (ungated) and 'scale' (gated) on this socket; no presence, no participant account.
+    if (socket.handshake.auth?.['role'] == serviceTokenRole) {
+        serviceTokens.serve.socket(socket)
+        return
+    }
     const account = participantAccount(tab)
     const peer = host.connection(account)
     const resource = files.connection(account)
@@ -1311,6 +1328,7 @@ function closeDemoResources() {
     closeDemoResource('workboard', workboard.close)
     closeDemoResource('mini scale', miniScale.close)
     closeDemoResource('auth lifecycle', authLifecycle.close)
+    closeDemoResource('service tokens', serviceTokens.close)
     closeDemoResource('files', files.close)
     closeDemoResource('AI', ai.close)
     closeDemoResource('artifacts', artifacts.close)

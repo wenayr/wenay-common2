@@ -26,6 +26,7 @@ import type {createDemoParticipantFacade} from './server'
 import {setupContractRuntimeDemo} from './contract-runtime-demo'
 import {setupPacketMeshDemo} from './packet-mesh-demo'
 import {setupAuthLifecycleDemo} from './auth-lifecycle-demo'
+import {setupServiceTokenDemo} from './service-token-demo'
 import {createProtocolDemo} from './protocol-demo'
 import {demoRpcOpt} from './protocol-schema'
 import {createBrowserRtc} from './browser-rtc'
@@ -75,10 +76,13 @@ async function main() {
     const packetMesh = setupPacketMeshDemo({element: el, log})
     // Its own gated connection, so the participant surface below stays ungated.
     const authLifecycle = setupAuthLifecycleDemo({element: el, log, tab})
+    // Service leaders in a per-tab sandbox, on sockets of their own: nothing opens until a scenario runs.
+    const serviceTokens = setupServiceTokenDemo({element: el, log, tab})
     window.addEventListener('beforeunload', replicaMesh.close)
     window.addEventListener('beforeunload', contractRuntime.close)
     window.addEventListener('beforeunload', packetMesh.close)
     window.addEventListener('beforeunload', authLifecycle.close)
+    window.addEventListener('beforeunload', serviceTokens.close)
     const hub = createRpcClientHub(
         // Start with polling so an HTTP-only tunnel/proxy can carry RPC, then
         // Socket.IO upgrades to WebSocket whenever the external route permits it.

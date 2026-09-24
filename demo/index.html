@@ -250,14 +250,16 @@
     .workItemTitle input:hover, .workItemTitle input:focus { border-color: var(--line-strong); background: var(--surface); }
     .workItemMeta { margin: 6px 0 9px; color: var(--muted); font-size: 11px; }
     .workItemActions { display: flex; gap: 5px; flex-wrap: wrap; }
-    #authLifecycle { grid-column: 1 / -1; }
+    #authLifecycle, #serviceTokens { grid-column: 1 / -1; }
     .authGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-top: 14px; }
     .authCard { min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-soft); }
     .authCard > em { display: block; margin-bottom: 5px; color: var(--muted); font-size: 10px; font-style: normal; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
     .authCard strong, .authCard span { display: block; overflow-wrap: anywhere; }
     .authCard span { margin-top: 3px; color: var(--muted); font-size: 11px; }
-    #authResult { margin: 12px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); color: #174aa5; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
-    #authLog { display: grid; align-content: start; gap: 3px; max-height: 230px; overflow: auto; margin-top: 12px; padding: 11px; border-radius: 11px; background: #17202a; color: #dbe7f7; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    #authResult, #stResult { margin: 12px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); color: #174aa5; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+    #authLog, #stVerdicts { display: grid; align-content: start; gap: 3px; max-height: 230px; overflow: auto; margin-top: 12px; padding: 11px; border-radius: 11px; background: #17202a; color: #dbe7f7; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    #stVerdicts { max-height: 380px; }
+    #stVerdicts:empty { display: none; }
     .authLogRow { overflow-wrap: anywhere; }
     .authLogRow[data-tone="good"] { color: #86e2b6; }
     .authLogRow[data-tone="bad"] { color: #ffb3a7; }
@@ -619,6 +621,50 @@
                             <summary>What is actually on the wire</summary>
                             <code>auth.resolveAuth(token) → {object, ack, expiresAt, renewBeforeMs} · [Pkt.AUTH, {state}] · createRpcClientHub(…, {token: provider})</code>
                             <p>Two gated facades share one socket and one token provider. With <code>gate: true</code> the starting object is the anonymous facade, so a privileged call is refused until a HELLO succeeds. Login is an ordinary HTTP endpoint for the same reason. At <code>expiring</code> both facades alarm and the hub asks the provider exactly once; the renewal is a soft re-auth, so the tick stream keeps its numbering. Expiry and revocation take the same downgrade corridor — the difference is that revocation is a <code>resolveAuth</code> throw carrying <code>revoke: true</code>.</p>
+                        </details>
+                    </div>
+                </section>
+
+                <section id="serviceTokens" class="surface">
+                    <div class="surfaceHeader">
+                        <div>
+                            <h3>Service tokens</h3>
+                            <p>Who issues a service token, who verifies it, who refuses it — on the real service runtime, in a sandbox only this tab can reach.</p>
+                            <code class="facetTag">leader.identity · serve.browserFragment · serve.scaleConnection · control.revoke</code>
+                        </div>
+                        <span id="stStatus" class="statusBadge" data-state="idle">no sandbox</span>
+                    </div>
+                    <div class="surfaceBody">
+                        <p id="stCredentials" class="pageMeta">Demo credentials: owner / owner-pass · member / member-pass</p>
+                        <div class="toolbar">
+                            <button id="stHandshake" class="primary">1 · Name an account in the handshake</button>
+                            <button id="stIssued">2 · Stand issues after its own login</button>
+                            <button id="stSelfIssued">3 · access.login checks credentials</button>
+                            <button id="stRevoke" class="danger">4 · Operator revokes</button>
+                            <button id="stReset" class="secondary">New sandbox</button>
+                        </div>
+                        <div class="authGrid">
+                            <div class="authCard">
+                                <em>Sandbox</em><strong id="stSandbox">none yet</strong><span id="stSandboxNote">opens on the first scenario</span>
+                            </div>
+                            <div class="authCard">
+                                <em>Board · tokens from the stand</em><strong id="stBoardWho">anonymous</strong><span id="stBoardToken">no token presented</span>
+                            </div>
+                            <div class="authCard">
+                                <em>Desk · access.login</em><strong id="stDeskWho">anonymous</strong><span id="stDeskToken">no token presented</span>
+                            </div>
+                            <div class="authCard">
+                                <em>Board notes</em><strong id="stNotes">—</strong><span id="stNotesNote">from the last command receipt</span>
+                            </div>
+                        </div>
+                        <p id="stResult">press a scenario: every step below names the layer that decided it</p>
+                        <div id="stVerdicts" aria-live="polite" aria-label="Service token verdicts"></div>
+                        <details class="replicaContract">
+                            <summary>What is on the wire</summary>
+                            <code>POST /service-tokens/login → sameSecret(password) → leader.identity.login(account) → {token, account, expiresAt} · 'app' (ungated): {[name]: leader.serve.browserFragment()} → identity {renew} | {login(credentials), renew} · 'scale' (gated): leader.serve.scaleConnection() · scale.reauth(token) = [Pkt.HELLO, token] → resolveAuth → [Pkt.MAP, …, {ok, who, node}] · POST /service-tokens/revoke → leader.control.revoke(account) → [Pkt.AUTH, {state: 'revoked'}]</code>
+                            <p>Each tab gets a sandbox: two <code>createServiceLeader</code> instances mounted on this stand's own Socket.IO server the way the shipped leader host mounts them — <code>'app'</code> ungated, <code>'scale'</code> gated. The board declares no <code>access.login</code>, so its ungated identity is <code>{renew}</code>: since 3.0.1 nothing on that port mints from a name, and the host reads only role, sandbox and service from the handshake. A board token exists only because the stand's own login compared the password in constant time and then called <code>leader.identity.login(account)</code>.</p>
+                            <p>The desk declares <code>access.login</code>: the leader itself checks credentials through <code>identity.login({account, password})</code>, and its <code>resolve</code> names the account or refuses. Tokens carry no roles: <code>resolveAuth</code> verifies the signature and the deny list, then the facade is built from the roles in state — <code>clear</code> is <code>null</code> in a member's facade (RPC-AUTH rule 3) and the corridor refuses it again at execution. Each leader signs with its own per-run secret, so a desk token verifies nowhere else.</p>
+                            <p>Revoke is the operator's: <code>leader.control.revoke</code> writes the deny list and cuts every live session through the authority's session registry (<code>Pkt.AUTH</code> revoked, the facade falls back to <code>{}</code>). Renewal then refuses the account; only an explicit server-side login starts a new session, and it lifts the revocation — which the anonymous port never can. Tokens live 15 minutes, the leader's codec default.</p>
                         </details>
                     </div>
                 </section>
