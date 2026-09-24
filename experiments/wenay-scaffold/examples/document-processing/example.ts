@@ -1,5 +1,6 @@
 import {startDocumentHost} from './host'
 import {connectDocuments} from './client'
+import {runCheck} from '../../resources/run-check'
 
 async function main() {
     const host = await startDocumentHost()
@@ -23,7 +24,4 @@ async function main() {
         await host.close()
     }
 }
-main().catch(function failed(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runCheck(main)

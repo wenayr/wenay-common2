@@ -9,6 +9,7 @@ import {createServiceClient} from 'wenay-common2/service/client'
 import {describeService, type ServiceResourceContext} from 'wenay-common2/service'
 import {createMemoryReplayStorage} from 'wenay-common2/replay'
 import type {StorePatch} from 'wenay-common2/observe'
+import {runCheck} from './run-check'
 
 // Real HTTP/WS forwarding with a replaceable upstream; no container or paid service.
 async function gateway() {
@@ -140,4 +141,4 @@ async function main() {
     }
     console.log('PASS H3: published origins, three real gateways, placement/drain/restart, Store/receipts/resources, URL validation and CORS')
 }
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

@@ -14,6 +14,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const check = process.argv.includes('--check')
 const source = 'experiments/wenay-scaffold'
 const TEMPLATE_FILES = ['leader.ts', 'node.ts', 'config.ts', 'input-schema.ts', 'access.ts', 'rest.ts', 'panel.ts', 'effects.ts', 'payments.ts', 'client.ts']
+// the stall/hang guard every check entrypoint ends through
+const RUN_CHECK = {from: '../../resources/run-check.ts', to: 'run-check.ts'}
 
 /** The examples table: one copyable project per entry. */
 export const EXAMPLES = {
@@ -21,7 +23,7 @@ export const EXAMPLES = {
         template: false,
         files: ['storage.ts', 'storage-check.ts', 'provider.ts', 'service.ts', 'host.ts', 'client.ts', 'page.ts', 'run.ts', 'example.ts', 'check.ts', 'graceful-close-check.ts',
             {from: '../../resources/http-host.ts', to: 'http-host.ts'},
-            {from: '../../resources/http-host-check.ts', to: 'http-host-check.ts'}],
+            {from: '../../resources/http-host-check.ts', to: 'http-host-check.ts'}, RUN_CHECK],
         dependencies: ['express', 'socket.io', 'socket.io-client'],
         scripts: {start: 'tsx run.ts', example: 'tsx example.ts', check: 'tsx http-host-check.ts && tsx storage-check.ts && tsx graceful-close-check.ts && tsx check.ts && tsx example.ts', typecheck: 'tsc --noEmit'},
     },
@@ -29,24 +31,24 @@ export const EXAMPLES = {
         template: false,
         files: ['provider.ts', 'service.ts', 'host.ts', 'client.ts', 'page.ts', 'run.ts', 'example.ts', 'check.ts', 'host-lifecycle-check.ts', 'concurrent-check.ts', 'persistence.ts', 'persistence-check.ts',
             {from: '../../resources/http-host.ts', to: 'http-host.ts'},
-            {from: '../../resources/http-host-check.ts', to: 'http-host-check.ts'}],
+            {from: '../../resources/http-host-check.ts', to: 'http-host-check.ts'}, RUN_CHECK],
         dependencies: ['express', 'socket.io', 'socket.io-client'],
         scripts: {start: 'tsx run.ts', example: 'tsx example.ts', check: 'tsx http-host-check.ts && tsx host-lifecycle-check.ts && tsx concurrent-check.ts && tsx check.ts && tsx example.ts && tsx persistence-check.ts', 'example:persistence': 'tsx persistence-check.ts', typecheck: 'tsc --noEmit'},
     },
     'small-jobs': {
         files: ['service.ts', 'leader-small-jobs.ts', 'node-small-jobs.ts', 'run.mjs', 'example.ts', 'check.ts', 'stand-check.ts',
-            {from: '../pizzeria/identity.ts', to: 'identity.ts'}],
+            {from: '../pizzeria/identity.ts', to: 'identity.ts'}, RUN_CHECK],
         scripts: {start: 'node run.mjs', example: 'tsx example.ts', check: 'tsx stand-check.ts && tsx check.ts && tsx example.ts', typecheck: 'tsc --noEmit'},
     },
     hosting: {
         template: false,
-        files: ['service.ts', 'worker.ts', 'process-resource.ts', 'example.ts', 'check.ts', 'run.ts', 'session-resources.ts', 'public-address.ts', 'agent-orchestration.ts'],
+        files: ['service.ts', 'worker.ts', 'process-resource.ts', 'example.ts', 'check.ts', 'run.ts', 'session-resources.ts', 'public-address.ts', 'agent-orchestration.ts', RUN_CHECK],
         dependencies: ['express', 'socket.io', 'socket.io-client'],
         scripts: {start: 'tsx run.ts', example: 'tsx example.ts', check: 'tsx check.ts && tsx session-resources.ts && tsx public-address.ts && tsx agent-orchestration.ts', 'example:resources': 'tsx session-resources.ts', 'example:agent': 'tsx agent-orchestration.ts', 'repro:public-address': 'tsx public-address.ts', typecheck: 'tsc --noEmit'},
     },
     'smart-home': {
         template: false,
-        files: ['service.ts', 'example.ts', 'check.ts', 'lifecycle-check.ts', 'client.ts', 'host.ts', 'stand.ts', 'stand-check.ts', 'process-check.ts'],
+        files: ['service.ts', 'example.ts', 'check.ts', 'lifecycle-check.ts', 'client.ts', 'host.ts', 'stand.ts', 'stand-check.ts', 'process-check.ts', RUN_CHECK],
         dependencies: ['socket.io', 'socket.io-client'],
         scripts: {start: 'tsx example.ts', check: 'tsx example.ts && tsx check.ts && tsx lifecycle-check.ts && tsx stand-check.ts && tsx process-check.ts',
             'check:local': 'tsx check.ts', 'check:lifecycle': 'tsx lifecycle-check.ts', 'check:process': 'tsx process-check.ts', typecheck: 'tsc --noEmit'},
@@ -54,16 +56,16 @@ export const EXAMPLES = {
     rental: {
         files: ['service.ts', 'board-rest.ts', 'leader-rental.ts', 'node-rental.ts', 'rental-client.ts', 'example.ts', 'durable-check.ts',
             'input-schema-check.ts', 'migration-check.ts',
-            {from: '../../resources/http-host.ts', to: 'http-host.ts'}],
+            {from: '../../resources/http-host.ts', to: 'http-host.ts'}, RUN_CHECK],
         scripts: {start: 'node run.mjs', example: 'tsx example.ts', benchmark: 'tsx benchmark.ts', 'probe:entities': 'tsx dynamic-api-probe.ts', 'probe:http': 'tsx entity-http-probe.ts', check: 'tsx input-schema-check.ts && tsx migration-check.ts && tsx entity-probe-check.ts && tsx durable-check.ts && tsx stand-check.ts && tsx check.ts', typecheck: 'tsc --noEmit'},
     },
     pizzeria: {
-        files: ['service.ts', 'identity.ts', 'leader-pizzeria.ts', 'node-pizzeria.ts', 'account-id-check.ts', 'network-check.ts'],
+        files: ['service.ts', 'identity.ts', 'leader-pizzeria.ts', 'node-pizzeria.ts', 'account-id-check.ts', 'network-check.ts', RUN_CHECK],
         scripts: {start: 'node run.mjs', check: 'tsx account-id-check.ts && tsx check.ts && npm run test:network', 'test:network': 'tsx network-check.ts', typecheck: 'tsc --noEmit'},
     },
     apartments: {
         // the in-repo oracle IS the copy's check: it only uses package-mappable imports
-        files: ['service.ts', 'identity.ts', 'lock-policy.ts', 'lock-policy-check.ts', 'device-lock.ts', 'device-lock-check.ts', 'leader-apartments.ts', 'node-apartments.ts', 'run.mjs', 'stand-check.ts', 'account-id-check.ts', {from: 'self-check.ts', to: 'check.ts'}],
+        files: ['service.ts', 'identity.ts', 'lock-policy.ts', 'lock-policy-check.ts', 'device-lock.ts', 'device-lock-check.ts', 'leader-apartments.ts', 'node-apartments.ts', 'run.mjs', 'stand-check.ts', 'account-id-check.ts', {from: 'self-check.ts', to: 'check.ts'}, RUN_CHECK],
         scripts: {start: 'node run.mjs', device: 'tsx device-lock.ts', check: 'tsx stand-check.ts && tsx lock-policy-check.ts && tsx device-lock-check.ts && tsx account-id-check.ts && tsx check.ts', typecheck: 'tsc --noEmit'},
     },
 }

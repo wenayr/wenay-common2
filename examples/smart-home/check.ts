@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict'
 import {createStoreFollower} from 'wenay-common2/observe'
 import {createHomeService, type tReading} from './service'
+import {runCheck} from './run-check'
 
 async function until(check: () => boolean) {
     const deadline = Date.now() + 3000
@@ -57,7 +58,4 @@ async function main() {
     }
 }
 
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runCheck(main)

@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os'
 import path from 'node:path'
 import {createTokenCodec} from '../../../../src/server/auth-token'
 import type {RentalBooking} from './service'
+import {runCheck} from '../../resources/run-check'
 
 async function check() {
     const temp = await realpath(tmpdir())
@@ -113,7 +114,4 @@ async function check() {
     }
 }
 
-void check().catch(function failed(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runCheck(check)

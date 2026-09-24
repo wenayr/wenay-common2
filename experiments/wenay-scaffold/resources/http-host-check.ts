@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {get} from 'node:http'
 import {io} from 'socket.io-client'
 import {createHostResource, type HostResource} from './http-host'
+import {runCheck} from './run-check'
 
 async function within<T>(pending: Promise<T>, label: string) {
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -100,7 +101,4 @@ async function check() {
     }
 }
 
-void check().catch(function failed(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runCheck(check)

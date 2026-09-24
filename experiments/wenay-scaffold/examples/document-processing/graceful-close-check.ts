@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {spawnSync} from 'node:child_process'
 import {startDocumentHost} from './host'
 import {connectDocuments} from './client'
+import {runCheck} from '../../resources/run-check'
 
 async function scenario() {
     let cancelled = () => false
@@ -49,10 +50,7 @@ async function scenario() {
 }
 
 if (process.argv.includes('--child')) {
-    scenario().catch(function failed(error) {
-        console.error(error)
-        process.exitCode = 1
-    })
+    runCheck(scenario)
 } else {
     const child = spawnSync(process.execPath, ['--import', 'tsx', __filename, '--child'], {
         encoding: 'utf8', timeout: 15000, windowsHide: true,

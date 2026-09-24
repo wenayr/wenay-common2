@@ -1,5 +1,6 @@
 import {createServiceClient} from '../../template/client'
 import {serviceDefinition} from './service'
+import {runCheck} from '../../resources/run-check'
 
 async function main() {
     const {startStand} = await import('./run.mjs')
@@ -15,4 +16,4 @@ async function main() {
     } finally { customer.close(); worker.close(); await stand.close() }
 }
 
-main().catch(function fatal(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

@@ -4,6 +4,7 @@ import {createMemoryReplayStorage} from '../../../../src/Common/events/replay-hi
 import {type StorePatch} from '../../../../src/Common/Observe/store'
 import {storeReplayAt} from '../../../../src/Common/Observe/store-replay'
 import {createHomeService, type HomeState} from './service'
+import {runCheck} from '../../resources/run-check'
 
 function pause(ms: number) {
     return new Promise<void>(function wait(resolve) { setTimeout(resolve, ms) })
@@ -101,10 +102,7 @@ async function main() {
     }
 }
 
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runCheck(main)
 
 
 

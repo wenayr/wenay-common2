@@ -8,6 +8,7 @@ import {createServiceClient} from '../../../../src/service/client'
 import {describeService, type ServiceResourceContext} from '../../../../src/service'
 import {createMemoryReplayStorage} from '../../../../src/Common/events/replay-history'
 import type {StorePatch} from '../../../../src/Common/Observe/store'
+import {runCheck} from '../../resources/run-check'
 
 // Real HTTP/WS forwarding with a replaceable upstream; no container or paid service.
 async function gateway() {
@@ -139,4 +140,4 @@ async function main() {
     }
     console.log('PASS H3: published origins, three real gateways, placement/drain/restart, Store/receipts/resources, URL validation and CORS')
 }
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

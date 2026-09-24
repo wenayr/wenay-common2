@@ -1,5 +1,6 @@
 import {createHomeReader, createHomeDevice} from './client'
 import {startHomeStand} from './stand'
+import {runCheck} from '../../resources/run-check'
 
 async function main() {
     const stand = await startHomeStand()
@@ -31,7 +32,4 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runCheck(main)

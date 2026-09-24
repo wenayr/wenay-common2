@@ -1,5 +1,6 @@
 import {randomUUID} from 'node:crypto'
 import {createRentalClient} from './rental-client'
+import {runCheck} from '../../resources/run-check'
 
 // The application only sees state and domain commands, on either endpoint.
 async function main() {
@@ -33,7 +34,4 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runCheck(main)

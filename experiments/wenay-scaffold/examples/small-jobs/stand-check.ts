@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import {runCheck} from '../../resources/run-check'
 
 async function main() {
     const {startStand} = await import('./run.mjs')
@@ -27,4 +28,4 @@ async function main() {
     } finally { await stand.close() }
 }
 
-main().catch(function fatal(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

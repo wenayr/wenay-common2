@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {spawnSync} from 'node:child_process'
 import {dirname, join} from 'node:path'
 import {createTokenCodec} from 'wenay-common2/server/auth'
+import {runCheck} from './run-check'
 
 async function main() {
     const imported = spawnSync(process.execPath, ['--import', 'tsx', '-e', 'require(process.argv[1])', join(__dirname, 'leader-rental.ts')], {
@@ -50,4 +51,4 @@ async function main() {
     } finally { await stand.close() }
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

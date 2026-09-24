@@ -4,6 +4,7 @@ import {setImmediate as nextTurn} from 'node:timers/promises'
 import {createMemoryReplayStorage} from '../../../../src/Common/events/replay-history'
 import type {StorePatch} from '../../../../src/Common/Observe/store'
 import {createServiceLeader, type tServiceDefinition} from '../../template/leader'
+import {runCheck} from '../../resources/run-check'
 
 type State = {record: {value: number}}
 const definition = {
@@ -84,4 +85,4 @@ async function main() {
     console.log('PASS migration: failed callback/result preserves archive and releases timers; detached retry migrates once')
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

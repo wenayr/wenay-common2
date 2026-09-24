@@ -5,6 +5,7 @@ import {createMemoryReplayStorage} from 'wenay-common2/replay'
 import {type StorePatch} from 'wenay-common2/observe'
 import {storeReplayAt} from 'wenay-common2/observe'
 import {createHomeService, type HomeState} from './service'
+import {runCheck} from './run-check'
 
 function pause(ms: number) {
     return new Promise<void>(function wait(resolve) { setTimeout(resolve, ms) })
@@ -102,10 +103,7 @@ async function main() {
     }
 }
 
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runCheck(main)
 
 
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import {createServiceClient} from '../../template/client'
 import {serviceDefinition, DEMO_LOGINS} from './service'
+import {runCheck} from '../../resources/run-check'
 
 async function until(label: string, predicate: () => boolean) {
     const deadline = Date.now() + 10000
@@ -105,4 +106,4 @@ async function main() {
     }
 }
 
-main().catch(function fatal(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

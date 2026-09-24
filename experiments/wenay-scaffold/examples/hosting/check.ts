@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {createHosting} from './service'
+import {runCheck} from '../../resources/run-check'
 
 async function until(label: string, predicate: () => boolean) {
     const deadline = Date.now() + 6000
@@ -125,4 +126,4 @@ async function main() {
     } finally { await interrupted.close() }
 }
 
-main().catch(function fatal(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

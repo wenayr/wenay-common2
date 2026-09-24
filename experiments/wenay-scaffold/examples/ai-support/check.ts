@@ -5,6 +5,7 @@ import {startSupportHost} from './host'
 import {connectSupport} from './client'
 import type {SupportFacade} from './service'
 import {createDemoProvider} from './provider'
+import {runCheck} from '../../resources/run-check'
 
 async function until(label: string, predicate: () => boolean) {
     const deadline = Date.now() + 5000
@@ -78,7 +79,4 @@ async function main() {
         await host.close()
     }
 }
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runCheck(main)

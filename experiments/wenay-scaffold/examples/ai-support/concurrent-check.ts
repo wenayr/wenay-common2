@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import type {Ai} from '../../../../src'
 import {startSupportHost} from './host'
 import {connectSupport} from './client'
+import {runCheck} from '../../resources/run-check'
 
 async function until(label: string, predicate: () => boolean) {
     const deadline = Date.now() + 5000
@@ -88,4 +89,4 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

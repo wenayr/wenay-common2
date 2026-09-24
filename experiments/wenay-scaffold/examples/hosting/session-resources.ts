@@ -4,6 +4,7 @@ import {createPeerHost} from '../../../../src/Common/peer/peer-index'
 import {describeService, type ServiceResourceContext, type tServiceDefinition} from '../../../../src/service'
 import {createServiceClient, type ServiceResourceController} from '../../../../src/service/client'
 import {createServiceLeaderHost} from '../../../../src/service/host'
+import {runCheck} from '../../resources/run-check'
 
 // Server composition. A browser imports describeService's JSON and definition types only.
 async function main() {
@@ -60,4 +61,4 @@ async function ready<F extends object>(resource: ServiceResourceController<F>) {
         })
     } finally { stop(); clearTimeout(timer) }
 }
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

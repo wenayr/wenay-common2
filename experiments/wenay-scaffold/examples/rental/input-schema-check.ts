@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import {buildInputValidate, inputJsonSchema, schemaCommand} from '../../template/input-schema'
 import {createServiceLeader, type ServiceCommandCtx, type tServiceDefinition} from '../../template/leader'
+import {runCheck} from '../../resources/run-check'
 
 const schema = {
     day: 'date-string', contact: {object: {email: 'string'}},
@@ -97,4 +98,4 @@ async function main() {
     console.log('PASS input schema: dates, recursive object arrays, optional fields, OpenAPI items, indexed errors, rejection before effects and same-ID retry')
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

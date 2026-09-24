@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict'
 import {createServiceLeader} from './leader'
 import {serviceDefinition} from './service'
+import {runCheck} from './run-check'
 
 async function checkHostIsolation() {
     const initial = structuredClone(serviceDefinition.initial)
@@ -95,8 +96,5 @@ async function main() {
     } finally { leader.control.close() }
 }
 
-main().catch(function fatal(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runCheck(main)
 

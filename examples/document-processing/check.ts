@@ -5,6 +5,7 @@ import {createRpcClient} from 'wenay-common2/rpc'
 import {startDocumentHost} from './host'
 import {connectDocuments} from './client'
 import type {DocumentFacade} from './service'
+import {runCheck} from './run-check'
 
 async function until(label: string, predicate: () => boolean) {
     const deadline = Date.now() + 5000
@@ -155,7 +156,4 @@ async function main() {
     await checkRunnerFailure()
     await checkHostLifecycle()
 }
-main().catch(function failed(error) {
-    console.error(error)
-    process.exitCode = 1
-})
+runCheck(main)

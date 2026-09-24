@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {startHomeStand} from './stand'
+import {runCheck} from '../../resources/run-check'
 
 async function main() {
     const stand = await startHomeStand()
@@ -24,4 +25,4 @@ async function main() {
     } finally { await stand.close() }
 }
 
-main().catch(function fatal(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

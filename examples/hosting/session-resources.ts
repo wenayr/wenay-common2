@@ -5,6 +5,7 @@ import {createPeerHost} from 'wenay-common2/peer'
 import {describeService, type ServiceResourceContext, type tServiceDefinition} from 'wenay-common2/service'
 import {createServiceClient, type ServiceResourceController} from 'wenay-common2/service/client'
 import {createServiceLeaderHost} from 'wenay-common2/service/host'
+import {runCheck} from './run-check'
 
 // Server composition. A browser imports describeService's JSON and definition types only.
 async function main() {
@@ -61,4 +62,4 @@ async function ready<F extends object>(resource: ServiceResourceController<F>) {
         })
     } finally { stop(); clearTimeout(timer) }
 }
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)

@@ -6,6 +6,7 @@ import path from 'node:path'
 import {setTimeout as delay} from 'node:timers/promises'
 import {createServiceClient} from '../../template/client'
 import {DEMO_LOGINS, serviceDefinition} from './service'
+import {runCheck} from '../../resources/run-check'
 
 async function until(label: string, check: () => boolean, timeoutMs = 20_000) {
     const deadline = Date.now() + timeoutMs
@@ -127,4 +128,4 @@ async function main() {
     }
 }
 
-void main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runCheck(main)
