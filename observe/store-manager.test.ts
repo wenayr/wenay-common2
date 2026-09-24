@@ -6,6 +6,8 @@ import {
     exposeStoreReplay,
     flushReactive,
     managedStore,
+    type ManagedOfflineResource,
+    type ManagedReplayResource,
 } from '../src/Common/Observe'
 import {isNoStrict, noStrict} from '../src/Common/rcp/rpc-dynamic'
 import {runOracle} from '../oracle/run-oracle'
@@ -87,6 +89,9 @@ async function runChecks() {
         const exposed = exposeStoreReplay(backend, {history: 100})
         const storage = createMemoryOfflineStorage()
         const manager = createStoreManager({
+            // library type: createStoreManager accepts ManagedStoreResource<any> only, and a replay/offline
+            // resource typed with its own state fails that (syncOpts callbacks take Store<T>, and Store<any>
+            // is not assignable to Store<Rows>); only an untyped `initial: {}` resource compiles today
             rows: managedStore.offline<Rows>({
                 remote: exposed.api.replay,
                 initial: {rows: {}},
@@ -94,7 +99,7 @@ async function runChecks() {
                 debounceMs: 0,
                 storeOpts: {drain: 'micro'},
                 tags: ['route:rows'],
-            }),
+            }) as ManagedOfflineResource<any>,
         })
 
         const store = await manager.start('rows')
@@ -128,11 +133,12 @@ async function runChecks() {
             },
         }))
         function accountResource(account: string) {
+            // library type: the same ManagedStoreResource<any> gap as the offline resource above
             return managedStore.replay<Market>({
                 remote: remotes[account],
                 initial: {data: {}, meta: {}},
                 storeOpts: {drain: 'micro'},
-            })
+            }) as ManagedReplayResource<any>
         }
         const manager = createStoreManager({
             alice: accountResource('alice'),

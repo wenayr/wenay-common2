@@ -63,6 +63,14 @@ function rolesOf(state: State, account: string) {
     return state.accounts[account]?.roles ?? []
 }
 
+// library type: the strict facade of an untyped client (ClientAPIStrict<any>) maps every member to a
+// function | object union and cannot be navigated, while func of the same client is any; the probes
+// below only read members that the audience seam may prune
+type SessionProbe = {svc: {replica?: unknown, node?: unknown, views?: {menu?: unknown}, commands?: {cook?: unknown}}}
+function strictProbe(client: {strict: unknown}) {
+    return client.strict as SessionProbe
+}
+
 /** The read policy of this oracle, shared by the authority and the node (one function, two corners). */
 function shapeFor(store: () => import('../src/Common/Observe/store').Store<State>, released: {count: number}) {
     // public projection: the menu only — built once per process, shared by every anonymous reader
@@ -163,7 +171,8 @@ async function main() {
         }
         return {upstream, fail}
     }
-    let nodeShape: ReturnType<typeof shapeFor> | null = null
+    // assigned inside the audience callbacks: the initializer must not narrow it to null for close below
+    let nodeShape = null as ReturnType<typeof shapeFor> | null
     const audience: StoreNodeAudience<State, Cmds> = {
         reader(defaults) {
             nodeShape ??= shapeFor(() => defaults.store, released)
@@ -207,7 +216,7 @@ async function main() {
 
     // anonymous: the menu projection, and NO raw line
     const anon = await openSession('n1')
-    ok(anon.read.strict.svc.replica == undefined && anon.read.strict.svc.node == undefined && anon.read.strict.svc.views?.menu != undefined, 'node: the ungated key serves the projection ONLY — no raw replica line, no node id (strict schema)')
+    ok(strictProbe(anon.read).svc.replica == undefined && strictProbe(anon.read).svc.node == undefined && strictProbe(anon.read).svc.views?.menu != undefined, 'node: the ungated key serves the projection ONLY — no raw replica line, no node id (strict schema)')
     const menuFollower = createStoreFollower<{menu: State['menu']}>({remote: anon.read.func.svc.views.menu})
     await menuFollower.ready
     ok(JSON.stringify(menuFollower.store.snapshot()) == JSON.stringify({menu: initial.menu}) && !JSON.stringify(menuFollower.store.snapshot()).includes('hash'),
@@ -219,7 +228,7 @@ async function main() {
     const alice = await openSession('n1', tokenOf('alice'))
     const roles = await alice.write!.func.svc.roles()
     ok(JSON.stringify(roles) == '["customer"]', 'node: the principal facade is shaped from the local mirror (roles from state)')
-    ok(alice.write!.strict.svc.commands?.cook == undefined, 'node: strict short-circuits the pruned cook member without a packet')
+    ok(strictProbe(alice.write!).svc.commands?.cook == undefined, 'node: strict short-circuits the pruned cook member without a packet')
     const forged = await alice.write!.func.svc.commands.cook('r9', {orderId: 'o-r1'}).then(() => 'executed', (error: any) => String(error?.message ?? error))
     ok(forged != 'executed', `node: a forged path call to the pruned member is refused (${forged})`)
     const placed = await alice.write!.func.svc.commands.place('r2', {phone: '+2'})
@@ -256,8 +265,8 @@ async function main() {
     const plainNode = bootNode('n2', false)
     await plainNode.start()
     const plain = await openSession('n2', tokenOf('alice'))
-    ok(plain.read.strict.svc.replica != undefined && await plain.read.func.svc.node() == 'n2', 'control: without shaping the read key serves the raw replica line')
-    ok(typeof plain.write!.strict.svc.commands?.cook == 'function', 'control: without shaping a customer sees the cook member — visibility is the seam\'s job')
+    ok(strictProbe(plain.read).svc.replica != undefined && await plain.read.func.svc.node() == 'n2', 'control: without shaping the read key serves the raw replica line')
+    ok(typeof strictProbe(plain.write!).svc.commands?.cook == 'function', 'control: without shaping a customer sees the cook member — visibility is the seam\'s job')
 
     plain.kill()
     bob.kill()
