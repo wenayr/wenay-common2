@@ -5,7 +5,8 @@
 import {
     applyStorePatch, applyStorePatches, createStore, exposeStore, StorePatch,
 } from '../src/Common/Observe/store'
-import {syncStoreReplay} from '../src/Common/Observe/store-replay'
+import {syncStoreReplay, type StoreReplayRemote} from '../src/Common/Observe/store-replay'
+import {encodeStoreReplayBatchV2} from '../src/Common/Observe/store-replay-codec'
 import {runOracle} from '../oracle/run-oracle'
 
 let fails = 0
@@ -86,9 +87,10 @@ async function runChecks() {
     console.log('\n[store-patch-safety] failed materialization keeps replay seq honest')
     const mirror = createStore<Record<string, any>>({})
     let failure: unknown = null
-    const remote = {
+    // A well-formed V2 envelope: the failure must come from applying the patch, not from decoding.
+    const remote: StoreReplayRemote<Record<string, any>> = {
         line: {on() { return function offLine() {} }},
-        since() { return [{seq: 1, ts: 1, event: [invalid] as [StorePatch]}] },
+        since() { return [encodeStoreReplayBatchV2({seq: 1, ts: 1, event: [[invalid]]})] },
         keyframe() { return null },
     }
     const sync = syncStoreReplay(mirror, remote, {
@@ -99,7 +101,8 @@ async function runChecks() {
     })
     await sync.ready
 
-    ok(failure instanceof Error, 'materialization failure is reported through replay onError')
+    ok(failure instanceof Error && failure.message.includes('consumer callback'),
+        'materialization failure is reported through replay onError')
     ok(sync.seq() == 0 && json(mirror.snapshot()) == '{}',
         'failed callback does not advance seq or partially mutate the mirror')
 
