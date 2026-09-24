@@ -135,13 +135,6 @@ function statusForError(error: unknown) {
     return 500
 }
 
-/** The RPC error codec minus `stack` at every cause depth: HTTP callers get facts, never server frames. */
-function publicError(error: unknown): unknown {
-    if (!(error instanceof Error)) return errToObj(error)
-    const {stack: _stack, cause, ...facts} = errToObj(error)
-    return cause === undefined ? facts : {...facts, cause: publicError((error as {cause?: unknown}).cause)}
-}
-
 function createRouteHandler(route: tRoute, limits: Required<RpcLimits>, onError?: HttpFacadeServerOptions<object>['onError']) {
     return async function handleHttpFacadeRequest(req: Request, res: Response) {
         try {
@@ -152,7 +145,8 @@ function createRouteHandler(route: tRoute, limits: Required<RpcLimits>, onError?
             const status = statusForError(error)
             // a failing operator hook must not cost the caller its reply
             try { onError?.(error, {route: route.route, status}) } catch {}
-            res.status(status).json({ok: false, error: publicError(error)})
+            // errToObj carries no stack at any cause depth: HTTP callers get facts, never server frames
+            res.status(status).json({ok: false, error: errToObj(error)})
         }
     }
 }

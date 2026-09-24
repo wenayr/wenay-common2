@@ -317,9 +317,12 @@ export function unpackResult(value: any, lim?: Required<RpcLimits>, rows?: tRowC
 
 // code/data/cause — additive wire fields: old clients simply ignore them,
 // new ones restore MyError (see reviveErr in rpc-client).
-export const errToObj = (e: any): any => {
+// `stack` only on request (a server in debug mode): frames carry file paths and internals,
+// and the peer is not trusted with them.
+export const errToObj = (e: any, withStack = false): any => {
     if (!(e instanceof Error)) return e;
-    const o: any = { name: e.name, message: e.message, stack: e.stack };
+    const o: any = { name: e.name, message: e.message };
+    if (withStack) o.stack = e.stack;
     const { code, data, cause } = e as any;
     if (code !== undefined) o.code = code;
     // pack data with same rich-walk as normal result: else BigInt/Date/Map/Set
@@ -327,7 +330,7 @@ export const errToObj = (e: any): any => {
     // escapes RPC try/catch → connection killed. Symmetrically unpacked in reviveErr.
     // For plain-JSON data packResult — identity (no markers), old peers byte-for-byte.
     if (data !== undefined) o.data = packResult(data);
-    if (cause !== undefined) o.cause = errToObj(cause);
+    if (cause !== undefined) o.cause = errToObj(cause, withStack);
     return o;
 };
 

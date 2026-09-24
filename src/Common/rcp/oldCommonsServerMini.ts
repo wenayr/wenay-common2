@@ -43,7 +43,8 @@ export function promiseServer<T extends Obj>(
 ) {
     const serializeError = (err: any) => {
         if (err instanceof Error) {
-            return { name: err.name, message: err.message, stack: err.stack };
+            // no stack: frames carry server paths and internals, the peer is not trusted with them
+            return { name: err.name, message: err.message };
         }
         return err;
     };

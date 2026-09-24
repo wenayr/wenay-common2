@@ -589,13 +589,13 @@ function createServer<T extends object>(
 
     function sendError(channel: tSendChannel, reqId: number, error: unknown) {
         try {
-            sendChannel(channel, [Pkt.RESP, reqId, null, errToObj(error)])
+            sendChannel(channel, [Pkt.RESP, reqId, null, errToObj(error, debug)])
         } catch (serializationError) {
             sendChannel(channel, [
                 Pkt.RESP,
                 reqId,
                 null,
-                errToObj(fallbackSerializationError(serializationError)),
+                errToObj(fallbackSerializationError(serializationError), debug),
             ])
         }
     }
