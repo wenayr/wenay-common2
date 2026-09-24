@@ -4,6 +4,7 @@
 import {createInProcSocketPair} from '../../src/Common/rcp/rpc-inproc'
 import {createRpcServer} from '../../src/Common/rcp/rpc-server'
 import {createRpcClient} from '../../src/Common/rcp/rpc-client'
+import {runOracle} from '../run-oracle'
 
 let failures = 0
 function check(name: string, ok: boolean, detail = '') {
@@ -41,4 +42,4 @@ async function main() {
     process.exitCode = failures == 0 ? 0 : 1
 }
 
-main().catch(function crashed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

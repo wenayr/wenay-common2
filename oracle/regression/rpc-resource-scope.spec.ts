@@ -6,6 +6,7 @@ import {bindRpcScopes, createRpcScope} from '../../src/Common/rcp/rpc-scope'
 import {listen, listenStore} from '../../src/Common/events/Listen'
 import {flowCallback} from '../../src/Common/rcp/rpc-flow'
 import {noStrict} from '../../src/Common/rcp/rpc-dynamic'
+import {runOracle} from '../run-oracle'
 
 function barrier() {
     let release!: () => void
@@ -125,4 +126,4 @@ async function main() {
     flowClient.dispose(); flowPair.kill()
     console.log('PASS RPC resource scopes: methods, ordinary/dynamic streams, independent shared sources, admission and result races')
 }
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

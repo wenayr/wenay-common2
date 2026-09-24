@@ -5,6 +5,7 @@ import {createRpcServerAutoDetect} from "../../src/Common/rcp/createRpcServerAut
 import {listenSocket} from "../../src/Common/rcp/listen-socket"
 import {RPC_STOP, type SocketTmpl} from "../../src/Common/rcp/rpc-protocol"
 import type {DeepSocketListen} from "../../src/Common/rcp/listen-deep"
+import {runOracle} from "../run-oracle"
 
 function createLoopback(): [SocketTmpl, SocketTmpl] {
     const A: Record<string, ((d: any) => void)[]> = {}
@@ -144,7 +145,4 @@ async function main() {
     }
 }
 
-main().catch(e => {
-    console.error(e?.stack ?? e)
-    process.exitCode = 1
-})
+runOracle(main)

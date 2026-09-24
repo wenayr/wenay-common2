@@ -6,6 +6,7 @@
 // GC proof: the facade behind a +1h grant stays reachable while the deadline is pending, and
 // becomes collectible after disconnect. Runs under --expose-gc (self-respawns if needed).
 import {spawnSync} from 'node:child_process'
+import {runOracle} from '../run-oracle'
 
 const delay = (ms: number) => new Promise(r => setTimeout(r, ms))
 
@@ -67,4 +68,4 @@ async function main() {
     console.log(failures == 0 ? 'ALL PASS' : `${failures} FAILED`)
     process.exit(failures == 0 ? 0 : 1)
 }
-main()
+runOracle(main)

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {createResourceScope, ResourceCloseTimeoutError} from '../../src'
+import {runOracle} from '../run-oracle'
 
 function gate<T>() {
     let resolve!: (value: T) => void
@@ -96,4 +97,4 @@ async function main() {
     console.log('PASS resource scope: ordered/parallel disposal, startup cause, late acquire, shared close, truthful deadline')
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

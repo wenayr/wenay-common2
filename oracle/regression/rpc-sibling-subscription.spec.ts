@@ -6,6 +6,7 @@ import {createInProcSocketPair} from '../../src/Common/rcp/rpc-inproc'
 import {createRpcServerAuto} from '../../src/Common/rcp/rpc-server-auto'
 import {createRpcClient} from '../../src/Common/rcp/rpc-client'
 import {listen as createListenPair} from '../../src/Common/events/Listen'
+import {runOracle} from '../run-oracle'
 
 const delay = (ms: number) => new Promise(r => setTimeout(r, ms))
 
@@ -49,4 +50,4 @@ async function main() {
     console.log(failures == 0 ? 'ALL PASS' : `${failures} FAILED`)
     process.exit(failures == 0 ? 0 : 1)
 }
-main()
+runOracle(main)
