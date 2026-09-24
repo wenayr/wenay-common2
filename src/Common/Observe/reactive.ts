@@ -58,18 +58,6 @@ function scheduler(drain: Drain): (f: Fn) => void {
     return deferImmediate
 }
 
-type Node = {
-    target: any
-    parent: Node | null
-    path: PropertyKey[]
-    active: boolean
-    level: number
-    subs: Set<Fn>
-    pathSubs: Set<PathUpdateFn>
-    kids: Map<PropertyKey, Node>
-    proxy: any
-    eng: Eng
-}
 type Eng = {
     live: number                 // total subscribers in the tree (cheap-cold gate)
     pathLive: number
@@ -136,11 +124,11 @@ export function reactive<T extends object>(root: T, opts: Opts = {}) {
                 eng.arrayPathKey = createPathKeyer()
                 let err: any
                 for (const n of batch) {
-                    for (const cb of [...n.subs]) {
+                    if (n.subs) for (const cb of [...n.subs]) {
                         try { cb() }
                         catch (e) { err ??= e }
                     }
-                    if (n.pathSubs.size) {
+                    if (n.pathSubs?.size) {
                         const paths = pathsForNode(n, dirtyPaths)
                         if (paths.length) for (const cb of [...n.pathSubs]) {
                             try {
@@ -169,124 +157,191 @@ export function reactive<T extends object>(root: T, opts: Opts = {}) {
         })
         eng.onMutation = onMutation
     }
-    const rootNode = makeNode(prepareReactiveValue(root, toRaw), null, [], 0, eng)
+    const rootNode = new Node(prepareReactiveValue(root, toRaw), null, undefined, eng)
     if (eager) prewalk(rootNode)
     return rootNode.proxy as T
 }
 
-function makeNode(target: any, parent: Node | null, path: PropertyKey[], level: number, eng: Eng): Node {
-    const node: Node = {
-        target, parent, path, active: true, level,
-        subs: new Set(), pathSubs: new Set(), kids: new Map(), proxy: null, eng,
+// The proxy target is a dummy with the right broad shape. The object dummy comes from a
+// constructor, so V8's slack tracking shrinks it to a bare 3-word object (a `{}` literal keeps
+// four spare property slots); its prototype IS Object.prototype, so the proxy's prototype,
+// inspect output and error texts stay a plain object's. The array dummy keeps its full length:
+// a captured array proxy rebound to an object still reports the length it was made with
+// (pinned in oracle/regression/reactive-surface.spec.ts, 'unsynced arr->obj').
+function ObjectDummy() {}
+ObjectDummy.prototype = Object.prototype
+function makeDummy(target: any) {
+    return Array.isArray(target) ? new Array(target.length) : new (ObjectDummy as any)()
+}
+
+// The node IS its proxy's handler: the traps live once on this prototype and read `this`, so a
+// node allocates no handler object and no closures of its own. A class because that prototype
+// is the mechanism, not a service surface. No per-node path or level: both derive from `parent`
+// and `key` when a consumer needs them (pathTo, levelOf).
+class Node {
+    target: any
+    parent: Node | null
+    /** Key under the parent; the root has none. A detached node has no parent link, so it keeps
+     *  its whole path here instead, frozen when it was detached (detachTree). */
+    key: PropertyKey | PropertyKey[] | undefined
+    active = true
+    // made on first use: most nodes never get a subscriber or a child
+    subs: Set<Fn> | null = null
+    pathSubs: Set<PathUpdateFn> | null = null
+    kids: Map<PropertyKey, Node> | null = null
+    proxy: any
+    eng: Eng
+    constructor(target: any, parent: Node | null, key: PropertyKey | undefined, eng: Eng) {
+        this.target = target
+        this.parent = parent
+        this.key = key
+        this.eng = eng
+        // Every trap reads/writes node.target (the CURRENT value), so the proxy survives wholesale replace.
+        this.proxy = new Proxy(makeDummy(target), this)
     }
-    // proxy target is a dummy with the right broad shape. Every trap reads/writes
-    // node.target (the CURRENT value), so the proxy survives wholesale replace.
-    const proxyTarget = (Array.isArray(target) ? new Array(target.length) : {}) as any
-    function syncArrayLength() {
-        if (!Array.isArray(proxyTarget) || !Array.isArray(node.target)) return
-        const descriptor = Reflect.getOwnPropertyDescriptor(node.target, 'length')!
-        Reflect.defineProperty(proxyTarget, 'length', descriptor)
+
+    // traps: `this` is the node, `dummy` the proxy's inert target
+    get(dummy: any, k: PropertyKey) {
+        if (k == NODE) return this
+        if (k == 'toJSON' && Array.isArray(dummy) && !Array.isArray(this.target) && this.target?.toJSON === undefined)
+            return () => this.target
+        const v = toRaw(this.target[k])
+        if (isReactiveObj(v) && (this.eng.depth == Infinity || levelOf(this) < this.eng.depth)) {
+            let kid = this.kids?.get(k)
+            if (!kid) { kid = new Node(v, this, k, this.eng); (this.kids ??= new Map()).set(k, kid) }
+            else if (kid.target !== v) kid.target = v
+            return kid.proxy
+        }
+        return v
     }
-    node.proxy = new Proxy(proxyTarget, {
-        get(_, k) {
-            if (k == NODE) return node
-            if (k == 'toJSON' && Array.isArray(proxyTarget) && !Array.isArray(node.target) && node.target?.toJSON === undefined)
-                return () => node.target
-            const v = toRaw(node.target[k])
-            if (isReactiveObj(v) && level < eng.depth) {
-                let kid = node.kids.get(k)
-                if (!kid) { kid = makeNode(v, node, [...node.path, k], level + 1, eng); node.kids.set(k, kid) }
-                else if (kid.target !== v) kid.target = v
-                return kid.proxy
+    set(dummy: any, k: PropertyKey, v: any) {
+        const eng = this.eng
+        v = prepareReactiveValue(v, toRaw)        // resolve nested proxies before any slot can move
+        const had = Object.prototype.hasOwnProperty.call(this.target, k)
+        const old = this.target[k]
+        if (had && Object.is(old, v)) return true
+        let accepted = true
+        if (had) {
+            accepted = Reflect.set(this.target, k, v, this.target)
+        } else {
+            // A Store key is data, even when Object/Array.prototype was polluted
+            // with a setter or a non-writable property of the same name.
+            if (!Reflect.defineProperty(this.target, k, {
+                configurable: true,
+                enumerable: true,
+                value: v,
+                writable: true,
+            })) return false
+        }
+        const next = this.target[k]
+        if (!accepted && Object.is(old, next)) return false
+        if (Array.isArray(this.target) && k == 'length') {
+            syncArrayLength(dummy, this)
+            if (next < old) detachTruncatedChildren(this)
+        }
+        const kid = this.kids?.get(k)
+        if (kid) rebind(kid, next)                  // an existing child slot got a whole new value
+        eng.onMutation?.(dirtyPathFor(this, k))
+        if (eng.live > 0) bubble(this, k, Array.isArray(old) || Array.isArray(v))
+        return accepted
+    }
+    defineProperty(dummy: any, k: PropertyKey, d: PropertyDescriptor) {
+        const eng = this.eng
+        const had = Object.prototype.hasOwnProperty.call(this.target, k)
+        const old = this.target[k]
+        const desc = 'value' in d ? {...d, value: prepareReactiveValue(d.value, toRaw)} : d
+        const ok = Reflect.defineProperty(this.target, k, desc)
+        const v = this.target[k]
+        if (!ok && Object.is(old, v)) return false
+        if (Array.isArray(this.target) && k == 'length') syncArrayLength(dummy, this)
+        else if (desc.configurable === false) {
+            const mirror = Reflect.defineProperty(dummy, k, desc)
+            if (!mirror) return false
+        }
+        if (!had || !Object.is(old, v)) {
+            if (Array.isArray(this.target) && k == 'length' && v < old) detachTruncatedChildren(this)
+            const kid = this.kids?.get(k)
+            if (kid) {
+                if (isReactiveObj(v)) rebind(kid, v)
+                else { this.kids!.delete(k); markChanged(kid); detachTree(kid) }
             }
-            return v
-        },
-        set(_, k, v) {
-            v = prepareReactiveValue(v, toRaw)        // resolve nested proxies before any slot can move
-            const had = Object.prototype.hasOwnProperty.call(node.target, k)
-            const old = node.target[k]
-            if (had && Object.is(old, v)) return true
-            let accepted = true
-            if (had) {
-                accepted = Reflect.set(node.target, k, v, node.target)
-            } else {
-                // A Store key is data, even when Object/Array.prototype was polluted
-                // with a setter or a non-writable property of the same name.
-                if (!Reflect.defineProperty(node.target, k, {
-                    configurable: true,
-                    enumerable: true,
-                    value: v,
-                    writable: true,
-                })) return false
-            }
-            const next = node.target[k]
-            if (!accepted && Object.is(old, next)) return false
-            if (Array.isArray(node.target) && k == 'length') {
-                syncArrayLength()
-                if (next < old) detachTruncatedChildren(node)
-            }
-            const kid = node.kids.get(k)
-            if (kid) rebind(kid, next)                  // an existing child slot got a whole new value
-            node.eng.onMutation?.(dirtyPathFor(node, k))
-            if (eng.live > 0) bubble(node, k, Array.isArray(old) || Array.isArray(v))
-            return accepted
-        },
-        defineProperty(_, k, d) {
-            const had = Object.prototype.hasOwnProperty.call(node.target, k)
-            const old = node.target[k]
-            const desc = 'value' in d ? {...d, value: prepareReactiveValue(d.value, toRaw)} : d
-            const ok = Reflect.defineProperty(node.target, k, desc)
-            const v = node.target[k]
-            if (!ok && Object.is(old, v)) return false
-            if (Array.isArray(node.target) && k == 'length') syncArrayLength()
-            else if (desc.configurable === false) {
-                const mirror = Reflect.defineProperty(proxyTarget, k, desc)
-                if (!mirror) return false
-            }
-            if (!had || !Object.is(old, v)) {
-                if (Array.isArray(node.target) && k == 'length' && v < old) detachTruncatedChildren(node)
-                const kid = node.kids.get(k)
-                if (kid) {
-                    if (isReactiveObj(v)) rebind(kid, v)
-                    else { node.kids.delete(k); markChanged(kid); detachTree(kid) }
-                }
-                node.eng.onMutation?.(dirtyPathFor(node, k))
-                if (eng.live > 0) bubble(node, k, Array.isArray(old) || Array.isArray(v))
-            }
-            return ok
-        },
-        deleteProperty(_, k) {
-            if (!Object.prototype.hasOwnProperty.call(node.target, k)) return true
-            const old = node.target[k]
-            if (!Reflect.deleteProperty(node.target, k)) return false
-            const kid = node.kids.get(k)
-            if (kid) { node.kids.delete(k); markChanged(kid); detachTree(kid) }
-            node.eng.onMutation?.(dirtyPathFor(node, k))
-            if (eng.live > 0) bubble(node, k, Array.isArray(old))
-            return true
-        },
-        has(_, k) { return k in node.target },
-        ownKeys() {
-            const keys = Reflect.ownKeys(node.target)
-            for (const k of Reflect.ownKeys(proxyTarget)) {
-                const d = Reflect.getOwnPropertyDescriptor(proxyTarget, k)
-                if (d?.configurable === false && !keys.includes(k)) keys.push(k)
-            }
-            return keys
-        },
-        getOwnPropertyDescriptor(_, k) {
-            if (Array.isArray(proxyTarget) && k == "length") {
-                syncArrayLength()
-                return Reflect.getOwnPropertyDescriptor(proxyTarget, k)
-            }
-            const pd = Reflect.getOwnPropertyDescriptor(proxyTarget, k)
-            if (pd && pd.configurable === false) return pd
-            const d = Reflect.getOwnPropertyDescriptor(node.target, k)
-            if (d) d.configurable = true              // proxy invariant vs the empty dummy target
-            return d
-        },
-    })
-    return node
+            eng.onMutation?.(dirtyPathFor(this, k))
+            if (eng.live > 0) bubble(this, k, Array.isArray(old) || Array.isArray(v))
+        }
+        return ok
+    }
+    deleteProperty(dummy: any, k: PropertyKey) {
+        const eng = this.eng
+        if (!Object.prototype.hasOwnProperty.call(this.target, k)) return true
+        const old = this.target[k]
+        if (!Reflect.deleteProperty(this.target, k)) return false
+        const kid = this.kids?.get(k)
+        if (kid) { this.kids!.delete(k); markChanged(kid); detachTree(kid) }
+        eng.onMutation?.(dirtyPathFor(this, k))
+        if (eng.live > 0) bubble(this, k, Array.isArray(old))
+        return true
+    }
+    has(dummy: any, k: PropertyKey) { return k in this.target }
+    ownKeys(dummy: any) {
+        const keys = Reflect.ownKeys(this.target)
+        for (const k of Reflect.ownKeys(dummy)) {
+            const d = Reflect.getOwnPropertyDescriptor(dummy, k)
+            if (d?.configurable === false && !keys.includes(k)) keys.push(k)
+        }
+        return keys
+    }
+    getOwnPropertyDescriptor(dummy: any, k: PropertyKey) {
+        if (Array.isArray(dummy) && k == "length") {
+            syncArrayLength(dummy, this)
+            return Reflect.getOwnPropertyDescriptor(dummy, k)
+        }
+        const pd = Reflect.getOwnPropertyDescriptor(dummy, k)
+        if (pd && pd.configurable === false) return pd
+        const d = Reflect.getOwnPropertyDescriptor(this.target, k)
+        if (d) d.configurable = true              // proxy invariant vs the empty dummy target
+        return d
+    }
+}
+
+// The proxy looks every trap up BY NAME on its handler, the node: a data field named like a
+// trap would be taken for one. Rename the field; this fails to compile until then.
+type tNodeField = {[K in keyof Node]: Node[K] extends Function ? never : K}[keyof Node]
+type tNoTrapNamed<T extends never> = T
+type tNodeFieldsAreNotTraps = tNoTrapNamed<Extract<tNodeField, keyof ProxyHandler<object>>>
+
+function syncArrayLength(dummy: any, node: Node) {
+    if (!Array.isArray(dummy) || !Array.isArray(node.target)) return
+    const descriptor = Reflect.getOwnPropertyDescriptor(node.target, 'length')!
+    Reflect.defineProperty(dummy, 'length', descriptor)
+}
+
+// Path and level derive from the parent chain; a detached ancestor contributes its frozen path.
+// Only a finite depth limit needs the level.
+function levelOf(node: Node) {
+    let level = 0
+    let n = node
+    while (n.parent) { level++; n = n.parent }
+    if (Array.isArray(n.key)) level += n.key.length
+    return level
+}
+
+// built only when a consumer takes it (mutation hook, path subscribers), at its exact size
+function pathTo(node: Node, extra = 0) {
+    let depth = 0
+    let n = node
+    while (n.parent) { depth++; n = n.parent }
+    const frozen = Array.isArray(n.key) ? n.key : null
+    const base = frozen ? frozen.length : 0
+    const out = new Array<PropertyKey>(base + depth + extra)
+    if (frozen) for (let i = 0; i < base; i++) out[i] = frozen[i]
+    let at = base + depth
+    for (let m = node; m.parent; m = m.parent) out[--at] = m.key as PropertyKey   // attached: a single key
+    return out
+}
+function pathOf(node: Node, key: PropertyKey) {
+    const out = pathTo(node, 1)
+    out[out.length - 1] = key
+    return out
 }
 
 // the fact bubbles UP: this node + every ancestor that has subscribers fires once.
@@ -296,11 +351,11 @@ function bubble(from: Node, key: PropertyKey, replacedArrayBranch = false) {
     if (eng.pathLive > 0) {
         const dirtyPath = dirtyPathFor(from, key)
         addDirtyPath(eng, dirtyPath)
-        if (Array.isArray(from.target)) addArrayPath(eng, [...from.path, key], false)
+        if (Array.isArray(from.target)) addArrayPath(eng, pathOf(from, key), false)
         else if (replacedArrayBranch) addArrayPath(eng, dirtyPath, true)
     }
     for (let n: Node | null = from; n && n.active; n = n.parent)
-        if (n.subs.size || n.pathSubs.size) eng.dirty.add(n)
+        if (n.subs?.size || n.pathSubs?.size) eng.dirty.add(n)
     eng.schedule()
 }
 
@@ -308,7 +363,8 @@ function bubble(from: Node, key: PropertyKey, replacedArrayBranch = false) {
 // at the new value, and propagate the fact down to existing descendant watchers.
 function rebind(node: Node, next: any) {
     node.target = next = toRaw(next)
-    if (node.subs.size || node.pathSubs.size) node.eng.dirty.add(node)
+    if (node.subs?.size || node.pathSubs?.size) node.eng.dirty.add(node)
+    if (!node.kids) return
     for (const [k, kid] of [...node.kids]) {
         const cv = isReactiveObj(next) ? next[k] : undefined
         if (isReactiveObj(cv)) rebind(kid, cv)
@@ -316,12 +372,12 @@ function rebind(node: Node, next: any) {
     }
 }
 function markChanged(node: Node) {
-    if (node.subs.size || node.pathSubs.size) node.eng.dirty.add(node)
-    for (const kid of node.kids.values()) markChanged(kid)
+    if (node.subs?.size || node.pathSubs?.size) node.eng.dirty.add(node)
+    if (node.kids) for (const kid of node.kids.values()) markChanged(kid)
 }
 
 function dirtyPathFor(node: Node, key: PropertyKey) {
-    return Array.isArray(node.target) ? [...node.path] : [...node.path, key]
+    return Array.isArray(node.target) ? pathTo(node) : pathOf(node, key)
 }
 
 // collision-proof string path key: length-prefixed segments (string with any
@@ -370,10 +426,11 @@ function pathsForNode(node: Node, dirtyPaths: PropertyKey[][]) {
     const out: PropertyKey[][] = []
     const seen = new Set<string>()
     const pathKey = createPathKeyer()
+    const nodePath = pathTo(node)
     for (const path of dirtyPaths) {
         let next: PropertyKey[] | null = null
-        if (startsWithPath(path, node.path)) next = path.slice(node.path.length)
-        else if (startsWithPath(node.path, path)) next = []
+        if (startsWithPath(path, nodePath)) next = path.slice(nodePath.length)
+        else if (startsWithPath(nodePath, path)) next = []
         if (next == null) continue
         const k = pathKey(next)
         if (seen.has(k)) continue
@@ -386,12 +443,17 @@ function pathsForNode(node: Node, dirtyPaths: PropertyKey[][]) {
 function detachTree(node: Node) {
     if (!node.active) return
     node.active = false
+    // Freeze the path BEFORE releasing the parent link: pathTo walks parent links, and a detached
+    // proxy still reports its writes under its old path (mutation hook, path subscribers). The
+    // kids detach after this, so each one resolves its own path through the frozen one.
+    node.key = pathTo(node)
     node.parent = null
-    for (const kid of node.kids.values()) detachTree(kid)
-    node.kids.clear()
+    if (node.kids) for (const kid of node.kids.values()) detachTree(kid)
+    node.kids = null
 }
 
 function detachTruncatedChildren(node: Node) {
+    if (!node.kids) return
     for (const [key, child] of node.kids) {
         if (Object.prototype.hasOwnProperty.call(node.target, key)) continue
         node.kids.delete(key)
@@ -402,10 +464,10 @@ function detachTruncatedChildren(node: Node) {
 
 // eager: pre-wrap the whole tree to depth (full reactivity up front)
 function prewalk(node: Node, ancestors = new WeakSet<object>()) {
-    if (node.level >= node.eng.depth || ancestors.has(node.target)) return
+    if ((node.eng.depth != Infinity && levelOf(node) >= node.eng.depth) || ancestors.has(node.target)) return
     ancestors.add(node.target)
     for (const k of Reflect.ownKeys(node.target)) {
-        if (isReactiveObj(node.target[k])) { node.proxy[k]; const kid = node.kids.get(k); if (kid) prewalk(kid, ancestors) }
+        if (isReactiveObj(node.target[k])) { node.proxy[k]; const kid = node.kids?.get(k); if (kid) prewalk(kid, ancestors) }
     }
     ancestors.delete(node.target)
 }
@@ -414,15 +476,17 @@ function prewalk(node: Node, ancestors = new WeakSet<object>()) {
 //  subscribe — the FACT of update
 // ============================================================
 
+// a reactive proxy is always an object: any other value skips the symbol lookup on its prototype
 export function isReactive(p: any) {
-    const node: Node | undefined = p && p[NODE]
+    const node: Node | undefined = typeof p == 'object' && p != null ? p[NODE] : undefined
     return !!node && node.active
 }
 
 // current raw value behind a reactive proxy (the proxy itself if not one).
 // Reading/walking the raw value creates NO lazy nodes — use for snapshots.
 export function toRaw<T>(p: T): T {
-    const node: Node | undefined = p && (p as any)[NODE]
+    // every trap read passes its value through here: a leaf must not pay for the lookup
+    const node: Node | undefined = typeof p == 'object' && p != null ? (p as any)[NODE] : undefined
     return node ? node.target : p
 }
 
@@ -431,10 +495,10 @@ export function onUpdate(p: any, cb: Fn) {
     if (!node) throw new Error('onUpdate: not a reactive object')
     if (!node.active) throw new Error('onUpdate: reactive object is detached')
     const sub = () => cb()
-    node.subs.add(sub)
+    ;(node.subs ??= new Set()).add(sub)
     node.eng.live++
     let done = false
-    return () => { if (done) return; done = true; if (node.subs.delete(sub)) node.eng.live-- }
+    return () => { if (done) return; done = true; if (node.subs?.delete(sub)) node.eng.live-- }
 }
 
 export function onUpdatePaths(p: any, cb: PathUpdateFn) {
@@ -442,14 +506,14 @@ export function onUpdatePaths(p: any, cb: PathUpdateFn) {
     if (!node) throw new Error('onUpdatePaths: not a reactive object')
     if (!node.active) throw new Error('onUpdatePaths: reactive object is detached')
     const sub = (change: ReactiveChange) => cb(change)
-    node.pathSubs.add(sub)
+    ;(node.pathSubs ??= new Set()).add(sub)
     node.eng.live++
     node.eng.pathLive++
     let done = false
     return () => {
         if (done) return
         done = true
-        if (node.pathSubs.delete(sub)) {
+        if (node.pathSubs?.delete(sub)) {
             node.eng.live--
             node.eng.pathLive--
         }
