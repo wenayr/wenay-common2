@@ -6,6 +6,7 @@ import {
     clone,
     deepEqual,
 } from '../../src/Common/core/common'
+import {runOracle} from '../run-oracle'
 
 let fails = 0
 
@@ -24,7 +25,7 @@ async function assertRejects(promise: Promise<any>, expected: any, msg: string) 
     }
 }
 
-async function main() {
+async function runChecks() {
     // clone: cycles are preserved without reusing original objects.
     {
         const src: any = { name: 'root' }
@@ -147,4 +148,8 @@ async function main() {
     process.exit(fails === 0 ? 0 : 1)
 }
 
-main().catch(e => { console.error(e); process.exit(2) })
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(2) })
+}
+
+runOracle(main)

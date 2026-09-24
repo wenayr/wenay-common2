@@ -5,6 +5,7 @@ import {access, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import path from 'node:path'
 import {saveKeyValue} from '../../src/server/fsKeyVolume'
+import {runOracle} from '../run-oracle'
 
 let failed = 0
 async function check(label: string, run: () => Promise<void>) {
@@ -92,4 +93,4 @@ async function main() {
     else console.log('PASS saveKeyValue: every address stays inside the store')
 }
 
-main().catch(function crashed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

@@ -10,6 +10,7 @@ import {createStore} from '../../src/Common/Observe/store'
 import {flushReactive} from '../../src/Common/Observe/reactive'
 import {createOfflineStore, createMemoryOfflineStorage, type OfflineStoreRecord} from '../../src/Common/Observe/store-offline'
 import {exposeStoreLazyLine, syncStoreLazyLine, type StoreLazyChunkV1} from '../../src/Common/Observe/store-lazy-line'
+import {runOracle} from '../run-oracle'
 
 type Test = {name: string, fn: () => void | Promise<void>}
 const tests: Test[] = []
@@ -163,7 +164,7 @@ test('audio source: an overtaken start() releases its own stream', async () => {
     }
 })
 
-async function main() {
+async function runChecks() {
     let failed = 0
     for (const {name, fn} of tests) {
         try { await fn(); console.log(`ok - ${name}`) }
@@ -173,4 +174,8 @@ async function main() {
     console.log(`${tests.length} critical-fix regression tests passed`)
 }
 
-main().catch(error => { console.error(error); process.exit(1) })
+async function main() {
+    await runChecks().catch(error => { console.error(error); process.exit(1) })
+}
+
+runOracle(main)

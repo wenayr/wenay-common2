@@ -7,6 +7,7 @@ import {createArtifactHost, ArtifactRecord, ArtifactStore} from '../../src/Commo
 import {createStoreFollower} from '../../src/Common/Observe/store-follower'
 import {StorePatch} from '../../src/Common/Observe/store'
 import {ReplayRemote} from '../../src/Common/events/replay-wire'
+import {runOracle} from '../run-oracle'
 
 let failures = 0
 const ok = (condition: any, message: string) => {
@@ -18,7 +19,7 @@ async function rejection(fn: () => Promise<any>) {
     try { await fn(); return null } catch (e: any) { return String(e?.message ?? e) }
 }
 
-async function main() {
+async function runChecks() {
     const policy = {
         canRead: (account: string, artifact: ArtifactRecord) => account == 'mirror' || artifact.owner == account,
         canRevoke: (account: string, artifact: ArtifactRecord) => account == 'mirror' || artifact.owner == account,
@@ -89,4 +90,9 @@ async function main() {
     console.log(failures ? `artifact-adopt: ${failures} FAILED` : 'artifact-adopt: ALL GREEN')
     process.exit(failures ? 1 : 0)
 }
-main().catch(e => { console.error(e); process.exit(2) })
+
+async function main() {
+    await runChecks().catch(e => { console.error(e); process.exit(2) })
+}
+
+runOracle(main)

@@ -8,6 +8,7 @@ import {createHttpFacadeServer} from '../../src/server/httpFacadeServer'
 import {createServiceLeader} from '../../src/service/leader'
 import {createServiceRest} from '../../src/service/rest'
 import type {tServiceDefinition} from '../../src/service'
+import {runOracle} from '../run-oracle'
 
 let failed = 0
 async function check(label: string, run: () => Promise<void>) {
@@ -106,4 +107,4 @@ async function main() {
     else console.log('PASS HTTP facade errors: facts relayed, stacks stay on the server')
 }
 
-main().catch(function crashed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

@@ -9,6 +9,7 @@ import {joinListens} from '../src/Common/events/joinListens'
 import {listen as createListenPair} from '../src/Common/events/Listen'
 import {createIterableObject} from '../src/Common/async/createIterableObject'
 import {StructMap} from '../src/Common/core/common'
+import {runOracle} from './run-oracle'
 
 let fails = 0
 function assert(cond: any, msg: string) {
@@ -87,4 +88,4 @@ async function main() {
     console.log(`\n${fails === 0 ? 'ALL GREEN' : fails + ' FAILURE(S)'}`)
     process.exit(fails === 0 ? 0 : 1)
 }
-main()
+runOracle(main)

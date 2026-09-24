@@ -4,6 +4,7 @@ import type {AddressInfo} from 'node:net'
 
 import {unpackResult} from '../../src/Common/rcp/rpc-walk'
 import {createHttpFacadeServer} from '../../src/server'
+import {runOracle} from '../run-oracle'
 
 function assert(condition: unknown, message: string) {
     if (!condition) throw new Error(message)
@@ -131,7 +132,4 @@ async function main() {
     }
 }
 
-main().catch(function reportFailure(error) {
-    console.error(error?.stack ?? error)
-    process.exitCode = 1
-})
+runOracle(main)

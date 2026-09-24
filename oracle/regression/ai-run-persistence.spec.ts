@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {createAiRunHost, type AiRunRunner, type AiRunCheckpoint, type AiRunPersistencePort} from '../../src/Common/ai/ai-index'
 import {createAiRunClient} from '../../src/Common/ai/ai-run-client'
 import {setTimeout as delay} from 'node:timers/promises'
+import {runOracle} from '../run-oracle'
 
 function deferred<T>() {
     let resolve!: (value: T) => void
@@ -230,4 +231,4 @@ async function main() {
     } finally { process.off('unhandledRejection', unexpected) }
     console.log('PASS A1: write-before-effect, owner receipts, queued/running/waiting/completed restore, explicit recovery, rights, late IO and failed/uncertain writes')
 }
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

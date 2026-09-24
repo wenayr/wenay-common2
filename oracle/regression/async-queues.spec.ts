@@ -5,6 +5,7 @@ import {
     enhancedQueueRun,
 } from "../../src/Common/async/waitRun";
 import {promiseProgress} from "../../src/Common/async/promiseProgress";
+import {runOracle} from "../run-oracle";
 
 type Test = {
     name: string;
@@ -227,7 +228,7 @@ test("ReadyGate continues after thrown task and clears queued tasks", async () =
     assertEq(events.join(","), "first,second,after-ready", "tasks added after ready run immediately");
 });
 
-async function main() {
+async function runChecks() {
     let failed = 0;
 
     for (const {name, fn} of tests) {
@@ -248,7 +249,11 @@ async function main() {
     console.log(`${tests.length} async queue regression tests passed`);
 }
 
-main().catch(error => {
-    console.error(error);
-    process.exit(1);
-});
+async function main() {
+    await runChecks().catch(error => {
+        console.error(error);
+        process.exit(1);
+    });
+}
+
+runOracle(main);
