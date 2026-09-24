@@ -19,6 +19,7 @@
 import assert from 'node:assert/strict'
 import {createStore} from '../../src/Common/Observe/store'
 import {flushReactive, flushReactiveNow} from '../../src/Common/Observe/reactive'
+import {runOracle} from '../run-oracle'
 
 const SIBLINGS = 2000
 const DRAINS = 50
@@ -165,4 +166,4 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

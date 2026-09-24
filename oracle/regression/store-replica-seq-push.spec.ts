@@ -19,6 +19,7 @@ import {
     createStoreReplicaOffers, createStoreReplicaSet,
     type StoreReplicaDescriptor, type StoreReplicaRouteEvent,
 } from '../../src/Common/Observe/store-replica-set'
+import {runOracle} from '../run-oracle'
 
 type tState = Record<string, number>
 type tPush = 'descriptor' | 'legacy'
@@ -205,4 +206,4 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

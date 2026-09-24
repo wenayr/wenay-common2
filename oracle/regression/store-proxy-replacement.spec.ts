@@ -3,6 +3,7 @@ import {
     createStore, flushReactive, onUpdate, toRaw, listenStorePatches, applyStorePatches,
     exposeStoreReplay, syncStoreReplay,
 } from '../../src/Common/Observe'
+import {runOracle} from '../run-oracle'
 
 function retainedHistory() {
     const store = createStore({article: {title: 'first', history: [{title: 'previous'}]}})
@@ -148,4 +149,4 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

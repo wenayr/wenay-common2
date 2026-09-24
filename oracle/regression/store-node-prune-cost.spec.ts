@@ -14,6 +14,7 @@
 // =====================================================================
 import assert from 'node:assert/strict'
 import {createStore, flushReactive, type StoreCtx} from '../../src/Common/Observe'
+import {runOracle} from '../run-oracle'
 
 type tPrices = {prices: Record<string, number>}
 
@@ -228,4 +229,4 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

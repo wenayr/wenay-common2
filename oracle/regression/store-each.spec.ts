@@ -4,6 +4,7 @@
 import {createStore} from '../../src/Common/Observe/store'
 import {flushReactive} from '../../src/Common/Observe/reactive'
 import {exposeStoreReplay, syncStoreReplayEach} from '../../src/Common/Observe/store-replay'
+import {runOracle} from '../run-oracle'
 
 let failures = 0
 const tests: Array<{name: string; run: () => void | Promise<void>}> = []
@@ -188,7 +189,7 @@ test('syncStoreReplayEach: off() tears down BOTH the store subscription and the 
 //  runner
 // ============================================================
 
-async function main() {
+async function runChecks() {
     for (const t of tests) {
         try {
             await t.run()
@@ -203,7 +204,11 @@ async function main() {
     process.exit(failures === 0 ? 0 : 1)
 }
 
-main().catch(e => {
-    console.error(e?.stack ?? e)
-    process.exit(1)
-})
+async function main() {
+    await runChecks().catch(e => {
+        console.error(e?.stack ?? e)
+        process.exit(1)
+    })
+}
+
+runOracle(main)

@@ -3,6 +3,7 @@ import {createResourceSession, type ServiceResourceDiagnostic} from '../../src/s
 import type {ServiceResourceContext} from '../../src/service'
 import {listen} from '../../src/Common/events/Listen'
 import {mock} from 'node:test'
+import {runOracle} from '../run-oracle'
 
 function barrier<T = void>() {
     let resolve!: (value: T) => void
@@ -113,4 +114,4 @@ async function main() {
     } finally { mock.timers.reset() }
     console.log('PASS resource session: independent opens, renew, roles, account, cancellation, safe errors, bounded disposal')
 }
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

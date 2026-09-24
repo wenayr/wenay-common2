@@ -14,6 +14,7 @@ import {
     createStore, flushReactive, isReactive, listenStorePatches, toRaw,
     exposeStoreLazyLine, syncStoreLazyLine, type StoreLazyChunkV1,
 } from '../../src/Common/Observe'
+import {runOracle} from '../run-oracle'
 
 type tQuotes = Record<string, {px: number, legs: number[]}>
 
@@ -120,4 +121,4 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

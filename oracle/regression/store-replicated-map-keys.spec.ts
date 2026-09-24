@@ -18,6 +18,7 @@
 import {spawnSync} from 'node:child_process'
 import assert from 'node:assert/strict'
 import type {FollowedReplicatedMap} from '../../src/Common/Observe/replicated-map'
+import {runOracle} from '../run-oracle'
 
 if (typeof (globalThis as {gc?: unknown}).gc != 'function') {
     const res = spawnSync(process.execPath, ['--expose-gc', '--import', 'tsx', __filename], {stdio: 'inherit'})
@@ -226,4 +227,4 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

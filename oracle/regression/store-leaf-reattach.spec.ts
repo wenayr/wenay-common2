@@ -13,6 +13,7 @@ import assert from 'node:assert/strict'
 import {
     createStore, flushReactive, applyStorePatches, exposeStoreReplay, syncStoreReplay,
 } from '../../src/Common/Observe'
+import {runOracle} from '../run-oracle'
 
 type tOrder = {status: string, qty: number, fill?: {price: number}}
 type tState = {order?: tOrder}
@@ -162,4 +163,4 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

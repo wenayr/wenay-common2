@@ -5,6 +5,7 @@ import {createStoreFollower} from '../../src/Common/Observe/store-follower'
 import {listen} from '../../src/Common/events/Listen'
 import {createServiceAccess} from '../../experiments/wenay-scaffold/template/access'
 import type {tServiceDefinition} from '../../experiments/wenay-scaffold/template/leader'
+import {runOracle} from '../run-oracle'
 
 const initial = {roles: {manager: ['manager'], other: ['manager']}, inventory: {flour: 5}}
 const definition = {
@@ -81,4 +82,4 @@ async function main() {
     console.log('PASS scaffold access: live roles, guarded shared content/history/commands, isolated sessions, regrant and cleanup')
 }
 
-void main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)

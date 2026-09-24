@@ -21,6 +21,7 @@ import {
     STORE_REPLAY_CHUNK_BUDGET_MIN, STORE_REPLAY_CHUNK_TTL_MS,
 } from '../../src/Common/Observe/store-replay'
 import {decodeStoreReplayBatchV2} from '../../src/Common/Observe/store-replay-codec'
+import {runOracle} from '../run-oracle'
 
 type tRow = {id: number, name: string, tags: string[], px: number}
 type tChunks = {
@@ -223,4 +224,4 @@ async function main() {
     }
 }
 
-main().catch(function failed(error) { console.error(error); process.exitCode = 1 })
+runOracle(main)
