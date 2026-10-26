@@ -14,6 +14,7 @@ import {createArtifactHost} from '../src/Common/artifact/artifact-index'
 import {createConversationHost, type ConversationRemote} from '../src/Common/conversation/conversation-index'
 import {createRpcServerAuto} from '../src/Common/rcp/rpc-server-auto'
 import {createHttpFacadeServer} from '../src/server/httpFacadeServer'
+import {createMcpFacadeHttp, createMcpFacadeServer, describeMethod} from '../src/server/mcp-index'
 import {createHttpFacadeOpenApi} from './http-openapi'
 import {createDevModuleBridge} from './dev-module-bridge'
 import {io as ioClient} from 'socket.io-client'
@@ -648,9 +649,10 @@ function authorizeDemoHttpFacade(req: Request, res: Response, next: NextFunction
     res.status(401).json({ok: false, error: {message: 'Unauthorized'}})
 }
 
+// The metadata sits next to each function and feeds both /openapi.json and the /mcp tool list.
 const httpFacadeDemo = {
     demo: {
-        status: function httpFacadeStatus() {
+        status: describeMethod(function httpFacadeStatus() {
             const instance = instanceFragment()
             return {
                 time: new Date(),
@@ -659,10 +661,19 @@ const httpFacadeDemo = {
                 participants: participantAccounts.size,
                 auth: 'bearer',
             }
-        },
-        echo: function httpFacadeEcho(value: unknown) {
+        }, {
+            title: 'Instance status',
+            description: 'Instance role, epoch and participant count',
+            args: [],
+            annotations: {readOnlyHint: true, openWorldHint: false},
+        }),
+        echo: describeMethod(function httpFacadeEcho(value: unknown) {
             return {value, echoedAt: new Date()}
-        },
+        }, {
+            description: 'Echoes the first argument back with a server timestamp',
+            args: [{name: 'value', schema: {}, description: 'Any JSON value'}],
+            annotations: {readOnlyHint: true, idempotentHint: true},
+        }),
     },
 }
 
@@ -705,13 +716,32 @@ const httpFacadeOpenApi = createHttpFacadeOpenApi({
     },
     bearerAuth: true,
     limits: httpFacadeLimits,
-    summaries: {
-        '/http-facade/demo/status': 'Instance role, epoch and participant count',
-        '/http-facade/demo/echo': 'Echoes the first argument back with a server timestamp',
-    },
 })
 app.get('/openapi.json', function serveOpenApiDocument(_req, res) {
     res.json(httpFacadeOpenApi.document())
+})
+
+// ============== the same facade as MCP tools ==============
+// Same object, same metadata, same bearer token: Streamable HTTP sessions at /mcp
+// (e.g. `claude mcp add --transport http demo http://localhost:<port>/mcp --header "Authorization: Bearer <token>"`).
+const httpFacadeMcp = createMcpFacadeServer({
+    name: 'wenay-common2-demo',
+    version: (require('../package.json') as {version: string}).version,
+    object: httpFacadeDemo,
+    strict: true,
+    limits: httpFacadeLimits,
+})
+createMcpFacadeHttp({
+    app,
+    path: '/mcp',
+    mcp: httpFacadeMcp,
+    maxSessions: 16,
+    auth: {
+        resolveAuth(token) {
+            if (token != httpFacadeToken) throw new Error('Unauthorized')
+            return {principal: {sub: 'demo-operator'}}
+        },
+    },
 })
 // Hand-written page instead of the package's own index.html, which hardcodes
 // the petstore URL in swagger-initializer.js.
@@ -1295,6 +1325,7 @@ async function startDemo() {
         ? '<DEMO_HTTP_FACADE_TOKEN> (configured)'
         : `${httpFacadeToken} (generated for this run)`}`)
     console.log(`  HTTP facade OpenAPI: http://localhost:${port}/openapi.json  Swagger UI: http://localhost:${port}/docs`)
+    console.log(`  MCP (same facade, same token): http://localhost:${port}/mcp`)
     if (devModuleBridge) {
         // A failing dev module must never stop the stand from serving.
         try {

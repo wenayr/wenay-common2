@@ -3,11 +3,13 @@ import {createProcessResource} from '../../src/server/process-resource'
 import {runOracle} from '../run-oracle'
 
 async function main() {
+    // A generous startup deadline: early exit and READY must not race the start of node itself,
+    // which takes longer than 300 ms on a loaded Windows host. Only `never` tests the deadline.
     function child(code: string, extra = {}) {
-        return createProcessResource({command: process.execPath, args: ['-e', code], startTimeoutMs: 300, stopTimeoutMs: 50,
+        return createProcessResource({command: process.execPath, args: ['-e', code], startTimeoutMs: 15_000, stopTimeoutMs: 50,
             ready: fact => fact.type == 'stdout' && fact.tail.includes('READY') ? 'ready' : undefined, ...extra})
     }
-    const never = child('setInterval(() => {}, 100)')
+    const never = child('setInterval(() => {}, 100)', {startTimeoutMs: 300})
     await assert.rejects(never.ready, /timed out/)
     await never.done
     assert(never.view.stopped())

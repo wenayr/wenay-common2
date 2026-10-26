@@ -796,7 +796,27 @@ shutdown fix does not widen the authorization guarantees below; see
   disconnect signal; use the auto layer (or take over the socket and key) to get this release.
 - **Errors reach peers without stack frames.** A failed call answers `{name, message, code?,
   data?, cause?}`; `createRpcServer({debug: true})` adds `stack` for development. The HTTP facade
-  never sends one and hands the whole error to its optional `onError`.
+  never sends one and hands the whole error to its optional `onError`; the MCP facade answers the
+  same fields as an `isError` tool result.
+
+## MCP over HTTP — the same `resolveAuth`, a different carrier
+
+`createMcpFacadeHttp` (`wenay-common2/server/mcp`, 3.2.0) adds no auth model. It reuses Rule 3 and
+the grant shape; only the carrier differs, because MCP is HTTP, not one long-lived socket:
+
+| | RPC | MCP over Streamable HTTP |
+| --- | --- | --- |
+| token | `Pkt.HELLO` | `Authorization: Bearer` on **every** request (never the query) |
+| resolver | `resolveAuth(token) -> {object, ack?, expiresAt?}` | `resolveAuth(token, req) -> {object?, principal?, expiresAt?}` |
+| facade | the grant's `object` | the grant's `object` (absent = the facade server's own object) |
+| rejection | `E_UNAUTHORIZED` | HTTP 401 with `WWW-Authenticate: Bearer`, before any MCP work |
+| deadline | `expiresAt`, fails closed | the same rule: `Infinity` = none, other non-finite = expired |
+| binding | one principal per socket+key | one principal per MCP session (`principal.sub`, else the token); another principal on that session id is 403 |
+
+The facade for a session is fixed when it initializes: a new grant object takes effect on the next
+session, so revoke by `control.terminate(id)` (find ids by principal in `sessions.list()`), not by
+waiting for the old one. As on RPC, the principal's facade decides what exists — read-only and
+per-role surfaces are separate objects, not checks inside methods.
 
 ## Executable truth
 

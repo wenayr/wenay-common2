@@ -56,4 +56,5 @@ These import the repository's `src/` and are not in the npm package.
   `wenay-common2` / `wenay-common2/peer` / `wenay-common2/replay` / `wenay-common2/observe` /
   `wenay-common2/contract`; focused lower-level entrypoints are `wenay-common2/listen`,
   `wenay-common2/rpc`, `wenay-common2/server/fs`, `wenay-common2/server/auth`,
-  `wenay-common2/server/http`, and `wenay-common2/server/webhook`.
+  `wenay-common2/server/http`, `wenay-common2/server/mcp` (MCP tools from a facade), and
+  `wenay-common2/server/webhook`.

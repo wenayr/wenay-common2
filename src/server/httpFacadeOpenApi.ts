@@ -15,6 +15,8 @@
 import type {HttpFacadeServerOptions, tHttpFacadeMethod} from './httpFacadeServer'
 import {createHttpFacadeServer} from './httpFacadeServer'
 import {resolveLimits, type RpcLimits} from '../Common/rcp/rpc-limits'
+import {checkMetaMap, methodArgTuple, resolveMethodMeta, type tFacadeMetaMap} from './facadeMeta'
+import {facadeMember} from './facadeWalk'
 
 export type HttpFacadeOpenApiDeps = {
     /** The same object the demo hands to createHttpFacadeServer. */
@@ -37,6 +39,13 @@ export type HttpFacadeOpenApiDeps = {
      * generic args array — the reason the document is OpenAPI 3.1.0.
      */
     argSchemas?: Record<string, readonly object[]>
+    /**
+     * Metadata by dotted facade path, for functions not described in place. Each route also
+     * reads describeMethod metadata from its function: title/description become the
+     * summary/description, input/args the tuple body, output the result value. An explicit
+     * summaries/argSchemas entry for the route still wins.
+     */
+    meta?: tFacadeMetaMap
 }
 
 // Mirrors the private normalizeBasePath of httpFacadeServer.ts only to strip the
@@ -58,6 +67,7 @@ function routeSegments(route: string, basePath: string) {
 export function createHttpFacadeOpenApi(deps: HttpFacadeOpenApiDeps) {
     const basePath = normalizeBasePath(deps.basePath)
     const limits = resolveLimits(deps.limits)
+    const metaMap = checkMetaMap(deps.meta)
 
     // ============== record the real walk ==============
     // createHttpFacadeServer registers routes through app[method]; capturing that
@@ -70,14 +80,17 @@ export function createHttpFacadeOpenApi(deps: HttpFacadeOpenApiDeps) {
         get: recorder('get'),
         post: recorder('post'),
     } as unknown as HttpFacadeServerOptions<object>['app']
+    // the facade path of each captured route, to find the function and its metadata
+    const routePaths = new Map<string, readonly string[]>()
     for (const method of deps.methods) {
-        createHttpFacadeServer({
+        const server = createHttpFacadeServer({
             app: recordingApp,
             object: deps.object,
             method,
             basePath: deps.basePath,
             limits: deps.limits,
         })
+        for (const route of server.routes()) routePaths.set(route.route, route.path)
     }
 
     // ============== shared schemas ==============
@@ -138,14 +151,18 @@ export function createHttpFacadeOpenApi(deps: HttpFacadeOpenApiDeps) {
     // ============== one operation per captured route ==============
     function buildOperation(method: tHttpFacadeMethod, route: string) {
         const segments = routeSegments(route, basePath)
+        const path = routePaths.get(route) ?? segments
+        const meta = resolveMethodMeta(facadeMember(deps.object, path), path, metaMap)
         const operation: Record<string, unknown> = {
             operationId: `${method}_${segments.join('.')}`,
             tags: [segments.length > 1 ? segments[0] : 'facade'],
-            description: `Invokes ${segments.join('.')}(...args) on the facade object.`,
+            description: meta?.description ?? `Invokes ${segments.join('.')}(...args) on the facade object.`,
             responses: {
                 '200': {
                     description: 'The facade function returned; its value arrives codec-packed.',
-                    content: {'application/json': {schema: {$ref: '#/components/schemas/Result'}}},
+                    content: {'application/json': {schema: meta?.output
+                        ? {allOf: [{$ref: '#/components/schemas/Result'}, {properties: {value: meta.output}}]}
+                        : {$ref: '#/components/schemas/Result'}}},
                 },
                 '400': failureResponse('Malformed request: args is not valid JSON, not an array, '
                     + 'or the POST body is neither an array nor an object with "args".'),
@@ -154,7 +171,7 @@ export function createHttpFacadeOpenApi(deps: HttpFacadeOpenApiDeps) {
                 '500': failureResponse('The facade function threw.'),
             },
         }
-        const summary = deps.summaries?.[route]
+        const summary = deps.summaries?.[route] ?? meta?.title ?? meta?.description
         if (summary != null) operation['summary'] = summary
         if (deps.bearerAuth) {
             (operation['responses'] as Record<string, unknown>)['401']
@@ -173,7 +190,7 @@ export function createHttpFacadeOpenApi(deps: HttpFacadeOpenApiDeps) {
         } else {
             // an argSchemas route documents the args as the exact call tuple;
             // without one the generic bounded array stands as before
-            const tuple = deps.argSchemas?.[route]
+            const tuple = deps.argSchemas?.[route] ?? methodArgTuple(meta)
             const bodyArgsSchema = tuple ? {
                 type: 'array',
                 prefixItems: [...tuple],

@@ -1,3 +1,4 @@
+import type { McpToolAnnotations } from '../facadeMeta';
 export declare const MODULE_WORKER_VERIFIED_SOURCE: 'wenay-common2/verified-module-source@1';
 export type VerifiedModuleSource = {
     verification: typeof MODULE_WORKER_VERIFIED_SOURCE;
@@ -17,11 +18,7 @@ type ModuleWorkerMetadata = {
     bindingGeneration: number;
 };
 export type tModuleWorkerMcpLifetime = 'host' | 'generation' | 'session';
-export type ModuleWorkerMcpAnnotations = {
-    readOnlyHint: boolean;
-    destructiveHint: boolean;
-    idempotentHint: boolean;
-};
+export type ModuleWorkerMcpAnnotations = Required<Pick<McpToolAnnotations, 'readOnlyHint' | 'destructiveHint' | 'idempotentHint'>>;
 export type ModuleWorkerMcpToolDescriptor = {
     contributionId: string;
     lifetime: tModuleWorkerMcpLifetime;

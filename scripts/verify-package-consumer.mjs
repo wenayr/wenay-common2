@@ -44,6 +44,7 @@ try {
             // optional peers: this smoke uses the server entries, so it installs them as a server project would
             'express': manifest.devDependencies['express'],
             '@types/express': manifest.devDependencies['@types/express'],
+            '@modelcontextprotocol/sdk': manifest.devDependencies['@modelcontextprotocol/sdk'],
         },
     }, null, 4))
     run(npm, ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--package-lock=false'], consumer)
@@ -68,6 +69,29 @@ createHttpFacadeServer({
         next()
     },
 })
+
+// the MCP entry: the same metadata feeds the tool list; installed declarations keep the context type
+import {createMcpFacadeServer, describeMethod as describeMcpMethod, type McpToolContext} from 'wenay-common2/server/mcp'
+const consumerMcp = createMcpFacadeServer({
+    name: 'consumer',
+    version: '1.0.0',
+    strict: true,
+    object: {
+        greet: describeMcpMethod(function greet(args: {name: string}, ctx: McpToolContext) {
+            const signal: AbortSignal = ctx.signal
+            void signal
+            return {greeting: 'hello ' + args.name}
+        }, {
+            description: 'Greets',
+            input: {type: 'object', properties: {name: {type: 'string'}}, required: ['name']},
+            context: true,
+        }),
+    },
+})
+consumerMcp.tools.call('greet', {name: 'cjs'}).then(function checkMcpResult(result) {
+    if (JSON.stringify(result.structuredContent) != '{"greeting":"hello cjs"}') throw new Error('MCP consumer call failed')
+    console.log('CJS consumer: MCP facade passed')
+})
 `)
     writeFileSync(path.join(consumer, 'esm.mts'), `
 import assert from 'node:assert/strict'
@@ -79,7 +103,13 @@ import {createPeerHost} from 'wenay-common2/peer'
 import {openFsReplayStorage} from 'wenay-common2/server/fs'
 import {createTokenCodec} from 'wenay-common2/server/auth'
 import {createHttpFacadeServer} from 'wenay-common2/server/http'
+import {createMcpFacadeServer, describeMethod} from 'wenay-common2/server/mcp'
 
+const mcp = createMcpFacadeServer({
+    name: 'esm', version: '1.0.0',
+    object: {ping: describeMethod(() => 'pong', {description: 'Ping', args: []})},
+})
+assert.deepEqual((await mcp.tools.call('ping', {})).structuredContent, {value: 'pong'})
 const store = createStore({count: 0})
 const peerHost = createPeerHost()
 const peerConnection = peerHost.connection('consumer')

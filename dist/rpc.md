@@ -443,6 +443,9 @@ contract (absent for an old server, a non-object ack, an ack that already owns `
 Numeric method refs stay pinned to their path across principal switches (a racing call never runs a
 different method); errors reach peers without server stack frames unless the server runs `debug`;
 a service without `access.login` never mints a token from a client-named account.
+The MCP facade over HTTP (`wenay-common2/server/mcp`) reuses the same `resolveAuth -> {object}`
+shape with a bearer header per request and one principal per MCP session — see
+[RPC-AUTH, *MCP over HTTP*](doc/RPC-AUTH.md#mcp-over-http--the-same-resolveauth-a-different-carrier).
 
 ### 5.1 Server: empty initial facade + `gate: true`
 

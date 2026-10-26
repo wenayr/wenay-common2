@@ -605,8 +605,18 @@ signature-key, or process-control capabilities.
 ### MCP is optional
 
 Do not implement the MCP protocol itself. Use an official SDK in an external server adapter and map
-it to the same `ModuleControl` service. The temporary adapter under `experiments/dynamic-runtime/`
-does exactly that and remains outside package exports. Keep MCP off the hot data plane.
+it to the same `ModuleControl` service. Keep MCP off the hot data plane.
+
+Since 3.2.0 that adapter is a library entry: `wenay-common2/server/mcp` generates MCP tools from the
+same facade object the HTTP adapter serves (`createMcpFacadeServer`, one `describeMethod` metadata set
+shared with OpenAPI, Streamable HTTP sessions and stdio; see the rare doc, *MCP facade server*). Build
+the `control`/`view`/`health` facade once and expose it three ways; the facade's `around` chain is
+where a host puts journaling and post-mutation receipts, `policy.concurrency` its ordering. The
+dynamic-runtime contribution gateway joins the same registry through `control.replace(key, fragment)`
+(`experiments/dynamic-runtime/mcp-facade-gateway.ts`, verified by `facade-gateway-self-client.ts` in
+`npm run test:dynamic-runtime`): isolated module tools and host facade tools are one tool list, and
+`ModuleWorkerMcpAnnotations` is the adapter's `McpToolAnnotations` with three hints required. The
+older hand-written adapter under `experiments/dynamic-runtime/mcp-adapter.ts` stays an experiment.
 
 Several separately authorized MCP surfaces are useful:
 
@@ -624,9 +634,9 @@ MCP resources are suitable for discovery and “resource changed, reread” noti
 high-rate replay. Store Replay remains the exact event/data mechanism. The internal experiment pins
 `@modelcontextprotocol/sdk@1.30.0`. Its own metadata says Node `>=18`, but the current secure
 dependency resolution includes `@hono/node-server@2.0.12`, which says Node `>=20`; therefore the
-MCP experiment's effective Node 20 floor matches the library package engine `>=20`. MCP remains
-dev-only and unexported. Recheck the complete dependency graph before promotion rather than
-trusting only the root SDK metadata.
+MCP experiment's effective Node 20 floor matches the library package engine `>=20`. The library
+declares the SDK as an optional peer (`^1.30.0`) loaded only by `server/mcp`; recheck the complete
+dependency graph when raising that range rather than trusting only the root SDK metadata.
 
 Dynamic catalogs are protocol-aligned rather than a repository-specific workaround: the MCP
 architecture defines list operations plus `list_changed` notifications, and the official client

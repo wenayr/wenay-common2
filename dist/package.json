@@ -1,6 +1,6 @@
 {
   "name": "wenay-common2",
-  "version": "3.1.1",
+  "version": "3.2.0",
   "description": "Typed RPC over sockets, replayable Listen wires, reactive stores with replication and failover, peer packet mesh, media/artifact/AI/conversation runtimes",
   "keywords": [
     "rpc",
@@ -11,6 +11,7 @@
     "failover",
     "webrtc",
     "peer-mesh",
+    "mcp",
     "typescript"
   ],
   "main": "lib/index.js",
@@ -58,6 +59,7 @@
     "./server/fs": "./lib/server/fs-index.js",
     "./server/auth": "./lib/server/auth-token.js",
     "./server/http": "./lib/server/http-index.js",
+    "./server/mcp": "./lib/server/mcp-index.js",
     "./server/webhook": "./lib/server/WebHook3.js",
     "./service": "./lib/service/index.js",
     "./service/client": "./lib/service/client.js",
@@ -67,6 +69,7 @@
     "./server/blob": "./lib/server/blob-storage.js"
   },
   "peerDependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/express": "^5.0.6",
     "express": "^5.2.1",
     "socket.io": "^4.8.3",
@@ -74,6 +77,9 @@
     "swagger-ui-dist": "^5.32.14"
   },
   "peerDependenciesMeta": {
+    "@modelcontextprotocol/sdk": {
+      "optional": true
+    },
     "@types/express": {
       "optional": true
     },

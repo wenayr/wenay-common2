@@ -2,6 +2,7 @@ import {Worker} from 'node:worker_threads'
 import {serialize} from 'node:v8'
 import {listen as createListenPair} from '../../Common/events/Listen'
 import {moduleWorkerBootstrapSource} from './module-worker-bootstrap'
+import type {McpToolAnnotations} from '../facadeMeta'
 
 // =====================================================================
 // Verified input and wire contracts
@@ -57,11 +58,8 @@ type ModuleWorkerMetadata = {
 
 export type tModuleWorkerMcpLifetime = 'host' | 'generation' | 'session'
 
-export type ModuleWorkerMcpAnnotations = {
-    readOnlyHint: boolean
-    destructiveHint: boolean
-    idempotentHint: boolean
-}
+// The facade MCP adapter's annotations, with the three hints an isolated module must declare.
+export type ModuleWorkerMcpAnnotations = Required<Pick<McpToolAnnotations, 'readOnlyHint' | 'destructiveHint' | 'idempotentHint'>>
 
 export type ModuleWorkerMcpToolDescriptor = {
     contributionId: string

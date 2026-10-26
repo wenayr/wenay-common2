@@ -1,5 +1,6 @@
 import type { tHttpFacadeMethod } from './httpFacadeServer';
 import { type RpcLimits } from '../Common/rcp/rpc-limits';
+import { type tFacadeMetaMap } from './facadeMeta';
 export type HttpFacadeOpenApiDeps = {
     object: object;
     basePath: string;
@@ -13,6 +14,7 @@ export type HttpFacadeOpenApiDeps = {
     limits?: RpcLimits;
     summaries?: Record<string, string>;
     argSchemas?: Record<string, readonly object[]>;
+    meta?: tFacadeMetaMap;
 };
 export declare function createHttpFacadeOpenApi(deps: HttpFacadeOpenApiDeps): {
     document: () => Record<string, unknown>;

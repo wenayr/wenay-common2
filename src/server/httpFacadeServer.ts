@@ -1,7 +1,8 @@
 import type {Express, Request, RequestHandler, Response} from 'express'
 
-import {isSafeKey, PayloadLimitError, resolveLimits, type RpcLimits} from '../Common/rcp/rpc-limits'
+import {PayloadLimitError, resolveLimits, type RpcLimits} from '../Common/rcp/rpc-limits'
 import {errToObj, packResult, unpackResult} from '../Common/rcp/rpc-walk'
+import {walkFacade} from './facadeWalk'
 
 export type tHttpFacadeMethod = 'get' | 'post'
 
@@ -54,41 +55,14 @@ function makeRoute(basePath: string, path: readonly string[]) {
     return basePath == '/' ? `/${suffix}` : `${basePath}/${suffix}`
 }
 
-function discoverRoutes(object: object, method: tHttpFacadeMethod, basePath: string) {
-    const routes: tRoute[] = []
-    const ancestors = new Set<object>()
-
-    function visit(node: object, path: string[]) {
-        if (ancestors.has(node)) {
-            throw new Error(`HTTP facade contains a circular branch at ${JSON.stringify(path)}`)
-        }
-        ancestors.add(node)
-        try {
-            for (const key of Object.keys(node)) {
-                if (!isSafeKey(key)) throw new Error(`HTTP facade contains a forbidden key: ${key}`)
-                if (key.length == 0) throw new Error('HTTP facade contains an empty path segment')
-
-                const value = (node as any)[key]
-                const nextPath = [...path, key]
-                if (typeof value == 'function') {
-                    routes.push({
-                        method,
-                        path: nextPath,
-                        route: makeRoute(basePath, nextPath),
-                        fn: value,
-                        context: node,
-                    })
-                    continue
-                }
-                if (value != null && typeof value == 'object') visit(value, nextPath)
-            }
-        } finally {
-            ancestors.delete(node)
-        }
-    }
-
-    visit(object, [])
-    return routes
+function discoverRoutes(object: object, method: tHttpFacadeMethod, basePath: string): tRoute[] {
+    return walkFacade(object, {label: 'HTTP facade'}).map(entry => ({
+        method,
+        path: entry.path,
+        route: makeRoute(basePath, entry.path),
+        fn: entry.fn,
+        context: entry.context,
+    }))
 }
 
 // ===================================================================

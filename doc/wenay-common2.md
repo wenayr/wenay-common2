@@ -23,6 +23,7 @@
 | `service/server` | authority + node + access + REST composition | express |
 | `service/host` | HTTP/WS host, mounts, process signals | express, socket.io, socket.io-client |
 | `server/fs` · `server/auth` · `server/http` · `server/process` | Node adapters: fs replay storage/journals, token codec, HTTP facade + OpenAPI, one child process | none |
+| `server/mcp` | MCP tools/resources generated from a facade (Streamable HTTP, stdio) | @modelcontextprotocol/sdk |
 | `server/blob` | immutable binary storage + Artifact storage adapter | express |
 | `server/webhook` | webhook server/client | express |
 | `server` | root + all Node adapters (compatibility facade) | express |
@@ -33,7 +34,8 @@ Exchange data (`Bars`, `CQuotesHistory`...) is the separate package `wenay-excha
 `TF`, `Period`, the time API and the `Params` model stay here.
 The package has no mandatory dependency. Optional peers: `socket.io` / `socket.io-client` for `service/client`
 and `service/host`; `express` (+ `@types/express` for TypeScript) for `server`, `server/webhook`, `server/blob`,
-`service/server`, `service/host`, and `@types/express` for the types of `server/http`.
+`service/server`, `service/host`, and `@types/express` for the types of `server/http`;
+`@modelcontextprotocol/sdk` (^1.30) for `server/mcp` only.
 
 Where things are: copyable apps by level and product probes → [examples/README.md](../examples/README.md);
 each example README owns its run/benchmark knobs and states its boundaries.
@@ -53,6 +55,27 @@ await httpsManager.stop()       // preserve Caddy + ACME account + keys + certif
 Installed CLI: `npm exec wenay-https -- ensure|status|doctor|stop`. The consuming project supplies
 `wenay-https.json`; Caddy owns automatic renewal. Call `ensure` only from trusted server startup or
 an authenticated administrative route. Full setup and security boundary → [`HTTPS-CLI.md`](HTTPS-CLI.md).
+
+## 🤖 One facade → HTTP, OpenAPI, MCP (server-only)
+
+```ts
+import {describeMethod} from 'wenay-common2/server/http'              // also exported by server/mcp
+import {createMcpFacadeServer, createMcpFacadeHttp, serveMcpStdio} from 'wenay-common2/server/mcp'
+
+describeMethod(fn, {description, title?, input? | args?, output?, annotations?, context?}) -> fn
+//   input: JSON Schema of ONE object argument; args: [{name, schema, optional?}] -> positional call
+//   the same metadata feeds createHttpFacadeOpenApi (summary, tuple body) and the MCP tool list
+createMcpFacadeServer({name, version, object, meta?, strict?, readOnly?, policy?, around?, limits?, names?, resources?})
+mcp.tools.list() / mcp.tools.call(name, args)       // descriptors; the tools/call pipeline in-process
+mcp.control.attach(server) / server() / mount(key, obj) / replace / unmount / refresh / derive(obj) / dispose()
+mcp.on.called / mcp.on.failed                       // audit streams
+createMcpFacadeHttp({app, path, mcp, mode?, maxSessions?, sessionTtlMs?, auth?: {resolveAuth}}) -> {sessions, control, on}
+await serveMcpStdio(mcp)
+```
+
+Same walk as `createHttpFacadeServer`; Listen `on` → resources, `noStrict` not walked; one serial queue
+unless `policy.concurrency` says `'parallel'`; throws → `isError` with the `MyError` code.
+Full contract → rare doc, *MCP facade server*.
 
 ## ⭐ events — `listen` / `listenStore`
 > `import {listen, listenStore, mapListen} from 'wenay-common2'` or the narrow

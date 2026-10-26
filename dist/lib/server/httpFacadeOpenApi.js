@@ -3,6 +3,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createHttpFacadeOpenApi = createHttpFacadeOpenApi;
 const httpFacadeServer_1 = require("./httpFacadeServer");
 const rpc_limits_1 = require("../Common/rcp/rpc-limits");
+const facadeMeta_1 = require("./facadeMeta");
+const facadeWalk_1 = require("./facadeWalk");
 function normalizeBasePath(basePath) {
     const normalized = `/${basePath}`.replace(/\/{2,}/g, '/').replace(/\/$/, '');
     return normalized == '' ? '/' : normalized;
@@ -14,6 +16,7 @@ function routeSegments(route, basePath) {
 function createHttpFacadeOpenApi(deps) {
     const basePath = normalizeBasePath(deps.basePath);
     const limits = (0, rpc_limits_1.resolveLimits)(deps.limits);
+    const metaMap = (0, facadeMeta_1.checkMetaMap)(deps.meta);
     const captured = [];
     function recorder(method) {
         return function captureRoute(route) { captured.push({ method, route }); };
@@ -22,14 +25,17 @@ function createHttpFacadeOpenApi(deps) {
         get: recorder('get'),
         post: recorder('post'),
     };
+    const routePaths = new Map();
     for (const method of deps.methods) {
-        (0, httpFacadeServer_1.createHttpFacadeServer)({
+        const server = (0, httpFacadeServer_1.createHttpFacadeServer)({
             app: recordingApp,
             object: deps.object,
             method,
             basePath: deps.basePath,
             limits: deps.limits,
         });
+        for (const route of server.routes())
+            routePaths.set(route.route, route.path);
     }
     const packedValueSchema = {
         description: 'The return value packed by the RPC result codec: plain JSON passes '
@@ -82,14 +88,18 @@ function createHttpFacadeOpenApi(deps) {
     }
     function buildOperation(method, route) {
         const segments = routeSegments(route, basePath);
+        const path = routePaths.get(route) ?? segments;
+        const meta = (0, facadeMeta_1.resolveMethodMeta)((0, facadeWalk_1.facadeMember)(deps.object, path), path, metaMap);
         const operation = {
             operationId: `${method}_${segments.join('.')}`,
             tags: [segments.length > 1 ? segments[0] : 'facade'],
-            description: `Invokes ${segments.join('.')}(...args) on the facade object.`,
+            description: meta?.description ?? `Invokes ${segments.join('.')}(...args) on the facade object.`,
             responses: {
                 '200': {
                     description: 'The facade function returned; its value arrives codec-packed.',
-                    content: { 'application/json': { schema: { $ref: '#/components/schemas/Result' } } },
+                    content: { 'application/json': { schema: meta?.output
+                                ? { allOf: [{ $ref: '#/components/schemas/Result' }, { properties: { value: meta.output } }] }
+                                : { $ref: '#/components/schemas/Result' } } },
                 },
                 '400': failureResponse('Malformed request: args is not valid JSON, not an array, '
                     + 'or the POST body is neither an array nor an object with "args".'),
@@ -98,7 +108,7 @@ function createHttpFacadeOpenApi(deps) {
                 '500': failureResponse('The facade function threw.'),
             },
         };
-        const summary = deps.summaries?.[route];
+        const summary = deps.summaries?.[route] ?? meta?.title ?? meta?.description;
         if (summary != null)
             operation['summary'] = summary;
         if (deps.bearerAuth) {
@@ -117,7 +127,7 @@ function createHttpFacadeOpenApi(deps) {
                 }];
         }
         else {
-            const tuple = deps.argSchemas?.[route];
+            const tuple = deps.argSchemas?.[route] ?? (0, facadeMeta_1.methodArgTuple)(meta);
             const bodyArgsSchema = tuple ? {
                 type: 'array',
                 prefixItems: [...tuple],

@@ -28,6 +28,8 @@ const focusedExports = [
     {subpath: 'server/auth', target: './lib/server/auth-token.js', sentinel: 'createTokenCodec'},
     // the http entry is an index since the OpenAPI generator graduated next to the facade server
     {subpath: 'server/http', target: './lib/server/http-index.js', sentinel: 'createHttpFacadeServer'},
+    // the only entry that loads @modelcontextprotocol/sdk (an optional peer)
+    {subpath: 'server/mcp', target: './lib/server/mcp-index.js', sentinel: 'createMcpFacadeServer'},
     {subpath: 'server/webhook', target: './lib/server/WebHook3.js', sentinel: 'createWebhookServer'},
 ] as const
 

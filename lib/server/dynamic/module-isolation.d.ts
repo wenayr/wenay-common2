@@ -1,4 +1,5 @@
 import { VerifiedModuleArtifact } from '../../Common/dynamic/module-verifier';
+import type { McpToolAnnotations } from '../facadeMeta';
 export type ModuleIsolationCallOptions = {
     correlationId: string;
     bindingGeneration?: number;
@@ -14,11 +15,7 @@ export type ModuleIsolationMcpRegistration = {
         toolId: string;
         title?: string;
         description?: string;
-        annotations?: {
-            readOnlyHint: boolean;
-            destructiveHint: boolean;
-            idempotentHint: boolean;
-        };
+        annotations?: Required<Pick<McpToolAnnotations, 'readOnlyHint' | 'destructiveHint' | 'idempotentHint'>>;
     };
     state: 'accepted' | 'attached' | 'detached' | 'rejected' | 'removed';
     reason?: string;

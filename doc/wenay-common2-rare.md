@@ -594,9 +594,12 @@ can settle no pending `reauth()`).
 
 `createHttpFacadeServer` is exported from `wenay-common2/server/http` and the compatibility
 `wenay-common2/server` facade. `createHttpFacadeOpenApi({object, basePath, methods, info,
-bearerAuth?, summaries?, argSchemas?, limits?}) -> {document()}` lives beside it (graduated from
+bearerAuth?, summaries?, argSchemas?, meta?, limits?}) -> {document()}` lives beside it (graduated from
 the demo incubator): the same facade walk as an OpenAPI 3.1 document, `argSchemas` giving a route
-its real tuple body. The scaffold's `template/rest.ts` mounts both from a service definition. It receives a caller-owned Express app and
+its real tuple body. Since 3.2.0 each route also reads the function's `describeMethod` metadata (or
+the `meta` map entry for its dotted path): `title`/`description` become the summary and description,
+`input`/`args` the tuple body, `output` the documented result value; an explicit `summaries` or
+`argSchemas` entry still wins. The MCP adapter below reads the same metadata. The scaffold's `template/rest.ts` mounts both from a service definition. It receives a caller-owned Express app and
 walks the supplied object once at server setup. Every nested enumerable string-keyed function becomes a route whose
 URL segments match its object path:
 
@@ -659,6 +662,156 @@ POST /http-facade/demo/echo    {"args":["hello"]}
 Both routes require `Authorization: Bearer <token>`. Set `DEMO_HTTP_FACADE_TOKEN` for a stable token; otherwise the
 stand generates one for that run and prints it beside the URLs. Authorization runs before the POST JSON parser. The
 example lives in `demo/server.ts` and deliberately exposes only status/echo rather than the account-scoped RPC facade.
+The same object is also served as MCP tools at `/mcp` with the same token (next section).
+
+### MCP facade server: tools and resources from the same facade
+
+`wenay-common2/server/mcp` (3.2.0) turns a facade into MCP tools on the official SDK
+(`@modelcontextprotocol/sdk` ^1.30, an optional peer loaded by this entry only). One facade and one
+metadata set give RPC, HTTP, OpenAPI and MCP; the facade and the tool list cannot drift apart.
+
+**Metadata next to the implementation.** A function cannot be introspected, so its description and
+argument schema are supplied explicitly and shared with `createHttpFacadeOpenApi`:
+
+```ts
+import {describeMethod, createMcpFacadeServer, type McpToolContext} from 'wenay-common2/server/mcp'
+
+const facade = {
+    view: {
+        list: describeMethod(function list(args: {prefix?: string}) { return {items: find(args.prefix)} }, {
+            description: 'Lists items by prefix',
+            input: {type: 'object', properties: {prefix: {type: 'string'}}},      // ONE object argument
+            annotations: {readOnlyHint: true},
+        }),
+    },
+    doc: {
+        add: describeMethod(function add(this: Doc, name: string, at?: number) { /* ... */ }, {
+            description: 'Adds an item',
+            args: [{name: 'name', schema: {type: 'string'}}, {name: 'at', schema: {type: 'integer'}, optional: true}],
+        }),
+        rebuild: describeMethod(async function rebuild(args: {full: boolean}, ctx: McpToolContext) {
+            ctx.progress(1, 2, 'planning')                    // MCP progress token
+            if (ctx.signal.aborted) throw new MyError('cancelled', 'E_CANCELLED')
+        }, {description: 'Rebuilds', input: {type: 'object', properties: {full: {type: 'boolean'}}}, context: true}),
+    },
+}
+```
+
+- `describeMethod(fn, meta) -> fn` stores frozen, checked metadata on the function under a registered
+  symbol (non-enumerable). `meta: {'doc.add': {...}}` on the factory describes functions you do not
+  own; a map entry wins over the attached one.
+- `input` — JSON Schema (`type: 'object'`) of the one object argument: the recommended agent-facing
+  shape `(args: T) => R`. `args` — named positional arguments: exposed as one object schema
+  (`additionalProperties: false`, non-optional names required), called positionally in order;
+  omitted trailing arguments are not passed. The two are exclusive.
+- `output` — JSON Schema (`type: 'object'`) of `structuredContent`, validated before it is sent.
+- `annotations` — `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`
+  (`McpToolAnnotations`; the dynamic runtime's `ModuleWorkerMcpAnnotations` is the same type with
+  three hints required).
+- `context: true` — a trailing argument `{signal, progress(n, total?, message?), session: {id},
+  principal}`. MCP cancellation aborts `signal`. Without it the function receives its arguments
+  only, so the same function works over RPC and HTTP unchanged.
+
+**The walk** is the HTTP adapter's (`facadeWalk.ts`): nested enumerable string-keyed functions in key
+order, the parent kept as `this`, circular branches, forbidden RPC keys and empty segments refused,
+walked once at setup. Tool name = path joined by `names.separator` (default `.`). `names.charset:
+'mcp'` (default, `[A-Za-z0-9_.-]`, 128) or `'claude'` (`[A-Za-z0-9_-]`, 64); a name outside it is
+refused naming its path, `names.map: true` replaces disallowed characters with `_`. A name registered
+twice is refused naming both paths. `noStrict` subtrees are not walked: expose dynamic keys through a
+stable dispatcher (`call(name, args)` resolving at call time) or `control.mount`/`replace`.
+
+`strict: true` refuses setup listing every function without description and `input`/`args`, and every
+`meta` key that names nothing. Without strict, such a function gets `{type: 'object'}`, a generated
+description, and receives the arguments object when it is non-empty; each case is reported once to
+`onFinding` (default `console.warn`) and kept in `view.findings()`.
+
+**Policy, ordering, middleware.**
+
+```ts
+const mcp = createMcpFacadeServer({
+    name: 'documents', version: '1.0.0', object: facade, strict: true,
+    readOnly: false,                                       // true: only readOnlyHint tools listed AND callable
+    policy: {
+        readOnly: path => path[0] == 'view',               // fills readOnlyHint where metadata does not
+        concurrency: path => path[0] == 'view' ? 'parallel' : 'serial',
+        resource: path => path.join('.') == 'view.summary', // zero-argument view also as a resource
+    },
+    around: [journal, receipts],                           // (ctx, next) => ..., outermost first
+    formatResult: (path, value) => undefined,              // presentation hook: a full tool result or undefined
+    limits: {maxStringLen: 100_000},
+})
+```
+
+- `'serial'` (default) runs through one ordered queue (`createAsyncQueue(1)`) shared by every session
+  and every derived principal facade; `'parallel'` means the tool orders itself. A call cancelled
+  while it waits never runs.
+- `around(ctx, next)` runs inside the queue slot, so post-mutation passes see the state right after
+  their own mutation. `ctx = {tool, path, args, readOnly, session, principal, signal}`; a middleware
+  may decorate the value (receipts) or rethrow. The adapter itself has no domain logic.
+- Read-only mode is defence in depth: a mutating tool is neither listed nor callable by name
+  (protocol error `-32602`).
+
+**Results and errors.** A plain-object return is `structuredContent` plus its JSON as one text
+block; a primitive or array is wrapped as `{value}`. The RPC walk codec marks Date/Map/Set/RegExp/
+BigInt exactly as on the HTTP facade. Top-level bytes (TypedArray/ArrayBuffer) become one embedded
+`blob` resource (`application/octet-stream`, bounded by `maxBinaryLen`); bytes nested in an object
+are refused (`E_MCP_BINARY`), never inflated into JSON. `RpcLimits` apply to the input and the
+output: an explicit `PayloadLimitError`, not truncation. Input is validated against the tool's schema
+(the SDK's Ajv provider; `validator: false` turns it off). Every failure inside the call is a tool
+result `isError: true` whose text is `{"error": {name, message, code?, data?}}` — the `MyError`
+code, never a stack. An unknown tool and a read-only refusal are protocol errors.
+
+**Listen and composition.** A branded `on` (or a Listen api object) at path P is the resource
+`facade://P` (`resources.scheme`): `resources/subscribe` subscribes the session (emits within one
+tick coalesce into one `notifications/resources/updated`; `resources.maxSubscriptions`, default 32
+per session), `resources/read` answers a `listenStore`'s current value, a plain `listen` notifies
+only (read is refused). A zero-argument function marked by `policy.resource` is a readable resource.
+`control.mount(key, object)`, `replace(key, object)` (one change, one notification), `unmount(key)`
+and `refresh()` (walk again: keys added since setup) send `notifications/tools/list_changed` (and
+`resources/list_changed`) to attached sessions when the lists differ; a refused composition leaves the
+served one in place. `experiments/dynamic-runtime/mcp-facade-gateway.ts` mounts the dynamic-runtime
+contribution gateway this way, so isolated module tools and facade tools share one registry.
+
+**Attaching and transports.** `control.attach(server, {id?, principal?})` registers `tools/*` (and
+`resources/*` when the facade has resources or `resources` is given) on an SDK `Server` or `McpServer`
+before it connects, and returns `detach`. It refuses a server whose `tools/list` is already handled:
+one server, one tool registry — mount other tools instead of `McpServer.registerTool`. Resource
+handlers are claimed only when needed, so a host's `registerResource` guides still work.
+`control.server(session?)` creates an attached SDK `Server`. Both are typed by the structural
+`McpServerLike` (what the adapter calls; an SDK `Server` satisfies it, an `McpServer` satisfies
+`{server: McpServerLike}`) and `validator` by `McpJsonSchemaValidator`: the SDK's CommonJS declarations
+of those classes fail TS1541 under `skipLibCheck: false`, and the entry's declarations never pull
+them in. `control.derive(object)` is the same
+metadata, policy, middleware, queue and audit over another object (a principal's facade).
+`control.dispose()` aborts in-flight calls, releases subscriptions and handlers, and refuses later
+calls (`E_MCP_DISPOSED`). `on.called` / `on.failed` are the audit streams.
+
+```ts
+createMcpFacadeHttp({
+    app, path: '/mcp', mcp,
+    mode: 'stateful',            // or 'stateless': a fresh server per POST
+    maxSessions: 32, sessionTtlMs: 30 * 60_000,
+    auth: {resolveAuth: token => ({object: facadeFor(verify(token)), principal: verify(token)})},
+}) // -> {sessions: {list, count}, control: {terminate, evictIdle, dispose}, on: {opened, closed}}
+await serveMcpStdio(mcp)         // one session over stdin/stdout
+```
+
+A stateful session is a registry entry, not a connection. **Closing a transport ends its streams
+and nothing else.** A session ends when the client sends `DELETE`, when it is idle past
+`sessionTtlMs` (no request in flight, no open stream), or when the host calls
+`control.terminate(id)` — each removes the entry and closes the SDK server; a later request with
+that id gets 404 and the client initializes again. `maxSessions` counts live and initializing
+sessions; beyond it `initialize` is refused with 503 naming the limit. Auth mirrors RPC (see
+[`RPC-AUTH.md`](RPC-AUTH.md)): the bearer token comes from `Authorization` on every request,
+`resolveAuth` throwing is 401, a grant's `object` is the principal's facade (absent = the facade's
+own), `expiresAt` fails closed, and a session stays bound to the principal that opened it
+(`principal.sub`, else the token): another principal on that session id is 403. A JSON parser before
+the endpoint is optional (the body is read up to `maxBodyBytes` otherwise).
+
+Living stand: `npm run demo` serves the HTTP facade demo object at `/mcp` with the same bearer token,
+its OpenAPI summaries and tuple bodies now coming from the same `describeMethod` metadata. Executable
+truth: `oracle/regression/mcp-facade-server.spec.ts` (in-process SDK client and real HTTP sessions,
+including OpenAPI ↔ MCP parity) and `experiments/dynamic-runtime/facade-gateway-self-client.ts`.
 
 ### RPC dynamic maps: `noStrict` for personal/runtime keys
 Use `noStrict(obj)` for user-scoped or runtime-keyed objects whose children are not a stable API schema: strategy maps, account maps, ORM/DB proxies, per-session private objects. The name is exactly `noStrict`.
@@ -1368,8 +1521,9 @@ It uses this package as a peer dependency, so `TF`/`Period` stay here and keep o
 Migration rows: [NAMING_RENAMES.md](NAMING_RENAMES.md).
 
 ## 🧩 server / socket helpers
-> Focused Node entrypoints: `wenay-common2/server/fs`, `/server/auth`, `/server/http`, and
-> `/server/webhook`; `wenay-common2/server` remains the compatibility facade.
+> Focused Node entrypoints: `wenay-common2/server/fs`, `/server/auth`, `/server/http`, `/server/mcp`
+> and `/server/webhook`; `wenay-common2/server` remains the compatibility facade (it does not load
+> the MCP SDK: `server/mcp` is reachable only by its own path).
 
 ```
 SocketServerHook(opt?) · WebSocketServerHook(hook, params?, disconnect?)    // server-side socket wiring

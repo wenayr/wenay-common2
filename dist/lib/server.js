@@ -14,6 +14,7 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
     for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.methodMeta = exports.describeMethod = void 0;
 __exportStar(require("./index"), exports);
 __exportStar(require("./server/fsKeyVolume"), exports);
 __exportStar(require("./server/fsReplayStorage"), exports);
@@ -22,4 +23,7 @@ __exportStar(require("./server/WebHook3"), exports);
 __exportStar(require("./server/createSignatureFunction"), exports);
 __exportStar(require("./server/httpFacadeServer"), exports);
 __exportStar(require("./server/httpFacadeOpenApi"), exports);
+var facadeMeta_1 = require("./server/facadeMeta");
+Object.defineProperty(exports, "describeMethod", { enumerable: true, get: function () { return facadeMeta_1.describeMethod; } });
+Object.defineProperty(exports, "methodMeta", { enumerable: true, get: function () { return facadeMeta_1.methodMeta; } });
 __exportStar(require("./server/auth-token"), exports);
