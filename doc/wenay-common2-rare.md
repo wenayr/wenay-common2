@@ -1440,10 +1440,7 @@ Viewer helpers (`media-view`): the consumer side of any media line (local pair o
 - `attachAudioPlayer(line, {minBufferSec? = 0.08, maxBacklogSec? = 0.35, audioContext?, onError?})` — pcm16/float32 through a sequential playhead. A still-future playhead remains contiguous even when its headroom drops below `minBufferSec`; only a real underrun rebuilds the jitter buffer (`stats().underruns`). A backlog past `maxBacklogSec` is dropped and rebased (`stats().dropped`). `enable()` must come from a user gesture (browser autoplay rules); `audioContext` injects a factory for tests/custom routing.
 - `pipeMediaPublish(line, publish, {stamp? = true, onError?})` — fire-and-forget pipe into an RPC call; the default `Date.now()` stamp is what viewer `stats().ageMs` measures against. Both attach helpers also expose `stats().perSec` (rolling 1s rate).
 - The canvas path gives an ordinary ArrayBuffer-backed payload directly to `Blob` (SharedArrayBuffer still receives an owned copy), closes every decoded bitmap after draw/error, and ignores an in-flight decode after `off()`. A synchronous publisher does not allocate a Promise; thenables retain asynchronous error routing.
-- Oracles: `replay/media-view.test.ts` and `replay/video-windows-stress.test.ts`. The latter uses
-  real Socket.IO/RPC with five synthetic participants, ten independent video windows, 96-512 KiB
-  frames, ACL/rejoin/latest recovery, slow-render busy-skip and listener-leak teardown without
-  requesting camera or microphone permissions.
+- Oracles: `replay/media-view.test.ts`, `replay/media-socket.test.ts`, `replay/video-socket.demo.ts`.
 
 Replay/RPC wiring:
 ```ts

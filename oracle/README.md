@@ -1,8 +1,10 @@
 # Oracles — executable checks run by `scripts/run-oracles.mjs`
 
-`npm run test:all` and `npm run release:verify` (CI, not before a publish) run every oracle in `oracle/`, `oracle/regression/`,
-`oracle/realsocket/`, `observe/` and `replay/` (see the groups in `scripts/run-oracles.mjs`). None of
-these folders ships in the npm package.
+`npm run test:all` and `npm run release:verify` (CI, not before a publish) run every oracle in
+`oracle/`, `oracle/regression/`, `oracle/realsocket/`, `observe/` and `replay/` in a parallel pool
+(all cores but two; `--jobs 1` runs them in order). A file with a fixed port constant holds that port
+while it runs, so files sharing a port never overlap. There are no stress or benchmark oracles: a
+check asserts behavior, not time or memory budgets. None of these folders ships in the npm package.
 
 - One script per behavior; `npx tsx <file>` runs it. It prints `PASS`/`FAIL` lines and exits non-zero
   on any failure. `oracle/regression/` holds the proof for a fixed defect: the spec failed before the

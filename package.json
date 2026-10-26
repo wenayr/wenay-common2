@@ -58,8 +58,6 @@
     "test:dynamic-runtime": "tsx observe/dynamic-module-manifest.test.ts && tsx observe/dynamic-module-worker.test.ts && tsx observe/dynamic-module-mcp-registrar.test.ts && tsx observe/dynamic-module-runtime.test.ts && tsx observe/dynamic-module-host-races.test.ts && tsx observe/dynamic-module-artifact-registry.test.ts && tsx observe/dynamic-module-rollout-journal.test.ts && tsx experiments/dynamic-runtime/fleet-self-client.ts && tsx experiments/dynamic-runtime/facade-gateway-self-client.ts",
     "test:dynamic-runtime:acceptance": "npm run test:dynamic-runtime && tsx oracle/realsocket/contract-runtime.spec.ts && tsx oracle/realsocket/replay-reconnect.spec.ts && tsx oracle/realsocket/store-chaos.spec.ts && tsx replay/offline-store-socket.test.ts && tsx observe/store-replica-set.test.ts",
     "test:all": "npm run test:rpc-guards && npm run test:types && npm run test:spec-types && npm run test:demo-types && npm run test:rpc && npm run test:rpc-flow && npm run test:rpc-markers && npm run test:rpc-inproc && npm run test:store-values && npm run test:store-external && npm run test:https && node scripts/run-oracles.mjs",
-    "test:stress": "node scripts/run-oracles.mjs --stress",
-    "test:stress:extended": "npm run test:stress && node scripts/run-oracles.mjs --extended-stress",
     "experiment:transport": "tsx experiments/transport-2026-07/bench.ts",
     "experiment:slow-network": "tsx experiments/slow-network-2026-08/bench.ts",
     "experiment:store-lazy": "tsx experiments/store-lazy-2026-08/bench.ts",
