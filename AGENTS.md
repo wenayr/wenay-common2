@@ -154,6 +154,10 @@ Use these rules by default — no need to ask.
 - Release flow: bump the version, run `npm run release:verify`, commit everything it produced (`lib/` and
   `dist/` included) and push, then `npm run publish`. `scripts/release-guard.mjs` refuses a tree that is
   uncommitted, unpushed or different from the verified one, and tags `v<version>` after publishing.
-- `packages/wenay-exchange` is a separate npm package (peer: this one). `release:verify` tests it too;
+- `release:fast` is the pre-publish gate and stays minutes long: build, type checks, doc links, the
+  example generation check and the installed-package check. Test suites and oracles never run before a
+  push or publish: the full `npm run release:verify` (npm test, all oracles, scale, exchange consumer,
+  scaffold, examples) runs in CI on every push, or locally afterwards; a defect it finds ships as a patch.
+- `packages/wenay-exchange` is a separate npm package (peer: this one). `release:verify` tests it;
   publish it after this package with `npm run --prefix packages/wenay-exchange release` (tag
   `wenay-exchange-v<version>`).

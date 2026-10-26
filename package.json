@@ -27,6 +27,7 @@
     "types:generate": "tsc -p tsconfig.json --emitDeclarationOnly",
     "types:watch": "tsc -p tsconfig.json --emitDeclarationOnly --watch",
     "_afterBuild": "node copyCompiledFiles.mjs ./dist  &&  cd dist  &&  npm pkg delete scripts devDependencies private",
+    "release:fast": "npm run build  &&  npm run test:types  &&  npm run test:spec-types  &&  npm run test:oracle-types  &&  npm run test:demo-types  &&  npm run test:doc-links  &&  node scripts/generate-examples.mjs --check  &&  npm run test:package  &&  node scripts/release-guard.mjs stamp",
     "release:verify": "npm run build  &&  npm test  &&  node scripts/run-oracles.mjs  &&  npm run test:scale-process  &&  npm run test:package  &&  npm run test:exchange-package  &&  npm run test:scaffold && npm run test:examples  &&  node scripts/release-guard.mjs stamp",
     "test:scale-process": "tsx experiments/wenay-scaffold/multiprocess-check.ts",
     "test:package": "node scripts/verify-package-consumer.mjs",

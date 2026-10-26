@@ -1,6 +1,6 @@
 # Oracles — executable checks run by `scripts/run-oracles.mjs`
 
-`npm run test:all` and `npm run release:verify` run every oracle in `oracle/`, `oracle/regression/`,
+`npm run test:all` and `npm run release:verify` (CI, not before a publish) run every oracle in `oracle/`, `oracle/regression/`,
 `oracle/realsocket/`, `observe/` and `replay/` (see the groups in `scripts/run-oracles.mjs`). None of
 these folders ships in the npm package.
 
