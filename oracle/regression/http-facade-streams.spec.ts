@@ -73,8 +73,12 @@ function createStreams() {
 }
 
 const BASE = '/facade'
-const EXPECTED_ROUTES = ['status', 'plain/withCallback', 'publish', 'wire/since', 'wire/keyframe', 'wire/frame']
+// a noStrict object is one dynamic route resolved per request (http-facade-dynamic.spec.ts covers it)
+const EXPECTED_ROUTES = ['status', 'plain/withCallback', 'publish', 'wire/since', 'wire/keyframe', 'wire/frame', 'dynamic/*rest']
     .map(path => `${BASE}/${path}`)
+const EXPECTED_PATHS = EXPECTED_ROUTES.flatMap(route => route.endsWith('/*rest')
+    ? [route.replace(/\/\*rest$/, '/{member}'), route.replace(/\/\*rest$/, '/{key}/{member}')]
+    : [route])
 
 // =====================================================================
 // tests
@@ -97,9 +101,9 @@ async function streamsOverExpress() {
     const postServer = createHttpFacadeServer({app, object: facade, method: 'post', basePath: BASE})
 
     assert(same(getServer.routes().map(route => route.route), EXPECTED_ROUTES),
-        `GET routes are the plain functions only: ${JSON.stringify(getServer.routes().map(route => route.route))}`)
+        `GET routes are the plain functions and the dynamic node: ${JSON.stringify(getServer.routes().map(route => route.route))}`)
     assert(same(postServer.routes().map(route => route.route), EXPECTED_ROUTES),
-        `POST routes are the plain functions only: ${JSON.stringify(postServer.routes().map(route => route.route))}`)
+        `POST routes are the plain functions and the dynamic node: ${JSON.stringify(postServer.routes().map(route => route.route))}`)
 
     const server = createServer(app)
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -130,7 +134,6 @@ async function streamsOverExpress() {
             ['POST events/journal/close', await post('/events/journal/close')],
             ['POST wire/line/emit', await post('/wire/line/emit', [{seq: 99, ts: 0, event: [99]}])],
             ['GET events/price?args=[1]', await get('/events/price', [1])],
-            ['POST dynamic/hidden', await post('/dynamic/hidden')],
             ['POST dynamicFn', await post('/dynamicFn')],
         ] as const
         for (const [request, status] of forged) assert(status == 404, `${request} is not a route: got ${status}`)
@@ -139,7 +142,7 @@ async function streamsOverExpress() {
         assert(ticks.count() == 1 && same(ticksSeen, []), `ticks kept its one subscriber and saw nothing: ${ticks.count()} ${ticksSeen}`)
         assert(journal.head() == 1 && same(journalSeen, [1]), `the journal took no forged event: head ${journal.head()}, seen ${journalSeen}`)
         assert(priceStore.count() == 1, `no subscriber was planted on price: ${priceStore.count()}`)
-        assert(streams.dynamicCalls() == 0, 'noStrict members were never called')
+        assert(streams.dynamicCalls() == 0, 'a noStrict function was never called')
 
         streams.emitTick(5)
         streams.setPrice(11)
@@ -151,6 +154,7 @@ async function streamsOverExpress() {
         // ---------- negative control: an explicit function does deliver over HTTP ----------
         assert(await post('/publish', [7]) == 200, 'the explicit publish route answers')
         assert(same(ticksSeen, [5, 7]), `the delivery probe sees what a real route publishes: ${ticksSeen}`)
+        assert(await post('/dynamic/hidden') == 200 && streams.dynamicCalls() == 1, 'a member below a noStrict object resolves per request')
 
         // ---------- the replay wire keeps its catch-up calls ----------
         const sinceResponse = await fetch(`${url}${BASE}/wire/since`, {
@@ -168,7 +172,7 @@ async function streamsOverExpress() {
     // ---------- the OpenAPI document repeats the same walk ----------
     const openApi = createHttpFacadeOpenApi({object: facade, basePath: BASE, methods: ['get', 'post'], info: {title: 'streams', version: '1'}})
     const paths = openApi.document()['paths'] as Record<string, Record<string, unknown>>
-    assert(same(Object.keys(paths), EXPECTED_ROUTES), `OpenAPI paths are the routes: ${JSON.stringify(Object.keys(paths))}`)
+    assert(same(Object.keys(paths), EXPECTED_PATHS), `OpenAPI paths are the routes: ${JSON.stringify(Object.keys(paths))}`)
     assert(Object.values(paths).every(item => same(Object.keys(item), ['get', 'post'])), 'each path documents both mirrors')
 
     console.log('PASS HTTP facade does not route Listen, replay, branded on or noStrict members (404 over Express)')
@@ -211,8 +215,8 @@ function nodeKinds() {
     const trapped = noStrict(new Proxy({}, {ownKeys: trap, getOwnPropertyDescriptor: trap, get: trap, has: trap}))
     assert(facadeNodeKind(trapped) == 'dynamic' && !trapRan, 'a noStrict Proxy is dynamic without running a trap')
     const walked = createHttpFacadeServer({app: express(), object: {ok: () => 1, dyn: trapped}, method: 'post', basePath: '/trap'})
-    assert(same(walked.routes().map(route => route.route), ['/trap/ok']) && !trapRan,
-        'the walk skips a noStrict Proxy without enumerating it')
+    assert(same(walked.routes().map(route => route.route), ['/trap/ok', '/trap/dyn/*rest']) && !trapRan,
+        'the walk registers a noStrict Proxy as a dynamic route without enumerating it')
 
     // a spread copy loses the replay brand but keeps the Listen shape
     const copy = {...journal}

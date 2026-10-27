@@ -356,8 +356,9 @@ const LISTEN_CORE = ['emit', 'on', 'off', 'onClose', 'run', 'isRunning', 'close'
 
 export function isListenCallback(obj: any): obj is ListenApi {
     if (obj == null || typeof obj != 'object') return false
-    const keys = new Set(Object.keys(obj))
-    for (const key of LISTEN_CORE) if (!keys.has(key)) return false
+    // own enumerable, as Object.keys, but per core key: listing every key costs O(size) on a big array
+    // or index, which the HTTP/MCP facades pass through on every dynamic request
+    for (const key of LISTEN_CORE) if (!Object.prototype.propertyIsEnumerable.call(obj, key)) return false
     for (const key of LISTEN_CORE) if (typeof obj[key] != 'function') return false
     return true
 }

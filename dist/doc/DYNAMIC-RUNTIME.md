@@ -88,7 +88,7 @@ source, tests, and public docs.
 | `Observe.createStore` plus Store Replay | Authoritative status, resumable facts, browser mirrors, reconnect catch-up | A replay sequence alone is not a business-command id |
 | `Observe.syncStoreReplayRoute` | Replaceable replay route where a continuous mirror is needed | It switches data sources, not executable code |
 | RPC facades and `Listen` | Typed remote calls and outward event streams | Authorization must follow `RPC-AUTH.md` |
-| `createHttpFacadeServer` from `wenay-common2/server` | Static GET/POST mirror for a safe control/view facade with Express middleware | Request/response only: Listen streams and `noStrict` subtrees are skipped, not routed; no callbacks, SSE, dynamic route keys or binary download |
+| `createHttpFacadeServer` from `wenay-common2/server` | Static GET/POST mirror for a safe control/view facade with Express middleware | Request/response only: Listen streams are skipped, not routed; a `noStrict` object is one route `<P>/*rest` resolved per request (runtime keys); no callbacks, SSE or binary download |
 
 Relevant implementation evidence:
 

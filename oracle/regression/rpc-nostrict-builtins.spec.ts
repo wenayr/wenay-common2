@@ -27,6 +27,10 @@ async function main() {
     const when = new Date(0)
     const strategies = {s1: new Strategy()}
     const ownClear = {clear: () => 'own clear'}
+    // platform classes are builtins too: their prototype methods are the runtime's, not the host's
+    const query = new URLSearchParams('a=1')
+    const abort = new AbortController()
+    const bytes = Buffer.from('abcd')
     const gated = new Proxy({}, {
         has: (_target, key) => key == 'bob',
         get: (_target, key) => key == 'bob' ? {ping: () => 'pong'} : undefined,
@@ -39,6 +43,7 @@ async function main() {
         strategies: noStrict(strategies),
         ownClear: noStrict(ownClear),
         gated: noStrict(gated),
+        platform: noStrict({query, abort, bytes}),
     }
     const [clientSocket, serverSocket] = createInProcSocketPair()
     createRpcServer({socket: serverSocket, socketKey: 'k', object: api})
@@ -63,6 +68,12 @@ async function main() {
     check('the host Map is unchanged', cache.size == 1, `size=${cache.size}`)
     await refused("a Date's setTime is refused", () => f.clock.when.setTime(5))
     check('the host Date is unchanged', when.getTime() == 0, String(when.getTime()))
+    await refused("URLSearchParams' delete is refused", () => f.platform.query.delete('a'))
+    check('the host URLSearchParams is unchanged', query.get('a') == '1', String(query))
+    await refused("AbortController's abort is refused", () => f.platform.abort.abort())
+    check('the host AbortController is not aborted', !abort.signal.aborted)
+    await refused("Buffer's write is refused", () => f.platform.bytes.write('xxxx'))
+    check('the host Buffer is unchanged', bytes.toString() == 'abcd', bytes.toString())
 
     // ---------- the application's own surface stays reachable (controls) ----------
     check('an own method below noStrict works', await f.accounts.alice.greet() == 'hi')

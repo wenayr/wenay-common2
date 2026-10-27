@@ -461,10 +461,15 @@ async function listenResources() {
     })
     const names = mcp.tools.list().map(tool => tool.name)
     assert(!names.some(name => name.startsWith('events') || name.startsWith('dynamic')), `Listen and noStrict are not tools: ${names}`)
-    // the same walk: HTTP routes neither the streams nor the noStrict subtree, one route per tool
+    // the same walk: HTTP routes no stream; one static route per tool, and the noStrict node is one
+    // dynamic route (documented as {member} and {key}/{member}) where MCP serves `facade://dynamic/{key}`
     const openApi = createHttpFacadeOpenApi({object, basePath: '/api', methods: ['post'], info: {title: 'resources', version: '1'}})
     const routes = Object.keys(openApi.document()['paths'] as Record<string, unknown>)
-    assert(same(routes, names.map(name => `/api/${name.split('.').join('/')}`)), `OpenAPI routes are the MCP tools: ${routes}`)
+    const staticRoutes = routes.filter(route => !route.endsWith('{member}'))
+    assert(same(staticRoutes, names.map(name => `/api/${name.split('.').join('/')}`)), `OpenAPI static routes are the MCP tools: ${routes}`)
+    assert(same(routes.filter(route => route.endsWith('{member}')), ['/api/dynamic/{member}', '/api/dynamic/{key}/{member}'])
+        && same(mcp.resources.templates().map(template => template.uriTemplate), ['facade://dynamic/{key}']),
+        `the noStrict node is a dynamic route over HTTP and a template over MCP: ${routes}`)
     const {client, close} = await connect(mcp)
     const uris = (await client.listResources()).resources.map(resource => resource.uri)
     assert(same([...uris].sort(), ['facade://events/price', 'facade://events/ticks', 'facade://view/count']), `resources: ${uris}`)

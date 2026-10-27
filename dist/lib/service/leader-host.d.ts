@@ -487,11 +487,13 @@ export declare function createServiceLeaderHost<D extends tServiceDefinition<any
                 method: import("../server").tHttpFacadeMethod;
                 path: string[];
                 route: string;
+                dynamic: boolean;
             }[];
             write: {
                 method: import("../server").tHttpFacadeMethod;
                 path: string[];
                 route: string;
+                dynamic: boolean;
             }[];
         };
         openApi: {
@@ -976,11 +978,13 @@ export declare function runLeaderProcess<D extends tServiceDefinition<any, any>>
                 method: import("../server").tHttpFacadeMethod;
                 path: string[];
                 route: string;
+                dynamic: boolean;
             }[];
             write: {
                 method: import("../server").tHttpFacadeMethod;
                 path: string[];
                 route: string;
+                dynamic: boolean;
             }[];
         };
         openApi: {

@@ -18,6 +18,7 @@ export declare function createHttpFacadeServer<T extends object>(options: HttpFa
         method: tHttpFacadeMethod;
         path: string[];
         route: string;
+        dynamic: boolean;
     }[];
 };
 export type HttpFacadeServer = ReturnType<typeof createHttpFacadeServer>;

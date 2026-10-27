@@ -82,6 +82,7 @@ export function createHttpFacadeOpenApi(deps: HttpFacadeOpenApiDeps) {
     } as unknown as HttpFacadeServerOptions<object>['app']
     // the facade path of each captured route, to find the function and its metadata
     const routePaths = new Map<string, readonly string[]>()
+    const dynamicRoutes = new Set<string>()
     for (const method of deps.methods) {
         const server = createHttpFacadeServer({
             app: recordingApp,
@@ -90,7 +91,19 @@ export function createHttpFacadeOpenApi(deps: HttpFacadeOpenApiDeps) {
             basePath: deps.basePath,
             limits: deps.limits,
         })
-        for (const route of server.routes()) routePaths.set(route.route, route.path)
+        for (const route of server.routes()) {
+            routePaths.set(route.route, route.path)
+            if (route.dynamic) dynamicRoutes.add(route.route)
+        }
+    }
+    // Express's `<P>/*rest` is documented as two templates of one-segment parameters: OpenAPI forbids
+    // "/" inside a path parameter and Swagger UI percent-encodes it, which the route reads as one key.
+    // Deeper member paths (`<P>/<key>/<a>/<b>`) work the same and stay undocumented.
+    type tDynamicShape = 'member' | 'key/member'
+    function documentedPaths(route: string): {path: string, shape?: tDynamicShape}[] {
+        if (!dynamicRoutes.has(route)) return [{path: route}]
+        const prefix = route.replace(/\/\*rest$/, '')
+        return [{path: `${prefix}/{member}`, shape: 'member'}, {path: `${prefix}/{key}/{member}`, shape: 'key/member'}]
     }
 
     // ============== shared schemas ==============
@@ -149,14 +162,22 @@ export function createHttpFacadeOpenApi(deps: HttpFacadeOpenApiDeps) {
     }
 
     // ============== one operation per captured route ==============
-    function buildOperation(method: tHttpFacadeMethod, route: string) {
-        const segments = routeSegments(route, basePath)
-        const path = routePaths.get(route) ?? segments
-        const meta = resolveMethodMeta(facadeMember(deps.object, path), path, metaMap)
+    function buildOperation(method: tHttpFacadeMethod, route: string, shape?: tDynamicShape) {
+        const dynamic = shape != undefined
+        const path = routePaths.get(route) ?? routeSegments(route, basePath)
+        const segments = shape == 'key/member' ? [...path, 'key', 'member']
+            : shape == 'member' ? [...path, 'member']
+            : routeSegments(route, basePath)
+        // a dynamic node's members are resolved per request: there is no one function to describe
+        const meta = dynamic ? undefined : resolveMethodMeta(facadeMember(deps.object, path), path, metaMap)
         const operation: Record<string, unknown> = {
             operationId: `${method}_${segments.join('.')}`,
             tags: [segments.length > 1 ? segments[0] : 'facade'],
-            description: meta?.description ?? `Invokes ${segments.join('.')}(...args) on the facade object.`,
+            description: dynamic
+                ? `Invokes ${shape == 'key/member' ? '<key>.<member>' : '<member>'}(...args) below the dynamic node `
+                    + `${path.join('.')} (noStrict), resolved on every request: keys added after setup work at once; `
+                    + 'inherited builtins and streams do not resolve. Deeper member paths work the same way.'
+                : meta?.description ?? `Invokes ${segments.join('.')}(...args) on the facade object.`,
             responses: {
                 '200': {
                     description: 'The facade function returned; its value arrives codec-packed.',
@@ -177,8 +198,29 @@ export function createHttpFacadeOpenApi(deps: HttpFacadeOpenApiDeps) {
             (operation['responses'] as Record<string, unknown>)['401']
                 = failureResponse('Missing or wrong bearer token; the error carries only a message.')
         }
+        const parameters: object[] = []
+        if (dynamic) {
+            (operation['responses'] as Record<string, unknown>)['404']
+                = failureResponse('No such key or member below the dynamic node, or it is not a function.')
+            if (shape == 'key/member') {
+                parameters.push({
+                    name: 'key',
+                    in: 'path',
+                    required: true,
+                    description: 'A key of the dynamic node; a key holding "/" is percent-encoded.',
+                    schema: {type: 'string'},
+                })
+            }
+            parameters.push({
+                name: 'member',
+                in: 'path',
+                required: true,
+                description: shape == 'key/member' ? 'A function of that key.' : 'A function of the dynamic node itself.',
+                schema: {type: 'string'},
+            })
+        }
         if (method == 'get') {
-            operation['parameters'] = [{
+            parameters.push({
                 name: 'args',
                 in: 'query',
                 required: false,
@@ -186,8 +228,10 @@ export function createHttpFacadeOpenApi(deps: HttpFacadeOpenApiDeps) {
                     + 'omitted or empty means no arguments. Repeating the parameter is rejected.',
                 schema: {type: 'string'},
                 example: '["hello"]',
-            }]
-        } else {
+            })
+        }
+        if (parameters.length) operation['parameters'] = parameters
+        if (method != 'get') {
             // an argSchemas route documents the args as the exact call tuple;
             // without one the generic bounded array stands as before
             const tuple = deps.argSchemas?.[route] ?? methodArgTuple(meta)
@@ -228,8 +272,10 @@ export function createHttpFacadeOpenApi(deps: HttpFacadeOpenApiDeps) {
 
     const paths: Record<string, Record<string, unknown>> = {}
     for (const {method, route} of captured) {
-        const item = paths[route] ?? (paths[route] = {})
-        item[method] = buildOperation(method, route)
+        for (const documented of documentedPaths(route)) {
+            const item = paths[documented.path] ?? (paths[documented.path] = {})
+            item[method] = buildOperation(method, route, documented.shape)
+        }
     }
 
     const document: Record<string, unknown> = {

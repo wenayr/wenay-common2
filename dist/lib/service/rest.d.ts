@@ -25,11 +25,13 @@ export declare function createServiceRest<D extends tServiceDefinition<any, any>
             method: import("../server").tHttpFacadeMethod;
             path: string[];
             route: string;
+            dynamic: boolean;
         }[];
         write: {
             method: import("../server").tHttpFacadeMethod;
             path: string[];
             route: string;
+            dynamic: boolean;
         }[];
     };
     openApi: {

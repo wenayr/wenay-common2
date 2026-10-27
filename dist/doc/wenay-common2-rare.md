@@ -601,7 +601,8 @@ the `meta` map entry for its dotted path): `title`/`description` become the summ
 `input`/`args` the tuple body, `output` the documented result value; an explicit `summaries` or
 `argSchemas` entry still wins. The MCP adapter below reads the same metadata. The scaffold's `template/rest.ts` mounts both from a service definition. It receives a caller-owned Express app and
 walks the supplied object once at server setup. Every nested enumerable string-keyed function becomes a route whose
-URL segments match its object path, except inside Listen streams and `noStrict` subtrees (below):
+URL segments match its object path, except inside Listen streams (skipped) and `noStrict` objects (one dynamic route
+each, resolved per request — below):
 
 ```ts
 import express from 'express'
@@ -644,14 +645,33 @@ hook never costs the reply. The service REST logs every 5xx with its stack throu
 The existing RPC walk codec restores Date/Map/Set/RegExp/BigInt request values and packs them in results. This is not
 a callback or binary transport. A plain function is a route whatever its signature, so a function that takes a
 callback cannot receive one over HTTP. Streams are never routes: a Listen api object, a `replayListen` line, and a
-branded `on` are skipped together with their members (`emit`, `close`, `run`, `on`…). So is a `noStrict` subtree,
-which RPC resolves at call time. To publish over HTTP, wrap it in an explicit function (`publish: v => emit(v)`,
-`count: () => stream.count()`). A Listen or `noStrict` root object is refused. A replay wire facade keeps
+branded `on` are skipped together with their members (`emit`, `close`, `run`, `on`…). To publish over HTTP, wrap it in
+an explicit function (`publish: v => emit(v)`, `count: () => stream.count()`). A Listen or `noStrict` root object is
+refused.
+
+A `noStrict` object at path P is one dynamic route `<base>/P/*rest` (3.3.2), resolved on every request as RPC resolves
+that subtree at call time: `POST /api/accounts/alice/orders/add` calls `accounts['alice'].orders.add(...args)` with
+`orders` as `this`. Keys added after setup work at once; the node is never enumerated at setup. Each segment is
+decoded (`%2F` keeps a slash inside one key), must be non-empty and safe (400), and the whole path stays within
+`limits.maxPathLen` (413; a node too deep for any member is refused at setup); one trailing slash is ignored, as on
+static routes. Membership is the RPC rule (`in`, so a proxy's `has` trap is the access point); methods inherited from
+builtin and platform prototypes (`hasOwnProperty`, `toString`, an array's `push`, a Map's `clear`, `URLSearchParams`,
+`AbortController`, `Buffer`…) never resolve unless own; neither a function nor bytes are containers, and a stream below a
+key stays unreachable — each is 404, as is a member that is not a function. A `noStrict` function holds no members and
+gets no route. A route of the same method registered on the same app below (or above) a dynamic route is refused at
+setup: one of the two could never answer. `routes()` marks these entries `dynamic: true`; OpenAPI documents each node
+as `<base>/P/{member}` and `<base>/P/{key}/{member}` (one-segment parameters: Swagger UI percent-encodes a `/` inside a
+parameter, which the route reads as one key); deeper member paths work the same and stay undocumented. To keep a
+`noStrict` node off HTTP, leave it out of the object you give this adapter (one facade per audience, as on RPC). A
+malformed percent-escape fails in Express's router before this adapter runs and answers Express's own 400 page, with a
+stack unless `NODE_ENV=production` or an error handler is installed — the same as an invalid JSON body under
+`express.json()`. A replay wire facade keeps
 `since`/`keyframe`/`frame` as routes; its `line` is skipped. Only registered or branded streams are recognized (an
 object with all eight Listen-core functions counts, as on RPC): a `toSlimListen` object or a bare `emit` placed in the
 facade is a plain function and stays a route. Use an explicit download endpoint for bytes. The adapter preserves a function's parent as its invocation context,
 rejects circular facade branches and forbidden RPC keys, and rejects repeated registration of the same app, method,
-and URL. Dynamic keys added after setup do not create new routes; call the factory only after the static facade is ready.
+and URL. Plain keys added after setup do not create new routes (put runtime keys under `noStrict`); call the factory
+only after the static facade is ready.
 
 Register this adapter once next to the HTTP server, not inside a Socket.IO `connection` callback. Authentication,
 rate limiting, and network exposure remain ordinary Express middleware concerns. GET routes must stay read-only
@@ -724,9 +744,10 @@ walked once at setup. Tool name = path joined by `names.separator` (default `.`)
 refused naming its path, `names.map: true` replaces disallowed characters with `_`. A name registered
 twice is refused naming both paths. The walk itself skips streams (Listen api objects, replay lines,
 branded `on`) and `noStrict` subtrees for both HTTP and MCP, and refuses a stream or `noStrict` root
-(also for `derive`; `control.mount`/`replace` refuse a stream). MCP claims both first: streams become
-resources, `noStrict` nodes — including a `noStrict` object mounted under a key — become resource
-templates and, on request, a dispatcher tool (*Dynamic nodes* below).
+(also for `derive`; `control.mount`/`replace` refuse a stream). Each adapter claims them first: MCP
+turns streams into resources and `noStrict` nodes — including a `noStrict` object mounted under a
+key — into resource templates and, on request, a dispatcher tool (*Dynamic nodes* below); HTTP turns
+a `noStrict` object into one dynamic route resolved per request.
 
 `strict: true` refuses setup listing every function without description and `input`/`args`, and every
 `meta` key that names nothing. Without strict, such a function gets `{type: 'object'}`, a generated

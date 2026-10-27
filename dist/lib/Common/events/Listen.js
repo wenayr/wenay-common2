@@ -305,9 +305,8 @@ const LISTEN_CORE = ['emit', 'on', 'off', 'onClose', 'run', 'isRunning', 'close'
 function isListenCallback(obj) {
     if (obj == null || typeof obj != 'object')
         return false;
-    const keys = new Set(Object.keys(obj));
     for (const key of LISTEN_CORE)
-        if (!keys.has(key))
+        if (!Object.prototype.propertyIsEnumerable.call(obj, key))
             return false;
     for (const key of LISTEN_CORE)
         if (typeof obj[key] != 'function')

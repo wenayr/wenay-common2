@@ -13,6 +13,7 @@ function collectBuiltinMethods() {
     ];
     if (typeof WeakRef == 'function')
         samples.push(new WeakRef({}));
+    samples.push(...platformSamples());
     const methods = new Map();
     const seen = new Set();
     for (const sample of samples) {
@@ -30,6 +31,40 @@ function collectBuiltinMethods() {
         }
     }
     return methods;
+}
+function platformSamples() {
+    const factories = [
+        () => new URL('http://localhost/'),
+        () => new URLSearchParams(''),
+        () => new AbortController(),
+        () => new AbortController().signal,
+        () => new EventTarget(),
+        () => new Event('sample'),
+        () => new TextEncoder(),
+        () => new TextDecoder(),
+        () => new Headers(),
+        () => new Blob([]),
+        () => new FormData(),
+        () => new Response(null),
+        () => new Request('http://localhost/'),
+        function messagePort() {
+            const channel = new MessageChannel();
+            channel.port1.close();
+            channel.port2.close();
+            return channel.port1;
+        },
+        () => globalThis.Buffer?.alloc(0),
+    ];
+    const samples = [];
+    for (const factory of factories) {
+        try {
+            const sample = factory();
+            if (sample != null)
+                samples.push(sample);
+        }
+        catch { }
+    }
+    return samples;
 }
 function dynamicMember(node, key) {
     if (key.length == 0 || !(0, rpc_limits_1.isSafeKey)(key))

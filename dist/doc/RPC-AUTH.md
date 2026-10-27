@@ -140,7 +140,9 @@ resolves only if it is not a method inherited from a builtin prototype (`__defin
 `hasOwnProperty`, `toString`, an array's `push`/`splice`, a Map's `clear`, a Date's `setTime`…) or the
 node owns it. Before, a peer could plant an accessor on host data or mutate it through those methods.
 A host class's own prototype methods and members answered by a proxy's `has` trap stay reachable;
-MCP's `noStrict` templates and dispatcher use the same rule.
+MCP's `noStrict` templates and dispatcher use the same rule. Since 3.3.2 the rule also covers the
+platform's classes (`URL`, `URLSearchParams`, `AbortController`, `EventTarget`, `Headers`, `Blob`,
+`Buffer`…), and the HTTP facade's dynamic routes use it too.
 
 **A `PIPE` step is a route segment too.** Each `{type:'get', prop}` walks a name into the facade
 exactly as a path segment does, so it passes the same `isSafeKey` filter as `ref`, and the whole

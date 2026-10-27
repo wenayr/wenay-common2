@@ -75,7 +75,8 @@ createMcpFacadeHttp({app, path, mcp, mode?, maxSessions?, sessionTtlMs?, auth?: 
 await serveMcpStdio(mcp)
 ```
 
-Same walk as `createHttpFacadeServer` (streams and `noStrict` are never routes or tools); Listen `on` → MCP
+Same walk as `createHttpFacadeServer` (streams are never routes or tools; a `noStrict` object is one HTTP route
+`<P>/*rest` resolved per request and an MCP resource template); Listen `on` → MCP
 resources; a `noStrict` node → the resource template `facade://P/{key}` resolved per request as on RPC
 (`policy.dynamic`: `'read'` default, `false` hides, `'call'` adds the `P.call` dispatcher tool;
 `resources.completions` opts into key completion); one serial queue unless `policy.concurrency` says

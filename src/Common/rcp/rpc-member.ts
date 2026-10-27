@@ -24,6 +24,7 @@ function collectBuiltinMethods() {
         Object(''), Object(0), Object(false), Object(Symbol()), Object(BigInt(0)),
     ]
     if (typeof WeakRef == 'function') samples.push(new WeakRef({}))
+    samples.push(...platformSamples())
     const methods = new Map<string, Set<unknown>>()
     const seen = new Set<object>()
     for (const sample of samples) {
@@ -39,6 +40,42 @@ function collectBuiltinMethods() {
         }
     }
     return methods
+}
+
+// The host platform's classes (Node and browsers differ, so each is optional): URLSearchParams.delete,
+// AbortController.abort or Buffer.write are as much the runtime's as an array's push.
+function platformSamples() {
+    const factories: (() => unknown)[] = [
+        () => new URL('http://localhost/'),
+        () => new URLSearchParams(''),
+        () => new AbortController(),
+        () => new AbortController().signal,
+        () => new EventTarget(),
+        () => new Event('sample'),
+        () => new TextEncoder(),
+        () => new TextDecoder(),
+        () => new Headers(),
+        () => new Blob([]),
+        () => new FormData(),
+        () => new Response(null),
+        () => new Request('http://localhost/'),
+        function messagePort() {
+            // closed at once: a port is only a sample of its prototype and must not hold the process
+            const channel = new MessageChannel()
+            channel.port1.close()
+            channel.port2.close()
+            return channel.port1
+        },
+        () => (globalThis as {Buffer?: {alloc(size: number): unknown}}).Buffer?.alloc(0),
+    ]
+    const samples: unknown[] = []
+    for (const factory of factories) {
+        try {
+            const sample = factory()
+            if (sample != null) samples.push(sample)
+        } catch {}
+    }
+    return samples
 }
 
 /** The member `key` of a node below noStrict, or undefined when absent or a builtin the node does
