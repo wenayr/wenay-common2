@@ -1,4 +1,5 @@
 import {isNoStrict} from "./rpc-dynamic";
+import {dynamicMember} from "./rpc-member";
 import { isSafeKey, resolveLimits, PayloadLimitError, type RpcLimits } from "./rpc-limits";
 import {unpack, errToObj, packResult, type tReservedKeyReport} from "./rpc-walk";
 import { isPlainObject, createCbShapeServer, createShapeRegistry, createRowEncoder } from "./rpc-shape";
@@ -134,9 +135,12 @@ function invalidPipeStep(steps: readonly any[]): string | null {
 // does not descend, so the schema describes nothing below it — the application resolves that
 // subtree itself and answers `in` from its own proxy trap. The flag LATCHES: a value reached
 // through a dynamic node is part of that same app-resolved subtree, and the marker sits on
-// the node the application handed over, not on everything it later returns.
-const reachableMember = (obj: any, key: string, dynamic: boolean) =>
-    dynamic ? key in obj : Object.prototype.hasOwnProperty.call(obj, key);
+// the node the application handed over, not on everything it later returns. `in` alone also
+// found the runtime's own prototype methods (__defineGetter__, an array's push, a Map's clear):
+// dynamicMember refuses those unless the node owns them, the same rule MCP applies.
+const reachableValue = (obj: any, key: string, dynamic: boolean): any =>
+    dynamic ? dynamicMember(obj, key)
+        : Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined;
 
 function createServer<T extends object>(
     socket: SocketTmpl,
@@ -1046,15 +1050,15 @@ function createServer<T extends object>(
                     let dynamic = isNoStrict(curr);
                     for (let i = 0; i < ref.length - 1; i++) {
                         const seg = ref[i];
-                        if (curr == null || typeof curr !== "object" || !reachableMember(curr, seg, dynamic)) { curr = undefined; break; }
-                        curr = curr[seg];
+                        if (curr == null || typeof curr !== "object") { curr = undefined; break; }
+                        curr = reachableValue(curr, seg, dynamic);
                         if (hooks?.resolveTransform && !isNoStrict(curr)) curr = transformRpcScoped(hooks, curr, resourceScope);
                         if (isNoStrict(curr)) dynamic = true;
                     }
                     const last = ref[ref.length - 1];
                     if (curr != null && typeof curr == "object") {
                         ctx = curr;
-                        fn = reachableMember(curr, last, dynamic) ? curr[last] : undefined;
+                        fn = reachableValue(curr, last, dynamic);
                     }
                 }
             }

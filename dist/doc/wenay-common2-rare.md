@@ -896,6 +896,7 @@ Contract:
 - `noStrict` stops schema walking and routeMap indexing below that object.
 - It is the only way to expose a proxy-backed surface: without it the string-path fallback resolves own members only, and a trap-only proxy has none.
 - It is not an access-control boundary and does not bypass safe-key/path limits. Validate user-owned names in your facade if they are security-sensitive.
+- Below it a name resolves with `in`, except methods inherited from a builtin prototype (`__defineGetter__`, `toString`, an array's `push`, a Map's `clear`, a Date's `setTime`…), which never resolve unless the node owns them (3.3.1). A host class's prototype methods and a proxy's `has`-trap members stay reachable.
 - RPC paths are arrays of string segments. `"mystrategy.2020"` is one segment, so the call above is `["strategies", "mystrategy.2020", "start"]`, not `["strategies", "mystrategy", "2020", "start"]`.
 - The failure mode to avoid is treating `path.join(".")` as identity: `["a.b", "c"]` and `["a", "b", "c"]` both display as `a.b.c` but are different RPC paths.
 - Static dotted keys are also supported: `api["a.b"].c` is distinct from `api.a.b.c`. Internal route/listen/cache identity must stay lossless; dotted strings are only a debug display form.

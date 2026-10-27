@@ -12,6 +12,7 @@ const rpc_limits_1 = require("../Common/rcp/rpc-limits");
 const rpc_walk_1 = require("../Common/rcp/rpc-walk");
 const myThrow_1 = require("../toError/myThrow");
 const facadeMeta_1 = require("./facadeMeta");
+const rpc_member_1 = require("../Common/rcp/rpc-member");
 const facadeWalk_1 = require("./facadeWalk");
 const NAME_RULES = {
     mcp: { pattern: /^[A-Za-z0-9_.-]+$/, disallowed: /[^A-Za-z0-9_.-]/g, max: 128 },
@@ -643,7 +644,7 @@ function createSurface(shared, root, checkStaleMeta) {
             if (kind == 'binary' || kind == 'on' || kind == 'listen')
                 return undefined;
             parent = node;
-            node = (0, facadeWalk_1.dynamicMember)(node, segment);
+            node = (0, rpc_member_1.dynamicMember)(node, segment);
             if (node === undefined)
                 return undefined;
         }

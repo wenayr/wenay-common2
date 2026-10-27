@@ -69,6 +69,8 @@ export function buildFacade(client) {
     // 3. Dynamic objects (Proxy, ORM)
     // Wrap in noStrict so the server doesn't try to read keys.
     // Client will work with it in "blind" mode (without schema).
+    // Names resolve with `in` (the proxy's has trap decides), never to an inherited builtin
+    // such as push, clear or __defineGetter__ unless the node owns it (3.3.1, RPC-AUTH Rule 3).
     dbRef: noStrict(getProxyDb()),
 
     // 4. Events

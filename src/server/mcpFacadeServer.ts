@@ -51,7 +51,8 @@ import {
     type McpToolAnnotations,
     type tFacadeMetaMap,
 } from './facadeMeta'
-import {dynamicMember, facadeNodeKind, walkFacade} from './facadeWalk'
+import {dynamicMember} from '../Common/rcp/rpc-member'
+import {facadeNodeKind, walkFacade} from './facadeWalk'
 
 // ===================================================================
 // names

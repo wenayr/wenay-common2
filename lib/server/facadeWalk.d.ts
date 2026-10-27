@@ -9,5 +9,4 @@ export type FacadeWalkOptions = {
 };
 export declare function facadeNodeKind(value: unknown): "dynamic" | "listen" | "on" | undefined;
 export declare function walkFacade(object: object, options: FacadeWalkOptions): FacadeWalkEntry[];
-export declare function dynamicMember(node: object, key: string): unknown;
 export declare function facadeMember(object: object, path: readonly string[]): unknown;

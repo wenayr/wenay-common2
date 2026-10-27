@@ -135,6 +135,12 @@ marked node needs no mark of its own. A proxy-backed surface must therefore be m
 resolves nothing, and it was never addressable from the schema either (an unmarked empty node
 renders as `{}` and the strict lane cannot descend past it, while a marked one renders as
 `"dynamic"`). Marking is not an access-control boundary: `isSafeKey` still filters every segment.
+Since 3.3.1 `in` no longer counts the runtime's own prototype methods: below a marked node a name
+resolves only if it is not a method inherited from a builtin prototype (`__defineGetter__`,
+`hasOwnProperty`, `toString`, an array's `push`/`splice`, a Map's `clear`, a Date's `setTime`…) or the
+node owns it. Before, a peer could plant an accessor on host data or mutate it through those methods.
+A host class's own prototype methods and members answered by a proxy's `has` trap stay reachable;
+MCP's `noStrict` templates and dispatcher use the same rule.
 
 **A `PIPE` step is a route segment too.** Each `{type:'get', prop}` walks a name into the facade
 exactly as a path segment does, so it passes the same `isSafeKey` filter as `ref`, and the whole
