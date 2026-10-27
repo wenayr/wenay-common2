@@ -6,7 +6,7 @@
 // by 1 (fork-choice «larger epoch wins»). Split-brain tail of old
 // leader is handled by diffKeyedState: non-overlapping is re-conducted with ordinary
 // commands (analogous to returning orphaned branch transactions to mempool),
-// conflicting pairs are saved for the application. Ports 3164/3165 (3100+).
+// conflicting pairs are saved for the application. Ephemeral ports.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {createWorkboardHost, WorkboardHost} from '../../demo/workboard-host'
 import {createStoreFollower, diffKeyedState} from '../../src/Common/Observe/store-follower'
@@ -14,8 +14,6 @@ import {createStore} from '../../src/Common/Observe/store'
 import {syncStoreReplay, type StoreReplayRemote} from '../../src/Common/Observe/store-replay'
 import {WorkboardState} from '../../demo/workboard-contract'
 
-const LEADER_PORT = 3164
-const FOLLOWER_PORT = 3165
 const WAIT_MS = 8000
 
 async function waitFor(name: string, predicate: () => boolean, timeoutMs = WAIT_MS) {
@@ -55,7 +53,6 @@ async function main() {
     })
     let leaderConn = 0
     const leaderSrv = await startRealServer({
-        port: LEADER_PORT,
         makeObject: function makeLeaderConnection() {
             const account = 'person-' + String.fromCharCode(97 + leaderConn++)
             const connection = board.connection(account)
@@ -74,7 +71,7 @@ async function main() {
     })
 
     // ============== follower: mirror + dynamic command dispatch ==============
-    const upstream = await startRealClient({port: LEADER_PORT})
+    const upstream = await startRealClient({port: leaderSrv.port})
     const follower = createStoreFollower<WorkboardState>({
         remote: upstream.api.workboard.state as StoreReplayRemote<WorkboardState>,
         epoch: 1,
@@ -89,7 +86,6 @@ async function main() {
     }
     let followerConn = 0
     const followerSrv = await startRealServer({
-        port: FOLLOWER_PORT,
         makeObject: function makeFollowerConnection() {
             const account = 'person-z' + (++followerConn)
             return {
@@ -107,7 +103,7 @@ async function main() {
     await check('follower starts at the leader epoch', () => follower.status.state.epoch, 1)
 
     // ============== follower client with live subscription ==============
-    const b = await startRealClient({port: FOLLOWER_PORT})
+    const b = await startRealClient({port: followerSrv.port})
     const bStore = createStore<WorkboardState>({})
     let bSyncErrors = 0
     const bSync = syncStoreReplay(bStore, b.api.workboard.state as StoreReplayRemote<WorkboardState>, {
@@ -176,7 +172,7 @@ async function main() {
         () => Object.values(follower.store.state).some(item => item.title == 'Divergent card'), true)
 
     // Old node takes on follower role: winner keyframe over its state
-    const rejoin = await startRealClient({port: FOLLOWER_PORT})
+    const rejoin = await startRealClient({port: followerSrv.port})
     const rejoinSync = syncStoreReplay(board.control.store, rejoin.api.workboard.state as StoreReplayRemote<WorkboardState>)
     await rejoinSync.ready
     await waitFor('old node converges to the winner', () =>

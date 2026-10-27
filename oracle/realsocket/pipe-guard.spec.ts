@@ -31,6 +31,7 @@
 // ============================================================
 import express from 'express'
 import {createServer} from 'http'
+import type {AddressInfo} from 'net'
 import {Server as SocketIOServer} from 'socket.io'
 import {io} from 'socket.io-client'
 import msgpackParser from 'socket.io-msgpack-parser'
@@ -40,10 +41,6 @@ import {createRpcServerAuto} from '../../src/Common/rcp/rpc-server-auto'
 import {createRpcClientHub} from '../../src/Common/rcp/rpc-clientHub'
 import {noStrict} from '../../src/Common/rcp/rpc-dynamic'
 import {listen as createListenPair} from '../../src/Common/events/Listen'
-
-const PORT_PLAIN = 4130   // plain closure-factory facade (the project's normal shape)
-const PORT_CLASS = 4131   // class instance: methods live on the prototype
-const PORT_MSGPACK = 4132 // same facade, msgpack parser — binary attachment ceiling
 
 // last binary-attachment count the default socket.io parser survives in one packet
 const DEFAULT_PARSER_BINARY_MAX = 10
@@ -189,7 +186,7 @@ class ClassFacade {
 // ===================================================================
 // _rs.ts intentionally has no parser knob (it is the shared harness for ~20 specs),
 // so this spec wires its own pair rather than widening it for one case.
-async function startMsgpackPair(port: number) {
+async function startMsgpackPair() {
     const app = express()
     const httpServer = createServer(app)
     const ioServer = new SocketIOServer(httpServer, {maxHttpBufferSize: 1e8, parser: msgpackParser as any})
@@ -202,7 +199,8 @@ async function startMsgpackPair(port: number) {
         }
         createRpcServerAuto({socket: adapter, socketKey: 'rpc', object: makePlainObject(), disconnectListen})
     })
-    await new Promise<void>(resolve => { httpServer.listen(port, resolve) })
+    await new Promise<void>(resolve => { httpServer.listen(0, resolve) })
+    const {port} = httpServer.address() as AddressInfo
 
     const hub = createRpcClientHub(
         () => io(`http://localhost:${port}`, {transports: ['websocket'], forceNew: true, parser: msgpackParser as any}),
@@ -273,11 +271,13 @@ async function main() {
     const {check, done} = makeChecker('pipe-guard')
     const watchdog = setTimeout(() => { console.error('WATCHDOG timeout'); process.exit(3) }, 120000)
 
-    const srvPlain = await startRealServer({port: PORT_PLAIN, makeObject: makePlainObject})
-    const srvClass = await startRealServer({port: PORT_CLASS, makeObject: () => new ClassFacade()})
-    const raw = await openRaw(PORT_PLAIN)
-    const rawClass = await openRaw(PORT_CLASS)
-    const cli = await startRealClient({port: PORT_PLAIN})
+    // plain closure-factory facade (the project's normal shape)
+    const srvPlain = await startRealServer({makeObject: makePlainObject})
+    // class instance: methods live on the prototype
+    const srvClass = await startRealServer({makeObject: () => new ClassFacade()})
+    const raw = await openRaw(srvPlain.port)
+    const rawClass = await openRaw(srvClass.port)
+    const cli = await startRealClient({port: srvPlain.port})
     const P = cli.client.pipe as any
     const api = cli.api
 
@@ -532,7 +532,7 @@ async function main() {
     // ===============================================================
     // Same RPC layers, same facade, same buffers — only the socket.io parser differs.
     // If this ever fails, the ceiling moved and the note at the top of this file is stale.
-    const mp = await startMsgpackPair(PORT_MSGPACK)
+    const mp = await startMsgpackPair()
     await check('msgpack parser carries 200 binary leaves in one packet', async () => {
         const list = await mp.pipe.blobs(200).list
         return fp(list)

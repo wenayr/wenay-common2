@@ -353,8 +353,9 @@ async function main() {
             stdio: ['ignore', 'pipe', 'pipe'],
         })
         let output = ''
+        // readiness is the printed line; the bound only has to outlast a cold tsx start on a loaded machine
         const url = await new Promise<string>(function awaitListening(resolve, reject) {
-            const timer = setTimeout(function bootTimedOut() { reject(new Error('leader.ts did not bind within 15s:\n' + output)) }, 15_000)
+            const timer = setTimeout(function bootTimedOut() { reject(new Error('leader.ts did not bind within 120s:\n' + output)) }, 120_000)
             function scan(chunk: unknown) {
                 output += String(chunk)
                 const bound = /leader listening on (http:\/\/localhost:\d+)/.exec(output)

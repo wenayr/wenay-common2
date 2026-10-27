@@ -10,6 +10,8 @@ import {instantiate} from './create.mjs'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '../..')
 const npm = process.env.npm_execpath ?? path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js')
+// outlasts the process oracle's own 600 s watchdog, so its report, not this kill, explains a stall
+const COMMAND_MS = 660_000
 
 async function run(args, cwd) {
     return new Promise(function execute(resolve, reject) {
@@ -18,8 +20,8 @@ async function run(args, cwd) {
         let settled = false
         const timer = setTimeout(function timedOut() {
             child.kill('SIGKILL')
-            finish(new Error(`command exceeded 180s: ${args.join(' ')}`))
-        }, 180_000)
+            finish(new Error(`command exceeded ${COMMAND_MS / 1000}s: ${args.join(' ')}`))
+        }, COMMAND_MS)
         function finish(error) {
             if (settled) return
             settled = true

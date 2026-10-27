@@ -5,14 +5,11 @@
 // authority model, delivered seq stays monotonic, epoch grows exactly once and
 // the follower line survives the role change. Deterministic PRNG (mulberry32),
 // small journal (history: 16) so bounces exercise both tail and keyframe paths.
-// Ports 3167/3168 (3100+ range).
+// Ephemeral ports.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {createStore} from '../../src/Common/Observe/store'
 import {exposeStoreReplay, syncStoreReplay, type StoreReplayRemote} from '../../src/Common/Observe/store-replay'
 import {createStoreFollower} from '../../src/Common/Observe/store-follower'
-
-const LEADER_PORT = 3167
-const MID_PORT = 3168
 
 function mulberry32(seed: number) {
     let a = seed >>> 0
@@ -39,18 +36,18 @@ async function main() {
     // ============== leader with a deliberately small journal ==============
     const leaderStore = createStore<Record<string, any>>({}, {drain: 'micro'})
     const leader = exposeStoreReplay(leaderStore, {history: 16})
-    const leaderSrv = await startRealServer({port: LEADER_PORT, makeObject: () => ({board: leader.api})})
+    const leaderSrv = await startRealServer({makeObject: () => ({board: leader.api})})
 
     // ============== mid: follower of the leader, serving its own cascade ==============
-    const up = await startRealClient({port: LEADER_PORT})
+    const up = await startRealClient({port: leaderSrv.port})
     const mid = createStoreFollower<Record<string, any>>({remote: up.api.board.replay as StoreReplayRemote<Record<string, any>>, initial: {}, epoch: 0})
     await mid.ready
-    const midSrv = await startRealServer({port: MID_PORT, makeObject: () => ({board: mid.api})})
+    const midSrv = await startRealServer({makeObject: () => ({board: mid.api})})
 
     // ============== edge: bounce-able mirror of the cascade ==============
     const edge = createStore<Record<string, any>>({}, {drain: 'micro'})
     const seqs: number[] = []
-    let edgeClient = await startRealClient({port: MID_PORT})
+    let edgeClient = await startRealClient({port: midSrv.port})
     let edgeSub = syncStoreReplay(edge, edgeClient.api.board.replay as StoreReplayRemote<Record<string, any>>, {onSeq: s => seqs.push(s)})
     await edgeSub.ready
 
@@ -58,7 +55,7 @@ async function main() {
         edgeSub()
         edgeClient.close()
         await delay(15 + Math.floor(rand() * 30))
-        edgeClient = await startRealClient({port: MID_PORT})
+        edgeClient = await startRealClient({port: midSrv.port})
         const since = seqs.length ? seqs[seqs.length - 1] : -1
         edgeSub = syncStoreReplay(edge, edgeClient.api.board.replay as StoreReplayRemote<Record<string, any>>, {since, onSeq: s => seqs.push(s)})
         await edgeSub.ready

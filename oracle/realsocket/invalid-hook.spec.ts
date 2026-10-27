@@ -19,8 +19,6 @@ import {io} from 'socket.io-client'
 import {startRealServer, makeChecker, delay} from './_rs'
 import {Pkt} from '../../src/Common/rcp/rpc-protocol'
 
-const PORT = 4134
-
 function makeObject() {
     return {ping: () => 'pong'}
 }
@@ -35,7 +33,6 @@ async function main() {
 
     let hookCalls = 0
     const srv = await startRealServer({
-        port: PORT,
         makeObject,
         serverOpts: {
             hooks: {
@@ -49,7 +46,7 @@ async function main() {
 
     // Raw wire: the official client cannot build these frames, and that is the point —
     // onInvalid exists precisely for peers that do not follow the protocol.
-    const sock = io(`http://localhost:${PORT}`, {transports: ['websocket'], forceNew: true})
+    const sock = io(`http://localhost:${srv.port}`,{transports: ['websocket'], forceNew: true})
     await new Promise<void>(resolve => { sock.on('connect', () => resolve()) })
 
     sock.emit('rpc', [Pkt.CALL, 'not-a-number', ['ping'], [], true])   // reqId is not a number

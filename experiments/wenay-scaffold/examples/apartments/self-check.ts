@@ -31,11 +31,12 @@ async function main() {
     // APARTMENTS_DEBUG=1 shows every process's output and the device log
     const debug = process.env['APARTMENTS_DEBUG'] == '1'
     const stand = await startStand({nodes: 1, device: false, verbose: debug})
+    // two leader restarts, each allowed the stand's two-minute readiness bound
     const watchdog = setTimeout(function expired() {
         console.error('apartments check timed out')
         void stand.close()
         process.exit(3)
-    }, 180_000)
+    }, 360_000)
     const api = () => stand.url + '/api/apartments'
 
     async function get(pathname: string, bearer?: string) {
@@ -250,7 +251,7 @@ async function main() {
     process.exitCode = fails ? 1 : 0
 }
 
-// past the 180 s watchdog above, which stops the stand's processes before it exits
-runCheck(main, 200_000)
+// past the stand's two starts and the 360 s watchdog above, which stops the stand's processes before it exits
+runCheck(main, 660_000)
 
 

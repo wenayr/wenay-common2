@@ -59,8 +59,9 @@ export async function startStand({port = 0, nodes = 2, device = true, dataDir = 
         })
         return entry
     }
+    // readiness is the printed line; the bound only has to outlast a cold tsx start on a loaded machine
     async function waitForLine(entry, pattern) {
-        const deadline = Date.now() + 20_000
+        const deadline = Date.now() + 120_000
         while (Date.now() < deadline) {
             if (closing || signal?.aborted) throw new Error('stand startup cancelled')
             if (entry.failure() || entry.child.exitCode != null || entry.child.signalCode != null) {

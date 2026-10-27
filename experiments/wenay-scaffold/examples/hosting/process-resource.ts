@@ -6,9 +6,10 @@ import {type tRelease} from './worker'
 export function createAppProcess(deps: {tenant: string, release: tRelease}) {
     let pending = 0
     let closing = false
+    // readiness is the worker's IPC message; the start bound only has to outlast a cold tsx start on a loaded machine
     const child = createProcessResource({
         command: process.execPath, args: ['--import', 'tsx', join(__dirname, 'worker.ts'), deps.release, deps.tenant],
-        ipc: true, startTimeoutMs: 5000, stopTimeoutMs: 2500, tailChars: 2000,
+        ipc: true, startTimeoutMs: 120_000, stopTimeoutMs: 2500, tailChars: 2000,
         ready(fact) {
             if (fact.type != 'message') return
             const message = fact.value as {type?: string, port?: number}

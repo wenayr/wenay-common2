@@ -1,9 +1,7 @@
 // oracle-ends: own watchdog timer — a stall exits 3
-// REAL-SOCKET dedupe: subscription dedupe + refcount + server stats + cap. Port 4106.
+// REAL-SOCKET dedupe: subscription dedupe + refcount + server stats + cap. Ephemeral ports.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {listen as createListenPair} from '../../src/Common/events/Listen'
-
-const PORT = 4106
 
 // One stream node per facade; emit pushes a value to whoever subscribed.
 // `feed` is a server-side method the client can call to drive an emission.
@@ -27,8 +25,8 @@ async function main() {
 
     // capture per-connection server api for subscription stats
     let serverApi: any = null
-    const srv = await startRealServer({port: PORT, makeObject, onServer: (api) => { serverApi = api }})
-    const cli = await startRealClient<ReturnType<typeof makeObject>>({port: PORT})
+    const srv = await startRealServer({makeObject, onServer: (api) => { serverApi = api }})
+    const cli = await startRealClient<ReturnType<typeof makeObject>>({port: srv.port})
     const api = cli.api
 
     await delay(50) // let handshake (MAP / declared listens) settle
@@ -97,11 +95,11 @@ async function main() {
     const CAP = 2
     let serverApi2: any = null
     const srv2 = await startRealServer({
-        port: PORT, makeObject,
+        makeObject,
         serverOpts: {maxPerListen: CAP},
         onServer: (api) => { serverApi2 = api },
     })
-    const cli2 = await startRealClient<ReturnType<typeof makeObject>>({port: PORT})
+    const cli2 = await startRealClient<ReturnType<typeof makeObject>>({port: srv2.port})
     const api2 = cli2.api
     await delay(50)
 

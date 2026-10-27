@@ -1,8 +1,6 @@
-// REAL-SOCKET core: CALL + rich-type round-trip both ways. Port 4101.
+// REAL-SOCKET core: CALL + rich-type round-trip both ways. Ephemeral port.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {runOracle} from '../run-oracle'
-
-const PORT = 4101
 
 function makeObject() {
     return {
@@ -23,8 +21,8 @@ function makeObject() {
 
 async function runChecks() {
     const {check, done} = makeChecker('core')
-    const srv = await startRealServer({port: PORT, makeObject})
-    const cli = await startRealClient<ReturnType<typeof makeObject>>({port: PORT})
+    const srv = await startRealServer({makeObject})
+    const cli = await startRealClient<ReturnType<typeof makeObject>>({port: srv.port})
     const api = cli.api
 
     await check('CALL math.add', () => api.math.add(5, 7), 12)

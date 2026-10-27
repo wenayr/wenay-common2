@@ -33,4 +33,5 @@ async function main() {
     }
 }
 
-runCheck(main)
+// two household host starts, each allowed the stand's two-minute readiness bound
+runCheck(main, 360_000)

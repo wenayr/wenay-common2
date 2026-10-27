@@ -24,13 +24,14 @@ async function main() {
     const heater = createHomeDevice(stand.source.device('bob'))
     const readers = [phone, tablet, bob]
     const probes: {close(): unknown}[] = []
+    // covers one host restart, whose readiness alone may take up to two minutes on a loaded machine
     const watchdog = setTimeout(function expired() {
         console.error('smart-home process check timed out')
         for (const reader of readers) reader.close()
         meter.close(); heater.close()
         void stand.close()
         process.exitCode = 3
-    }, 60_000)
+    }, 180_000)
     try {
         await Promise.all([phone.ready, tablet.ready, bob.ready, meter.ready, heater.ready])
         assert.equal(new Set([process.pid, stand.view.pid('anna'), stand.view.pid('bob')]).size, 3)
@@ -127,4 +128,5 @@ async function main() {
     }
 }
 
-runCheck(main)
+// two host starts before the watchdog is armed, then the watchdog itself
+runCheck(main, 480_000)

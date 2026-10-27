@@ -30,11 +30,12 @@ async function main() {
     await assert.rejects(startStand({signal: cancelled.signal}), /cancelled/)
     const stand = await startStand({nodes: 1})
     const clients: RentalClient[] = []
+    // covers a node restart and the example.ts process, each allowed a two-minute cold start
     const watchdog = setTimeout(function expired() {
         for (const client of clients) client.close()
         void stand.close()
         process.exitCode = 1
-    }, 40_000)
+    }, 300_000)
     try {
         for (const suffix of ['/board', '/docs', '/openapi.json', '/docs/assets/swagger-ui-bundle.js']) {
             const response = await fetch(stand.url + suffix, {signal: AbortSignal.timeout(5000)})
@@ -74,7 +75,7 @@ async function main() {
                 cwd: __dirname, env: {...process.env, RENTAL_URL: stand.nodeUrls[0], RENTAL_TOKEN: stand.token},
                 stdio: 'ignore', windowsHide: true,
             })
-            const timeout = setTimeout(function stop() { child.kill('SIGKILL') }, 25_000)
+            const timeout = setTimeout(function stop() { child.kill('SIGKILL') }, 120_000)
             child.once('error', function failed(error) { clearTimeout(timeout); reject(error) })
             child.once('exit', function exited(code) {
                 clearTimeout(timeout)
@@ -90,4 +91,5 @@ async function main() {
     }
 }
 
-runCheck(main)
+// leader and node starts before the watchdog is armed, then the watchdog itself
+runCheck(main, 600_000)

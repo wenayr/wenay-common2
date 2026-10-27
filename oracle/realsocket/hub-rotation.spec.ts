@@ -4,9 +4,10 @@
 // strands its predecessor turns every logout/rotation into a zombie TCP socket
 // holding server-side sessions (the mini-scale stand counted 13 browser-owned
 // sockets on one mini's port after readers closed). Counted server-side via
-// io.engine connections, not inferred from client state. Port 4173.
+// io.engine connections, not inferred from client state. Ephemeral port.
 import {Server as SocketIOServer} from 'socket.io'
 import {createServer} from 'http'
+import type {AddressInfo} from 'net'
 import {io} from 'socket.io-client'
 import {makeChecker, delay} from './_rs'
 import {listen as createListenPair} from '../../src/Common/events/Listen'
@@ -15,7 +16,6 @@ import {exposeReplay, replaySubscribe} from '../../src/Common/events/replay-wire
 import {createRpcServerAuto} from '../../src/Common/rcp/rpc-server-auto'
 import {createRpcClientHub} from '../../src/Common/rcp/rpc-clientHub'
 
-const PORT = 4173
 const WAIT_MS = 8000
 const HUB_CLOSED = 'RPC hub closed'
 
@@ -48,14 +48,15 @@ async function main() {
             disconnectListen: goneListen,
         })
     })
-    await new Promise<void>(resolve => httpServer.listen(PORT, resolve))
+    await new Promise<void>(resolve => httpServer.listen(0, resolve))
+    const url = 'http://localhost:' + (httpServer.address() as AddressInfo).port
     const live = () => ioServer.engine.clientsCount
     const lineSubs = () => tickLine.line.count()
     emitTick(1)
 
     function openHub() {
         return createRpcClientHub(
-            () => io('http://localhost:' + PORT, {transports: ['websocket'], auth: {tab: 'hub-rotation'}}),
+            () => io(url, {transports: ['websocket'], auth: {tab: 'hub-rotation'}}),
             r => ({app: r<any>('app')}) as const,
         )
     }
@@ -97,7 +98,7 @@ async function main() {
 
     // ============== 5. a token-provider hub self-starts exactly one connection ==============
     const provided = createRpcClientHub(
-        () => io('http://localhost:' + PORT, {transports: ['websocket'], auth: {tab: 'hub-provider'}}),
+        () => io(url, {transports: ['websocket'], auth: {tab: 'hub-provider'}}),
         r => ({app: r<any>('app')}) as const,
         {token: async function provideHubToken() { return null }},
     )
@@ -124,7 +125,7 @@ async function main() {
     const sweptSockets = new Set<any>()
     const sweptHub = createRpcClientHub(
         () => {
-            const raw = io('http://localhost:' + PORT, {transports: ['websocket', 'polling'], auth: {tab: 'hub-swept'}})
+            const raw = io(url, {transports: ['websocket', 'polling'], auth: {tab: 'hub-swept'}})
             sweptSockets.add(raw)
             return raw
         },
@@ -143,7 +144,7 @@ async function main() {
     const midSockets = new Set<any>()
     const midHub = createRpcClientHub(
         () => {
-            const raw = io('http://localhost:' + PORT, {transports: ['websocket', 'polling'], auth: {tab: 'hub-mid'}})
+            const raw = io(url, {transports: ['websocket', 'polling'], auth: {tab: 'hub-mid'}})
             midSockets.add(raw)
             return raw
         },

@@ -4,7 +4,7 @@
 // it to its OWN clients via cascading exposeStoreReplay; commands are forwarded to leader with
 // through (account, requestId) — receipts stay only with leader.
 // Upstream disruption — honest Engine.IO close (auto-reconnect of same Socket).
-// Ports 3160 (leader) / 3161 (follower) — project rule: range 3100+.
+// Leader and follower bind ephemeral ports.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {createWorkboardHost} from '../../demo/workboard-host'
 import {createStoreFollower} from '../../src/Common/Observe/store-follower'
@@ -12,8 +12,6 @@ import {createStore} from '../../src/Common/Observe/store'
 import {syncStoreReplay, type StoreReplayRemote} from '../../src/Common/Observe/store-replay'
 import {WorkboardState} from '../../demo/workboard-contract'
 
-const LEADER_PORT = 3160
-const FOLLOWER_PORT = 3161
 const WAIT_MS = 8000
 
 type tClient = Awaited<ReturnType<typeof startRealClient>>
@@ -72,7 +70,6 @@ async function main() {
     const board = createWorkboardHost({initial: [{id: 'seed-1', title: 'Seed card', status: 'new'}]})
     let leaderConn = 0
     const leaderSrv = await startRealServer({
-        port: LEADER_PORT,
         makeObject: function makeLeaderConnection() {
             const account = 'person-' + String.fromCharCode(97 + leaderConn++)
             const connection = board.connection(account)
@@ -95,7 +92,7 @@ async function main() {
     })
 
     // ============== follower instance: leader client + server for its own ==============
-    const upstream = await startRealClient({port: LEADER_PORT})
+    const upstream = await startRealClient({port: leaderSrv.port})
     const follower = createStoreFollower<WorkboardState>({
         remote: upstream.api.workboard.state as StoreReplayRemote<WorkboardState>,
     })
@@ -107,7 +104,6 @@ async function main() {
     }
     let followerConn = 0
     const followerSrv = await startRealServer({
-        port: FOLLOWER_PORT,
         makeObject: function makeFollowerConnection() {
             const account = 'person-z' + (++followerConn)
             return {
@@ -130,8 +126,8 @@ async function main() {
     await check('follower upstream is live', () => follower.status.state.upstream, 'live')
 
     // ============== clients on different instances ==============
-    const a = await startRealClient({port: LEADER_PORT})
-    const b = await startRealClient({port: FOLLOWER_PORT})
+    const a = await startRealClient({port: leaderSrv.port})
+    const b = await startRealClient({port: followerSrv.port})
     const bStore = createStore<WorkboardState>({})
     const bSync = syncStoreReplay(bStore, b.api.workboard.state as StoreReplayRemote<WorkboardState>)
     await bSync.ready

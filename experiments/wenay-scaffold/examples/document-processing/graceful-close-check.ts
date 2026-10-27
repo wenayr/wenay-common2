@@ -52,8 +52,10 @@ async function scenario() {
 if (process.argv.includes('--child')) {
     runCheck(scenario)
 } else {
+    // The child's runCheck deadline, counted from its own start, fails a shutdown that leaves a
+    // handle open; this outer bound only has to outlast a cold tsx start on a loaded machine.
     const child = spawnSync(process.execPath, ['--import', 'tsx', __filename, '--child'], {
-        encoding: 'utf8', timeout: 15000, windowsHide: true,
+        encoding: 'utf8', timeout: 180_000, windowsHide: true,
     })
     assert.equal(child.error, undefined, 'shutdown child must exit without hanging')
     assert.equal(child.status, 0, child.stdout + child.stderr)

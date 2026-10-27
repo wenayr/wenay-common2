@@ -3,8 +3,9 @@
 //
 //  Boots a genuine socket.io server (express + http) on a TCP port and a real
 //  socket.io-client hub — the SAME transport pattern as src/Common/rcp/test.ts.
-//  Not the in-memory loopback: messages cross a real WebSocket. Each spec uses
-//  its OWN port so specs run concurrently without clashing.
+//  Not the in-memory loopback: messages cross a real WebSocket. The server binds
+//  an ephemeral port (0) unless told otherwise and reports the one it got, so
+//  specs run concurrently without clashing.
 //
 //  Disposable oracle (project rule: no standing test suite; real harness is the
 //  one in src/Common/rcp/rpc.harness.spec.ts). Delete this dir after the pass.
@@ -22,7 +23,8 @@ export const delay = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 // ===== real socket.io server =====
 type ServerOpts = {
-    port: number
+    // 0 (default) = ephemeral; pass a bound port only to come back on the same address
+    port?: number
     // facade object factory for EACH connection (as in real server)
     makeObject: () => any
     // passed to createRpcServerAuto (auth / limits / maxPerListen / throttle / debug)
@@ -33,7 +35,7 @@ type ServerOpts = {
 }
 
 export async function startRealServer(opts: ServerOpts) {
-    const {port, makeObject, serverOpts = {}, socketKey = 'rpc', onServer} = opts
+    const {port = 0, makeObject, serverOpts = {}, socketKey = 'rpc', onServer} = opts
     const app = express()
     const httpServer = createServer(app)
     const ioServer = new SocketIOServer(httpServer, {maxHttpBufferSize: 1e8})
@@ -49,8 +51,11 @@ export async function startRealServer(opts: ServerOpts) {
         onServer?.(server.api, socket)
     })
 
-    await new Promise<void>(resolve => httpServer.listen(port, resolve))
+    await new Promise<void>((resolve, reject) => { httpServer.once('error', reject); httpServer.listen(port, resolve) })
+    const address = httpServer.address()
+    if (!address || typeof address == 'string') throw new Error('expected a listening TCP server')
     return {
+        port: address.port,
         httpServer, ioServer,
         close: () => new Promise<void>(resolve => { ioServer.close(); httpServer.close(() => resolve()) }),
     }

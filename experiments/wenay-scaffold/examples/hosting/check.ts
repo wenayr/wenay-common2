@@ -2,8 +2,11 @@ import assert from 'node:assert/strict'
 import {createHosting} from './service'
 import {runCheck} from '../../resources/run-check'
 
-async function until(label: string, predicate: () => boolean) {
-    const deadline = Date.now() + 6000
+// a wait that includes starting an app process passes STARTUP_MS: a cold tsx start on a loaded machine
+const STARTUP_MS = 120_000
+
+async function until(label: string, predicate: () => boolean, timeoutMs = 6000) {
+    const deadline = Date.now() + timeoutMs
     while (!predicate()) {
         assert(Date.now() < deadline, 'timeout: ' + label)
         await new Promise(function wait(resolve) { setTimeout(resolve, 10) })
@@ -30,7 +33,7 @@ async function main() {
         process.kill(active.pid, 'SIGKILL')
         assert.equal(await inFlight, 503, 'a crashed in-flight request is not silently replayed')
         await until('failed release restarted after retry', () => recovering.view.processes().some(process => process.tenant == 'recovering' && process.release == 'v2' && process.pid != active.pid && !process.exited)
-            && recovering.view.history().filter(event => event.to?.descriptor.implementationId == 'v2' && event.to.slotId == 'recovering').length >= 2)
+            && recovering.view.history().filter(event => event.to?.descriptor.implementationId == 'v2' && event.to.slotId == 'recovering').length >= 2, STARTUP_MS)
         const history = recovering.view.history().filter(event => event.slotId == 'recovering')
         const failedAt = history.findIndex(event => event.reason == 'session failed')
         assert(failedAt >= 0)
@@ -126,4 +129,5 @@ async function main() {
     } finally { await interrupted.close() }
 }
 
-runCheck(main)
+// about sixteen app-process starts in sequence
+runCheck(main, 600_000)

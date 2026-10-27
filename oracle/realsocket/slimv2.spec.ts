@@ -1,5 +1,5 @@
 // oracle-ends: own watchdog timer — a stall exits 3
-// REAL-SOCKET slimv2: NEW slim Listen v2 (slimListen) — unit-surface + end-to-end wire. Port 4110.
+// REAL-SOCKET slimv2: NEW slim Listen v2 (slimListen) — unit-surface + end-to-end wire. Ephemeral port.
 //
 // FINDING (verified against source, see notes in ##RESULT##):
 //   isListenCallback() in src/Common/events/Listen.ts identifies a "listen" by
@@ -14,8 +14,6 @@
 //   via its full handle.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {slimListen, toSlimListen, createListen, isListenCallback, listen as createListenPair} from '../../src/Common/events/Listen'
-
-const PORT = 4110
 
 // emit fns + full handles created at module scope so makeObject (per-connection) can place
 // the FULL listen as the wire stream node while the spec drives emit / inspects slim surface.
@@ -81,8 +79,8 @@ async function main() {
     }
 
     // ===== 3. END-TO-END wire: full handle (the one slimListen wraps) over a REAL socket =====
-    const srv = await startRealServer({port: PORT, makeObject})
-    const cli = await startRealClient({port: PORT})
+    const srv = await startRealServer({makeObject})
+    const cli = await startRealClient({port: srv.port})
     const api = cli.api
 
     const received: number[] = []

@@ -29,4 +29,5 @@ async function main() {
     } finally { await stand.close() }
 }
 
-runCheck(main)
+// leader, node and replacement process starts
+runCheck(main, 480_000)

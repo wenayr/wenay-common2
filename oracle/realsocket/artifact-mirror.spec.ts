@@ -4,7 +4,7 @@
 // createArtifactByteCache: miss → open at the leader → fetch → sha256 check →
 // cache. Policy applies at every edge: the mirror-link sees the whole catalog
 // (trusted channel), end clients see only their own. Error texts match the
-// host — the client cannot tell which one it talks to. Ports 3162/3163 (3100+ range).
+// host — the client cannot tell which one it talks to. Ephemeral ports.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {createArtifactHost, ArtifactRecord, ArtifactStore} from '../../src/Common/artifact/artifact-host'
 import {createArtifactMirror} from '../../src/Common/artifact/artifact-mirror'
@@ -13,8 +13,6 @@ import {sha256Hex} from '../../src/Common/artifact/artifact-hash'
 import {createStoreFollower} from '../../src/Common/Observe/store-follower'
 import type {StoreReplayRemote} from '../../src/Common/Observe/store-replay'
 
-const LEADER_PORT = 3162
-const MIRROR_PORT = 3163
 const MIRROR_ACCOUNT = 'mirror-link'
 
 async function rejectionText(work: () => Promise<any>) {
@@ -77,7 +75,6 @@ async function main() {
 
     let leaderConn = 0
     const leaderSrv = await startRealServer({
-        port: LEADER_PORT,
         makeObject: function makeLeaderConnection() {
             const account = leaderConn++ == 0 ? MIRROR_ACCOUNT : 'person-' + leaderConn
             const connection = host.connection(account)
@@ -86,7 +83,7 @@ async function main() {
     })
 
     // ============== mirror node: catalog follower + byte cache + read-edge ==============
-    const upstream = await startRealClient({port: LEADER_PORT})   // first connection = mirror-link
+    const upstream = await startRealClient({port: leaderSrv.port})   // first connection = mirror-link
     const catalog = createStoreFollower<ArtifactStore>({
         remote: upstream.api.artifacts.state as StoreReplayRemote<ArtifactStore>,
         initial: {artifacts: {}},
@@ -114,7 +111,6 @@ async function main() {
     })
     let mirrorConn = 0
     const mirrorSrv = await startRealServer({
-        port: MIRROR_PORT,
         makeObject: function makeMirrorConnection() {
             const account = 'person-' + String.fromCharCode(97 + mirrorConn++)   // person-a, person-b...
             const connection = mirror.connection(account)
@@ -126,8 +122,8 @@ async function main() {
     await check('catalog mirrored to the follower node', () => catalog.store.state.artifacts[first.id]?.descriptor.label, 'first')
 
     // ============== mirror clients: policy at the edge + lazy bytes ==============
-    const a = await startRealClient({port: MIRROR_PORT})   // person-a (owner)
-    const b = await startRealClient({port: MIRROR_PORT})   // person-b (stranger)
+    const a = await startRealClient({port: mirrorSrv.port})   // person-a (owner)
+    const b = await startRealClient({port: mirrorSrv.port})   // person-b (stranger)
 
     const openedByA = await a.api.artifacts.open(first.id)
     const fetched = await fetch(openedByA.url)

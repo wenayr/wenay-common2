@@ -21,6 +21,12 @@ type Reader = Pick<Browser, 'replica'>
 type Principal = ReturnType<ReturnType<Leader['serve']['scaleConnection']>['auth']['resolveAuth']>['object']
 type Writer = Pick<Principal, 'commands' | 'whoami'>
 
+// A spawned tsx process compiles before it listens or registers; on a loaded machine that alone
+// can take most of a minute. Readiness of a process gets this bound; behavior after it keeps the
+// short default. The watchdog outlasts every process start of the run.
+const READY_MS = 120_000
+const WATCHDOG_MS = 600_000
+
 async function waitFor(label: string, predicate: () => boolean, timeoutMs = 15_000) {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
@@ -80,9 +86,9 @@ async function main() {
     let consumerDiagnostic: (() => unknown) | undefined
     const watchdog = setTimeout(function timedOut() {
         for (const entry of processes) entry.child.kill('SIGKILL')
-        console.error('scaffold multiprocess check exceeded 100s')
+        console.error(`scaffold multiprocess check exceeded ${WATCHDOG_MS / 1000}s`)
         process.exit(3)
-    }, 100_000)
+    }, WATCHDOG_MS)
     try {
         const name = serviceDefinition.name
         const secrets = {
@@ -94,7 +100,7 @@ async function main() {
         await waitFor('authority port', function leaderReady() {
             leader.assertAlive()
             return /leader listening on (http:\/\/localhost:\d+)/.test(leader.output())
-        })
+        }, READY_MS)
         const url = /leader listening on (http:\/\/localhost:\d+)/.exec(leader.output())![1]
         const primary = createRpcClientHub(
             () => io(url, {transports: ['websocket'], forceNew: true}),
@@ -120,7 +126,7 @@ async function main() {
         await waitFor('first serving process registration', function nodesReady() {
             firstNode.assertAlive()
             return roster.nodes().some(row => row.nodeId == 'process-node-1' && row.meta?.['pid'] == firstNode.child.pid)
-        })
+        }, READY_MS)
 
         const sessions = new Map<string, ReturnType<typeof createNodeHub>>()
         let offline = false
@@ -195,7 +201,7 @@ async function main() {
         await waitFor('extra serving process registration', function secondReady() {
             secondNode.assertAlive()
             return roster.nodes().some(row => row.nodeId == 'process-node-2' && row.meta?.['pid'] == secondNode.child.pid)
-        })
+        }, READY_MS)
         const pids = [process.pid, leader.child.pid, firstNode.child.pid, secondNode.child.pid]
         assert.equal(new Set(pids).size, 4, 'consumer, authority and serving nodes are different OS processes')
         await waitFor('live balance onto extra capacity', () => cluster.view.route() == 'process-node-2')
@@ -225,7 +231,10 @@ async function main() {
         console.log('PASS planned drain -> evacuation before process exit:', JSON.stringify({drainMs, route: cluster.view.route()}))
 
         const replacement = startNode('process-node-2')
-        await waitFor('replacement capacity registration', () => roster.nodes().some(row => row.nodeId == 'process-node-2' && row.meta?.['pid'] == replacement.child.pid))
+        await waitFor('replacement capacity registration', function replacementReady() {
+            replacement.assertAlive()
+            return roster.nodes().some(row => row.nodeId == 'process-node-2' && row.meta?.['pid'] == replacement.child.pid)
+        }, READY_MS)
 
         const crashAt = Date.now()
         await firstNode.stop()
@@ -251,7 +260,7 @@ async function main() {
         await waitFor('new serving process registration', function restartedReady() {
             restarted.assertAlive()
             return roster.nodes().some(row => row.nodeId == 'process-node-1' && row.meta?.['pid'] == restarted.child.pid)
-        })
+        }, READY_MS)
         assert.notEqual(restarted.child.pid, firstNode.child.pid)
         cluster.placement.repick()
         await waitFor('route to restarted serving process', () => cluster.view.route() == 'process-node-1')

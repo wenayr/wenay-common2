@@ -17,16 +17,24 @@ const guard = pathToFileURL(path.join(root, 'experiments/wenay-scaffold/resource
 const bareEnding = 'main().catch(function failed(error) { console.error(error); process.exitCode = 1 })\n'
 const stall = 'async function main() { console.log("PASS first check"); await new Promise(() => {}); console.log("PASS never reached") }\n'
 const hang = 'async function main() { setInterval(() => {}, 1000); await new Promise(() => {}); console.log("PASS never reached") }\n'
+// Each child stamps when its script starts, so `ms` never includes the tsx cold start a loaded
+// machine can stretch to most of a minute; the default spawn bound outlasts that start plus the
+// two-minute runCheck deadline.
+const STARTED = 'child-started-at '
 
 function main() {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'wenay-run-check-'))
     // one process per script (no tsx CLI wrapper), so a timeout kill cannot leave an orphan behind
-    function run(name: string, body: string, timeout = 60_000) {
+    function run(name: string, body: string, timeout = 180_000) {
         const file = path.join(dir, name + '.ts')
-        writeFileSync(file, body)
-        const started = Date.now()
+        writeFileSync(file, `process.stderr.write('${STARTED}' + Date.now() + '\\n')\n` + body)
+        const spawnedAt = Date.now()
         const child = spawnSync(process.execPath, ['--import', 'tsx', file], {cwd: root, encoding: 'utf8', windowsHide: true, timeout, maxBuffer: 16 * 1024 * 1024})
-        return {code: child.status, timedOut: child.error != undefined, stdout: child.stdout, text: child.stdout + child.stderr, ms: Date.now() - started}
+        const finishedAt = Date.now()
+        const stamp = new RegExp('^' + STARTED + '(\\d+)\\r?\\n', 'm').exec(child.stderr ?? '')
+        const stderr = stamp ? child.stderr.replace(stamp[0], '') : child.stderr
+        return {code: child.status, timedOut: child.error != undefined, stdout: child.stdout, text: child.stdout + stderr,
+            ms: finishedAt - (stamp ? Number(stamp[1]) : spawnedAt)}
     }
     function guarded(name: string, body: string) {
         return run(name, `import {runCheck} from '${guard}'\n` + body)
@@ -64,7 +72,7 @@ function main() {
         assert.match(failed.text, /FAIL failed\.ts: main\(\) failed: Error: boom: the assertion text/)
         console.log('PASS  a failed main() exits 1 with its error visible')
 
-        // with the default deadline only the immediate exit can beat the 60 s spawn timeout
+        // the default deadline is two minutes: only the immediate exit passes the 30 s bound below
         const failedOpen = guarded('failed-open', 'runCheck(async function main() { setInterval(() => {}, 1000); throw new Error("boom with a live handle") })\n')
         assert.equal(failedOpen.code, 1, 'a failed main() with an open handle must exit 1 at once: ' + failedOpen.text)
         assert.match(failedOpen.text, /boom with a live handle/)

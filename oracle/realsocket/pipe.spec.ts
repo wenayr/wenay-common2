@@ -13,8 +13,6 @@
 // ============================================================
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 
-const PORT = 4103
-
 // ===== facade with pipe-able chain methods =====
 function makeObject() {
     // makeBox returns a fresh chainable box; every transform returns a new box,
@@ -54,8 +52,8 @@ async function main() {
     const {check, done} = makeChecker('pipe')
     const watchdog = setTimeout(() => { console.error('WATCHDOG timeout'); process.exit(3) }, 40000)
 
-    const srv = await startRealServer({port: PORT, makeObject})
-    const cli = await startRealClient({port: PORT})
+    const srv = await startRealServer({makeObject})
+    const cli = await startRealClient({port: srv.port})
     const P = cli.client.pipe as any // pipe proxy: supports chaining .a().b().value
 
     await delay(20)

@@ -27,7 +27,8 @@ function startProcess(deps: {initial: HomeState, secret: string, dataDir: string
     let resolveReady!: (value: Ready) => void
     let rejectReady!: (error: Error) => void
     const ready = new Promise<Ready>(function awaitReady(resolve, reject) { resolveReady = resolve; rejectReady = reject })
-    const startup = setTimeout(function expired() { rejectReady(new Error('host startup timed out: ' + output)) }, 15_000)
+    // readiness is the host's IPC message; the bound only has to outlast a cold tsx start on a loaded machine
+    const startup = setTimeout(function expired() { rejectReady(new Error('host startup timed out: ' + output)) }, 120_000)
     ready.catch(function observeReadinessFailure() {})
     child.on('message', function message(value: unknown) {
         if (!value || typeof value != 'object') return

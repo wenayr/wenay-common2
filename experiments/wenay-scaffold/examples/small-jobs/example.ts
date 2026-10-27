@@ -16,4 +16,5 @@ async function main() {
     } finally { customer.close(); worker.close(); await stand.close() }
 }
 
-runCheck(main)
+// leader and node process starts, each allowed the stand's two-minute readiness bound
+runCheck(main, 360_000)

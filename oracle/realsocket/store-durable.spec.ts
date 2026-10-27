@@ -4,7 +4,8 @@
 // is torn down; lifetime 2 reboots from the SAME file — state and seq restored,
 // a mirror reconnecting with its old seq gets the exact persisted tail (no
 // keyframe reset), new writes continue the seq line, and a compacted archive
-// falls back to a loud keyframe. Port 3166 (3100+ range).
+// falls back to a loud keyframe. Lifetime 1 binds an ephemeral port; lifetime 2
+// comes back on that same port, as a restarted process would.
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -13,8 +14,6 @@ import {openFsReplayStorage} from '../../src/server/fsReplayStorage'
 import {createDurableStoreReplay} from '../../src/Common/Observe/store-durable'
 import {createStore, StorePatch} from '../../src/Common/Observe/store'
 import {StoreReplayRemote, syncStoreReplay} from '../../src/Common/Observe/store-replay'
-
-const PORT = 3166
 
 async function main() {
     const {check, done} = makeChecker('store-durable')
@@ -29,8 +28,9 @@ async function main() {
     let head = createDurableStoreReplay<Record<string, any>>({storage, initial: {}, everyEvents: 4})
     await check('fresh boot restores nothing', () => head.restored, {seq: 0, fromArchive: false})
 
-    let srv = await startRealServer({port: PORT, makeObject: () => ({board: head.api})})
-    const c1 = await startRealClient({port: PORT})
+    let srv = await startRealServer({makeObject: () => ({board: head.api})})
+    const port = srv.port
+    const c1 = await startRealClient({port})
     const m1 = createStore<Record<string, any>>({}, {drain: 'micro'})
     const sub1 = syncStoreReplay(m1, c1.api.board.replay as StoreReplayRemote)
     await sub1.ready
@@ -51,8 +51,8 @@ async function main() {
     await check('reboot restored the head coordinate', () => head.restored, {seq: 1, fromArchive: true})
     await check('reboot restored the state', () => head.store.snapshot()['item6'], {n: 6})
 
-    srv = await startRealServer({port: PORT, makeObject: () => ({board: head.api})})
-    const c2 = await startRealClient({port: PORT})
+    srv = await startRealServer({port, makeObject: () => ({board: head.api})})
+    const c2 = await startRealClient({port})
     const remote2 = c2.api.board.replay as StoreReplayRemote
 
     // reconnect with the OLD seq: the persisted journal serves the exact tail

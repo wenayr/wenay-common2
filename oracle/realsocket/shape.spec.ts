@@ -15,8 +15,6 @@ import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {listen as createListenPair} from '../../src/Common/events/Listen'
 import {Pkt} from '../../src/Common/rcp/rpc-protocol'
 
-const PORT = 4107
-
 // captured server-side emit handles (filled when makeObject runs on the connection)
 let emitMono: ((v: any) => void) | null = null
 let emitPoly: ((v: any) => void) | null = null
@@ -50,7 +48,6 @@ async function main() {
     }
 
     const srv = await startRealServer({
-        port: PORT,
         makeObject,
         onServer: (_api, socket) => {
             // wrap the genuine socket.emit BEFORE any tick is sent — the rpc-server
@@ -64,7 +61,7 @@ async function main() {
         },
     })
 
-    const cli = await startRealClient({port: PORT})
+    const cli = await startRealClient({port: srv.port})
     const api = cli.api
 
     // give the connection a moment so makeObject ran and emit handles are captured

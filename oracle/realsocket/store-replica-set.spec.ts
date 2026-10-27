@@ -7,9 +7,6 @@ import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {flushReactive} from '../../src/Common/Observe/reactive'
 import {createStoreReplicaSet, StoreReplicaOffer} from '../../src/Common/Observe/store-replica-set'
 
-const LEADER_PORT = 3166
-const FOLLOWER_PORT = 3167
-
 type State = Record<string, {id: string, value: number}>
 
 async function waitFor(label: string, condition: () => boolean, timeoutMs = 8000) {
@@ -50,10 +47,9 @@ async function main() {
         leadership: {initialRole: 'leader', epoch: 4},
     })
     const leaderServer = await startRealServer({
-        port: LEADER_PORT,
         makeObject: () => ({replica: leader.api.fragment}),
     })
-    const leaderConnection = await startRealClient({port: LEADER_PORT})
+    const leaderConnection = await startRealClient({port: leaderServer.port})
 
     const follower = createStoreReplicaSet<State>({
         storeId: 'real-mesh',
@@ -73,10 +69,9 @@ async function main() {
     await check('RPC offer keyframe converges', () => follower.api.store.snapshot(), leader.api.store.snapshot())
 
     const followerServer = await startRealServer({
-        port: FOLLOWER_PORT,
         makeObject: () => ({replica: follower.api.fragment}),
     })
-    const followerConnection = await startRealClient({port: FOLLOWER_PORT})
+    const followerConnection = await startRealClient({port: followerServer.port})
     const client = createStoreReplicaSet<State>({
         storeId: 'real-mesh',
         originId: 'real-mesh-origin',

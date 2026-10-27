@@ -106,4 +106,5 @@ async function main() {
     }
 }
 
-runCheck(main)
+// leader, node and node-restart process starts
+runCheck(main, 480_000)

@@ -1,11 +1,10 @@
 // oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET regression: reconnect recovery must wait for delayed in-band auth
-// before recreating the physical replay subscription. Port 4125.
+// before recreating the physical replay subscription. Ephemeral port.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {replayListen} from '../../src/Common/events/replay-listen'
 import {exposeReplay, replaySubscribe, ReplayRemote} from '../../src/Common/events/replay-wire'
 
-const PORT = 4125
 const WAIT_MS = 10000
 const AUTH_DELAY_MS = 180
 
@@ -50,12 +49,11 @@ async function main() {
     }, 40000)
 
     const srv = await startRealServer({
-        port: PORT,
         makeObject: function makeGatedObject() { return {} },
         serverOpts: {auth: {resolveAuth, gate: true}},
         onServer: rememberServer,
     })
-    const cli = await startRealClient({port: PORT, token: 'replay-token'})
+    const cli = await startRealClient({port: srv.port, token: 'replay-token'})
     const remote = (cli.client.func as any).replay as ReplayRemote<[number]>
     const values: number[] = []
     const seqs: number[] = []

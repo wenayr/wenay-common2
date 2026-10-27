@@ -7,8 +7,6 @@ import {exposeStoreReplay, syncStoreReplay} from '../../src/Common/Observe/store
 import {flushReactive} from '../../src/Common/Observe/reactive'
 import {ContractOffer, createContractRuntime} from '../../src/Common/contract/contract-index'
 
-const PORT = 3168
-
 type State = {value: number, writer: string}
 type RemoteEditor = {
     identity: () => Promise<string>
@@ -82,14 +80,13 @@ async function main() {
     }
 
     const server = await startRealServer({
-        port: PORT,
         makeObject: () => ({
             state: exposed.api.replay,
             editorA: editor('rpc-editor-a'),
             editorB: editor('rpc-editor-b'),
         }),
     })
-    const connection = await startRealClient({port: PORT})
+    const connection = await startRealClient({port: server.port})
     const mirror = createStore<State>({value: 0, writer: ''})
     const sync = syncStoreReplay(mirror, connection.api.state)
     await sync.ready

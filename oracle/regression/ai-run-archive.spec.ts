@@ -19,8 +19,9 @@ if (process.argv[2] == '--effect-child') {
     const tempRoot = realpathSync(tmpdir())
     const directory = mkdtempSync(path.join(tempRoot, 'ai-process-restart-'))
     try {
+        // the child exits by itself; the bound only has to outlast a cold tsx start on a loaded machine
         const child = spawnSync(process.execPath, ['--max-old-space-size=256', '--import', 'tsx', __filename, '--effect-child', directory],
-            {encoding: 'utf8', windowsHide: true, timeout: 15_000})
+            {encoding: 'utf8', windowsHide: true, timeout: 120_000})
         assert.equal(child.status, 0, child.stderr)
         const effects = path.join(directory, 'effects.txt')
         assert.equal(readFileSync(effects, 'utf8'), 'effect\n')

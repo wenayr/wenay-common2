@@ -18,8 +18,6 @@
 // ============================================================
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 
-const PORT = 4109
-
 // echo bounces its single arg straight back; sink takes many args and reports count.
 function makeObject() {
     return {
@@ -55,8 +53,8 @@ async function main() {
         maxArrayLen: 4,
     }
 
-    const srv = await startRealServer({port: PORT, makeObject, serverOpts: {limits}})
-    const cli = await startRealClient({port: PORT})
+    const srv = await startRealServer({makeObject, serverOpts: {limits}})
+    const cli = await startRealClient({port: srv.port})
     const api = cli.api
     await delay(30) // let the strict handshake settle over the real socket
 

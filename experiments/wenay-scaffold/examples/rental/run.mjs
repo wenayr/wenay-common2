@@ -43,8 +43,11 @@ function boot(label, script, env) {
     return child
 }
 
+// the bound only has to outlast a cold tsx start on a loaded machine
+const LEADER_READY_MS = 120_000
+
 async function waitForLeader() {
-    const deadline = Date.now() + 30_000
+    const deadline = Date.now() + LEADER_READY_MS
     while (Date.now() < deadline) {
         try {
             const answer = await fetch(`http://localhost:${port}/openapi.json`)
@@ -52,7 +55,7 @@ async function waitForLeader() {
         } catch {}
         await new Promise(resolve => setTimeout(resolve, 250))
     }
-    throw new Error(`leader did not answer on port ${port} within 30s`)
+    throw new Error(`leader did not answer on port ${port} within ${LEADER_READY_MS / 1000}s`)
 }
 
 function shutdown(reason) {

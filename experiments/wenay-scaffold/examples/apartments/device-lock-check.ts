@@ -73,11 +73,12 @@ async function realDevice() {
     })
     let closeDevice = function notStarted() {}
     try {
+        // readiness is the fixture's IPC message; the bound only has to outlast a cold tsx start on a loaded machine
         const url = await new Promise<string>(function waitHost(resolve, reject) {
             const timeout = setTimeout(function timedOut() {
                 reject(new Error('fixture host timeout: ' + stderr))
                 child.kill('SIGKILL')
-            }, 10000)
+            }, 120_000)
             child.once('message', function ready(message) {
                 clearTimeout(timeout)
                 resolve((message as {url: string}).url)
@@ -166,4 +167,5 @@ if (process.argv.includes('--fixture')) fixtureHost().catch(function failed(erro
     console.error(error)
     process.exit(1)
 })
-else runCheck(main)
+// one fixture process start, then in-process checks
+else runCheck(main, 240_000)

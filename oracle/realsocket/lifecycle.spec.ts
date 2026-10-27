@@ -1,11 +1,9 @@
 // oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET intentional teardown lifecycle: client.dispose() drains live subscriptions,
 // and hard setToken rotation fires onDisconnect, tears down old subs, then connects a fresh
-// socket generation (connectCount++). Neither hard boundary auto-resubscribes. Port 4108.
+// socket generation (connectCount++). Neither hard boundary auto-resubscribes. Ephemeral port.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {listen as createListenPair} from '../../src/Common/events/Listen'
-
-const PORT = 4108
 
 // ===== facade: a method + two listen stream nodes =====
 // The server fabricates a fresh facade per connection (see _rs.startRealServer),
@@ -31,12 +29,12 @@ async function main() {
     const {check, done} = makeChecker('lifecycle')
     const watchdog = setTimeout(() => { console.error('WATCHDOG timeout'); process.exit(3) }, 40000)
 
-    const srv = await startRealServer({port: PORT, makeObject})
+    const srv = await startRealServer({makeObject})
 
     // ============================================================
     // PART 1 — client.dispose() drains a live subscription
     // ============================================================
-    const cli = await startRealClient({port: PORT})
+    const cli = await startRealClient({port: srv.port})
     const api = cli.api
 
     // sanity: a plain call round-trips over the real socket
@@ -77,7 +75,7 @@ async function main() {
     // ============================================================
     // PART 2 — hub.setToken hard rotation: teardown old subs, then reconnect
     // ============================================================
-    const cli2 = await startRealClient({port: PORT})
+    const cli2 = await startRealClient({port: srv.port})
 
     let hubDisconnectReason: string | null = null
     let connectFiredCount = 0

@@ -14,12 +14,13 @@
 //  - real createTokenCodec tokens end-to-end: tampered / foreign-secret refused,
 //    and the codec's own `exp` claim drives the server-side deadline
 //
-//  Ports 3169..3172 (3160..3168 belong to oracle/realsocket).
+//  Every server binds an ephemeral port on 127.0.0.1.
 //  Run: npx tsx replay/rpc-auth-lifecycle.test.ts
 // ============================================================
 
 import express from 'express'
 import {createServer} from 'http'
+import type {AddressInfo} from 'net'
 import {Server as SocketIOServer} from 'socket.io'
 import {io} from 'socket.io-client'
 import {listen as createListenPair} from '../src/Common/events/Listen'
@@ -139,7 +140,7 @@ function makeResolveAuth(book: ReturnType<typeof createGrantBook>, object: objec
 // ============================================================
 const SOCKET_KEY = 'rpc-auth-lifecycle'
 
-async function startServer(deps: {port: number, object: object, resolveAuth: (token: any) => any}) {
+async function startServer(deps: {object: object, resolveAuth: (token: any) => any}) {
     const inbound = {calls: 0}
     let latest: any = null
     const app = express()
@@ -167,9 +168,10 @@ async function startServer(deps: {port: number, object: object, resolveAuth: (to
     })
     await new Promise<void>(function listenForConnections(resolve, reject) {
         httpServer.once('error', reject)
-        httpServer.listen(deps.port, '127.0.0.1', resolve)
+        httpServer.listen(0, '127.0.0.1', resolve)
     })
     return {
+        port: (httpServer.address() as AddressInfo).port,
         inbound,
         subscriptions: () => latest?.subscriptions() ?? [],
         close: () => new Promise<void>(function closeServer(resolve) {
@@ -219,7 +221,6 @@ async function startClient(deps: {port: number, token?: string | null, provider?
 // ============================================================
 // grant + gate contract + renewal on a live subscription
 // ============================================================
-const PORT_GRANT = 3169
 const GRANT_SHORT_MS = 3_000
 const GRANT_WARN_MS = 1_500
 const GRANT_LONG_MS = 30_000
@@ -230,7 +231,6 @@ async function grantAndRenewal() {
     const book = createGrantBook()
     const seen: string[] = []
     const server = await startServer({
-        port: PORT_GRANT,
         object: world.anon,
         resolveAuth: makeResolveAuth(book, world.member, GRANT_WARN_MS, seen),
     })
@@ -242,8 +242,8 @@ async function grantAndRenewal() {
         providerCalls++
         return book.mint('member', ttlPlan.shift() ?? GRANT_LONG_MS)
     }
-    const anon = await startClient({port: PORT_GRANT})
-    const member = await startClient({port: PORT_GRANT, provider: provideToken})
+    const anon = await startClient({port: server.port})
+    const member = await startClient({port: server.port, provider: provideToken})
     const secretTicks: number[] = []
     const feedTicks: number[] = []
     const subscriberCounts: number[] = []
@@ -332,7 +332,6 @@ async function grantAndRenewal() {
 // ============================================================
 // expiry without a renewal, single-flight, one automatic retry
 // ============================================================
-const PORT_EXPIRY = 3170
 const EXPIRY_SHORT_MS = 1_200
 const EXPIRY_WARN_MS = 500
 const EXPIRY_LONG_MS = 30_000
@@ -343,7 +342,6 @@ async function expiryAndRetry() {
     const book = createGrantBook()
     const seen: string[] = []
     const server = await startServer({
-        port: PORT_EXPIRY,
         object: world.anon,
         resolveAuth: makeResolveAuth(book, world.member, EXPIRY_WARN_MS, seen),
     })
@@ -355,7 +353,7 @@ async function expiryAndRetry() {
         providerCalls++
         return vault
     }
-    const member = await startClient({port: PORT_EXPIRY, provider: provideToken})
+    const member = await startClient({port: server.port, provider: provideToken})
     const secretTicks: number[] = []
     const feedTicks: number[] = []
     let secretsEnded = false
@@ -414,7 +412,6 @@ async function expiryAndRetry() {
 // ============================================================
 // revocation mid-session
 // ============================================================
-const PORT_REVOKE = 3171
 const REVOKE_SHORT_MS = 1_200
 const REVOKE_WARN_MS = 500
 const REVOKE_LONG_MS = 30_000
@@ -425,7 +422,6 @@ async function revocationMidSession() {
     const book = createGrantBook()
     const seen: string[] = []
     const server = await startServer({
-        port: PORT_REVOKE,
         object: world.anon,
         resolveAuth: makeResolveAuth(book, world.member, REVOKE_WARN_MS, seen),
     })
@@ -439,7 +435,7 @@ async function revocationMidSession() {
         book.revoke(token)
         return token
     }
-    const member = await startClient({port: PORT_REVOKE, provider: provideToken})
+    const member = await startClient({port: server.port, provider: provideToken})
     const secretTicks: number[] = []
     const feedTicks: number[] = []
     let secretsEnded = false
@@ -479,7 +475,6 @@ async function revocationMidSession() {
 // ============================================================
 // real createTokenCodec tokens end-to-end
 // ============================================================
-const PORT_CODEC = 3172
 const CODEC_TTL_MS = 30_000
 const CODEC_SHORT_MS = 1_200
 const CODEC_WARN_MS = 500
@@ -523,10 +518,10 @@ async function realTokenCodec() {
     ok(foreignVerdict.ok == false && foreignVerdict.reason == 'signature',
         `a foreign secret does not verify (${json(foreignVerdict)})`)
 
-    const server = await startServer({port: PORT_CODEC, object: world.anon, resolveAuth})
+    const server = await startServer({object: world.anon, resolveAuth})
     try {
         // ---- a genuine token over the wire ----
-        const good = await startClient({port: PORT_CODEC, token: genuine})
+        const good = await startClient({port: server.port, token: genuine})
         try {
             const ack = await withTimeout(good.client.auth(), 'codec authAck')
             ok(ack?.ok == true && ack.sub == 'alice',
@@ -540,7 +535,7 @@ async function realTokenCodec() {
 
         // ---- refused tokens ----
         for (const [label, token] of [['tampered', escalated], ['foreign-secret', foreignToken]] as const) {
-            const bad = await startClient({port: PORT_CODEC, token})
+            const bad = await startClient({port: server.port, token})
             try {
                 const ack = await withTimeout(bad.client.auth(), 'refused authAck')
                 ok(ack?.ok == false && ack.reason == 'token signature',
@@ -561,7 +556,7 @@ async function realTokenCodec() {
         async function provideShortLived(request: RpcAuthRenewRequest) {
             return request.reason == 'connect' ? shortLived : null
         }
-        const bob = await startClient({port: PORT_CODEC, provider: provideShortLived})
+        const bob = await startClient({port: server.port, provider: provideShortLived})
         const ticks: number[] = []
         let ended = false
         try {

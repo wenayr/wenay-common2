@@ -9,8 +9,6 @@
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {MyError} from '../../src/toError/myThrow'
 
-const PORT = 4104
-
 function makeObject() {
     return {
         // happy path — used to prove the socket survives rejections
@@ -48,8 +46,8 @@ async function main() {
     const {check, done} = makeChecker('errors')
     const watchdog = setTimeout(() => { console.error('WATCHDOG timeout'); process.exit(3) }, 40000)
 
-    const srv = await startRealServer({port: PORT, makeObject})
-    const cli = await startRealClient({port: PORT})
+    const srv = await startRealServer({makeObject})
+    const cli = await startRealClient({port: srv.port})
     const api = cli.api
 
     await delay(20)

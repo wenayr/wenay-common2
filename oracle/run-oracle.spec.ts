@@ -12,11 +12,18 @@ const guard = pathToFileURL(path.join(__dirname, 'run-oracle.ts')).href
 const tsx = path.join(__dirname, '..', 'node_modules', 'tsx', 'dist', 'cli.mjs')
 const dir = mkdtempSync(path.join(os.tmpdir(), 'wenay-run-oracle-'))
 
+// Each child stamps when its script starts, so only what follows is timed, never the tsx cold
+// start a loaded machine can stretch to most of a minute; the spawn bound only has to outlast it.
+const STARTED = 'child-started-at '
 function exitOf(name: string, body: string) {
     const file = path.join(dir, name + '.ts')
-    writeFileSync(file, body)
-    const result = spawnSync(process.execPath, [tsx, file], {encoding: 'utf8', windowsHide: true, timeout: 30_000})
-    return {code: result.status, text: result.stdout + result.stderr}
+    writeFileSync(file, `process.stderr.write('${STARTED}' + Date.now() + '\\n')\n` + body)
+    const spawnedAt = Date.now()
+    const result = spawnSync(process.execPath, [tsx, file], {encoding: 'utf8', windowsHide: true, timeout: 120_000})
+    const finishedAt = Date.now()
+    const stamp = new RegExp('^' + STARTED + '(\\d+)\\r?\\n', 'm').exec(result.stderr ?? '')
+    const stderr = stamp ? result.stderr.replace(stamp[0], '') : result.stderr
+    return {code: result.status, ms: finishedAt - (stamp ? Number(stamp[1]) : spawnedAt), text: result.stdout + stderr}
 }
 
 const stall = 'async function main() { console.log("PASS first check"); await new Promise(() => {}); console.log("never") }\n'
@@ -45,10 +52,9 @@ try {
     console.log('PASS  a thrown main() fails the process')
 
     // a throw must end the run now, not when open sockets/timers happen to close (a hang until the runner timeout)
-    const started = Date.now()
     const thrownOpen = exitOf('thrown-open', `import {runOracle} from '${guard}'\nrunOracle(async function main() { setInterval(() => {}, 1000); throw new Error('boom with a live handle') })\n`)
     assert.equal(thrownOpen.code, 1, 'a thrown main with an open handle must exit 1 promptly: ' + thrownOpen.text)
-    assert.ok(Date.now() - started < 20_000, 'took ' + (Date.now() - started) + ' ms')
+    assert.ok(thrownOpen.ms < 20_000, 'took ' + thrownOpen.ms + ' ms after the script started')
     console.log('PASS  a thrown main() with an open handle exits at once')
 
     const failedExit = exitOf('failed-exit', `import {runOracle} from '${guard}'\nrunOracle(async function main() { process.exit(1) })\n`)

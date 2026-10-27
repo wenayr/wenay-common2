@@ -10,8 +10,6 @@
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {listen as createListenPair} from '../../src/Common/events/Listen'
 
-const PORT = 4105
-
 // One stream node, shared by BOTH principals → the subscription survives a principal
 // swap (same socket, same Listen handle). Distinct principals: user (read-only) vs
 // admin (read + write) so the swap is observable in method visibility.
@@ -44,13 +42,12 @@ async function main() {
     // gate=true: the EMPTY initial object is protected; the real principal surface only
     // appears after a successful HELLO (resolveAuth → principal facade).
     const srv = await startRealServer({
-        port: PORT,
         makeObject: () => ({}),                          // empty until HELLO
         serverOpts: {auth: {resolveAuth, gate: true}},
     })
 
     // ---- (1) valid token: auth resolves ok, principal methods callable ----
-    const cliUser = await startRealClient({port: PORT, token: 'tok-user'})
+    const cliUser = await startRealClient({port: srv.port, token: 'tok-user'})
     const userApi = cliUser.api
 
     await check('valid token: authAck ok', async () => (await cliUser.client.auth())?.ok, true)
@@ -62,7 +59,7 @@ async function main() {
         () => userApi.write(5).then(() => 'ok', () => 'rejected'), 'rejected')
 
     // ---- (2) bad token / gated: calls rejected with E_UNAUTHORIZED ----
-    const cliBad = await startRealClient({port: PORT, token: 'tok-nope'})
+    const cliBad = await startRealClient({port: srv.port, token: 'tok-nope'})
     await check('bad token: authAck ok=false', async () => (await cliBad.client.auth())?.ok, false)
     await check('gated: call rejected code E_UNAUTHORIZED',
         () => (cliBad.api.read() as Promise<any>).catch((e: any) => e?.code), 'E_UNAUTHORIZED')

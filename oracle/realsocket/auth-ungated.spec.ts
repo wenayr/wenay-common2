@@ -17,8 +17,6 @@
 // =====================================================================
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 
-const PORT = 4133
-
 function makeObject() {
     return {
         ping: () => 'pong',
@@ -38,12 +36,11 @@ async function main() {
 
     // NOTE: no `gate` — the base facade is public by design.
     const srv = await startRealServer({
-        port: PORT,
         makeObject,
         serverOpts: {auth: {resolveAuth}},
     })
 
-    const cli = await startRealClient({port: PORT, token: 'good'})
+    const cli = await startRealClient({port: srv.port, token: 'good'})
     await delay(20)
 
     await check('ungated: call works before any refusal', () => cli.api.ping(), 'pong')

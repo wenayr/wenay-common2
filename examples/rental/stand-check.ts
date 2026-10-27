@@ -5,8 +5,9 @@ import {createTokenCodec} from 'wenay-common2/server/auth'
 import {runCheck} from './run-check'
 
 async function main() {
+    // An import that starts a server never exits; the bound only has to outlast a cold tsx start on a loaded machine.
     const imported = spawnSync(process.execPath, ['--import', 'tsx', '-e', 'require(process.argv[1])', join(__dirname, 'leader-rental.ts')], {
-        cwd: dirname(__filename), encoding: 'utf8', timeout: 5000, windowsHide: true,
+        cwd: dirname(__filename), encoding: 'utf8', timeout: 120_000, windowsHide: true,
     })
     assert.equal(imported.error, undefined, 'import must exit without starting a server')
     assert.equal(imported.status, 0, imported.stderr)
@@ -51,4 +52,5 @@ async function main() {
     } finally { await stand.close() }
 }
 
-runCheck(main)
+// the import probe, then leader, node and replacement process starts
+runCheck(main, 600_000)

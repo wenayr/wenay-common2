@@ -2,12 +2,10 @@
 // ============================================================
 //  oracle/realsocket/callbacks.spec.ts — DISPOSABLE real-socket oracle
 //  CATEGORY "callbacks": callbacks-as-args (Pkt.CB) + listen streaming
-//  subscriptions over a genuine WebSocket. Port 4102 (own port, no clash).
+//  subscriptions over a genuine WebSocket. Ephemeral port (no clash).
 // ============================================================
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {listen as createListenPair, listenStore} from '../../src/Common/events/Listen'
-
-const PORT = 4102
 
 // Stream nodes live in module scope so the facade factory closes over the SAME
 // listen handles every connection — we drive them from the test below.
@@ -47,8 +45,8 @@ async function main() {
     const {check, done} = makeChecker('callbacks')
     const watchdog = setTimeout(() => { console.error('WATCHDOG timeout'); process.exit(3) }, 40000)
 
-    const srv = await startRealServer({port: PORT, makeObject})
-    const cli = await startRealClient({port: PORT})
+    const srv = await startRealServer({makeObject})
+    const cli = await startRealClient({port: srv.port})
     const api = cli.api
 
     // ===== 1. Callback-as-arg (Pkt.CB): all ticks arrive in order, rich Date =====

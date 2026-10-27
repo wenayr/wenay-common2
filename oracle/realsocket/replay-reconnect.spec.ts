@@ -1,12 +1,11 @@
 // oracle-ends: own watchdog timer — a stall exits 3
 // REAL-SOCKET replay reconnect oracle. The replay journals below outlive every
 // Socket.IO connection: reconnect must repair a logical subscription, not create
-// a new application-level replay line. Port 4112.
+// a new application-level replay line. Ephemeral port.
 import {startRealServer, startRealClient, makeChecker, delay} from './_rs'
 import {replayListen} from '../../src/Common/events/replay-listen'
 import {exposeReplay, replaySubscribe, ReplayRemote} from '../../src/Common/events/replay-wire'
 
-const PORT = 4112
 const WAIT_MS = 8000
 
 type tCheck = ReturnType<typeof makeChecker>['check']
@@ -152,8 +151,8 @@ function numbers(from: number, to: number) {
 // Scenario 1 + 2: identity and a short recoverable gap
 // ============================================================
 
-async function checkIdentityAndShortReconnect(check: tCheck) {
-    const cli = await startRealClient<ReturnType<typeof makeObject>>({port: PORT})
+async function checkIdentityAndShortReconnect(check: tCheck, port: number) {
+    const cli = await startRealClient<ReturnType<typeof makeObject>>({port})
     const client = cli.client as any
 
     const pathA = client.func.identity.deep.orders.events
@@ -229,8 +228,8 @@ async function checkIdentityAndShortReconnect(check: tCheck) {
 // Scenario 3: two local consumers remain one physical subscription
 // ============================================================
 
-async function checkTwoConsumers(check: tCheck) {
-    const cli = await startRealClient<ReturnType<typeof makeObject>>({port: PORT})
+async function checkTwoConsumers(check: tCheck, port: number) {
+    const cli = await startRealClient<ReturnType<typeof makeObject>>({port})
     const remote = remoteOf(cli, 'consumers')
     const first: number[] = []
     const second: number[] = []
@@ -292,8 +291,8 @@ async function checkTwoConsumers(check: tCheck) {
 // Scenario 4: three reconnects, including overlapping recovery
 // ============================================================
 
-async function checkRepeatedReconnect(check: tCheck) {
-    const cli = await startRealClient<ReturnType<typeof makeObject>>({port: PORT})
+async function checkRepeatedReconnect(check: tCheck, port: number) {
+    const cli = await startRealClient<ReturnType<typeof makeObject>>({port})
     const values: number[] = []
     const seqs: number[] = []
     const sub = replaySubscribe(remoteOf(cli, 'cycles'), function receiveCycle(value) {
@@ -348,8 +347,8 @@ async function checkRepeatedReconnect(check: tCheck) {
 // Scenario 5: sacred journal eviction fails loudly and stays stopped
 // ============================================================
 
-async function checkSacredEviction(check: tCheck) {
-    const cli = await startRealClient<ReturnType<typeof makeObject>>({port: PORT})
+async function checkSacredEviction(check: tCheck, port: number) {
+    const cli = await startRealClient<ReturnType<typeof makeObject>>({port})
     const values: number[] = []
     const seqs: number[] = []
     const errors: any[] = []
@@ -399,8 +398,8 @@ async function checkSacredEviction(check: tCheck) {
 // Scenario 6: dispose while offline is terminal
 // ============================================================
 
-async function checkDisposeOffline(check: tCheck) {
-    const cli = await startRealClient<ReturnType<typeof makeObject>>({port: PORT})
+async function checkDisposeOffline(check: tCheck, port: number) {
+    const cli = await startRealClient<ReturnType<typeof makeObject>>({port})
     const remote = remoteOf(cli, 'dispose')
     const values: number[] = []
     const sub = replaySubscribe(remote, function receiveBeforeDispose(value) { values.push(value) }, {since: 0})
@@ -435,8 +434,8 @@ async function checkDisposeOffline(check: tCheck) {
 // Scenario 8: legacy lifecycle slot plus additive multicast listeners
 // ============================================================
 
-async function checkLifecycleMulticast(check: tCheck) {
-    const cli = await startRealClient<ReturnType<typeof makeObject>>({port: PORT})
+async function checkLifecycleMulticast(check: tCheck, port: number) {
+    const cli = await startRealClient<ReturnType<typeof makeObject>>({port})
     const hub = cli.hub
     const values: number[] = []
     const sub = replaySubscribe(remoteOf(cli, 'lifecycle'), function receiveLifecycle(value) {
@@ -507,8 +506,8 @@ async function checkLifecycleMulticast(check: tCheck) {
 // Scenario 7: setToken remains a hard generation boundary
 // ============================================================
 
-async function checkHardTokenRotation(check: tCheck) {
-    const cli = await startRealClient<ReturnType<typeof makeObject>>({port: PORT})
+async function checkHardTokenRotation(check: tCheck, port: number) {
+    const cli = await startRealClient<ReturnType<typeof makeObject>>({port})
     const oldClient = cli.client
     const oldRemote = remoteOf(cli, 'rotation')
     const oldSocket = cli.hub.socket
@@ -569,18 +568,17 @@ async function main() {
     }, 120000)
 
     const server = await startRealServer({
-        port: PORT,
         makeObject,
         onServer: rememberServer,
     })
 
-    await checkIdentityAndShortReconnect(check)
-    await checkTwoConsumers(check)
-    await checkRepeatedReconnect(check)
-    await checkSacredEviction(check)
-    await checkDisposeOffline(check)
-    await checkLifecycleMulticast(check)
-    await checkHardTokenRotation(check)
+    await checkIdentityAndShortReconnect(check, server.port)
+    await checkTwoConsumers(check, server.port)
+    await checkRepeatedReconnect(check, server.port)
+    await checkSacredEviction(check, server.port)
+    await checkDisposeOffline(check, server.port)
+    await checkLifecycleMulticast(check, server.port)
+    await checkHardTokenRotation(check, server.port)
 
     clearTimeout(watchdog)
     await server.close()
