@@ -29,6 +29,7 @@ import {createHttpFacadeOpenApi} from '../../src/server/http-index'
 import {
     createMcpFacadeHttp,
     createMcpFacadeServer,
+    describeDynamic,
     describeMethod,
     type McpAround,
     type McpCallEvent,
@@ -89,6 +90,10 @@ async function connect(surface: McpFacadeSurface, principal?: unknown) {
     const client = new Client({name: 'oracle', version: '1.0.0'})
     await client.connect(clientTransport)
     return {client, server, close: () => client.close()}
+}
+async function readText(client: Client, uri: string) {
+    const first = (await client.readResource({uri})).contents[0]
+    return {uri: first?.uri, text: first && 'text' in first ? first.text : undefined}
 }
 
 // =====================================================================
@@ -456,6 +461,10 @@ async function listenResources() {
     })
     const names = mcp.tools.list().map(tool => tool.name)
     assert(!names.some(name => name.startsWith('events') || name.startsWith('dynamic')), `Listen and noStrict are not tools: ${names}`)
+    // the same walk: HTTP routes neither the streams nor the noStrict subtree, one route per tool
+    const openApi = createHttpFacadeOpenApi({object, basePath: '/api', methods: ['post'], info: {title: 'resources', version: '1'}})
+    const routes = Object.keys(openApi.document()['paths'] as Record<string, unknown>)
+    assert(same(routes, names.map(name => `/api/${name.split('.').join('/')}`)), `OpenAPI routes are the MCP tools: ${routes}`)
     const {client, close} = await connect(mcp)
     const uris = (await client.listResources()).resources.map(resource => resource.uri)
     assert(same([...uris].sort(), ['facade://events/price', 'facade://events/ticks', 'facade://view/count']), `resources: ${uris}`)
@@ -487,6 +496,384 @@ async function listenResources() {
     await close()
     await tick(5)
     assert(priceStore.count() == 0, 'closing the session releases its subscriptions')
+}
+
+async function dynamicTemplates() {
+    let price = 10
+    const [emitPrice, prices] = listenStore<number>({current: () => [price]})
+    const [, ticks] = listen<number>()
+    const [emitSpaced, spaced] = listen<number>()
+    const loop: Record<string, unknown> = {}
+    loop['self'] = loop
+    let gets = 0
+    const getCount = () => gets
+    // answers only through traps, as peer-media-relay's watchOf does: no own key at all
+    const accounts = describeDynamic(noStrict(new Proxy({} as Record<string, unknown>, {
+        has: (_target, key) => key == 'bob',
+        get(_target, key) {
+            gets++
+            return key == 'bob' ? {name: 'bob'} : undefined
+        },
+    })), {description: 'Accounts by lower-case name', key: {type: 'string', pattern: '^[a-z]+$'}})
+    // the has trap is the access point: albert exists in the target and is denied
+    const users = noStrict(new Proxy({
+        alice: {profile: {name: 'Alice', since: new Date(0)}, rename: (name: string) => name},
+        albert: {profile: {name: 'Albert'}},
+    } as Record<string, unknown>, {
+        has: (target, key) => key != 'albert' && Reflect.has(target, key),
+    }))
+    const object = {
+        view: {count: describeMethod(() => 1, {description: 'Count', args: []})},
+        // a static store whose value is cyclic: the read must be bounded before packing
+        events: {loop: listenStore<Record<string, unknown>>({current: () => [loop]})[1]},
+        feeds: noStrict({prices, ticks: ticks.on, 'a/b c': spaced}),
+        users,
+        accounts,
+        data: noStrict({loop, bytes: new Uint8Array([1, 2]), nested: {raw: new Uint8Array(2)}, nothing: null}),
+        dynamic: noStrict({hidden: () => 1}),
+        secret: noStrict({token: 'x'}),
+    }
+    const mcp = createMcpFacadeServer({
+        name: 'templates', version: '1', object, ...silent,
+        policy: {dynamic: path => path[0] == 'secret' ? false : undefined},
+        resources: {maxSubscriptions: 2, completions: true},
+    })
+    const {client, close} = await connect(mcp)
+
+    // C1: one template per exposed noStrict node, never in resources/list, no tool
+    const templates = (await client.listResourceTemplates()).resourceTemplates
+    const uriTemplates = templates.map(template => template.uriTemplate)
+    assert(same([...uriTemplates].sort(), ['facade://accounts/{key}', 'facade://data/{key}', 'facade://dynamic/{key}', 'facade://feeds/{key}', 'facade://users/{key}']),
+        `one template per noStrict node: ${uriTemplates}`)
+    assert(same(mcp.resources.templates().map(template => template.uriTemplate), uriTemplates), 'in-process templates() is resources/templates/list')
+    assert(templates.find(template => template.name == 'accounts')?.description == 'Accounts by lower-case name', 'describeDynamic names the template')
+    const statics = (await client.listResources()).resources.map(resource => resource.uri)
+    assert(same(statics, ['facade://events/loop']), `templates never appear in resources/list: ${statics}`)
+    assert(same(mcp.tools.list().map(tool => tool.name), ['view.count']), 'read exposure adds no tool')
+    await rejectsWith(() => client.readResource({uri: 'facade://secret/token'}), 'Unknown resource', 'negative control: policy.dynamic false hides the node')
+
+    // C2: Listen values below a key
+    assert((await readText(client, 'facade://feeds/prices')).text == '10', 'a templated listenStore reads its current value')
+    await rejectsWith(() => client.readResource({uri: 'facade://feeds/ticks'}), 'no current value', 'a templated plain listen only notifies')
+
+    // C3: data, subtrees, functions
+    const profile = await readText(client, 'facade://users/alice/profile')
+    assert(profile.text?.includes('"$_d"') == true, `data reads through the RPC codec: ${profile.text}`)
+    const restored = unpackResult(JSON.parse(profile.text!))
+    assert(restored.since instanceof Date && restored.name == 'Alice', 'unpackResult restores the Date')
+    assert((await readText(client, 'facade://data/nothing')).text == 'null', 'a member holding null is present')
+    await rejectsWith(() => client.readResource({uri: 'facade://users/alice'}), 'subtree', 'a subtree holding functions is refused')
+    await rejectsWith(() => client.readResource({uri: 'facade://dynamic/hidden'}), 'is a function', 'a function is not read')
+
+    // C4: resolution refusals
+    await rejectsWith(() => client.readResource({uri: 'facade://users/carol'}), 'Unknown resource', 'an absent key')
+    await rejectsWith(() => client.readResource({uri: 'facade://users/albert'}), 'Unknown resource', 'a key the has trap denies is absent')
+    await rejectsWith(() => client.readResource({uri: 'facade://users/constructor'}), 'Forbidden', 'constructor is a forbidden segment')
+    await rejectsWith(() => client.readResource({uri: 'facade://users/%5F%5Fproto%5F%5F'}), 'Forbidden', 'an encoded __proto__ is forbidden')
+    await rejectsWith(() => client.readResource({uri: 'facade://users/toString'}), 'Unknown resource', 'an inherited builtin is not a member')
+    await rejectsWith(() => client.readResource({uri: 'facade://users/./alice'}), 'Unknown resource', 'a dot segment')
+    await rejectsWith(() => client.readResource({uri: 'facade://users/alice/profile?x=1'}), 'Unknown resource', 'a query')
+    await rejectsWith(() => client.readResource({uri: 'facade://users'}), 'Unknown resource', 'the template base itself')
+
+    // C5: one canonical URI per key, whatever the spelling
+    const updates: string[] = []
+    client.setNotificationHandler(ResourceUpdatedNotificationSchema, notification => { updates.push(notification.params.uri) })
+    await client.subscribeResource({uri: 'facade://feeds/a%2Fb%20c'})
+    await client.subscribeResource({uri: 'FACADE://feeds/a%2fb%20c'})
+    assert(spaced.count() == 1, `a variant spelling is the same subscription: ${spaced.count()}`)
+    emitSpaced(1)
+    await tick(10)
+    assert(same(updates, ['facade://feeds/a%2Fb%20c']), `the notification carries the canonical URI: ${updates}`)
+
+    // C6: subscribe, coalesce, refuse data, limit, unsubscribe
+    await client.subscribeResource({uri: 'facade://feeds/prices'})
+    price = 11
+    emitPrice(11)
+    emitPrice(12)
+    await tick(10)
+    assert(same(updates.slice(1), ['facade://feeds/prices']), `emits in one tick coalesce: ${updates}`)
+    await rejectsWith(() => client.subscribeResource({uri: 'facade://users/alice/profile'}), 'no change stream', 'data has no stream')
+    await rejectsWith(() => client.subscribeResource({uri: 'facade://feeds/ticks'}), 'Subscription limit', 'templated URIs count toward the limit')
+    assert(ticks.count() == 0, 'a refused subscription holds nothing')
+    await client.unsubscribeResource({uri: 'facade://feeds/a%2fb%20c'})
+    assert(spaced.count() == 0, 'unsubscribe through a variant spelling releases the Listen')
+
+    // C7: the key schema runs before any trap
+    const getsBefore = getCount()
+    await rejectsWith(() => client.readResource({uri: 'facade://accounts/Bob1'}), 'Invalid key', 'the key schema refuses')
+    assert(getCount() == getsBefore, 'no get trap ran for a refused key')
+
+    // C8: RPC-like membership: a proxy answering only through traps is reachable (flips under own-only resolution)
+    assert((await readText(client, 'facade://accounts/bob')).text == '{"name":"bob"}', 'a trap-only key reads')
+    assert(getCount() == getsBefore + 1, 'one get trap per read')
+    await rejectsWith(() => client.readResource({uri: 'facade://accounts/eve'}), 'Unknown resource', 'its has trap denies eve')
+
+    // C9: completion of template keys, opt-in
+    assert(client.getServerCapabilities()?.completions != null, 'resources.completions declares the capability')
+    const completed = await client.complete({ref: {type: 'ref/resource', uri: 'facade://users/{key}'}, argument: {name: 'key', value: 'al'}})
+    assert(same(completed.completion.values, ['alice']), `completion offers only keys the has trap allows: ${completed.completion.values}`)
+    const plain = createMcpFacadeServer({name: 'no-completions', version: '1', object: {users}, ...silent})
+    const other = await connect(plain)
+    assert(other.client.getServerCapabilities()?.completions == undefined, 'negative control: no completions capability by default')
+    await rejectsWith(() => other.client.complete({ref: {type: 'ref/resource', uri: 'facade://users/{key}'}, argument: {name: 'key', value: 'al'}}),
+        'Method not found', 'without the option completion/complete is not handled')
+    await other.close()
+
+    // C10: bounded before packing, bytes refused
+    const cyclic = await rejectsWith(() => mcp.resources.read('facade://data/loop'), 'max depth', 'templated cyclic data') as Error
+    assert(cyclic.name == 'PayloadLimitError', `a cycle is a PayloadLimitError, not a RangeError: ${cyclic.name}`)
+    const staticCycle = await rejectsWith(() => mcp.resources.read('facade://events/loop'), 'max depth', 'a static store read') as Error
+    assert(staticCycle.name == 'PayloadLimitError', `the static store read is bounded too: ${staticCycle.name}`)
+    const bytes = await rejectsWith(() => mcp.resources.read('facade://data/bytes'), 'binary', 'top-level bytes') as MyError
+    assert(bytes.code == 'E_MCP_BINARY', `bytes are refused, not stringified: ${bytes.code}`)
+    const nested = await rejectsWith(() => mcp.resources.read('facade://data/nested'), 'Binary value', 'nested bytes') as MyError
+    assert(nested.code == 'E_MCP_BINARY', `nested bytes are refused: ${nested.code}`)
+
+    await close()
+    await tick(5)
+    assert(prices.count() == 0, 'closing the session releases templated subscriptions')
+}
+
+async function dynamicDispatch() {
+    const log: string[] = []
+    const slowGate = gate()
+    // a class on purpose: members on the prototype must be reachable, as RPC reaches them
+    class Strategy {
+        speed = 0
+        readonly state = {running: false}
+        readonly events = listen<number>()[1]
+        constructor(readonly id: string) {}
+        start(args: {speed: number}) {
+            log.push(`start:${this.id}:${args.speed}`)
+            this.speed = args.speed
+            this.state.running = true
+            return {id: this.id, speed: this.speed}
+        }
+        stop() {
+            log.push(`stop:${this.id}`)
+            this.state.running = false
+            return true
+        }
+        probe(first?: unknown) {
+            return {count: arguments.length, date: first instanceof Date}
+        }
+    }
+    const entries: Record<string, Strategy> = {'mystrategy.2020': new Strategy('mystrategy.2020')}
+    for (let i = 0; i < 50; i++) entries[`s${i}`] = new Strategy(`s${i}`)
+    const strategies = describeDynamic(noStrict(entries), {
+        description: 'Trading strategies by id.',
+        members: {
+            start: {
+                description: 'Starts the strategy',
+                input: {type: 'object', properties: {speed: {type: 'integer', minimum: 1}}, required: ['speed'], additionalProperties: false},
+            },
+        },
+    })
+    const facade = {
+        slow: describeMethod(async function slow() {
+            log.push('slow:start')
+            await slowGate.opened
+            log.push('slow:end')
+        }, {description: 'Slow static call', args: []}),
+        strategies,
+        feeds: noStrict({x: 1}),
+    }
+    const audit: McpAround = function audit(ctx, next) {
+        log.push(`around:${ctx.tool}:${JSON.stringify(ctx.path)}`)
+        return next()
+    }
+    const called: McpCallEvent[] = []
+    const findings: string[] = []
+    const mcp = createMcpFacadeServer({
+        name: 'dispatch', version: '1', object: facade, around: audit,
+        policy: {dynamic: path => path[0] == 'strategies' ? 'call' : undefined},
+        onFinding: finding => findings.push(finding.path),
+    })
+    mcp.on.called(event => called.push(event))
+    const {client, close} = await connect(mcp)
+    const dispatch = (args: Record<string, unknown>) => client.callTool({name: 'strategies.call', arguments: args}) as Promise<CallToolResult>
+
+    // C11: listed for the 'call' node only, one schema
+    const tools = (await client.listTools()).tools
+    assert(same(tools.map(tool => tool.name).sort(), ['slow', 'strategies.call']), `a dispatcher only for the 'call' node: ${tools.map(tool => tool.name)}`)
+    const dispatcher = tools.find(tool => tool.name == 'strategies.call')!
+    const schema = dispatcher.inputSchema as {properties: Record<string, unknown>, required: string[], additionalProperties?: unknown}
+    assert(same(Object.keys(schema.properties), ['key', 'method', 'args']) && same(schema.required, ['key', 'method'])
+        && schema.additionalProperties == false, `the dispatcher schema: ${JSON.stringify(schema)}`)
+    assert(dispatcher.description?.includes('start: Starts the strategy') == true, `the description lists the members: ${dispatcher.description}`)
+
+    // C12: this is the entry, the path carries the key
+    const started = await dispatch({key: 'mystrategy.2020', method: ['start'], args: {speed: 2}})
+    assert(same(started.structuredContent, {id: 'mystrategy.2020', speed: 2}) && entries['mystrategy.2020'].speed == 2,
+        `a prototype member runs with the entry as this: ${JSON.stringify(started)}`)
+    assert(log.includes('around:strategies.call:["strategies","mystrategy.2020","start"]'), `around sees the dispatcher and the concrete path: ${log}`)
+    assert(called.some(event => event.tool == 'strategies.call' && same(event.path, ['strategies', 'mystrategy.2020', 'start'])),
+        'on.called reports the dispatcher and the concrete path')
+
+    // C13: member schema, undescribed members, the codec
+    assert(errorOf(await dispatch({key: 's1', method: ['start'], args: {speed: 0}})).code == 'E_MCP_ARGS', 'the member schema applies')
+    assert(errorOf(await dispatch({key: 's1', method: ['start'], args: {speed: 2, turbo: true}})).code == 'E_MCP_ARGS', 'an unknown argument name is refused')
+    const probed = await dispatch({key: 's1', method: ['probe'], args: [1, 2]})
+    assert(same(probed.structuredContent, {count: 2, date: false}), `an undescribed member takes a positional array: ${JSON.stringify(probed)}`)
+    const dated = await dispatch({key: 's1', method: ['probe'], args: [{$_d: 0}]})
+    assert(same(dated.structuredContent, {count: 1, date: true}), 'a $_d argument arrives as a Date')
+
+    // C14: what a dispatcher never reaches
+    for (const method of [['constructor'], ['__proto__']]) {
+        assert(errorOf(await dispatch({key: 's1', method})).code == 'E_MCP_ARGS', `${method} is a forbidden segment`)
+    }
+    for (const method of [['toString'], ['hasOwnProperty']]) {
+        assert(errorOf(await dispatch({key: 's1', method})).code == 'E_MCP_NOT_FOUND', `${method} is an inherited builtin`)
+    }
+    const s1 = entries['s1']
+    let emitted = 0
+    s1.events.on(() => { emitted++ })
+    for (const method of [['events', 'emit'], ['events', 'close']]) {
+        assert(errorOf(await dispatch({key: 's1', method, args: [1]})).code == 'E_MCP_NOT_FOUND', `${method.join('.')} of a Listen is unreachable`)
+    }
+    assert(emitted == 0 && s1.events.count() == 1 && s1.events.isRunning(), 'no emit seen and the Listen is still open')
+    assert(errorOf(await dispatch({key: 's1', method: ['state']})).message.includes('not a function'), 'data is not a call target')
+    const tooLong = errorOf(await dispatch({key: 's1', method: Array.from({length: 20}, () => 'deep')}))
+    assert(tooLong.name == 'PayloadLimitError', `a path past maxPathLen: ${JSON.stringify(tooLong)}`)
+
+    // C15: dynamic calls share the serial queue
+    const slow = mcp.tools.call('slow', {})
+    const stopped = mcp.tools.call('strategies.call', {key: 's2', method: ['stop']})
+    await tick(20)
+    assert(log.includes('slow:start') && !log.includes('stop:s2'), 'serial: the dynamic call waits behind the slow static call')
+    slowGate.open()
+    await Promise.all([slow, stopped])
+    assert(log.indexOf('slow:end') < log.indexOf('stop:s2'), 'serial order is call order')
+
+    // C17 (non-strict): many keys, one finding per member path
+    for (let i = 0; i < 50; i++) await mcp.tools.call('strategies.call', {key: `s${i}`, method: ['stop']})
+    assert(same(findings.filter(path => path.endsWith('stop')), ['strategies.*.stop']), `findings stay bounded: ${findings}`)
+
+    // C18
+    await close()
+    mcp.control.dispose()
+    assert(errorOf(await mcp.tools.call('strategies.call', {key: 's1', method: ['stop']})).code == 'E_MCP_DISPOSED', 'a disposed facade refuses dispatch')
+
+    // C16: read-only server
+    const described = describeDynamic(noStrict({a: {peek: () => 'peeked', poke: () => 'poked'}}), {
+        description: 'Read-only dispatcher',
+        annotations: {readOnlyHint: true},
+        members: {
+            peek: {description: 'Peeks', args: [], annotations: {readOnlyHint: true}},
+            poke: {description: 'Pokes', args: [], annotations: {readOnlyHint: false}},
+        },
+    })
+    const reader = createMcpFacadeServer({
+        name: 'dispatch-read', version: '1', readOnly: true, ...silent,
+        object: {bare: noStrict({a: {stop: () => 1}}), described},
+        policy: {dynamic: () => 'call'},
+    })
+    assert(same(reader.tools.list().map(tool => tool.name), ['described.call']), 'an undescribed dispatcher is not listed on a read-only server')
+    await rejectsWith(() => reader.tools.call('bare.call', {key: 'a', method: ['stop']}), 'serves reads only', 'nor callable by name')
+    const peeked = await reader.tools.call('described.call', {key: 'a', method: ['peek']})
+    assert(same(peeked.structuredContent, {value: 'peeked'}), 'negative control: a read-only member runs')
+    await rejectsWith(() => reader.tools.call('described.call', {key: 'a', method: ['poke']}), 'serves reads only',
+        'a read-only dispatcher refuses a mutating member as a protocol error')
+
+    // C17 (strict)
+    throwsWith(() => createMcpFacadeServer({
+        name: 'x', version: '1', strict: true, object: {bare: noStrict({})}, policy: {dynamic: () => 'call'},
+    }), 'without describeDynamic: bare', 'strict refuses an undescribed call node at setup')
+    const strict = createMcpFacadeServer({
+        name: 'strict-dispatch', version: '1', strict: true, object: {strategies}, policy: {dynamic: () => 'call'},
+    })
+    assert(same((await strict.tools.call('strategies.call', {key: 's3', method: ['start'], args: {speed: 3}})).structuredContent,
+        {id: 's3', speed: 3}), 'negative control: a described member runs under strict')
+    assert(errorOf(await strict.tools.call('strategies.call', {key: 's3', method: ['stop']})).code == 'E_MCP_ARGS',
+        'strict refuses an undescribed member at call time')
+}
+
+// review findings on dynamic nodes; each check fails without its fix, each has a negative control
+async function dynamicHardening() {
+    // H1: methods the runtime put on builtin prototypes are never dispatch targets
+    const tags = ['a']
+    const cache = new Map([['a', 1]])
+    const when = new Date(0)
+    class Journal extends Array<string> {
+        override push(...items: string[]) { return super.push(...items.map(item => `journal:${item}`)) }
+    }
+    const journal = new Journal()
+    let wiped = 0
+    class Tool { static wipe() { wiped++ } }
+    const entries = noStrict({
+        e: {tags, cache, when, journal, own: {push: (value: string) => `own:${value}`}, ping: () => 'pong'},
+        Tool,
+        fn: Object.assign(function fn() {}, {inner: {secret: 's'}}),
+    })
+    const mcp = createMcpFacadeServer({name: 'hardening', version: '1', object: {entries}, policy: {dynamic: () => 'call'}, ...silent})
+    const dispatch = (key: string, method: string[], args?: unknown) => mcp.tools.call('entries.call', {key, method, ...(args ? {args} : {})})
+    for (const [method, args] of [[['tags', 'push'], ['x']], [['cache', 'clear'], undefined], [['when', 'setTime'], [5]], [['tags', 'splice'], [0, 1]]] as const) {
+        assert(errorOf(await dispatch('e', [...method], args)).code == 'E_MCP_NOT_FOUND', `${method.join('.')} is a builtin, not a member`)
+    }
+    assert(same(tags, ['a']) && cache.size == 1 && when.getTime() == 0, 'the data behind the refused builtins is unchanged')
+    assert(same((await dispatch('e', ['journal', 'push'], ['x'])).structuredContent, {value: 1}) && journal[0] == 'journal:x',
+        'negative control: a host class that overrides push keeps it')
+    assert(same((await dispatch('e', ['own', 'push'], ['x'])).structuredContent, {value: 'own:x'}), 'negative control: an own push is the host\'s')
+
+    // H2: only an object holds members, as on RPC
+    assert(errorOf(await dispatch('Tool', ['wipe'])).code == 'E_MCP_NOT_FOUND' && wiped == 0, 'a static method of a class held as a key is not reached')
+    await rejectsWith(() => mcp.resources.read('facade://entries/fn/name'), 'Unknown resource', 'a function\'s name is not a member')
+    await rejectsWith(() => mcp.resources.read('facade://entries/fn/inner/secret'), 'Unknown resource', 'nor a property hung on a function')
+    assert(same((await dispatch('e', ['ping'])).structuredContent, {value: 'pong'}), 'negative control: an object\'s method is reached')
+
+    // H3: reading a parent does not list a dynamic map below it past its has trap
+    const acl = noStrict(new Proxy({alice: {n: 1}, albert: {n: 2}} as Record<string, unknown>, {
+        has: (target, key) => key != 'albert' && Reflect.has(target, key),
+    }))
+    const team = {name: 'desk', users: acl}
+    const org = createMcpFacadeServer({name: 'org', version: '1', object: {org: noStrict({team, home: {back: {team}}})}, ...silent})
+    await rejectsWith(() => org.resources.read('facade://org/team/users/albert'), 'Unknown resource', 'the has trap denies albert')
+    await rejectsWith(() => org.resources.read('facade://org/team'), 'holds a dynamic map at users', 'the parent of a dynamic map is not read whole')
+    await rejectsWith(() => org.resources.read('facade://org/home'), 'at back.team.users', 'nor any ancestor of one')
+    assert((await org.resources.read('facade://org/team/name')).contents[0].text == '"desk"', 'negative control: a sibling data member reads')
+    assert((await org.resources.read('facade://org/team/users/alice')).contents[0].text == '{"n":1}', 'negative control: an allowed key reads')
+
+    // H4: a URI longer than any resolvable path is refused before any per-prefix work (was quadratic)
+    const longUri = 'facade://zz/' + Array.from({length: 16000}, () => 'a').join('/')
+    const started = Date.now()
+    await rejectsWith(() => mcp.resources.read(longUri), 'Unknown resource', 'a URI past maxPathLen')
+    assert(Date.now() - started < 1000, `a 16000-segment URI is refused at once: ${Date.now() - started} ms`)
+
+    // H5: a member path is matched against members only when no segment holds a dot
+    let poked = 0
+    const dotted = describeDynamic(noStrict({k: {'a.b': () => { poked++; return 'poked' }, a: {b: () => 'peeked'}}}), {
+        description: 'Dotted members', annotations: {readOnlyHint: true},
+        members: {'a.b': {description: 'Peeks', args: [], annotations: {readOnlyHint: true}}},
+    })
+    const reader = createMcpFacadeServer({name: 'dotted', version: '1', readOnly: true, object: {dotted}, policy: {dynamic: () => 'call'}, ...silent})
+    await rejectsWith(() => reader.tools.call('dotted.call', {key: 'k', method: ['a.b']}), 'serves reads only',
+        'an own key "a.b" does not borrow the read-only entry of the member path a.b')
+    assert(poked == 0, 'the mutating member did not run')
+    assert(same((await reader.tools.call('dotted.call', {key: 'k', method: ['a', 'b']})).structuredContent, {value: 'peeked'}),
+        'negative control: the described member path a.b runs')
+
+    // H6: findings stay bounded when a node answers any member name
+    const findings: string[] = []
+    const anyMember = noStrict(new Proxy({}, {has: () => true, get: (_target, key) => typeof key == 'string' ? function any() { return key } : undefined}))
+    const flood = createMcpFacadeServer({
+        name: 'flood', version: '1', object: {m: noStrict({k: {h: anyMember}})}, policy: {dynamic: () => 'call'},
+        onFinding: finding => findings.push(finding.path),
+    })
+    for (let i = 0; i < 100; i++) await flood.tools.call('m.call', {key: 'k', method: ['h', `x${i}`]})
+    assert(findings.length == 65 && findings[64] == 'm.*', `findings per dynamic node are capped: ${findings.length}`)
+    assert(findings[0] == 'm.*.h.x0', `negative control: the first members are still reported: ${findings[0]}`)
+
+    // H7: every spelling that subscribes also unsubscribes
+    const [, price] = listenStore<number>({current: () => [1]})
+    const live = createMcpFacadeServer({name: 'spelling', version: '1', object: {events: {price}}, ...silent})
+    const {client, close} = await connect(live)
+    await client.subscribeResource({uri: 'facade://events/./price'})
+    assert(price.count() == 1, 'a dot-segment spelling subscribes the static resource')
+    await client.unsubscribeResource({uri: 'facade://events/./price'})
+    assert(price.count() == 0, 'and the same spelling unsubscribes it')
+    await client.subscribeResource({uri: 'facade://events/price'})
+    assert(price.count() == 1, 'negative control: the canonical spelling subscribes')
+    await close()
 }
 
 async function compositionChanges() {
@@ -530,6 +917,23 @@ async function compositionChanges() {
     mcp.control.unmount('module')
     await tick(5)
     assert(toolChanges() == 3 && !(await client.listTools()).tools.some(tool => tool.name == 'module.ping'), 'unmount removes and notifies')
+
+    // C19: a mounted noStrict fragment is one template; unmount releases its templated subscriptions
+    const [, liveFeed] = listen<number>()
+    const resourcesBefore = resourceChanges()
+    mcp.control.mount('live', noStrict({feed: liveFeed}))
+    await tick(5)
+    assert(resourceChanges() == resourcesBefore + 1 && toolChanges() == 3, 'mounting a noStrict node -> resources/list_changed only')
+    const mountedTemplates = (await client.listResourceTemplates()).resourceTemplates.map(template => template.uriTemplate)
+    assert(same(mountedTemplates, ['facade://live/{key}']), `the mounted template is listed: ${mountedTemplates}`)
+    await client.subscribeResource({uri: 'facade://live/feed'})
+    assert(liveFeed.count() == 1, 'a templated subscription holds one Listen subscription')
+    mcp.control.refresh()
+    assert(liveFeed.count() == 1, 'negative control: a recomposition that keeps the node keeps the subscription')
+    mcp.control.unmount('live')
+    await tick(5)
+    assert(liveFeed.count() == 0, 'unmount releases a templated subscription (its source is gone)')
+    assert(mcp.resources.templates().length == 0, 'the template is gone')
     await close()
 }
 
@@ -539,8 +943,9 @@ async function httpSessionsAndAuth() {
             description: 'Who am I', input: {type: 'object'}, context: true,
         }),
         admin: {wipe: describeMethod(() => 'wiped', {description: 'Admin only', args: []})},
+        notes: noStrict({todo: {text: 'buy milk'}}),
     }
-    const bob = {whoami: alice.whoami}
+    const bob = {whoami: alice.whoami, inbox: noStrict({})}
     const mcp = createMcpFacadeServer({name: 'http', version: '1', object: {}})
     const app = express()
     app.use(express.json())
@@ -578,6 +983,13 @@ async function httpSessionsAndAuth() {
         assert(same(aliceTools, ['whoami', 'admin.wipe']) && same(bobTools, ['whoami']), 'each principal gets its own facade')
         const who = await b.client.callTool({name: 'whoami', arguments: {}}) as CallToolResult
         assert(same(who.structuredContent, {principal: {sub: 'bob'}}), 'the grant principal reaches the tool context')
+        // C20: templates come from the principal's own object
+        const aliceTemplates = (await a.client.listResourceTemplates()).resourceTemplates.map(template => template.uriTemplate)
+        const bobTemplates = (await b.client.listResourceTemplates()).resourceTemplates.map(template => template.uriTemplate)
+        assert(same(aliceTemplates, ['facade://notes/{key}']) && same(bobTemplates, ['facade://inbox/{key}']),
+            `each principal gets its own templates: ${aliceTemplates} / ${bobTemplates}`)
+        assert((await readText(a.client, 'facade://notes/todo')).text == '{"text":"buy milk"}', 'alice reads her dynamic node over HTTP')
+        await rejectsWith(() => b.client.readResource({uri: 'facade://notes/todo'}), 'Unknown resource', 'bob does not reach alice\'s node')
         assert(http.sessions.count() == 2, 'two sessions')
 
         await rejectsWith(() => open('alice-token'), 'session limit reached', 'the session limit is an explicit refusal')
@@ -653,6 +1065,9 @@ async function main() {
     await refusals()
     await openApiParity()
     await listenResources()
+    await dynamicTemplates()
+    await dynamicDispatch()
+    await dynamicHardening()
     await compositionChanges()
     await httpSessionsAndAuth()
     await statelessHttp()

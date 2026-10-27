@@ -5,9 +5,10 @@
 //  metadata of the OpenAPI document (facadeMeta.ts), handlers registered on the official
 //  SDK's low-level Server. McpServer.registerTool takes zod shapes only, while facade
 //  metadata is JSON Schema — so this layer owns tools/list and tools/call (and the
-//  resources/* methods when the facade has Listen streams) of the server it is attached to.
-//  No domain logic lives here: ordering, journaling, receipts and audit are the host's,
-//  through policy and the `around` chain.
+//  resources/* methods when the facade has Listen streams or noStrict nodes) of the server it
+//  is attached to. A noStrict node is a resource template resolved per request as RPC resolves
+//  it, optionally with a `<path>.call` dispatcher tool. No domain logic lives here: ordering,
+//  journaling, receipts, admission and audit are the host's, through policy and the `around` chain.
 // ============================================================
 
 import {randomUUID} from 'node:crypto'
@@ -17,8 +18,10 @@ import type {RequestHandlerExtra} from '@modelcontextprotocol/sdk/shared/protoco
 import type {Transport} from '@modelcontextprotocol/sdk/shared/transport.js'
 import {
     CallToolRequestSchema,
+    CompleteRequestSchema,
     ErrorCode,
     ListResourcesRequestSchema,
+    ListResourceTemplatesRequestSchema,
     ListToolsRequestSchema,
     McpError,
     ReadResourceRequestSchema,
@@ -31,21 +34,24 @@ import {
 import {AjvJsonSchemaValidator} from '@modelcontextprotocol/sdk/validation/ajv'
 
 import {createAsyncQueue} from '../Common/async/waitRun'
-import {isListenCallback, isListenOn, listen} from '../Common/events/Listen'
+import {isListenOn, listen} from '../Common/events/Listen'
 import {isNoStrict} from '../Common/rcp/rpc-dynamic'
-import {PayloadLimitError, resolveLimits, type RpcLimits} from '../Common/rcp/rpc-limits'
+import {isSafeKey, PayloadLimitError, resolveLimits, type RpcLimits} from '../Common/rcp/rpc-limits'
 import {errToObj, packResult, unpackResult, walk} from '../Common/rcp/rpc-walk'
 import {MyError} from '../toError/myThrow'
 import {
     checkMetaMap,
+    dynamicMeta,
     facadeMetaKey,
     methodInputSchema,
+    methodMeta,
     resolveMethodMeta,
+    type FacadeDynamicMeta,
     type FacadeMethodMeta,
     type McpToolAnnotations,
     type tFacadeMetaMap,
 } from './facadeMeta'
-import {walkFacade} from './facadeWalk'
+import {dynamicMember, facadeNodeKind, walkFacade} from './facadeWalk'
 
 // ===================================================================
 // names
@@ -59,6 +65,8 @@ const NAME_RULES = {
 
 export type tMcpToolNameCharset = keyof typeof NAME_RULES
 export type tMcpConcurrency = 'serial' | 'parallel'
+/** A noStrict node over MCP: 'read' = a resource template, 'call' = also the `<path>.call` dispatcher tool, false = hidden. */
+export type tMcpDynamic = false | 'read' | 'call'
 
 // ===================================================================
 // the SDK as this layer touches it
@@ -140,6 +148,8 @@ export type McpFacadePolicy = {
     concurrency?: (path: readonly string[]) => tMcpConcurrency
     /** A zero-argument function at this path is also an MCP resource (read = call). */
     resource?: (path: readonly string[]) => boolean
+    /** A noStrict node at this path: 'read' (default, a resource template), 'call' (also `<path>.call`), false (hidden). */
+    dynamic?: (path: readonly string[]) => tMcpDynamic | undefined
 }
 
 export type McpFacadeFinding = {path: string, message: string}
@@ -168,12 +178,14 @@ export type McpFacadeServerOptions<T extends object> = {
         /** Replace disallowed characters with '_' instead of refusing the name. */
         map?: boolean
     }
-    /** Listen streams and view functions as MCP resources; false = never claim resources/*. */
+    /** Listen streams and view functions as MCP resources, noStrict nodes as resource templates; false = never claim resources/*. */
     resources?: false | {
         /** URI scheme: `<scheme>://<path>`; default 'facade'. */
         scheme?: string
-        /** Per session; default 32. */
+        /** Per session, templated URIs included; default 32. */
         maxSubscriptions?: number
+        /** Answer completion/complete with the keys of a template; the method is server-wide, so default false. */
+        completions?: boolean
     }
     /** JSON Schema validation of input and output; default the SDK's Ajv provider, false = off. */
     validator?: McpJsonSchemaValidator | false
@@ -199,6 +211,38 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function binaryByteLength(value: unknown) {
     if (ArrayBuffer.isView(value)) return value.byteLength
     if (value instanceof ArrayBuffer) return value.byteLength
+    return null
+}
+
+/** Undescribed-member findings one dynamic node may report before it reports only that there are more. */
+const MAX_DYNAMIC_FINDINGS = 64
+
+/** Path of the first noStrict node below the top of a value read as data, or null. Runs before the limits
+ *  walk, which would enumerate such a node and bypass its has trap; it never enters one, and it stops
+ *  where that walk stops (a cycle at maxDepth on its first branch, an oversized array or object). */
+function findNestedDynamic(value: unknown, limits: Required<RpcLimits>, path: string[] = []): string[] | null {
+    if (path.length > limits.maxDepth) throw new PayloadLimitError('max depth exceeded')
+    if (value == null || typeof value != 'object' || binaryByteLength(value) != null) return null
+    if (path.length > 0 && isNoStrict(value)) return path
+    if (value instanceof Date || value instanceof RegExp) return null
+    // Map and Set contents are packed too (their serializer walks them), so they are bounded like arrays
+    const size = value instanceof Map || value instanceof Set ? value.size : Array.isArray(value) ? value.length : null
+    if (size != null) {
+        if (size > limits.maxArrayLen) throw new PayloadLimitError('array too long')
+        const items: unknown[] = value instanceof Map ? [...value.entries()] : value instanceof Set ? [...value] : value as unknown[]
+        for (let i = 0; i < items.length; i++) {
+            const found = findNestedDynamic(items[i], limits, [...path, String(i)])
+            if (found) return found
+        }
+        return null
+    }
+    const keys = Object.keys(value)
+    if (keys.length > limits.maxKeys) throw new PayloadLimitError('too many keys in object')
+    for (const key of keys) {
+        if (!isSafeKey(key)) continue
+        const found = findNestedDynamic((value as any)[key], limits, [...path, key])
+        if (found) return found
+    }
     return null
 }
 
@@ -256,6 +300,8 @@ function createShared<T extends object>(deps: McpFacadeServerOptions<T>) {
     if (!Number.isSafeInteger(maxSubscriptions) || maxSubscriptions < 0) {
         throw new Error('MCP facade resources.maxSubscriptions must be a non-negative integer')
     }
+    const completions = resourceOptions?.completions == true
+    const limits = resolveLimits(deps.limits)
 
     const around = deps.around == null ? [] : Array.isArray(deps.around) ? [...deps.around] : [deps.around as McpAround]
     const validator: McpJsonSchemaValidator | null = deps.validator === false ? null : deps.validator ?? new AjvJsonSchemaValidator()
@@ -284,6 +330,30 @@ function createShared<T extends object>(deps: McpFacadeServerOptions<T>) {
         return `${scheme}://${path.map(encodeURIComponent).join('/')}`
     }
 
+    /** The decoded segments of `<scheme>://a/b`, or null (another scheme, a query or fragment, an empty or
+     *  dot segment, a bad escape, more segments than limits.maxPathLen). resourceUri(resourcePath(uri)) is
+     *  the canonical form of a URI. */
+    function resourcePath(uri: string) {
+        const prefix = `${scheme}://`
+        if (typeof uri != 'string' || uri.slice(0, prefix.length).toLowerCase() != prefix.toLowerCase()) return null
+        const rest = uri.slice(prefix.length)
+        if (rest == '' || rest.includes('?') || rest.includes('#')) return null
+        // counted before splitting: no longer path resolves, and every prefix is a template lookup
+        let count = 1
+        for (let at = rest.indexOf('/'); at != -1; at = rest.indexOf('/', at + 1)) {
+            if (++count > limits.maxPathLen) return null
+        }
+        const segments: string[] = []
+        for (const raw of rest.split('/')) {
+            let segment: string
+            try { segment = decodeURIComponent(raw) } catch { return null }
+            // a client may normalise '.' and '..' away: such a key is reachable through a dispatcher only
+            if (segment == '' || segment == '.' || segment == '..') return null
+            segments.push(segment)
+        }
+        return segments
+    }
+
     function compiled(meta: FacadeMethodMeta) {
         let entry = validators.get(meta)
         if (!entry) {
@@ -292,6 +362,50 @@ function createShared<T extends object>(deps: McpFacadeServerOptions<T>) {
                 output: meta.output ? validator.getValidator(meta.output) : undefined,
             }
             validators.set(meta, entry)
+        }
+        return entry
+    }
+
+    // Ajv keeps every schema object it compiles: compile once per metadata, never once per rebuild
+    const keyChecks = new WeakMap<FacadeDynamicMeta, tSchemaCheck>()
+    const dispatchInputs = new WeakMap<object, Map<number, {schema: Record<string, unknown>, check?: tSchemaCheck}>>()
+    const undescribedNode = {}
+
+    function compiledKey(meta: FacadeDynamicMeta) {
+        if (validator == null || meta.key == null) return undefined
+        let check = keyChecks.get(meta)
+        if (!check) {
+            check = validator.getValidator(meta.key)
+            keyChecks.set(meta, check)
+        }
+        return check
+    }
+
+    /** The `<path>.call` input schema and its check; `depth` = how many member segments fit in maxPathLen. */
+    function dispatchInput(meta: FacadeDynamicMeta | undefined, depth: number) {
+        const owner = meta ?? undescribedNode
+        let byDepth = dispatchInputs.get(owner)
+        if (!byDepth) dispatchInputs.set(owner, byDepth = new Map())
+        let entry = byDepth.get(depth)
+        if (!entry) {
+            const schema = {
+                type: 'object',
+                properties: {
+                    key: meta?.key ?? {type: 'string', minLength: 1},
+                    method: {
+                        type: 'array', items: {type: 'string', minLength: 1}, minItems: 1, maxItems: depth,
+                        description: 'Member path below the key, e.g. ["start"]',
+                    },
+                    args: {
+                        type: ['object', 'array'],
+                        description: 'The member\'s arguments: the object its metadata describes; an undescribed member also takes a positional array',
+                    },
+                },
+                required: ['key', 'method'],
+                additionalProperties: false,
+            }
+            entry = {schema, check: validator?.getValidator(schema)}
+            byDepth.set(depth, entry)
         }
         return entry
     }
@@ -305,13 +419,32 @@ function createShared<T extends object>(deps: McpFacadeServerOptions<T>) {
         else console.warn(`[mcp facade] ${finding.path}: ${finding.message}`)
     }
 
+    // the member path below a key is the caller's: a node answering any key (a trap, a list of
+    // handlers) would add a finding per call, so each dynamic node reports a bounded number
+    const dynamicFindings = new Map<string, Set<string>>()
+
+    function reportDynamic(node: readonly string[], member: readonly string[], message: string) {
+        const label = node.join('.')
+        let seen = dynamicFindings.get(label)
+        if (!seen) dynamicFindings.set(label, seen = new Set())
+        const path = [...node, '*', ...member].join('.')
+        if (seen.has(path)) return
+        if (seen.size >= MAX_DYNAMIC_FINDINGS) {
+            report({path: `${label}.*`, message: `more than ${MAX_DYNAMIC_FINDINGS} undescribed members: the rest are not reported`})
+            return
+        }
+        seen.add(path)
+        report({path, message})
+    }
+
     return {
         deps,
         rule,
         scheme,
         resourceOptions,
         maxSubscriptions,
-        limits: resolveLimits(deps.limits),
+        completions,
+        limits,
         metaMap: checkMetaMap(deps.meta),
         around,
         queue,
@@ -321,19 +454,26 @@ function createShared<T extends object>(deps: McpFacadeServerOptions<T>) {
         events: {emitCalled, emitFailed, called, failed},
         toolName,
         resourceUri,
+        resourcePath,
         compiled,
+        compiledKey,
+        dispatchInput,
         report,
+        reportDynamic,
     }
 }
 
 type tShared = ReturnType<typeof createShared>
+
+/** One resource subscription and what it listens through: a static stream, or the dynamic node it resolved under. */
+type tSubscription = {off: () => void, source: unknown}
 
 type tAttachment = {
     server: McpServerLike
     resources: boolean
     sessionId: string
     principal: unknown
-    subscriptions: Map<string, () => void>
+    subscriptions: Map<string, tSubscription>
     pending: Set<string>
     surface: object
     closed: boolean
@@ -382,7 +522,75 @@ function makeToolEntry(shared: tShared, path: string[], fn: (...args: any[]) => 
 
 type tToolEntry = ReturnType<typeof makeToolEntry>
 
+/** What the call pipeline needs: a static tool, or the member a dispatcher resolved for one call. */
+type tCallTarget = Pick<tToolEntry, 'name' | 'path' | 'fn' | 'context' | 'meta' | 'readOnly' | 'concurrency' | 'validate'>
+
 type tListenOn = (cb: (...args: any[]) => void, opts?: {current?: boolean}) => () => void
+
+// ===================================================================
+// a noStrict node: a resource template, and with policy.dynamic 'call' a dispatcher tool
+// ===================================================================
+
+function makeTemplate(shared: tShared, path: string[], node: object, exposure: 'read' | 'call') {
+    const meta = dynamicMeta(node)
+    const base = shared.resourceUri(path)
+    const name = path.join('.')
+    return {
+        path,
+        node,
+        meta,
+        base,
+        /** The `<path>.call` tool name when the node is callable. */
+        dispatcher: exposure == 'call' ? shared.toolName([...path, 'call']) : undefined,
+        checkKey: meta ? shared.compiledKey(meta) : undefined,
+        descriptor: {
+            uriTemplate: `${base}/{key}`,
+            name,
+            ...(meta?.title != null ? {title: meta.title} : {}),
+            description: meta?.description
+                ?? `Dynamic keys under ${name}: read ${base}/<key>[/<member>...]; a store reads its current value, data reads as JSON, a plain listen only notifies (subscribe).`,
+            mimeType: 'application/json',
+        },
+    }
+}
+
+type tTemplate = ReturnType<typeof makeTemplate>
+
+function makeDispatchEntry(shared: tShared, template: tTemplate) {
+    const {deps, limits} = shared
+    const label = template.path.join('.')
+    // the key is one segment of the resolved path, the member at least one more
+    const depth = limits.maxPathLen - template.path.length - 1
+    if (depth < 1) throw new Error(`MCP facade: dynamic node ${label} is too deep for limits.maxPathLen (${limits.maxPathLen})`)
+    const meta = template.meta
+    const readOnlyHint = meta?.annotations?.readOnlyHint ?? deps.policy?.readOnly?.(template.path)
+    const annotations: McpToolAnnotations | undefined = meta?.annotations || readOnlyHint != null
+        ? {...meta?.annotations, ...(readOnlyHint != null ? {readOnlyHint} : {})}
+        : undefined
+    const members = Object.entries(meta?.members ?? {}).map(([member, entry]) => `${member}: ${entry.description}`)
+    const input = shared.dispatchInput(meta, depth)
+    const name = template.dispatcher ?? shared.toolName([...template.path, 'call'])
+    // the same descriptor type as a static tool: tools/list stays one shape
+    const descriptor: tToolEntry['descriptor'] = {
+        name,
+        ...(meta?.title != null ? {title: meta.title} : {}),
+        description: (meta?.description ?? `Calls a member below a dynamic key of ${label}.`)
+            + ' Input: key, method (the member path below the key), args.'
+            + (members.length ? ` Members: ${members.join('; ')}.` : ''),
+        inputSchema: input.schema as {type: 'object', [key: string]: unknown},
+        ...(annotations ? {annotations} : {}),
+    }
+    return {
+        name,
+        path: [...template.path, 'call'],
+        template,
+        descriptor,
+        readOnly: readOnlyHint == true,
+        check: input.check,
+    }
+}
+
+type tDispatchEntry = ReturnType<typeof makeDispatchEntry>
 
 function createSurfaceState(shared: tShared, root: object, checkStaleMeta: boolean) {
     const {deps, metaMap} = shared
@@ -410,24 +618,23 @@ function createSurfaceState(shared: tShared, root: object, checkStaleMeta: boole
     }
 
     function build() {
-        const tools = new Map<string, tToolEntry>()
+        const tools = new Map<string, tToolEntry | tDispatchEntry>()
         const resources = new Map<string, ReturnType<typeof makeResource>>()
+        const templates = new Map<string, tTemplate>()
         const missing: string[] = []
+        const undescribed: string[] = []
         const walked = new Set<string>()
 
         function take(value: unknown, path: string[]) {
-            if (value != null && (typeof value == 'object' || typeof value == 'function') && isNoStrict(value)) return true
-            if (isListenOn(value)) {
-                walked.add(facadeMetaKey(path))
-                addResource(makeResource(path, {on: value as tListenOn}))
+            const kind = facadeNodeKind(value)
+            if (kind == 'dynamic') {
+                addDynamic(path, value as object)
                 return true
             }
-            if (isListenCallback(value)) {
-                walked.add(facadeMetaKey(path))
-                addResource(makeResource(path, {on: value.on as tListenOn}))
-                return true
-            }
-            return false
+            if (kind != 'on' && kind != 'listen') return false
+            walked.add(facadeMetaKey(path))
+            addResource(makeResource(path, {on: (kind == 'on' ? value : (value as {on: unknown}).on) as tListenOn}))
+            return true
         }
 
         function addResource(resource: ReturnType<typeof makeResource>) {
@@ -436,16 +643,43 @@ function createSurfaceState(shared: tShared, root: object, checkStaleMeta: boole
             resources.set(resource.uri, resource)
         }
 
+        function addTool(tool: tToolEntry | tDispatchEntry) {
+            const previous = tools.get(tool.name)
+            if (previous) {
+                throw new Error(`MCP facade: tool name "${tool.name}" is registered twice (${JSON.stringify(previous.path)} and ${JSON.stringify(tool.path)})`)
+            }
+            tools.set(tool.name, tool)
+        }
+
+        // a noStrict node is never enumerated here: its keys are resolved per request
+        function addDynamic(path: string[], node: object) {
+            const exposure = deps.policy?.dynamic?.(path) ?? 'read'
+            // strict comparison: 0 or '' must not pass for false
+            if (exposure !== false && exposure != 'read' && exposure != 'call') {
+                throw new Error(`MCP facade: policy.dynamic for ${JSON.stringify(path)} must be false, 'read' or 'call', got ${String(exposure)}`)
+            }
+            if (exposure === false) return
+            const template = makeTemplate(shared, path, node, exposure)
+            if (shared.resourceOptions != null) {
+                if (templates.has(template.base)) throw new Error(`MCP facade: resource template ${template.descriptor.uriTemplate} is registered twice`)
+                templates.set(template.base, template)
+            }
+            if (exposure != 'call') return
+            addTool(makeDispatchEntry(shared, template))
+            if (deps.strict && !template.meta) undescribed.push(path.join('.'))
+        }
+
         function addAll(object: object, prefix: string[]) {
+            // a mounted noStrict fragment is one dynamic node; the facade root never is (the walk refuses it)
+            if (prefix.length > 0 && facadeNodeKind(object) == 'dynamic') {
+                addDynamic(prefix, object)
+                return
+            }
             for (const entry of walkFacade(object, {label: 'MCP facade', take: (value, path) => take(value, [...prefix, ...path])})) {
                 const path = [...prefix, ...entry.path]
                 const tool = makeToolEntry(shared, path, entry.fn, entry.context)
                 walked.add(facadeMetaKey(path))
-                const previous = tools.get(tool.name)
-                if (previous) {
-                    throw new Error(`MCP facade: tool name "${tool.name}" is registered twice (${JSON.stringify(previous.path)} and ${JSON.stringify(path)})`)
-                }
-                tools.set(tool.name, tool)
+                addTool(tool)
                 if (!tool.meta || (!tool.meta.input && !tool.meta.args)) {
                     if (deps.strict) missing.push(path.join('.'))
                     else shared.report({
@@ -467,15 +701,17 @@ function createSurfaceState(shared: tShared, root: object, checkStaleMeta: boole
         addAll(root, [])
         for (const [key, object] of mounts) addAll(object, [key])
 
-        if (missing.length) {
-            throw new Error(`MCP facade (strict): functions without description and input/args: ${missing.join(', ')}`)
-        }
+        const problems = [
+            ...(missing.length ? [`functions without description and input/args: ${missing.join(', ')}`] : []),
+            ...(undescribed.length ? [`'call' nodes without describeDynamic: ${undescribed.join(', ')}`] : []),
+        ]
+        if (problems.length) throw new Error(`MCP facade (strict): ${problems.join('; ')}`)
         if (checkStaleMeta && metaMap) {
             const stale = Object.keys(metaMap).filter(key => !walked.has(key))
             if (stale.length && deps.strict) throw new Error(`MCP facade (strict): meta keys name no facade function: ${stale.join(', ')}`)
             for (const key of stale) shared.report({path: key, message: 'meta entry names no facade function'})
         }
-        return {tools, resources}
+        return {tools, resources, templates}
     }
 
     let current = build()
@@ -507,7 +743,7 @@ function createSurface(shared: tShared, root: object, checkStaleMeta: boolean) {
 
     // ============== the call pipeline ==============
 
-    function toCallArgs(tool: tToolEntry, input: Record<string, unknown>) {
+    function toCallArgs(tool: tCallTarget, input: Record<string, unknown>) {
         const meta = tool.meta
         let args: unknown[]
         if (meta?.input) args = [input]
@@ -523,7 +759,7 @@ function createSurface(shared: tShared, root: object, checkStaleMeta: boolean) {
         return args
     }
 
-    async function execute(tool: tToolEntry, args: unknown[], scope: McpCallScope) {
+    async function execute(tool: tCallTarget, args: unknown[], scope: McpCallScope) {
         const started = Date.now()
         const ctx = createCallContext(tool.name, tool.path, args, tool.readOnly, scope)
         const callArgs = tool.meta?.context ? [...args, createToolContext(scope)] : args
@@ -551,7 +787,7 @@ function createSurface(shared: tShared, root: object, checkStaleMeta: boolean) {
         }
     }
 
-    function encodeResult(tool: tToolEntry, value: unknown): CallToolResult {
+    function encodeResult(tool: tCallTarget, value: unknown): CallToolResult {
         const formatted = deps.formatResult?.(tool.path, value)
         if (formatted != null) return formatted
         const bytes = binaryByteLength(value)
@@ -587,6 +823,7 @@ function createSurface(shared: tShared, root: object, checkStaleMeta: boolean) {
         if (deps.readOnly && !tool.readOnly) {
             throw new McpError(ErrorCode.InvalidParams, `Tool ${name} is not read-only and this MCP facade serves reads only`)
         }
+        if ('template' in tool) return callDynamic(tool, input, scope)
         if (shared.disposal.signal.aborted) return errorResult(new MyError('MCP facade is disposed', 'E_MCP_DISPOSED'))
         try {
             const raw = input ?? {}
@@ -601,41 +838,242 @@ function createSurface(shared: tShared, root: object, checkStaleMeta: boolean) {
         }
     }
 
+    // ============== dynamic nodes: resolved per request ==============
+
+    /** The node `segments` below a template, as RPC resolves under noStrict; undefined = absent. */
+    function resolveBelow(template: tTemplate, segments: readonly string[]) {
+        if (template.path.length + segments.length > limits.maxPathLen) throw new PayloadLimitError('path too long')
+        for (const segment of segments) {
+            if (segment == '' || !isSafeKey(segment)) throw new MyError(`Forbidden path segment: ${segment}`, 'E_MCP_ARGS')
+        }
+        // the key schema runs before any trap of the node does
+        const check = template.checkKey?.(segments[0])
+        if (check && !check.valid) {
+            throw new MyError(`Invalid key under ${template.path.join('.')}: ${check.errorMessage}`, 'E_MCP_ARGS')
+        }
+        let parent: object = template.node
+        let node: unknown = template.node
+        for (const segment of segments) {
+            // only an object holds members, as on RPC: a function's statics and name are not reached
+            if (node == null || typeof node != 'object') return undefined
+            // bytes have no members; a stream is a resource, never a container: emit/close/run stay unreachable
+            const kind = nodeKind(node)
+            if (kind == 'binary' || kind == 'on' || kind == 'listen') return undefined
+            parent = node
+            node = dynamicMember(node, segment)
+            // strict: a member holding null is present (it reads as null)
+            if (node === undefined) return undefined
+        }
+        return {node, parent}
+    }
+
+    /** facadeNodeKind, but bytes are never enumerated: its Listen-shape test lists one key per byte. */
+    function nodeKind(node: unknown) {
+        return binaryByteLength(node) != null ? 'binary' as const : facadeNodeKind(node)
+    }
+
+    function makeDynamicTarget(entry: tDispatchEntry, segments: readonly string[], fn: (...args: any[]) => any, context: object): tCallTarget {
+        const path = [...entry.template.path, ...segments]
+        const members = entry.template.meta?.members
+        const method = segments.slice(1)
+        // members is keyed by the dotted path: a segment holding a dot would borrow another member's entry
+        const member = method.some(segment => segment.includes('.')) ? undefined : facadeMetaKey(method)
+        // a members entry wins over what the function carries, as a meta map entry does
+        const meta = member != null && members != null && Object.prototype.hasOwnProperty.call(members, member) ? members[member] : methodMeta(fn)
+        return {
+            name: entry.name,
+            path,
+            fn,
+            context,
+            meta,
+            readOnly: (meta?.annotations?.readOnlyHint ?? deps.policy?.readOnly?.(path)) == true,
+            concurrency: deps.policy?.concurrency?.(path) ?? 'serial',
+            validate: meta ? shared.compiled(meta) : {},
+        }
+    }
+
+    function dynamicArgs(entry: tDispatchEntry, target: tCallTarget, rawArgs: unknown) {
+        const label = target.path.join('.')
+        if (target.meta) {
+            const raw = rawArgs ?? {}
+            if (!isPlainObject(raw)) throw new MyError(`Arguments of ${label} must be the object its metadata describes`, 'E_MCP_ARGS')
+            const check = target.validate.input?.(raw)
+            if (check && !check.valid) throw new MyError(`Invalid arguments for ${label}: ${check.errorMessage}`, 'E_MCP_ARGS')
+            return toCallArgs(target, unpackResult(raw, limits) as Record<string, unknown>)
+        }
+        if (deps.strict) throw new MyError(`MCP facade (strict): ${label} has no metadata (describeDynamic members or describeMethod)`, 'E_MCP_ARGS')
+        // one finding per member path, not per key, and a bounded number per node
+        shared.reportDynamic(entry.template.path, target.path.slice(entry.template.path.length + 1),
+            'no metadata: args pass unvalidated (an array is positional, an object is the one argument)')
+        if (rawArgs == null) return []
+        if (!Array.isArray(rawArgs) && !isPlainObject(rawArgs)) throw new MyError(`Arguments of ${label} must be an array or an object`, 'E_MCP_ARGS')
+        if (Array.isArray(rawArgs) && rawArgs.length > limits.maxArgs) throw new PayloadLimitError('too many args')
+        const decoded = unpackResult(rawArgs, limits)
+        if (Array.isArray(decoded)) return decoded as unknown[]
+        return Object.keys(decoded).length ? [decoded] : []
+    }
+
+    async function callDynamic(entry: tDispatchEntry, input: unknown, scope: McpCallScope): Promise<CallToolResult> {
+        if (shared.disposal.signal.aborted) return errorResult(new MyError('MCP facade is disposed', 'E_MCP_DISPOSED'))
+        try {
+            const raw = input ?? {}
+            if (!isPlainObject(raw)) throw new MyError(`Arguments of ${entry.name} must be an object`, 'E_MCP_ARGS')
+            // explicit, so they hold with validator: false too
+            const {key, method} = raw
+            if (typeof key != 'string' || key == '') throw new MyError(`${entry.name}: key must be a non-empty string`, 'E_MCP_ARGS')
+            if (!Array.isArray(method) || method.length == 0 || method.some(segment => typeof segment != 'string')) {
+                throw new MyError(`${entry.name}: method must be a non-empty array of member names`, 'E_MCP_ARGS')
+            }
+            if (entry.template.path.length + 1 + method.length > limits.maxPathLen) throw new PayloadLimitError('path too long')
+            const check = entry.check?.(raw)
+            if (check && !check.valid) throw new MyError(`Invalid arguments for ${entry.name}: ${check.errorMessage}`, 'E_MCP_ARGS')
+
+            const segments = [key, ...method as string[]]
+            const label = [...entry.template.path, ...segments].join('.')
+            const found = resolveBelow(entry.template, segments)
+            if (!found) throw new MyError(`${entry.name}: nothing at ${label}`, 'E_MCP_NOT_FOUND')
+            // a Listen's on is a stream, never a call target
+            if (typeof found.node != 'function' || isListenOn(found.node)) {
+                throw new MyError(`${entry.name}: ${label} is not a function`, 'E_MCP_NOT_FOUND')
+            }
+            const target = makeDynamicTarget(entry, segments, found.node as (...args: any[]) => any, found.parent)
+            // the dispatcher may be listed as read-only; each member still answers for itself
+            if (deps.readOnly && !target.readOnly) {
+                throw new McpError(ErrorCode.InvalidParams, `${label} is not read-only and this MCP facade serves reads only`)
+            }
+            const value = await execute(target, dynamicArgs(entry, target, raw['args']), scope)
+            return encodeResult(target, value)
+        } catch (error) {
+            // a protocol refusal stays a protocol error, as for an unlisted tool
+            if (error instanceof McpError) throw error
+            return errorResult(error)
+        }
+    }
+
     // ============== resources ==============
 
-    function findResource(uri: string) {
-        const resources = state.current().resources
-        const exact = resources.get(uri)
+    type tComposition = ReturnType<typeof state.current>
+
+    function findStatic(composition: tComposition, uri: string) {
+        const exact = composition.resources.get(uri)
         if (exact) return exact
-        for (const resource of resources.values()) {
-            try { if (new URL(resource.uri).href == new URL(uri).href) return resource } catch {}
+        // the request URI is parsed once, not once per resource: it may be megabytes long
+        let href: string
+        try { href = new URL(uri).href } catch { return undefined }
+        for (const resource of composition.resources.values()) {
+            try { if (new URL(resource.uri).href == href) return resource } catch {}
+        }
+        return undefined
+    }
+
+    /** The template whose base is a proper prefix of `path`; templates never nest, so at most one. */
+    function templateAt(composition: tComposition, path: readonly string[]) {
+        for (let i = 1; i < path.length; i++) {
+            const template = composition.templates.get(shared.resourceUri(path.slice(0, i)))
+            if (template) return {template, segments: path.slice(i)}
+        }
+        return undefined
+    }
+
+    /** What a subscription to `uri` listens through in this composition: a static stream, or the dynamic node it resolves under. */
+    function sourceIn(composition: tComposition, uri: string) {
+        const resource = composition.resources.get(uri)
+        if (resource) return resource.on
+        const path = shared.resourcePath(uri)
+        return path ? templateAt(composition, path)?.template.node : undefined
+    }
+
+    /** A static resource, or the value a template resolves for this URI; refusals are protocol errors. */
+    function resolveResource(uri: string) {
+        const composition = state.current()
+        const resource = findStatic(composition, uri)
+        if (resource) {
+            return {
+                uri: resource.uri, on: resource.on, tool: resource.tool,
+                template: undefined, value: undefined, kind: undefined, source: resource.on ?? resource.tool as unknown,
+            }
+        }
+        const path = shared.resourcePath(uri)
+        const match = path ? templateAt(composition, path) : undefined
+        if (path && match) {
+            let found
+            try {
+                found = resolveBelow(match.template, match.segments)
+            } catch (error) {
+                throw new McpError(ErrorCode.InvalidParams, `Resource ${uri}: ${error instanceof Error ? error.message : String(error)}`)
+            }
+            if (found) {
+                const kind = nodeKind(found.node)
+                const on = kind == 'on' ? found.node as tListenOn : kind == 'listen' ? (found.node as {on: tListenOn}).on : undefined
+                return {
+                    uri: shared.resourceUri(path), on, tool: undefined,
+                    template: match.template, value: found.node, kind, source: match.template.node as unknown,
+                }
+            }
         }
         throw new McpError(ErrorCode.InvalidParams, `Unknown resource: ${uri}`)
     }
 
-    async function readResource(uri: string, scope: McpCallScope) {
-        const resource = findResource(uri)
-        let value: unknown
-        if (resource.tool) {
-            value = await execute(resource.tool!, [], scope)
-        } else {
-            // a store answers its current value synchronously; a plain listen never calls back
-            let current: unknown[] | undefined
-            const off = resource.on!(function captureCurrent(...args: unknown[]) { current ??= args }, {current: true})
-            off()
-            if (current == undefined) {
-                throw new McpError(ErrorCode.InvalidParams,
-                    `Resource ${uri} has no current value: a plain listen only notifies, a store has none yet`)
-            }
-            value = current.length == 1 ? current[0] : current
+    function currentValue(uri: string, on: tListenOn) {
+        // a store answers its current value synchronously; a plain listen never calls back
+        let current: unknown[] | undefined
+        const off = on(function captureCurrent(...args: unknown[]) { current ??= args }, {current: true})
+        off()
+        if (current == undefined) {
+            throw new McpError(ErrorCode.InvalidParams,
+                `Resource ${uri} has no current value: a plain listen only notifies, a store has none yet`)
+        }
+        return current.length == 1 ? current[0] : current
+    }
+
+    /** A templated value read as data: a function or a dynamic map is refused by name, never stringified. */
+    function dataValue(uri: string, resource: ReturnType<typeof resolveResource>) {
+        if (typeof resource.value == 'function') {
+            throw new McpError(ErrorCode.InvalidParams, resource.template?.dispatcher
+                ? `Resource ${uri} is a function: call it with the ${resource.template.dispatcher} tool`
+                : `Resource ${uri} is a function: policy.dynamic 'call' exposes the members of ${resource.template?.path.join('.')} as a tool`)
+        }
+        if (resource.kind == 'dynamic') throw new McpError(ErrorCode.InvalidParams, `Resource ${uri} is a dynamic map: read one of its keys`)
+        // the same refusal one level down: reading the parent must not list the map's keys past its has trap
+        const nested = findNestedDynamic(resource.value, limits)
+        if (nested) {
+            throw new McpError(ErrorCode.InvalidParams, `Resource ${uri} holds a dynamic map at ${nested.join('.')}: read its keys one by one`)
+        }
+        return resource.value
+    }
+
+    /** JSON text of a resource value: bounded before packing (packResult has no depth limit), bytes refused. */
+    function encodeResourceValue(uri: string, value: unknown, onLeaf: (leaf: unknown) => unknown) {
+        walk(value, onLeaf, limits)
+        if (binaryByteLength(value) != null) {
+            throw new MyError(`Resource ${uri} is binary: resources here carry JSON, return the bytes from a tool`, 'E_MCP_BINARY')
         }
         const packed = packResult(value)
-        walk(packed, function keepLeaf(leaf: unknown) { return leaf }, limits)
-        return {contents: [{uri: resource.uri, mimeType: 'application/json', text: JSON.stringify(packed ?? null)}]}
+        const nested = findNestedBinary(packed)
+        if (nested) throw new MyError(`Binary value at ${nested.join('.')} of resource ${uri}: resources here carry JSON`, 'E_MCP_BINARY')
+        return JSON.stringify(packed ?? null)
+    }
+
+    async function readResource(uri: string, scope: McpCallScope) {
+        const resource = resolveResource(uri)
+        let value: unknown
+        let onLeaf = function keepLeaf(leaf: unknown) { return leaf }
+        if (resource.tool) value = await execute(resource.tool, [], scope)
+        else if (resource.on) value = currentValue(uri, resource.on)
+        else {
+            value = dataValue(uri, resource)
+            onLeaf = function refuseFunctionLeaf(leaf: unknown) {
+                if (typeof leaf == 'function') {
+                    throw new McpError(ErrorCode.InvalidParams, `Resource ${uri} is a subtree with functions: read a data member below it`)
+                }
+                return leaf
+            }
+        }
+        return {contents: [{uri: resource.uri, mimeType: 'application/json', text: encodeResourceValue(uri, value, onLeaf)}]}
     }
 
     function subscribe(attachment: tAttachment, uri: string) {
-        const resource = findResource(uri)
+        const resource = resolveResource(uri)
         if (!resource.on) throw new McpError(ErrorCode.InvalidParams, `Resource ${uri} has no change stream to subscribe to`)
         if (attachment.subscriptions.has(resource.uri)) return
         if (attachment.subscriptions.size >= shared.maxSubscriptions) {
@@ -652,14 +1090,47 @@ function createSurface(shared: tShared, root: object, checkStaleMeta: boolean) {
                 attachment.server.sendResourceUpdated({uri: target}).catch(function ignoreClosedTransport() {})
             })
         }
-        attachment.subscriptions.set(target, resource.on(notifyUpdated))
+        attachment.subscriptions.set(target, {off: resource.on(notifyUpdated), source: resource.source})
     }
 
     function unsubscribe(attachment: tAttachment, uri: string) {
-        const resource = state.current().resources.get(uri)
-        const key = resource?.uri ?? uri
-        attachment.subscriptions.get(key)?.()
+        // canonical form without resolving: unsubscribing runs no trap of a dynamic node; a static
+        // URI is matched as subscribe matched it, so every spelling that subscribed also unsubscribes
+        const resource = findStatic(state.current(), uri)
+        const path = resource ? null : shared.resourcePath(uri)
+        const key = resource?.uri ?? (path ? shared.resourceUri(path) : uri)
+        attachment.subscriptions.get(key)?.off()
         attachment.subscriptions.delete(key)
+    }
+
+    function templateDescriptors() {
+        return [...state.current().templates.values()].map(template => template.descriptor)
+    }
+
+    // ============== completion of template keys ==============
+
+    function completeKeys(template: tTemplate, prefix: string) {
+        let keys: string[]
+        try { keys = Object.keys(template.node) } catch { keys = [] }
+        const values = keys.filter(function offeredKey(key) {
+            if (key == '' || !isSafeKey(key) || !key.startsWith(prefix)) return false
+            if (template.checkKey && !template.checkKey(key).valid) return false
+            // the has trap is the access point: a key it denies is never offered, and no get trap runs
+            try { return Reflect.has(template.node, key) } catch { return false }
+        })
+        return {values: values.slice(0, 100), total: values.length, hasMore: values.length > 100}
+    }
+
+    function complete(ref: {type: string, uri?: string}, argument: {name: string, value: string}) {
+        if (ref.type != 'ref/resource' || typeof ref.uri != 'string') {
+            throw new McpError(ErrorCode.InvalidParams, 'This MCP facade completes the keys of its resource templates only')
+        }
+        const composition = state.current()
+        if (findStatic(composition, ref.uri)) return {values: [], total: 0, hasMore: false}
+        const template = [...composition.templates.values()].find(template => template.descriptor.uriTemplate == ref.uri)
+        if (!template) throw new McpError(ErrorCode.InvalidParams, `Unknown resource template: ${ref.uri}`)
+        if (argument.name != 'key') throw new McpError(ErrorCode.InvalidParams, `Resource template ${ref.uri} has no argument ${argument.name}`)
+        return completeKeys(template, argument.value)
     }
 
     // ============== SDK attachment ==============
@@ -682,7 +1153,9 @@ function createSurface(shared: tShared, root: object, checkStaleMeta: boolean) {
     }
 
     function claimsResources() {
-        return shared.resourceOptions != null && (deps.resources != null || state.current().resources.size > 0)
+        const current = state.current()
+        return shared.resourceOptions != null
+            && (deps.resources != null || current.resources.size > 0 || current.templates.size > 0)
     }
 
     function attach(target: McpServerLike | {server: McpServerLike}, session: McpAttachSession = {}) {
@@ -692,18 +1165,30 @@ function createSurface(shared: tShared, root: object, checkStaleMeta: boolean) {
         const server = inner != null && typeof inner.setRequestHandler == 'function' ? inner : target as McpServerLike
         if (server.transport) throw new Error('MCP facade: attach before connecting the server (capabilities are fixed at connect)')
         const withResources = claimsResources()
-        const methods = ['tools/list', 'tools/call',
-            ...(withResources ? ['resources/list', 'resources/read', 'resources/subscribe', 'resources/unsubscribe'] : [])]
-        for (const method of methods) {
+        const withCompletions = withResources && shared.completions
+        // each claim names what caused it, so a conflict says which option to change
+        const toolsClaim = 'one server has one tool registry, mount other tools with control.mount'
+        const resourcesClaim = 'the facade claims resources/* for its Listen streams, noStrict nodes or the resources option; resources: false leaves them to the host'
+        const claims: [method: string, reason: string][] = [
+            ['tools/list', toolsClaim], ['tools/call', toolsClaim],
+            ...(withResources
+                ? ['resources/list', 'resources/templates/list', 'resources/read', 'resources/subscribe', 'resources/unsubscribe']
+                    .map(method => [method, resourcesClaim] as [string, string])
+                : []),
+            ...(withCompletions ? [['completion/complete', 'resources.completions: true claims it for template keys'] as [string, string]] : []),
+        ]
+        const methods = claims.map(([method]) => method)
+        for (const [method, reason] of claims) {
             try {
                 server.assertCanSetRequestHandler(method)
             } catch {
-                throw new Error(`MCP facade: ${method} is already handled on this server; one server has one tool registry, mount other tools with control.mount`)
+                throw new Error(`MCP facade: ${method} is already handled on this server; ${reason}`)
             }
         }
         server.registerCapabilities({
             tools: {listChanged: true},
             ...(withResources ? {resources: {subscribe: true, listChanged: true}} : {}),
+            ...(withCompletions ? {completions: {}} : {}),
         })
 
         const attachment: tAttachment = {
@@ -734,6 +1219,9 @@ function createSurface(shared: tShared, root: object, checkStaleMeta: boolean) {
             server.setRequestHandler(ListResourcesRequestSchema, function listResources() {
                 return {resources: [...state.current().resources.values()].map(resource => resource.descriptor)}
             })
+            server.setRequestHandler(ListResourceTemplatesRequestSchema, function listResourceTemplates() {
+                return {resourceTemplates: templateDescriptors()}
+            })
             server.setRequestHandler(ReadResourceRequestSchema, function readResourceRequest(request, extra) {
                 return handleWithScope(extra, scope => readResource(request.params.uri, scope))
             })
@@ -744,6 +1232,11 @@ function createSurface(shared: tShared, root: object, checkStaleMeta: boolean) {
             server.setRequestHandler(UnsubscribeRequestSchema, function unsubscribeResource(request) {
                 unsubscribe(attachment, request.params.uri)
                 return {}
+            })
+        }
+        if (withCompletions) {
+            server.setRequestHandler(CompleteRequestSchema, function completeRequest(request) {
+                return {completion: complete(request.params.ref, request.params.argument)}
             })
         }
 
@@ -757,7 +1250,7 @@ function createSurface(shared: tShared, root: object, checkStaleMeta: boolean) {
         function detachAttachment() {
             if (attachment.closed) return
             attachment.closed = true
-            for (const off of attachment.subscriptions.values()) off()
+            for (const subscription of attachment.subscriptions.values()) subscription.off()
             attachment.subscriptions.clear()
             shared.attachments.delete(attachment)
             for (const method of methods) server.removeRequestHandler(method)
@@ -794,11 +1287,13 @@ function createSurface(shared: tShared, root: object, checkStaleMeta: boolean) {
         }
         const toolsChanged = signature(before.tools.values()) != signature(after.tools.values())
         const resourcesChanged = signature(before.resources.values()) != signature(after.resources.values())
+            || signature(before.templates.values()) != signature(after.templates.values())
         for (const attachment of shared.attachments) {
             if (attachment.surface != surfaceId) continue
-            for (const [uri, off] of [...attachment.subscriptions]) {
-                if (after.resources.get(uri)?.on == before.resources.get(uri)?.on) continue
-                off()
+            // kept only while the new composition serves the same source: a templated URI is in no static map
+            for (const [uri, subscription] of [...attachment.subscriptions]) {
+                if (sourceIn(after, uri) == subscription.source) continue
+                subscription.off()
                 attachment.subscriptions.delete(uri)
             }
             if (toolsChanged) attachment.server.sendToolListChanged().catch(function ignoreClosedTransport() {})
@@ -863,6 +1358,9 @@ function createSurface(shared: tShared, root: object, checkStaleMeta: boolean) {
         },
         resources: {
             list: () => [...state.current().resources.values()].map(resource => resource.descriptor),
+            /** Resource templates as resources/templates/list returns them: one per exposed noStrict node. */
+            templates: templateDescriptors,
+            /** Static URIs and templated ones (`<base>/<key>[/<member>...]`). */
             read: (uri: string, scope?: Partial<McpCallScope>) => readResource(uri, inProcessScope(scope)),
         },
         control: {

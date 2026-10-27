@@ -446,6 +446,9 @@ a service without `access.login` never mints a token from a client-named account
 The MCP facade over HTTP (`wenay-common2/server/mcp`) reuses the same `resolveAuth -> {object}`
 shape with a bearer header per request and one principal per MCP session — see
 [RPC-AUTH, *MCP over HTTP*](doc/RPC-AUTH.md#mcp-over-http--the-same-resolveauth-a-different-carrier).
+It exposes a `noStrict` node as a resource template (and, opted in, a `P.call` dispatcher): the
+node's `has` trap is the access point, RPC scope hooks do not run there — see
+[RPC-AUTH, *noStrict over MCP*](doc/RPC-AUTH.md#nostrict-over-mcp).
 
 ### 5.1 Server: empty initial facade + `gate: true`
 

@@ -43,6 +43,17 @@ export type FacadeMethodMeta = {
 /** Metadata by dotted facade path ('journal.history') for functions you cannot describe in place. */
 export type tFacadeMetaMap = Readonly<Record<string, FacadeMethodMeta>>
 
+/** What a noStrict node says about its keys (MCP: the resource template and the `<path>.call` dispatcher). */
+export type FacadeDynamicMeta = {
+    description: string
+    title?: string
+    /** JSON Schema (type 'string') of one key; checked before any proxy trap of the node runs. */
+    key?: object
+    /** Members below a key by dotted member path ('start', 'orders.cancel'); wins over describeMethod. */
+    members?: Readonly<Record<string, FacadeMethodMeta>>
+    annotations?: McpToolAnnotations
+}
+
 // ===================================================================
 // validation — a wrong descriptor is refused where it is written
 // ===================================================================
@@ -96,20 +107,51 @@ export function checkMethodMeta(meta: unknown, where: string): FacadeMethodMeta 
     if (meta['input'] != null) out['input'] = objectSchema(meta['input'], 'input', where)
     if (meta['args'] != null) out['args'] = checkArgs(meta['args'], where)
     if (meta['output'] != null) out['output'] = objectSchema(meta['output'], 'output', where)
-    if (meta['annotations'] != null) {
-        const annotations = meta['annotations']
-        if (!isPlainObject(annotations)) throw new Error(`Facade metadata ${where}: annotations must be an object`)
-        for (const key of ANNOTATION_KEYS) {
-            if (annotations[key] != null && typeof annotations[key] != 'boolean') {
-                throw new Error(`Facade metadata ${where}: annotations.${key} must be a boolean`)
-            }
-        }
-        out['annotations'] = Object.freeze({...annotations})
-    }
+    if (meta['annotations'] != null) out['annotations'] = checkAnnotations(meta['annotations'], where)
     if (meta['context'] != null && typeof meta['context'] != 'boolean') {
         throw new Error(`Facade metadata ${where}: context must be a boolean`)
     }
     return Object.freeze(out) as FacadeMethodMeta
+}
+
+function checkAnnotations(annotations: unknown, where: string) {
+    if (!isPlainObject(annotations)) throw new Error(`Facade metadata ${where}: annotations must be an object`)
+    for (const key of ANNOTATION_KEYS) {
+        if (annotations[key] != null && typeof annotations[key] != 'boolean') {
+            throw new Error(`Facade metadata ${where}: annotations.${key} must be a boolean`)
+        }
+    }
+    return Object.freeze({...annotations}) as McpToolAnnotations
+}
+
+/** A frozen, checked copy of a noStrict node's metadata; throws naming `where` on the first defect. */
+export function checkDynamicMeta(meta: unknown, where: string): FacadeDynamicMeta {
+    if (!isPlainObject(meta)) throw new Error(`Facade metadata ${where}: must be an object`)
+    if (typeof meta['description'] != 'string' || meta['description'].trim() == '') {
+        throw new Error(`Facade metadata ${where}: description must be a non-empty string`)
+    }
+    if (meta['title'] != null && typeof meta['title'] != 'string') {
+        throw new Error(`Facade metadata ${where}: title must be a string`)
+    }
+    const out: Record<string, unknown> = {...meta}
+    if (meta['key'] != null) {
+        if (!isPlainObject(meta['key']) || meta['key']['type'] != 'string') {
+            throw new Error(`Facade metadata ${where}: key must be a JSON Schema of type 'string'`)
+        }
+        out['key'] = meta['key']
+    }
+    if (meta['members'] != null) {
+        const members = meta['members']
+        if (!isPlainObject(members)) throw new Error(`Facade metadata ${where}: members must be an object keyed by member path`)
+        const checked: Record<string, FacadeMethodMeta> = {}
+        for (const name of Object.keys(members)) {
+            if (name == '') throw new Error(`Facade metadata ${where}: a member path must be non-empty`)
+            checked[name] = checkMethodMeta(members[name], `${where}, member ${name}`)
+        }
+        out['members'] = Object.freeze(checked)
+    }
+    if (meta['annotations'] != null) out['annotations'] = checkAnnotations(meta['annotations'], where)
+    return Object.freeze(out) as FacadeDynamicMeta
 }
 
 // ===================================================================
@@ -128,6 +170,22 @@ export function describeMethod<F extends (...args: any[]) => any>(fn: F, meta: F
 /** The metadata describeMethod attached, or undefined. */
 export function methodMeta(fn: unknown): FacadeMethodMeta | undefined {
     return typeof fn == 'function' ? (fn as any)[FACADE_METHOD_META] : undefined
+}
+
+// keyed by identity, not a symbol property: a dynamic Proxy's get trap may answer nothing for a
+// symbol (peer-media-relay's watchOf does), so a property could never be read back
+const dynamicMetaByNode = new WeakMap<object, FacadeDynamicMeta>()
+
+/** Describes a noStrict node's keys and members and returns the same node, type unchanged. */
+export function describeDynamic<T extends object>(node: T, meta: FacadeDynamicMeta): T {
+    if (node == null || (typeof node != 'object' && typeof node != 'function')) throw new Error('describeDynamic needs an object')
+    dynamicMetaByNode.set(node, checkDynamicMeta(meta, 'of a dynamic node'))
+    return node
+}
+
+/** The metadata describeDynamic attached, or undefined. */
+export function dynamicMeta(node: unknown): FacadeDynamicMeta | undefined {
+    return node != null && (typeof node == 'object' || typeof node == 'function') ? dynamicMetaByNode.get(node) : undefined
 }
 
 export function facadeMetaKey(path: readonly string[]) {
