@@ -88,7 +88,7 @@ source, tests, and public docs.
 | `Observe.createStore` plus Store Replay | Authoritative status, resumable facts, browser mirrors, reconnect catch-up | A replay sequence alone is not a business-command id |
 | `Observe.syncStoreReplayRoute` | Replaceable replay route where a continuous mirror is needed | It switches data sources, not executable code |
 | RPC facades and `Listen` | Typed remote calls and outward event streams | Authorization must follow `RPC-AUTH.md` |
-| `createHttpFacadeServer` from `wenay-common2/server` | Static GET/POST mirror for a safe control/view facade with Express middleware | Request/response only; no callbacks, `Listen`, SSE, dynamic route keys, or binary download |
+| `createHttpFacadeServer` from `wenay-common2/server` | Static GET/POST mirror for a safe control/view facade with Express middleware | Request/response only: Listen streams and `noStrict` subtrees are skipped, not routed; no callbacks, SSE, dynamic route keys or binary download |
 
 Relevant implementation evidence:
 
@@ -615,7 +615,10 @@ where a host puts journaling and post-mutation receipts, `policy.concurrency` it
 dynamic-runtime contribution gateway joins the same registry through `control.replace(key, fragment)`
 (`experiments/dynamic-runtime/mcp-facade-gateway.ts`, verified by `facade-gateway-self-client.ts` in
 `npm run test:dynamic-runtime`): isolated module tools and host facade tools are one tool list, and
-`ModuleWorkerMcpAnnotations` is the adapter's `McpToolAnnotations` with three hints required. The
+`ModuleWorkerMcpAnnotations` is the adapter's `McpToolAnnotations` with three hints required. Since
+3.3.0 a runtime-keyed map (`noStrict`, e.g. active generations by id) needs no remount per key: the
+adapter serves it as a resource template resolved per request and, with `policy.dynamic: 'call'`, one
+stable `P.call` dispatcher tool, so the tool list does not churn with the keys. The
 older hand-written adapter under `experiments/dynamic-runtime/mcp-adapter.ts` stays an experiment.
 
 Several separately authorized MCP surfaces are useful:

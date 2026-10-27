@@ -1,8 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.checkMethodMeta = checkMethodMeta;
+exports.checkDynamicMeta = checkDynamicMeta;
 exports.describeMethod = describeMethod;
 exports.methodMeta = methodMeta;
+exports.describeDynamic = describeDynamic;
+exports.dynamicMeta = dynamicMeta;
 exports.facadeMetaKey = facadeMetaKey;
 exports.checkMetaMap = checkMetaMap;
 exports.resolveMethodMeta = resolveMethodMeta;
@@ -59,20 +62,53 @@ function checkMethodMeta(meta, where) {
         out['args'] = checkArgs(meta['args'], where);
     if (meta['output'] != null)
         out['output'] = objectSchema(meta['output'], 'output', where);
-    if (meta['annotations'] != null) {
-        const annotations = meta['annotations'];
-        if (!isPlainObject(annotations))
-            throw new Error(`Facade metadata ${where}: annotations must be an object`);
-        for (const key of ANNOTATION_KEYS) {
-            if (annotations[key] != null && typeof annotations[key] != 'boolean') {
-                throw new Error(`Facade metadata ${where}: annotations.${key} must be a boolean`);
-            }
-        }
-        out['annotations'] = Object.freeze({ ...annotations });
-    }
+    if (meta['annotations'] != null)
+        out['annotations'] = checkAnnotations(meta['annotations'], where);
     if (meta['context'] != null && typeof meta['context'] != 'boolean') {
         throw new Error(`Facade metadata ${where}: context must be a boolean`);
     }
+    return Object.freeze(out);
+}
+function checkAnnotations(annotations, where) {
+    if (!isPlainObject(annotations))
+        throw new Error(`Facade metadata ${where}: annotations must be an object`);
+    for (const key of ANNOTATION_KEYS) {
+        if (annotations[key] != null && typeof annotations[key] != 'boolean') {
+            throw new Error(`Facade metadata ${where}: annotations.${key} must be a boolean`);
+        }
+    }
+    return Object.freeze({ ...annotations });
+}
+function checkDynamicMeta(meta, where) {
+    if (!isPlainObject(meta))
+        throw new Error(`Facade metadata ${where}: must be an object`);
+    if (typeof meta['description'] != 'string' || meta['description'].trim() == '') {
+        throw new Error(`Facade metadata ${where}: description must be a non-empty string`);
+    }
+    if (meta['title'] != null && typeof meta['title'] != 'string') {
+        throw new Error(`Facade metadata ${where}: title must be a string`);
+    }
+    const out = { ...meta };
+    if (meta['key'] != null) {
+        if (!isPlainObject(meta['key']) || meta['key']['type'] != 'string') {
+            throw new Error(`Facade metadata ${where}: key must be a JSON Schema of type 'string'`);
+        }
+        out['key'] = meta['key'];
+    }
+    if (meta['members'] != null) {
+        const members = meta['members'];
+        if (!isPlainObject(members))
+            throw new Error(`Facade metadata ${where}: members must be an object keyed by member path`);
+        const checked = {};
+        for (const name of Object.keys(members)) {
+            if (name == '')
+                throw new Error(`Facade metadata ${where}: a member path must be non-empty`);
+            checked[name] = checkMethodMeta(members[name], `${where}, member ${name}`);
+        }
+        out['members'] = Object.freeze(checked);
+    }
+    if (meta['annotations'] != null)
+        out['annotations'] = checkAnnotations(meta['annotations'], where);
     return Object.freeze(out);
 }
 function describeMethod(fn, meta) {
@@ -84,6 +120,16 @@ function describeMethod(fn, meta) {
 }
 function methodMeta(fn) {
     return typeof fn == 'function' ? fn[FACADE_METHOD_META] : undefined;
+}
+const dynamicMetaByNode = new WeakMap();
+function describeDynamic(node, meta) {
+    if (node == null || (typeof node != 'object' && typeof node != 'function'))
+        throw new Error('describeDynamic needs an object');
+    dynamicMetaByNode.set(node, checkDynamicMeta(meta, 'of a dynamic node'));
+    return node;
+}
+function dynamicMeta(node) {
+    return node != null && (typeof node == 'object' || typeof node == 'function') ? dynamicMetaByNode.get(node) : undefined;
 }
 function facadeMetaKey(path) {
     return path.join('.');

@@ -136,6 +136,7 @@ async function main() {
     }
 }
 
-runCheck(main)
+// leader and node starts before the watchdog is armed, then the watchdog itself
+runCheck(main, 360_000)
 
 

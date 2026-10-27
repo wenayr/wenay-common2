@@ -14,9 +14,11 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
     for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.methodMeta = exports.describeMethod = void 0;
+exports.methodMeta = exports.dynamicMeta = exports.describeMethod = exports.describeDynamic = void 0;
 __exportStar(require("./mcpFacadeServer"), exports);
 __exportStar(require("./mcpFacadeHttp"), exports);
 var facadeMeta_1 = require("./facadeMeta");
+Object.defineProperty(exports, "describeDynamic", { enumerable: true, get: function () { return facadeMeta_1.describeDynamic; } });
 Object.defineProperty(exports, "describeMethod", { enumerable: true, get: function () { return facadeMeta_1.describeMethod; } });
+Object.defineProperty(exports, "dynamicMeta", { enumerable: true, get: function () { return facadeMeta_1.dynamicMeta; } });
 Object.defineProperty(exports, "methodMeta", { enumerable: true, get: function () { return facadeMeta_1.methodMeta; } });

@@ -8,6 +8,8 @@ import {createTokenCodec} from 'wenay-common2/server/auth'
 import type {RentalBooking} from './service'
 import {runCheck} from './run-check'
 
+const STARTUP_MS = 120_000
+
 async function check() {
     const temp = await realpath(tmpdir())
     const work = await mkdtemp(path.join(temp, 'rental-durable-'))
@@ -37,7 +39,8 @@ async function check() {
             await done
         }
         stops.push(stop)
-        const deadline = Date.now() + 10000
+        // readiness is the printed line; the bound only has to outlast a cold tsx start on a loaded machine
+        const deadline = Date.now() + STARTUP_MS
         while (Date.now() < deadline) {
             if (failure || exited) throw new Error('rental durable process failed before ready')
             const match = /leader listening on (http:\/\/localhost:\d+)/.exec(output)
@@ -92,7 +95,7 @@ async function check() {
         const refused = spawnSync(process.execPath, ['--import', 'tsx', path.join(__dirname, 'leader-rental.ts')], {
             env: {...process.env, RENTAL_PORT: '0', SERVICE_DATA_DIR: incomplete,
                 SERVICE_NODE_TOKEN: 'rental-durable-check-node-secret', SERVICE_TOKEN_SECRET: tokenSecret},
-            encoding: 'utf8', timeout: 10000, windowsHide: true,
+            encoding: 'utf8', timeout: STARTUP_MS, windowsHide: true,
         })
         assert.equal(refused.error, undefined)
         assert.equal(refused.status, 2, 'an incomplete archive pair must refuse startup')
@@ -115,4 +118,5 @@ async function check() {
     }
 }
 
-runCheck(check)
+// four leader starts, each allowed STARTUP_MS
+runCheck(check, 4 * STARTUP_MS + 60_000)

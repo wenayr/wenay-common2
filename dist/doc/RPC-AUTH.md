@@ -818,6 +818,33 @@ session, so revoke by `control.terminate(id)` (find ids by principal in `session
 waiting for the old one. As on RPC, the principal's facade decides what exists — read-only and
 per-role surfaces are separate objects, not checks inside methods.
 
+### `noStrict` over MCP
+
+Since 3.3.0 the MCP facade exposes a `noStrict` node: by default as a resource template
+(`facade://P/{key}`, read and subscribe), and with `policy.dynamic(path) == 'call'` also as a `P.call`
+dispatcher tool; `policy.dynamic → false` hides it. Keys resolve as RPC resolves below a marked node:
+`in` decides, so **the node's `has` trap is the access point** — a key it denies is absent for read,
+subscribe, call and completion. Only an object holds members, as on RPC (a function's statics and
+`name` are not reached). One difference from RPC: a method inherited from a builtin prototype —
+`Object`/`Function.prototype` (`toString`, `__defineGetter__`…), but also an array's `push`/`splice`, a
+Map's `clear`, a Date's `setTime` — never resolves unless it is own; a host class that overrides one
+keeps its own. `isSafeKey` filters every segment and `limits.maxPathLen` bounds the path, as on RPC.
+
+- Reading a subtree as data never enumerates a `noStrict` node inside it: such a read is refused
+  ("holds a dynamic map at …"), so a parent read cannot list the keys a `has` trap denies.
+
+- A Listen reached below a key is a resource only: its `emit`, `close`, `run` and other members are
+  never call targets, so MCP cannot forge events or stop a stream.
+- **RPC scope hooks are not applied.** `hooks.onRequest` and `bindRpcScopes` belong to the RPC
+  server; an MCP read or dispatch never passes them. Admission for a key goes into the MCP `around`
+  chain (`ctx.path` carries the key, `ctx.principal` the session's principal — reads of a view
+  resource and dispatcher calls both run it) or into the node's `has` trap. Templated reads and
+  subscriptions do not run `around`, so a key that needs admission for reading must be denied by `has`
+  or hidden with `policy.dynamic`.
+- Resolution runs the node's traps: a `get` trap with a side effect (creating a journal per key) runs
+  on every read, subscribe and call. A `describeDynamic` key schema is checked before any trap runs;
+  it is JSON Schema, so `validator: false` turns it off with the rest of the validation.
+
 ## Executable truth
 
 The auth semantics above are pinned by the harness — `npm run test:rpc`

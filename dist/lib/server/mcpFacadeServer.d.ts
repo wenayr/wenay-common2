@@ -1,7 +1,7 @@
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { type RpcLimits } from '../Common/rcp/rpc-limits';
-import { type FacadeMethodMeta, type McpToolAnnotations, type tFacadeMetaMap } from './facadeMeta';
+import { type FacadeDynamicMeta, type FacadeMethodMeta, type McpToolAnnotations, type tFacadeMetaMap } from './facadeMeta';
 declare const NAME_RULES: {
     readonly mcp: {
         readonly pattern: RegExp;
@@ -16,6 +16,7 @@ declare const NAME_RULES: {
 };
 export type tMcpToolNameCharset = keyof typeof NAME_RULES;
 export type tMcpConcurrency = 'serial' | 'parallel';
+export type tMcpDynamic = false | 'read' | 'call';
 export type McpServerLike = {
     setRequestHandler(schema: any, handler: (request: any, extra: any) => unknown): void;
     removeRequestHandler(method: string): void;
@@ -72,6 +73,7 @@ export type McpFacadePolicy = {
     readOnly?: (path: readonly string[]) => boolean | undefined;
     concurrency?: (path: readonly string[]) => tMcpConcurrency;
     resource?: (path: readonly string[]) => boolean;
+    dynamic?: (path: readonly string[]) => tMcpDynamic | undefined;
 };
 export type McpFacadeFinding = {
     path: string;
@@ -97,6 +99,7 @@ export type McpFacadeServerOptions<T extends object> = {
     resources?: false | {
         scheme?: string;
         maxSubscriptions?: number;
+        completions?: boolean;
     };
     validator?: McpJsonSchemaValidator | false;
     onFinding?: (finding: McpFacadeFinding) => void;
@@ -120,8 +123,10 @@ declare function createShared<T extends object>(deps: McpFacadeServerOptions<T>)
     resourceOptions: {
         scheme?: string;
         maxSubscriptions?: number;
+        completions?: boolean;
     } | null;
     maxSubscriptions: number;
+    completions: boolean;
     limits: Required<RpcLimits>;
     metaMap: Readonly<Record<string, FacadeMethodMeta>> | undefined;
     around: any[];
@@ -159,19 +164,33 @@ declare function createShared<T extends object>(deps: McpFacadeServerOptions<T>)
     };
     toolName: (path: readonly string[]) => string;
     resourceUri: (path: readonly string[]) => string;
+    resourcePath: (uri: string) => string[] | null;
     compiled: (meta: FacadeMethodMeta) => {
         input?: tSchemaCheck;
         output?: tSchemaCheck;
     };
+    compiledKey: (meta: FacadeDynamicMeta) => ((input: unknown) => {
+        valid: boolean;
+        errorMessage?: string;
+    }) | undefined;
+    dispatchInput: (meta: FacadeDynamicMeta | undefined, depth: number) => {
+        schema: Record<string, unknown>;
+        check?: tSchemaCheck;
+    };
     report: (finding: McpFacadeFinding) => void;
+    reportDynamic: (node: readonly string[], member: readonly string[], message: string) => void;
 };
 type tShared = ReturnType<typeof createShared>;
+type tSubscription = {
+    off: () => void;
+    source: unknown;
+};
 type tAttachment = {
     server: McpServerLike;
     resources: boolean;
     sessionId: string;
     principal: unknown;
-    subscriptions: Map<string, () => void>;
+    subscriptions: Map<string, tSubscription>;
     pending: Set<string>;
     surface: object;
     closed: boolean;
@@ -309,6 +328,13 @@ declare function createSurface(shared: tShared, root: object, checkStaleMeta: bo
     resources: {
         list: () => {
             uri: string;
+            name: string;
+            title?: string | undefined;
+            description: string;
+            mimeType: string;
+        }[];
+        templates: () => {
+            uriTemplate: string;
             name: string;
             title?: string | undefined;
             description: string;
@@ -472,6 +498,13 @@ export declare function createMcpFacadeServer<T extends object>(deps: McpFacadeS
             description: string;
             mimeType: string;
         }[];
+        templates: () => {
+            uriTemplate: string;
+            name: string;
+            title?: string | undefined;
+            description: string;
+            mimeType: string;
+        }[];
         read: (uri: string, scope?: Partial<McpCallScope>) => Promise<{
             contents: {
                 uri: string;
@@ -622,6 +655,13 @@ export declare function createMcpFacadeServer<T extends object>(deps: McpFacadeS
             resources: {
                 list: () => {
                     uri: string;
+                    name: string;
+                    title?: string | undefined;
+                    description: string;
+                    mimeType: string;
+                }[];
+                templates: () => {
+                    uriTemplate: string;
                     name: string;
                     title?: string | undefined;
                     description: string;

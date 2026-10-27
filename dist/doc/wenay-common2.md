@@ -67,15 +67,19 @@ describeMethod(fn, {description, title?, input? | args?, output?, annotations?, 
 //   the same metadata feeds createHttpFacadeOpenApi (summary, tuple body) and the MCP tool list
 createMcpFacadeServer({name, version, object, meta?, strict?, readOnly?, policy?, around?, limits?, names?, resources?})
 mcp.tools.list() / mcp.tools.call(name, args)       // descriptors; the tools/call pipeline in-process
+mcp.resources.list() / templates() / read(uri)      // static resources; one template per noStrict node
+describeDynamic(noStrict(map), {description, key?, members?, annotations?})   // server/mcp only
 mcp.control.attach(server) / server() / mount(key, obj) / replace / unmount / refresh / derive(obj) / dispose()
 mcp.on.called / mcp.on.failed                       // audit streams
 createMcpFacadeHttp({app, path, mcp, mode?, maxSessions?, sessionTtlMs?, auth?: {resolveAuth}}) -> {sessions, control, on}
 await serveMcpStdio(mcp)
 ```
 
-Same walk as `createHttpFacadeServer`; Listen `on` → resources, `noStrict` not walked; one serial queue
-unless `policy.concurrency` says `'parallel'`; throws → `isError` with the `MyError` code.
-Full contract → rare doc, *MCP facade server*.
+Same walk as `createHttpFacadeServer` (streams and `noStrict` are never routes or tools); Listen `on` → MCP
+resources; a `noStrict` node → the resource template `facade://P/{key}` resolved per request as on RPC
+(`policy.dynamic`: `'read'` default, `false` hides, `'call'` adds the `P.call` dispatcher tool;
+`resources.completions` opts into key completion); one serial queue unless `policy.concurrency` says
+`'parallel'`; throws → `isError` with the `MyError` code. Full contract → rare doc, *MCP facade server*.
 
 ## ⭐ events — `listen` / `listenStore`
 > `import {listen, listenStore, mapListen} from 'wenay-common2'` or the narrow

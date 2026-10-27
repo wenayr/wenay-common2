@@ -26,12 +26,13 @@ async function main() {
         ...process.env, SERVICE_DATA_DIR: work,
         SERVICE_NODE_TOKEN: 'pizzeria-network-node-secret', SERVICE_TOKEN_SECRET: 'pizzeria-network-token-secret',
     }
-    // Use the shipped process entrypoints; SIGKILL gives the roster no goodbye.
+    // Use the shipped process entrypoints; SIGKILL gives the roster no goodbye. Readiness is the
+    // printed line; the start bound only has to outlast a cold tsx start on a loaded machine.
     async function boot(script: string, settings: Record<string, string>, pattern: RegExp) {
         let graceful = false
         const child = createProcessResource({command: process.execPath,
             args: ['--import', 'tsx', path.join(__dirname, script)],
-            env: {...env, ...settings}, ipc: true, startTimeoutMs: 20_000, tailChars: 24_000,
+            env: {...env, ...settings}, ipc: true, startTimeoutMs: 120_000, tailChars: 24_000,
             ready(fact) { if (fact.type != 'message') return pattern.exec(fact.tail)?.[1] },
             shutdown(process) {
                 if (graceful && process.connected) process.send('shutdown', function sent(error) { if (error) process.kill('SIGKILL') })
@@ -129,4 +130,5 @@ async function main() {
     }
 }
 
-runCheck(main)
+// seven leader and node process starts in sequence
+runCheck(main, 600_000)

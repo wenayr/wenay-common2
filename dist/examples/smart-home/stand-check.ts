@@ -26,4 +26,5 @@ async function main() {
     } finally { await stand.close() }
 }
 
-runCheck(main)
+// up to four host starts, each allowed the stand's two-minute readiness bound
+runCheck(main, 600_000)

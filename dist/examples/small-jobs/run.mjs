@@ -55,8 +55,9 @@ export async function startStand({port = 0, nodes = 2, verbose = false, signal =
         })
         return entry
     }
+    // readiness is the printed line; the bound only has to outlast a cold tsx start on a loaded machine
     async function waitForUrl(entry, pattern) {
-        const deadline = Date.now() + 20_000
+        const deadline = Date.now() + 120_000
         while (Date.now() < deadline) {
             if (entry.failure() || entry.child.exitCode != null || entry.child.signalCode != null) {
                 throw new Error('stand process failed to start:\n' + entry.output())

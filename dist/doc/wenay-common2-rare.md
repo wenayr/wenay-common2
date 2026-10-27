@@ -601,7 +601,7 @@ the `meta` map entry for its dotted path): `title`/`description` become the summ
 `input`/`args` the tuple body, `output` the documented result value; an explicit `summaries` or
 `argSchemas` entry still wins. The MCP adapter below reads the same metadata. The scaffold's `template/rest.ts` mounts both from a service definition. It receives a caller-owned Express app and
 walks the supplied object once at server setup. Every nested enumerable string-keyed function becomes a route whose
-URL segments match its object path:
+URL segments match its object path, except inside Listen streams and `noStrict` subtrees (below):
 
 ```ts
 import express from 'express'
@@ -642,9 +642,14 @@ object path, and URL for inspection. Error bodies carry `{name, message, code?, 
 hook never costs the reply. The service REST logs every 5xx with its stack through its optional `log`.
 
 The existing RPC walk codec restores Date/Map/Set/RegExp/BigInt request values and packs them in results. This is not
-a callback or binary transport: function signatures cannot be discovered at runtime, so callback/Listen-shaped
-functions are registered like every other function and callers are responsible for not invoking them through HTTP.
-Use an explicit download endpoint for bytes. The adapter preserves a function's parent as its invocation context,
+a callback or binary transport. A plain function is a route whatever its signature, so a function that takes a
+callback cannot receive one over HTTP. Streams are never routes: a Listen api object, a `replayListen` line, and a
+branded `on` are skipped together with their members (`emit`, `close`, `run`, `on`…). So is a `noStrict` subtree,
+which RPC resolves at call time. To publish over HTTP, wrap it in an explicit function (`publish: v => emit(v)`,
+`count: () => stream.count()`). A Listen or `noStrict` root object is refused. A replay wire facade keeps
+`since`/`keyframe`/`frame` as routes; its `line` is skipped. Only registered or branded streams are recognized (an
+object with all eight Listen-core functions counts, as on RPC): a `toSlimListen` object or a bare `emit` placed in the
+facade is a plain function and stays a route. Use an explicit download endpoint for bytes. The adapter preserves a function's parent as its invocation context,
 rejects circular facade branches and forbidden RPC keys, and rejects repeated registration of the same app, method,
 and URL. Dynamic keys added after setup do not create new routes; call the factory only after the static facade is ready.
 
@@ -717,8 +722,11 @@ order, the parent kept as `this`, circular branches, forbidden RPC keys and empt
 walked once at setup. Tool name = path joined by `names.separator` (default `.`). `names.charset:
 'mcp'` (default, `[A-Za-z0-9_.-]`, 128) or `'claude'` (`[A-Za-z0-9_-]`, 64); a name outside it is
 refused naming its path, `names.map: true` replaces disallowed characters with `_`. A name registered
-twice is refused naming both paths. `noStrict` subtrees are not walked: expose dynamic keys through a
-stable dispatcher (`call(name, args)` resolving at call time) or `control.mount`/`replace`.
+twice is refused naming both paths. The walk itself skips streams (Listen api objects, replay lines,
+branded `on`) and `noStrict` subtrees for both HTTP and MCP, and refuses a stream or `noStrict` root
+(also for `derive`; `control.mount`/`replace` refuse a stream). MCP claims both first: streams become
+resources, `noStrict` nodes — including a `noStrict` object mounted under a key — become resource
+templates and, on request, a dispatcher tool (*Dynamic nodes* below).
 
 `strict: true` refuses setup listing every function without description and `input`/`args`, and every
 `meta` key that names nothing. Without strict, such a function gets `{type: 'object'}`, a generated
@@ -766,17 +774,75 @@ code, never a stack. An unknown tool and a read-only refusal are protocol errors
 tick coalesce into one `notifications/resources/updated`; `resources.maxSubscriptions`, default 32
 per session), `resources/read` answers a `listenStore`'s current value, a plain `listen` notifies
 only (read is refused). A zero-argument function marked by `policy.resource` is a readable resource.
+A read is bounded by `RpcLimits` before it is packed (a cyclic value is a `PayloadLimitError`) and
+bytes are refused (`E_MCP_BINARY`), never stringified.
 `control.mount(key, object)`, `replace(key, object)` (one change, one notification), `unmount(key)`
 and `refresh()` (walk again: keys added since setup) send `notifications/tools/list_changed` (and
-`resources/list_changed`) to attached sessions when the lists differ; a refused composition leaves the
-served one in place. `experiments/dynamic-runtime/mcp-facade-gateway.ts` mounts the dynamic-runtime
-contribution gateway this way, so isolated module tools and facade tools share one registry.
+`resources/list_changed`, templates included) to attached sessions when the lists differ; a refused
+composition leaves the served one in place. A subscription survives a recomposition only while the
+new composition serves the same stream or dynamic node. `experiments/dynamic-runtime/mcp-facade-gateway.ts`
+mounts the dynamic-runtime contribution gateway this way, so isolated module tools and facade tools
+share one registry.
+
+**Dynamic nodes (`noStrict`).** A `noStrict` node at path P is never enumerated: its keys are resolved
+per request the way RPC resolves below `noStrict` — `key in node` decides, so a proxy's `has` trap is
+the access point, and only an object holds members; a method inherited from a builtin prototype
+(`Object`, `Function`, an array's `push`, a Map's `clear`, a Date's `setTime`…) never counts unless own
+or overridden by a host class; forbidden keys and `limits.maxPathLen` apply (a longer URI is unknown). Since 3.3.0 the node is, by default, the resource
+template `facade://P/{key}` (`resources/templates/list`, in-process `resources.templates()`; never in
+`resources/list`). `facade://P/<key>[/<member>...]` (segments percent-decoded, one canonical URI per
+key) reads like a static resource: a store's current value, a plain listen refused (subscribe
+instead), data as JSON through the RPC codec; a function, a subtree holding functions or a subtree
+holding a `noStrict` node (its keys are its `has` trap's to answer) is refused by name. Any Listen below a key can be subscribed (counted in `maxSubscriptions`). `policy.dynamic(path)`
+decides per node: `'read'` (default), `false` (hidden: no template, no URI) or `'call'`, which also adds
+the dispatcher tool `P.call` with input `{key, method: string[], args?}`:
+
+```ts
+import {describeDynamic, createMcpFacadeServer} from 'wenay-common2/server/mcp'
+
+const facade = {
+    strategies: describeDynamic(noStrict(strategyByName), {
+        description: 'Trading strategies by id',
+        key: {type: 'string', pattern: '^[a-z0-9.]+$'},        // checked before any trap of the node runs
+        members: {start: {description: 'Starts', input: {type: 'object', properties: {speed: {type: 'integer'}}}}},
+    }),
+}
+const mcp = createMcpFacadeServer({
+    name: 'desk', version: '1', object: facade,
+    policy: {dynamic: path => path[0] == 'strategies' ? 'call' : 'read'},
+    resources: {completions: true},                             // completion/complete for {key}
+})
+// tools/call strategies.call {key: 'mystrategy.2020', method: ['start'], args: {speed: 2}}
+```
+
+- The member runs with its parent as `this` (prototype methods included), through the same queue,
+  `around` chain and audit: `ctx.tool` is `P.call`, `ctx.path` the concrete `[...P, key, ...method]`,
+  which `policy.readOnly`/`concurrency` also receive.
+- A described member (its `members` entry, else `describeMethod` on the function) takes the object its
+  schema describes; `members` is keyed by the dotted member path, so a member whose own name holds a
+  dot is described only by `describeMethod`. An undescribed one takes a positional array or one
+  object, unvalidated, reported once per `P.*.member` (at most 64 per node, then one `P.*` finding).
+  `strict: true` refuses a `'call'` node without `describeDynamic` at setup and an undescribed member
+  at call time.
+- Never call targets: forbidden segments (`E_MCP_ARGS`), builtin-prototype methods, members of a
+  function, data, and anything below a Listen — its `emit`/`close` stay unreachable (`E_MCP_NOT_FOUND`).
+- Read-only mode lists the dispatcher by its own `readOnlyHint` (`describeDynamic` annotations, else
+  `policy.readOnly(P)`), and each member must still be read-only (a protocol error otherwise).
+- `resources.completions: true` (off by default: the method is server-wide) answers
+  `completion/complete` for `{key}` with the own enumerable keys the `has` trap allows and the key
+  schema accepts (at most 100).
+- `noStrict` is not an access-control boundary here either: RPC scope hooks (`bindRpcScopes`) do not
+  run over MCP, so admission belongs in `around` or in the node's `has` trap, and every read, subscribe
+  or call runs the node's traps. A Listen replaced inside the map keeps its old subscriptions, and new
+  keys send no `list_changed`. See [`RPC-AUTH.md`](RPC-AUTH.md).
 
 **Attaching and transports.** `control.attach(server, {id?, principal?})` registers `tools/*` (and
-`resources/*` when the facade has resources or `resources` is given) on an SDK `Server` or `McpServer`
-before it connects, and returns `detach`. It refuses a server whose `tools/list` is already handled:
-one server, one tool registry — mount other tools instead of `McpServer.registerTool`. Resource
-handlers are claimed only when needed, so a host's `registerResource` guides still work.
+`resources/*` with `resources/templates/list` when the facade has resources or `noStrict` nodes, or
+`resources` is given; `completion/complete` with `resources.completions`) on an SDK `Server` or
+`McpServer` before it connects, and returns `detach`. It refuses a server whose `tools/list` is
+already handled: one server, one tool registry — mount other tools instead of `McpServer.registerTool`.
+Resource handlers are claimed only when needed, so a host's `registerResource` guides still work; a
+conflict names the option that caused the claim.
 `control.server(session?)` creates an attached SDK `Server`. Both are typed by the structural
 `McpServerLike` (what the adapter calls; an SDK `Server` satisfies it, an `McpServer` satisfies
 `{server: McpServerLike}`) and `validator` by `McpJsonSchemaValidator`: the SDK's CommonJS declarations
@@ -1440,10 +1506,7 @@ Viewer helpers (`media-view`): the consumer side of any media line (local pair o
 - `attachAudioPlayer(line, {minBufferSec? = 0.08, maxBacklogSec? = 0.35, audioContext?, onError?})` — pcm16/float32 through a sequential playhead. A still-future playhead remains contiguous even when its headroom drops below `minBufferSec`; only a real underrun rebuilds the jitter buffer (`stats().underruns`). A backlog past `maxBacklogSec` is dropped and rebased (`stats().dropped`). `enable()` must come from a user gesture (browser autoplay rules); `audioContext` injects a factory for tests/custom routing.
 - `pipeMediaPublish(line, publish, {stamp? = true, onError?})` — fire-and-forget pipe into an RPC call; the default `Date.now()` stamp is what viewer `stats().ageMs` measures against. Both attach helpers also expose `stats().perSec` (rolling 1s rate).
 - The canvas path gives an ordinary ArrayBuffer-backed payload directly to `Blob` (SharedArrayBuffer still receives an owned copy), closes every decoded bitmap after draw/error, and ignores an in-flight decode after `off()`. A synchronous publisher does not allocate a Promise; thenables retain asynchronous error routing.
-- Oracles: `replay/media-view.test.ts` and `replay/video-windows-stress.test.ts`. The latter uses
-  real Socket.IO/RPC with five synthetic participants, ten independent video windows, 96-512 KiB
-  frames, ACL/rejoin/latest recovery, slow-render busy-skip and listener-leak teardown without
-  requesting camera or microphone permissions.
+- Oracles: `replay/media-view.test.ts`, `replay/media-socket.test.ts`, `replay/video-socket.demo.ts`.
 
 Replay/RPC wiring:
 ```ts

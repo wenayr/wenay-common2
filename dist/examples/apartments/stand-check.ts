@@ -63,4 +63,5 @@ async function main() {
     }
 }
 
-runCheck(main)
+// leader, node, device and leader-replacement process starts
+runCheck(main, 600_000)

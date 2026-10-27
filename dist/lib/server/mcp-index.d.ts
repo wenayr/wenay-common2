@@ -1,4 +1,4 @@
 export * from './mcpFacadeServer';
 export * from './mcpFacadeHttp';
-export { describeMethod, methodMeta } from './facadeMeta';
-export type { FacadeMethodArg, FacadeMethodMeta, McpToolAnnotations, tFacadeMetaMap } from './facadeMeta';
+export { describeDynamic, describeMethod, dynamicMeta, methodMeta } from './facadeMeta';
+export type { FacadeDynamicMeta, FacadeMethodArg, FacadeMethodMeta, McpToolAnnotations, tFacadeMetaMap } from './facadeMeta';

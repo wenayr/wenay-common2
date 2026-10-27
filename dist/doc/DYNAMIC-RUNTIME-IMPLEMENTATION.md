@@ -515,7 +515,6 @@ npx tsx experiments/dynamic-runtime/contribution-self-client.ts
 npx tsx experiments/dynamic-runtime/fleet-self-client.ts
 npm run test:dynamic-runtime:acceptance
 npm run test:all
-npm run test:stress:extended
 ```
 
 The tests independently cover:
